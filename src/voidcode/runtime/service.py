@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
@@ -75,6 +76,7 @@ from ..provider.snapshot import (
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
+from ..tools.background_retry import BackgroundRetryTool
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -226,6 +228,7 @@ from .execution_seams import (
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager
+from .paths import provider_catalog_cache_path
 from .permission import (
     DelegationGovernance,
     ExternalDirectoryPolicy,
@@ -634,6 +637,7 @@ class ToolRegistry:
         question_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
+        background_retry_tool: Tool | None = None,
     ) -> ToolRegistry:
         return cls.from_tools(
             BuiltinToolProvider(
@@ -646,6 +650,7 @@ class ToolRegistry:
                 question_tool=question_tool,
                 background_output_tool=background_output_tool,
                 background_cancel_tool=background_cancel_tool,
+                background_retry_tool=background_retry_tool,
             ).provide_tools()
         )
 
@@ -699,6 +704,7 @@ class VoidCodeRuntime:
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
     _background_task_threads: dict[str, threading.Thread]
+    _background_task_shutdown_requested: bool
     _background_tasks_reconciled: bool
     _context_window_config_override: RuntimeContextWindowConfig | None
     _agent_registry: AgentManifestRegistry
@@ -814,6 +820,7 @@ class VoidCodeRuntime:
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._background_task_threads = {}
+        self._background_task_shutdown_requested = False
         self._background_tasks_reconciled = False
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
@@ -828,9 +835,28 @@ class VoidCodeRuntime:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = exc_type, exc, tb
+        self.shutdown_background_tasks()
         _ = self.disconnect_acp()
         _ = self.shutdown_mcp()
         _ = self.shutdown_lsp()
+
+    def shutdown_background_tasks(self, *, timeout_seconds: float = 2.0) -> None:
+        self._background_task_shutdown_requested = True
+        deadline = time.monotonic() + max(timeout_seconds, 0.0)
+        while True:
+            with self._background_task_supervisor._queue_lock:
+                threads = tuple(self._background_task_threads.items())
+            if not threads:
+                return
+            for task_id, thread in threads:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                thread.join(timeout=min(remaining, 0.1))
+                if not thread.is_alive():
+                    with self._background_task_supervisor._queue_lock:
+                        if self._background_task_threads.get(task_id) is thread:
+                            self._background_task_threads.pop(task_id, None)
 
     def _build_base_tool_registry(self) -> ToolRegistry:
         return ToolRegistry.with_defaults(
@@ -845,6 +871,7 @@ class VoidCodeRuntime:
             question_tool=QuestionTool(),
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
+            background_retry_tool=BackgroundRetryTool(runtime=self),
         )
 
     def _tool_registry_with_effective_local_tools(
@@ -3035,6 +3062,9 @@ class VoidCodeRuntime:
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._background_task_supervisor.cancel_background_task(task_id)
 
+    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
+        return self._background_task_supervisor.retry_background_task(task_id)
+
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         _ = self._load_session_result(session_id=session_id)
         self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
@@ -3615,8 +3645,9 @@ class VoidCodeRuntime:
             "discovery_mode": catalog.discovery_mode,
         }
 
-    def _provider_model_catalog_cache_path(self) -> Path:
-        return self._workspace / ".voidcode" / "provider-model-catalog.json"
+    @staticmethod
+    def _provider_model_catalog_cache_path() -> Path:
+        return provider_catalog_cache_path()
 
     def _hydrate_provider_model_catalog_cache(self) -> None:
         catalog = self._model_provider_registry.model_catalog

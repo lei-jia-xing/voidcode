@@ -26,6 +26,7 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
+from .paths import sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -230,6 +231,7 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
+    _SCHEMA_VERSION = 2
     _RESUME_CHECKPOINT_KINDS = frozenset(
         {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
     )
@@ -237,9 +239,9 @@ class SqliteSessionStore:
 
     _CANONICAL_SCHEMA: dict[str, tuple[tuple[str, str, int, str | None, int], ...]] = {
         "sessions": (
-            ("session_id", "TEXT", 0, None, 1),
+            ("session_id", "TEXT", 1, None, 2),
             ("parent_session_id", "TEXT", 0, None, 0),
-            ("workspace", "TEXT", 1, None, 0),
+            ("workspace_id", "TEXT", 1, None, 1),
             ("status", "TEXT", 1, None, 0),
             ("turn", "INTEGER", 1, None, 0),
             ("prompt", "TEXT", 1, None, 0),
@@ -253,23 +255,25 @@ class SqliteSessionStore:
             ("last_event_sequence", "INTEGER", 1, None, 0),
         ),
         "session_events": (
-            ("session_id", "TEXT", 1, None, 1),
-            ("sequence", "INTEGER", 1, None, 2),
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("session_id", "TEXT", 1, None, 2),
+            ("sequence", "INTEGER", 1, None, 3),
             ("event_type", "TEXT", 1, None, 0),
             ("source", "TEXT", 1, None, 0),
             ("payload_json", "TEXT", 1, None, 0),
         ),
         "session_todos": (
-            ("session_id", "TEXT", 1, None, 1),
-            ("position", "INTEGER", 1, None, 2),
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("session_id", "TEXT", 1, None, 2),
+            ("position", "INTEGER", 1, None, 3),
             ("content", "TEXT", 1, None, 0),
             ("status", "TEXT", 1, None, 0),
             ("priority", "TEXT", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
         ),
         "background_tasks": (
-            ("task_id", "TEXT", 0, None, 1),
-            ("workspace", "TEXT", 1, None, 0),
+            ("task_id", "TEXT", 1, None, 2),
+            ("workspace_id", "TEXT", 1, None, 1),
             ("status", "TEXT", 1, None, 0),
             ("prompt", "TEXT", 1, None, 0),
             ("request_session_id", "TEXT", 0, None, 0),
@@ -299,7 +303,7 @@ class SqliteSessionStore:
         ),
         "session_notifications": (
             ("notification_id", "TEXT", 0, None, 1),
-            ("workspace", "TEXT", 1, None, 0),
+            ("workspace_id", "TEXT", 1, None, 0),
             ("session_id", "TEXT", 1, None, 0),
             ("kind", "TEXT", 1, None, 0),
             ("status", "TEXT", 1, None, 0),
@@ -311,7 +315,7 @@ class SqliteSessionStore:
             ("acknowledged_at", "INTEGER", 0, None, 0),
         ),
         "session_event_deliveries": (
-            ("workspace", "TEXT", 1, None, 1),
+            ("workspace_id", "TEXT", 1, None, 1),
             ("session_id", "TEXT", 1, None, 2),
             ("dedupe_key", "TEXT", 1, None, 3),
             ("delivered_at", "INTEGER", 1, None, 0),
@@ -326,7 +330,7 @@ class SqliteSessionStore:
         "session_events": frozenset(),
         "session_todos": frozenset(),
         "background_tasks": frozenset(),
-        "session_notifications": frozenset({("workspace", "dedupe_key")}),
+        "session_notifications": frozenset({("workspace_id", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
         "storage_sequences": frozenset(),
     }
@@ -334,14 +338,14 @@ class SqliteSessionStore:
     def __init__(self, *, database_path: Path | None = None) -> None:
         self._database_path = database_path
 
-    def _resolve_database_path(self, workspace: Path) -> Path:
+    def _resolve_database_path(self) -> Path:
         if self._database_path is not None:
             return self._database_path
-        return workspace / ".voidcode" / "sessions.sqlite3"
+        return sessions_db_path()
 
     @contextmanager
     def _connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
-        database_path = self._resolve_database_path(workspace)
+        database_path = self._resolve_database_path()
         database_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(
             database_path,
@@ -377,12 +381,13 @@ class SqliteSessionStore:
                 raise
 
     def _ensure_schema(self, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        self._assert_existing_schema_version(connection=connection, database_path=database_path)
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
-                session_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
                 parent_session_id TEXT,
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 turn INTEGER NOT NULL,
                 prompt TEXT NOT NULL,
@@ -393,40 +398,43 @@ class SqliteSessionStore:
                 resume_checkpoint_json TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                last_event_sequence INTEGER NOT NULL
+                last_event_sequence INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, session_id)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS session_events (
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
                 event_type TEXT NOT NULL,
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
-                PRIMARY KEY (session_id, sequence)
+                PRIMARY KEY (workspace_id, session_id, sequence)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS session_todos (
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 position INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 status TEXT NOT NULL,
                 priority TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
-                PRIMARY KEY (session_id, position)
+                PRIMARY KEY (workspace_id, session_id, position)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS background_tasks (
-                task_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 request_session_id TEXT,
@@ -452,7 +460,8 @@ class SqliteSessionStore:
                 finished_at INTEGER,
                 created_at_unix_ms INTEGER,
                 started_at_unix_ms INTEGER,
-                finished_at_unix_ms INTEGER
+                finished_at_unix_ms INTEGER,
+                PRIMARY KEY (workspace_id, task_id)
             )
             """
         )
@@ -460,7 +469,7 @@ class SqliteSessionStore:
             """
             CREATE TABLE IF NOT EXISTS session_notifications (
                 notification_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -470,18 +479,18 @@ class SqliteSessionStore:
                 dedupe_key TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 acknowledged_at INTEGER,
-                UNIQUE(workspace, dedupe_key)
+                UNIQUE(workspace_id, dedupe_key)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE IF NOT EXISTS session_event_deliveries (
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 dedupe_key TEXT NOT NULL,
                 delivered_at INTEGER NOT NULL,
-                PRIMARY KEY (workspace, session_id, dedupe_key)
+                PRIMARY KEY (workspace_id, session_id, dedupe_key)
             )
             """
         )
@@ -493,9 +502,30 @@ class SqliteSessionStore:
             )
             """
         )
+        self._assert_schema_version(connection=connection, database_path=database_path)
         self._assert_canonical_schema(connection=connection, database_path=database_path)
+        self._ensure_workspace_indexes(connection=connection)
         self._ensure_storage_sequences(connection=connection)
         connection.commit()
+
+    @staticmethod
+    def _ensure_workspace_indexes(*, connection: sqlite3.Connection) -> None:
+        # Non-unique indexes that accelerate per-workspace filtering once the
+        # SQLite database becomes user-global and serves multiple workspaces.
+        # Additive: the strict canonical schema check ignores non-unique indexes,
+        # so adding new indexes here is safe.
+        _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS sessions_workspace_idx "
+            "ON sessions(workspace_id, status, updated_at DESC)"
+        )
+        _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS background_tasks_workspace_idx "
+            "ON background_tasks(workspace_id, status, updated_at DESC)"
+        )
+        _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx "
+            "ON session_notifications(workspace_id, session_id)"
+        )
 
     @staticmethod
     def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:
@@ -570,6 +600,42 @@ class SqliteSessionStore:
             "UPDATE storage_sequences SET value = MAX(value, ?) WHERE scope = ?",
             (floor, scope),
         )
+
+    @classmethod
+    def _assert_existing_schema_version(
+        cls, *, connection: sqlite3.Connection, database_path: Path
+    ) -> None:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == cls._SCHEMA_VERSION:
+            return
+        existing_tables = {
+            cast(str, row["name"])
+            for row in cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall(),
+            )
+        }
+        if version == 0 and not existing_tables.intersection(cls._CANONICAL_SCHEMA):
+            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
+            return
+        cls._raise_schema_mismatch(
+            database_path=database_path,
+            detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),
+        )
+
+    @classmethod
+    def _assert_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 0:
+            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
+            return
+        if version != cls._SCHEMA_VERSION:
+            cls._raise_schema_mismatch(
+                database_path=database_path,
+                detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),
+            )
 
     @classmethod
     def _assert_canonical_schema(
@@ -700,18 +766,11 @@ class SqliteSessionStore:
 
     @staticmethod
     def _raise_schema_mismatch(*, database_path: Path, detail: str) -> None:
-        workspace = (
-            database_path.parent.parent if database_path.parent.name == ".voidcode" else None
-        )
-        reset_command = (
-            f"uv run voidcode storage reset --workspace {workspace}"
-            if workspace is not None
-            else f"remove '{database_path}' plus matching -wal/-shm files"
-        )
         raise RuntimeError(
             "sqlite runtime schema mismatch: "
-            f"{detail}. This pre-MVP build does not migrate old schemas. "
-            f"Reset local runtime storage with: {reset_command}."
+            f"{detail}. Reset the runtime database with "
+            f"`uv run voidcode storage reset` or remove '{database_path}' "
+            "plus matching -wal/-shm files."
         )
 
     @staticmethod
@@ -777,16 +836,21 @@ class SqliteSessionStore:
         self,
         *,
         connection: sqlite3.Connection,
+        workspace: Path,
         session_id: str,
         events: tuple[EventEnvelope, ...],
     ) -> None:
-        _ = connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
+        _ = connection.execute(
+            "DELETE FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        )
         _ = connection.executemany(
             """
-            INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO session_events (
+                workspace_id, session_id, sequence, event_type, source, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            self._session_events_payload(events),
+            ((str(workspace), *payload) for payload in self._session_events_payload(events)),
         )
 
     @staticmethod
@@ -809,22 +873,27 @@ class SqliteSessionStore:
         self,
         *,
         connection: sqlite3.Connection,
+        workspace: Path,
         session_id: str,
         metadata: dict[str, object],
     ) -> None:
         todo_state = self._todo_state_from_metadata(metadata)
-        _ = connection.execute("DELETE FROM session_todos WHERE session_id = ?", (session_id,))
+        _ = connection.execute(
+            "DELETE FROM session_todos WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        )
         if todo_state is None:
             return
         todos = runtime_todos_from_state_payload(todo_state.get("todos"))
         _ = connection.executemany(
             """
             INSERT INTO session_todos (
-                session_id, position, content, status, priority, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                workspace_id, session_id, position, content, status, priority, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
+                    str(workspace),
                     session_id,
                     todo["position"],
                     todo["content"],
@@ -840,6 +909,7 @@ class SqliteSessionStore:
         self,
         *,
         connection: sqlite3.Connection,
+        workspace: Path,
         session_id: str,
     ) -> dict[str, object] | None:
         rows = cast(
@@ -848,10 +918,10 @@ class SqliteSessionStore:
                 """
                 SELECT position, content, status, priority, updated_at
                 FROM session_todos
-                WHERE session_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 ORDER BY position ASC
                 """,
-                (session_id,),
+                (str(workspace), session_id),
             ).fetchall(),
         )
         if not rows:
@@ -913,12 +983,16 @@ class SqliteSessionStore:
         resume_checkpoint: dict[str, object],
     ) -> int:
         session_id = response.session.session.id
-        created_at = self._read_created_at(connection=connection, session_id=session_id)
+        created_at = self._read_created_at(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+        )
         updated_at = self._next_timestamp(connection=connection)
         _ = connection.execute(
             """
             INSERT OR REPLACE INTO sessions (
-                session_id, parent_session_id, workspace, status, turn, prompt, output,
+                session_id, parent_session_id, workspace_id, status, turn, prompt, output,
                 metadata_json, pending_approval_json, pending_question_json,
                 resume_checkpoint_json, created_at, updated_at,
                 last_event_sequence
@@ -943,11 +1017,13 @@ class SqliteSessionStore:
         )
         self._replace_session_events(
             connection=connection,
+            workspace=workspace,
             session_id=session_id,
             events=response.events,
         )
         self._replace_session_todos(
             connection=connection,
+            workspace=workspace,
             session_id=session_id,
             metadata=response.session.metadata,
         )
@@ -1134,7 +1210,9 @@ class SqliteSessionStore:
                     None
                     if clear_pending_approval
                     else self._read_pending_approval_json(
-                        connection=connection, session_id=session_id
+                        connection=connection,
+                        workspace=workspace,
+                        session_id=session_id,
                     )
                 ),
                 pending_question_json=None,
@@ -1167,7 +1245,7 @@ class SqliteSessionStore:
                     """
                 SELECT session_id, parent_session_id, status, turn, prompt, updated_at
                 FROM sessions
-                WHERE workspace = ?
+                WHERE workspace_id = ?
                 ORDER BY updated_at DESC, session_id ASC
                 """,
                     (str(workspace),),
@@ -1234,7 +1312,7 @@ class SqliteSessionStore:
                     """
                     SELECT pending_approval_json
                     FROM sessions
-                    WHERE workspace = ? AND session_id = ?
+                    WHERE workspace_id = ? AND session_id = ?
                     """,
                     (str(workspace), session_id),
                 ).fetchone(),
@@ -1296,7 +1374,7 @@ class SqliteSessionStore:
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
         with self._write_connect(workspace) as connection:
             _ = connection.execute(
-                "UPDATE sessions SET pending_approval_json = NULL WHERE workspace = ? AND session_id = ?",  # noqa: E501
+                "UPDATE sessions SET pending_approval_json = NULL WHERE workspace_id = ? AND session_id = ?",  # noqa: E501
                 (str(workspace), session_id),
             )
             connection.commit()
@@ -1351,7 +1429,7 @@ class SqliteSessionStore:
                     """
                     SELECT pending_question_json
                     FROM sessions
-                    WHERE workspace = ? AND session_id = ?
+                    WHERE workspace_id = ? AND session_id = ?
                     """,
                     (str(workspace), session_id),
                 ).fetchone(),
@@ -1394,7 +1472,7 @@ class SqliteSessionStore:
             _ = connection.execute(
                 (
                     "UPDATE sessions SET pending_question_json = NULL "
-                    "WHERE workspace = ? AND session_id = ?"
+                    "WHERE workspace_id = ? AND session_id = ?"
                 ),
                 (str(workspace), session_id),
             )
@@ -1410,7 +1488,7 @@ class SqliteSessionStore:
                     """
                     SELECT resume_checkpoint_json
                     FROM sessions
-                    WHERE workspace = ? AND session_id = ?
+                    WHERE workspace_id = ? AND session_id = ?
                     """,
                     (str(workspace), session_id),
                 ).fetchone(),
@@ -1446,7 +1524,7 @@ class SqliteSessionStore:
                     """
                     UPDATE sessions
                     SET updated_at = ?, last_event_sequence = last_event_sequence + 1
-                    WHERE workspace = ? AND session_id = ?
+                    WHERE workspace_id = ? AND session_id = ?
                     RETURNING last_event_sequence
                     """,
                     (updated_at, str(workspace), session_id),
@@ -1459,7 +1537,7 @@ class SqliteSessionStore:
                 inserted_delivery = connection.execute(
                     """
                     INSERT OR IGNORE INTO session_event_deliveries (
-                        workspace, session_id, dedupe_key, delivered_at
+                        workspace_id, session_id, dedupe_key, delivered_at
                     ) VALUES (?, ?, ?, ?)
                     """,
                     (str(workspace), session_id, dedupe_key, delivered_at),
@@ -1469,7 +1547,7 @@ class SqliteSessionStore:
                         """
                         UPDATE sessions
                         SET updated_at = ?, last_event_sequence = last_event_sequence - 1
-                        WHERE workspace = ? AND session_id = ?
+                        WHERE workspace_id = ? AND session_id = ?
                         """,
                         (updated_at, str(workspace), session_id),
                     )
@@ -1485,10 +1563,12 @@ class SqliteSessionStore:
             )
             _ = connection.execute(
                 """
-                INSERT INTO session_events (session_id, sequence, event_type, source, payload_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO session_events (
+                    workspace_id, session_id, sequence, event_type, source, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    str(workspace),
                     event.session_id,
                     event.sequence,
                     event.event_type,
@@ -1548,7 +1628,7 @@ class SqliteSessionStore:
                 result_available = ?,
                 session_id = COALESCE(session_id, ?),
                 updated_at = ?
-            WHERE workspace = ? AND task_id = ?
+            WHERE workspace_id = ? AND task_id = ?
             """,
             (
                 request.session_id,
@@ -1591,13 +1671,16 @@ class SqliteSessionStore:
         return {**payload, **self._background_task_durable_payload(row)}
 
     def _read_pending_approval_json(
-        self, *, connection: sqlite3.Connection, session_id: str
+        self, *, connection: sqlite3.Connection, workspace: Path, session_id: str
     ) -> str | None:
         row = cast(
             sqlite3.Row | None,
             connection.execute(
-                "SELECT pending_approval_json FROM sessions WHERE session_id = ?",
-                (session_id,),
+                (
+                    "SELECT pending_approval_json FROM sessions "
+                    "WHERE workspace_id = ? AND session_id = ?"
+                ),
+                (str(workspace), session_id),
             ).fetchone(),
         )
         if row is None:
@@ -1774,7 +1857,7 @@ class SqliteSessionStore:
                     """
                     SELECT 1
                     FROM sessions
-                    WHERE workspace = ? AND session_id = ?
+                    WHERE workspace_id = ? AND session_id = ?
                     """,
                     (str(workspace), session_id),
                 ).fetchone(),
@@ -1802,7 +1885,7 @@ class SqliteSessionStore:
                     """
                 SELECT session_id, parent_session_id, status, turn, output, metadata_json
                 FROM sessions
-                WHERE workspace = ? AND session_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 """,
                     (str(workspace), session_id),
                 ).fetchone(),
@@ -1815,14 +1898,15 @@ class SqliteSessionStore:
                     """
                 SELECT sequence, event_type, source, payload_json
                 FROM session_events
-                WHERE session_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 ORDER BY sequence ASC
                 """,
-                    (session_id,),
+                    (str(workspace), session_id),
                 ).fetchall(),
             )
             stored_todo_state = self._todo_state_from_rows(
                 connection=connection,
+                workspace=workspace,
                 session_id=session_id,
             )
         metadata = self._metadata_with_todo_state(
@@ -1874,7 +1958,7 @@ class SqliteSessionStore:
                     """
                     SELECT prompt
                     FROM sessions
-                    WHERE workspace = ? AND session_id = ?
+                    WHERE workspace_id = ? AND session_id = ?
                     """,
                     (str(workspace), session_id),
                 ).fetchone(),
@@ -1958,7 +2042,7 @@ class SqliteSessionStore:
                 """
                 SELECT metadata_json
                 FROM sessions
-                WHERE workspace = ? AND session_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 """,
                 (str(workspace), session_id),
             ).fetchone(),
@@ -1971,10 +2055,10 @@ class SqliteSessionStore:
                 """
                 SELECT sequence, event_type, source, payload_json
                 FROM session_events
-                WHERE session_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 ORDER BY sequence ASC
                 """,
-                (session_id,),
+                (str(workspace), session_id),
             ).fetchall(),
         )
         events = tuple(
@@ -2007,7 +2091,7 @@ class SqliteSessionStore:
             """
             UPDATE sessions
             SET metadata_json = ?, updated_at = ?
-            WHERE workspace = ? AND session_id = ?
+            WHERE workspace_id = ? AND session_id = ?
             """,
             (
                 json.dumps(self._metadata_with_revert_marker(metadata, marker), sort_keys=True),
@@ -2105,8 +2189,8 @@ class SqliteSessionStore:
                            sessions.parent_session_id
                     FROM session_notifications AS notifications
                     LEFT JOIN sessions ON sessions.session_id = notifications.session_id
-                                      AND sessions.workspace = notifications.workspace
-                    WHERE notifications.workspace = ?
+                                      AND sessions.workspace_id = notifications.workspace_id
+                    WHERE notifications.workspace_id = ?
                     ORDER BY notifications.created_at DESC, notifications.notification_id DESC
                     """,
                     (str(workspace),),
@@ -2134,7 +2218,7 @@ class SqliteSessionStore:
             _ = connection.execute(
                 """
                 INSERT INTO background_tasks (
-                    task_id, workspace, status, prompt, request_session_id,
+                    task_id, workspace_id, status, prompt, request_session_id,
                     request_parent_session_id, request_metadata_json, requested_child_session_id,
                     routing_mode, routing_category, routing_subagent_type,
                     routing_description, routing_command, approval_request_id,
@@ -2188,7 +2272,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT * FROM background_tasks
-                    WHERE workspace = ? AND task_id = ?
+                    WHERE workspace_id = ? AND task_id = ?
                     """,
                     (str(workspace), task_id),
                 ).fetchone(),
@@ -2206,7 +2290,7 @@ class SqliteSessionStore:
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms
                     FROM background_tasks
-                    WHERE workspace = ?
+                    WHERE workspace_id = ?
                     ORDER BY updated_at DESC, task_id ASC
                     """,
                     (str(workspace),),
@@ -2225,7 +2309,7 @@ class SqliteSessionStore:
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms
                     FROM background_tasks
-                    WHERE workspace = ? AND status = 'queued'
+                    WHERE workspace_id = ? AND status = 'queued'
                     ORDER BY created_at ASC, task_id ASC
                     """,
                     (str(workspace),),
@@ -2244,7 +2328,7 @@ class SqliteSessionStore:
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms
                     FROM background_tasks
-                    WHERE workspace = ? AND request_parent_session_id = ?
+                    WHERE workspace_id = ? AND request_parent_session_id = ?
                     ORDER BY updated_at DESC, task_id ASC
                     """,
                     (str(workspace), parent_session_id),
@@ -2280,7 +2364,7 @@ class SqliteSessionStore:
                 UPDATE background_tasks
                 SET status = ?, session_id = ?, started_at = COALESCE(started_at, ?),
                     started_at_unix_ms = COALESCE(started_at_unix_ms, ?), updated_at = ?
-                WHERE workspace = ? AND task_id = ? AND status = 'queued'
+                WHERE workspace_id = ? AND task_id = ? AND status = 'queued'
                 """,
                 (
                     "running",
@@ -2338,7 +2422,7 @@ class SqliteSessionStore:
                 UPDATE background_tasks
                 SET status = ?, error = ?, finished_at = ?, updated_at = ?,
                     cancellation_cause = ?, result_available = ?, finished_at_unix_ms = ?
-                WHERE workspace = ? AND task_id = ?
+                WHERE workspace_id = ? AND task_id = ?
                 """,
                 (
                     status,
@@ -2384,7 +2468,7 @@ class SqliteSessionStore:
                     UPDATE background_tasks
                     SET status = 'cancelled', error = ?, cancellation_cause = ?,
                         result_available = 0, finished_at = ?, updated_at = ?
-                    WHERE workspace = ? AND task_id = ? AND status = 'queued'
+                    WHERE workspace_id = ? AND task_id = ? AND status = 'queued'
                     """,
                     (
                         "cancelled before start",
@@ -2417,7 +2501,7 @@ class SqliteSessionStore:
                 """
                 UPDATE background_tasks
                 SET cancel_requested_at = ?, updated_at = ?
-                WHERE workspace = ? AND task_id = ? AND status = 'running'
+                WHERE workspace_id = ? AND task_id = ? AND status = 'running'
                     AND cancel_requested_at IS NULL
                 """,
                 (updated_at, updated_at, str(workspace), task_id),
@@ -2450,9 +2534,9 @@ class SqliteSessionStore:
                     SELECT background_tasks.task_id, background_tasks.cancel_requested_at
                     FROM background_tasks
                     LEFT JOIN sessions
-                      ON sessions.workspace = background_tasks.workspace
+                      ON sessions.workspace_id = background_tasks.workspace_id
                      AND sessions.session_id = background_tasks.session_id
-                    WHERE background_tasks.workspace = ?
+                    WHERE background_tasks.workspace_id = ?
                       AND {incomplete_status_predicate}
                       AND NOT (
                           background_tasks.status = 'running'
@@ -2485,7 +2569,7 @@ class SqliteSessionStore:
                             finished_at = ?,
                             updated_at = ?,
                             result_available = 0
-                        WHERE workspace = ?
+                        WHERE workspace_id = ?
                           AND task_id = ?
                           AND status = 'running'
                           AND cancel_requested_at IS NOT NULL
@@ -2508,7 +2592,7 @@ class SqliteSessionStore:
                             finished_at = ?,
                             updated_at = ?,
                             result_available = 1
-                        WHERE workspace = ?
+                        WHERE workspace_id = ?
                           AND task_id = ?
                           AND status IN ('queued', 'running')
                           AND cancel_requested_at IS NULL
@@ -2553,7 +2637,7 @@ class SqliteSessionStore:
                     cancellation_cause = ?,
                     result_available = ?,
                     updated_at = ?
-                WHERE workspace = ? AND task_id = ?
+                WHERE workspace_id = ? AND task_id = ?
                 """,
                 (
                     approval_request_id
@@ -2626,7 +2710,7 @@ class SqliteSessionStore:
             connection.execute(
                 """
                 SELECT * FROM background_tasks
-                WHERE workspace = ? AND task_id = ?
+                WHERE workspace_id = ? AND task_id = ?
                 """,
                 (str(workspace), task_id),
             ).fetchone(),
@@ -2656,7 +2740,7 @@ class SqliteSessionStore:
                 """
                 SELECT status, pending_approval_json, pending_question_json
                 FROM sessions
-                WHERE workspace = ? AND session_id = ?
+                WHERE workspace_id = ? AND session_id = ?
                 """,
                 (str(workspace), session_id),
             ).fetchone(),
@@ -2674,7 +2758,7 @@ class SqliteSessionStore:
                     SELECT notification_id, session_id, kind, status, summary, payload_json,
                            event_sequence, created_at, acknowledged_at
                     FROM session_notifications
-                    WHERE workspace = ? AND notification_id = ?
+                    WHERE workspace_id = ? AND notification_id = ?
                     """,
                     (str(workspace), notification_id),
                 ).fetchone(),
@@ -2688,7 +2772,7 @@ class SqliteSessionStore:
                     """
                     UPDATE session_notifications
                     SET status = 'acknowledged', acknowledged_at = ?
-                    WHERE workspace = ? AND notification_id = ?
+                    WHERE workspace_id = ? AND notification_id = ?
                     """,
                     (acknowledged_at, str(workspace), notification_id),
                 )
@@ -2704,8 +2788,8 @@ class SqliteSessionStore:
                            sessions.parent_session_id
                     FROM session_notifications AS notifications
                     LEFT JOIN sessions ON sessions.session_id = notifications.session_id
-                                      AND sessions.workspace = notifications.workspace
-                    WHERE notifications.workspace = ? AND notifications.notification_id = ?
+                                      AND sessions.workspace_id = notifications.workspace_id
+                    WHERE notifications.workspace_id = ? AND notifications.notification_id = ?
                     """,
                     (str(workspace), notification_id),
                 ).fetchone(),
@@ -2713,7 +2797,7 @@ class SqliteSessionStore:
         return self._notification_from_row(row)
 
     def storage_diagnostics(self, *, workspace: Path) -> dict[str, object]:
-        database_path = self._resolve_database_path(workspace)
+        database_path = self._resolve_database_path()
         with self._connect(workspace) as connection:
             journal_mode = self._pragma_scalar(connection=connection, name="journal_mode")
             synchronous = self._pragma_scalar(connection=connection, name="synchronous")
@@ -2790,12 +2874,14 @@ class SqliteSessionStore:
                     table="session_events",
                     column="session_id",
                     ids=session_ids,
+                    workspace=workspace,
                 ),
                 "session_todos": self._delete_for_ids(
                     connection=connection,
                     table="session_todos",
                     column="session_id",
                     ids=session_ids,
+                    workspace=workspace,
                 ),
                 "session_event_deliveries": self._delete_for_ids(
                     connection=connection,
@@ -2831,7 +2917,7 @@ class SqliteSessionStore:
         return counts
 
     def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]:
-        database_path = self._resolve_database_path(workspace)
+        database_path = self._resolve_database_path()
         removed: list[str] = []
         for path in (
             database_path,
@@ -2880,7 +2966,7 @@ class SqliteSessionStore:
         counts = {
             table: int(
                 connection.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE workspace = ?",
+                    f"SELECT COUNT(*) FROM {table} WHERE workspace_id = ?",
                     (str(workspace),),
                 ).fetchone()[0]
             )
@@ -2891,7 +2977,7 @@ class SqliteSessionStore:
             for row in cast(
                 list[sqlite3.Row],
                 connection.execute(
-                    "SELECT session_id FROM sessions WHERE workspace = ?",
+                    "SELECT session_id FROM sessions WHERE workspace_id = ?",
                     (str(workspace),),
                 ).fetchall(),
             )
@@ -2901,18 +2987,21 @@ class SqliteSessionStore:
             table="session_events",
             column="session_id",
             ids=session_ids,
+            workspace=workspace,
         )
         counts["session_todos"] = SqliteSessionStore._count_for_ids(
             connection=connection,
             table="session_todos",
             column="session_id",
             ids=session_ids,
+            workspace=workspace,
         )
         counts["session_event_deliveries"] = SqliteSessionStore._count_for_ids(
             connection=connection,
             table="session_event_deliveries",
             column="session_id",
             ids=session_ids,
+            workspace=workspace,
         )
         return counts
 
@@ -2928,7 +3017,7 @@ class SqliteSessionStore:
                     """
                     SELECT status, COUNT(*) AS count
                     FROM background_tasks
-                    WHERE workspace = ?
+                    WHERE workspace_id = ?
                     GROUP BY status
                     ORDER BY status ASC
                     """,
@@ -2945,7 +3034,7 @@ class SqliteSessionStore:
                 SUM(CASE WHEN pending_approval_json IS NOT NULL THEN 1 ELSE 0 END) AS approvals,
                 SUM(CASE WHEN pending_question_json IS NOT NULL THEN 1 ELSE 0 END) AS questions
             FROM sessions
-            WHERE workspace = ?
+            WHERE workspace_id = ?
             """,
             (str(workspace),),
         ).fetchone()
@@ -2958,15 +3047,25 @@ class SqliteSessionStore:
 
     @staticmethod
     def _count_for_ids(
-        *, connection: sqlite3.Connection, table: str, column: str, ids: tuple[str, ...]
+        *,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        ids: tuple[str, ...],
+        workspace: Path | None = None,
     ) -> int:
         if not ids:
             return 0
         placeholders = ", ".join("?" for _ in ids)
+        workspace_clause = " AND workspace_id = ?" if workspace is not None else ""
+        parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
         return int(
             connection.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})",
-                ids,
+                (
+                    f"SELECT COUNT(*) FROM {table} "
+                    f"WHERE {column} IN ({placeholders}){workspace_clause}"
+                ),
+                parameters,
             ).fetchone()[0]
         )
 
@@ -2982,7 +3081,7 @@ class SqliteSessionStore:
         if not ids:
             return 0
         placeholders = ", ".join("?" for _ in ids)
-        workspace_clause = " AND workspace = ?" if workspace is not None else ""
+        workspace_clause = " AND workspace_id = ?" if workspace is not None else ""
         parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
         cursor = connection.execute(
             f"DELETE FROM {table} WHERE {column} IN ({placeholders}){workspace_clause}",
@@ -2999,7 +3098,7 @@ class SqliteSessionStore:
         older_than: int | None,
         protected_session_ids: tuple[str, ...] = (),
     ) -> tuple[str, ...]:
-        conditions = ["workspace = ?", "status IN ('completed', 'failed')"]
+        conditions = ["workspace_id = ?", "status IN ('completed', 'failed')"]
         parameters: list[object] = [str(workspace)]
         if older_than is not None:
             conditions.append("updated_at < ?")
@@ -3014,7 +3113,7 @@ class SqliteSessionStore:
             keep_clause = (
                 "AND session_id NOT IN ("
                 "SELECT session_id FROM sessions "
-                "WHERE workspace = ? AND status IN ('completed', 'failed') "
+                "WHERE workspace_id = ? AND status IN ('completed', 'failed') "
                 "ORDER BY updated_at DESC, session_id ASC LIMIT ?"
                 ")"
             )
@@ -3049,7 +3148,7 @@ class SqliteSessionStore:
             f"""
             SELECT DISTINCT session_id
             FROM background_tasks
-            WHERE workspace = ?
+            WHERE workspace_id = ?
               AND session_id IS NOT NULL
               {pruned_clause}
             """,
@@ -3066,7 +3165,7 @@ class SqliteSessionStore:
         older_than: int | None,
     ) -> tuple[str, ...]:
         conditions = [
-            "workspace = ?",
+            "workspace_id = ?",
             "status IN ('completed', 'failed', 'cancelled', 'interrupted')",
         ]
         parameters: list[object] = [str(workspace)]
@@ -3078,7 +3177,7 @@ class SqliteSessionStore:
             keep_clause = (
                 "AND task_id NOT IN ("
                 "SELECT task_id FROM background_tasks "
-                "WHERE workspace = ? AND status IN "
+                "WHERE workspace_id = ? AND status IN "
                 "('completed', 'failed', 'cancelled', 'interrupted') "
                 "ORDER BY updated_at DESC, task_id ASC LIMIT ?"
                 ")"
@@ -3151,7 +3250,7 @@ class SqliteSessionStore:
                 UPDATE session_notifications
                 SET status = 'acknowledged',
                     acknowledged_at = COALESCE(acknowledged_at, ?)
-                WHERE workspace = ?
+                WHERE workspace_id = ?
                   AND session_id = ?
                   AND kind = 'approval_blocked'
                   AND status = 'unread'
@@ -3168,7 +3267,7 @@ class SqliteSessionStore:
                 UPDATE session_notifications
                 SET status = 'acknowledged',
                     acknowledged_at = COALESCE(acknowledged_at, ?)
-                WHERE workspace = ?
+                WHERE workspace_id = ?
                   AND session_id = ?
                   AND kind = 'approval_blocked'
                   AND status = 'unread'
@@ -3187,7 +3286,7 @@ class SqliteSessionStore:
                 UPDATE session_notifications
                 SET status = 'acknowledged',
                     acknowledged_at = COALESCE(acknowledged_at, ?)
-                WHERE workspace = ?
+                WHERE workspace_id = ?
                   AND session_id = ?
                   AND kind = 'question_blocked'
                   AND status = 'unread'
@@ -3204,7 +3303,7 @@ class SqliteSessionStore:
                 UPDATE session_notifications
                 SET status = 'acknowledged',
                     acknowledged_at = COALESCE(acknowledged_at, ?)
-                WHERE workspace = ?
+                WHERE workspace_id = ?
                   AND session_id = ?
                   AND kind = 'question_blocked'
                   AND status = 'unread'
@@ -3222,7 +3321,7 @@ class SqliteSessionStore:
         _ = connection.execute(
             """
             INSERT OR IGNORE INTO session_notifications (
-                notification_id, workspace, session_id, kind, status, summary, payload_json,
+                notification_id, workspace_id, session_id, kind, status, summary, payload_json,
                 event_sequence, dedupe_key, created_at, acknowledged_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -3378,12 +3477,14 @@ class SqliteSessionStore:
             payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
         )
 
-    def _read_created_at(self, *, connection: sqlite3.Connection, session_id: str) -> int:
+    def _read_created_at(
+        self, *, connection: sqlite3.Connection, workspace: Path, session_id: str
+    ) -> int:
         row = cast(
             sqlite3.Row | None,
             connection.execute(
-                "SELECT created_at FROM sessions WHERE session_id = ?",
-                (session_id,),
+                "SELECT created_at FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
             ).fetchone(),
         )
         if row is not None:

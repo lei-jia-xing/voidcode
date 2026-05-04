@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import builtins as _builtins
 import json
+import os
 import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
@@ -1041,8 +1042,16 @@ def _background_task_next_steps(
             steps.append(
                 "Inspect runtime events and retry explicitly from the parent flow if needed."
             )
+        steps.append(f"Retry delegated task: voidcode tasks retry {task_id} {workspace_arg}")
     elif status == "cancelled":
         steps.append(f"Inspect final task state: voidcode tasks status {task_id} {workspace_arg}")
+        steps.append(f"Retry delegated task: voidcode tasks retry {task_id} {workspace_arg}")
+    elif status == "interrupted":
+        if result_available:
+            steps.append(
+                f"Inspect interrupted output: voidcode tasks output {task_id} {workspace_arg}"
+            )
+        steps.append(f"Retry delegated task: voidcode tasks retry {task_id} {workspace_arg}")
     return steps
 
 
@@ -1716,6 +1725,30 @@ def _handle_tasks_cancel_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_tasks_retry_command(args: argparse.Namespace) -> int:
+    workspace = cast(Path, args.workspace)
+    task_id = cast(str, args.task_id)
+    json_output = cast(bool, getattr(args, "json", False))
+    runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        try:
+            task = runtime.retry_background_task(task_id)
+        except ValueError as exc:
+            raise SystemExit(f"error: {exc}") from None
+    finally:
+        _close_runtime(runtime)
+
+    payload = _background_task_state_payload(task, workspace=workspace)
+    payload["retry_of_task_id"] = task_id
+    if json_output:
+        print_json({"workspace": str(workspace), "task": payload})
+        return 0
+    print(_format_background_task_state(task))
+    print(f"RETRY previous_task_id={task_id} new_task_id={task.task.id}")
+    _print_background_task_guidance(payload)
+    return 0
+
+
 def _handle_tasks_list_command(args: argparse.Namespace) -> int:
     workspace = cast(Path, args.workspace)
     parent_session_id = cast(str | None, getattr(args, "parent_session_id", None))
@@ -1784,7 +1817,7 @@ def _handle_storage_reset_command(args: argparse.Namespace) -> int:
         result = runtime.reset_runtime_storage()
     finally:
         _close_runtime(runtime)
-    print_json({"workspace": str(workspace), "storage": result})
+    print_json({"storage": result})
     return EXIT_SUCCESS
 
 
@@ -2464,8 +2497,21 @@ def _run_click_command(command: click.Command, argv: Sequence[str] | None) -> in
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 @click.version_option(__version__, "--version", prog_name="voidcode")
+@click.option(
+    "--db-path",
+    "db_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Override the runtime SQLite database path. Sets VOIDCODE_DB_PATH "
+        "for this invocation; otherwise the path resolves under "
+        "$XDG_STATE_HOME/voidcode/sessions.sqlite3."
+    ),
+)
 @click.pass_context
-def root_cli(ctx: click.Context) -> None:
+def root_cli(ctx: click.Context, db_path: Path | None) -> None:
+    if db_path is not None:
+        os.environ["VOIDCODE_DB_PATH"] = str(Path(db_path).expanduser().resolve())
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
@@ -2961,6 +3007,23 @@ def cancel(task_id: str, workspace: Path, json_output: bool) -> int:
     )
 
 
+@tasks.command(help="Retry failed, cancelled, or interrupted delegated background work.")
+@click.argument("task_id")
+@_workspace_option("Workspace root used to resolve the local session database.")
+@_json_option("Output retried delegated task state as JSON.")
+def retry(task_id: str, workspace: Path, json_output: bool) -> int:
+    return _invoke_handler_from_click(
+        _handle_tasks_retry_command,
+        _build_click_command_context(
+            command="tasks",
+            subcommand="retry",
+            task_id=task_id,
+            workspace=workspace,
+            json=json_output,
+        ),
+    )
+
+
 @tasks.command(name="list", help="List delegated background tasks.")
 @_workspace_option("Workspace root used to resolve the local session database.")
 @click.option("--parent-session", "parent_session_id")
@@ -3020,8 +3083,8 @@ def prune(
     )
 
 
-@storage.command(help="Delete the local pre-MVP runtime SQLite database and WAL/SHM files.")
-@_workspace_option("Workspace root used to resolve the local session database.")
+@storage.command(help="Delete the runtime SQLite database and WAL/SHM files.")
+@_workspace_option("Workspace root used to bootstrap the runtime; the database itself is global.")
 def reset(workspace: Path) -> int:
     return _invoke_handler_from_click(
         _handle_storage_reset_command,

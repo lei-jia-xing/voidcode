@@ -9,6 +9,7 @@ type HookPresetRef = Literal[
     "role_reminder",
     "delegation_guard",
     "background_output_quality_guidance",
+    "delegated_retry_guidance",
     "delegated_task_timing_guidance",
     "todo_continuation_guidance",
 ]
@@ -103,6 +104,18 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
                 "and summarize results before acting on them."
             ),
         ),
+        "delegated_retry_guidance": HookPreset(
+            ref="delegated_retry_guidance",
+            kind="guard",
+            description="Keep delegated retry decisions explicit and leader-owned.",
+            guidance=(
+                "Retry failed, cancelled, or interrupted delegated background tasks only when it "
+                "is the next explicit recovery step. Use the runtime-owned background_retry tool "
+                "from a leader context instead of manually reconstructing child requests, inspect "
+                "the new task id with background_output, and escalate repeated failures rather "
+                "than looping."
+            ),
+        ),
         "delegated_task_timing_guidance": HookPreset(
             ref="delegated_task_timing_guidance",
             kind="guidance",
@@ -152,6 +165,8 @@ def _parse_builtin_hook_preset_ref(ref: str) -> HookPresetRef | None:
         return "delegation_guard"
     if ref == "background_output_quality_guidance":
         return "background_output_quality_guidance"
+    if ref == "delegated_retry_guidance":
+        return "delegated_retry_guidance"
     if ref == "delegated_task_timing_guidance":
         return "delegated_task_timing_guidance"
     if ref == "todo_continuation_guidance":
