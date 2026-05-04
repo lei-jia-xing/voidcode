@@ -98,7 +98,10 @@ class ProviderGraph:
         if (
             self._pending_tool_calls
             and self._pending_tool_calls_session_id == session_id
-            and self._pending_tool_calls_run_id == run_id
+            and (
+                self._pending_tool_calls_run_id == run_id
+                or self._is_approval_resume(request.metadata)
+            )
             and self._pending_tool_calls_min_tool_result_count is not None
             and len(tool_results) >= self._pending_tool_calls_min_tool_result_count
         ):
@@ -476,6 +479,10 @@ class ProviderGraph:
         runtime_state_payload = cast(dict[str, object], runtime_state)
         run_id = runtime_state_payload.get("run_id")
         return run_id if isinstance(run_id, str) and run_id else None
+
+    @staticmethod
+    def _is_approval_resume(metadata: dict[str, object]) -> bool:
+        return metadata.get("resume_kind") == "approval"
 
     def _provider_execution_error(
         self,

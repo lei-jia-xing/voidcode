@@ -326,6 +326,9 @@ class RuntimeResumeCoordinator:
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                "resume": True,
+                "resume_kind": "approval",
+                "approval_request_id": pending.request_id,
                 "provider_attempt": (
                     session.metadata.get("provider_attempt", 0)
                     if isinstance(session.metadata.get("provider_attempt", 0), int)

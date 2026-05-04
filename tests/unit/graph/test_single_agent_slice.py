@@ -556,6 +556,50 @@ def test_provider_graph_discards_queued_tool_call_batch_for_new_run() -> None:
     assert second_step.events != ()
 
 
+def test_provider_graph_preserves_queued_tool_call_batch_for_approval_resume() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
+    first_context = RuntimeContextWindow(prompt="read then write")
+    first_session = _session_with_run("approval-session", "original-run")
+    first_request = GraphRunRequest(
+        session=first_session,
+        prompt="read then write",
+        available_tools=_tool_definitions(),
+        context_window=first_context,
+        assembled_context=_assembled_from_context_window(first_context),
+    )
+
+    first_step = graph.step(request=first_request, tool_results=(), session=first_session)
+
+    resumed_context = RuntimeContextWindow(
+        prompt="read then write",
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+    )
+    resumed_session = _session_with_run("approval-session", "resume-run")
+    resumed_request = GraphRunRequest(
+        session=resumed_session,
+        prompt="read then write",
+        available_tools=_tool_definitions(),
+        context_window=resumed_context,
+        assembled_context=_assembled_from_context_window(resumed_context),
+        metadata={"resume_kind": "approval", "approval_request_id": "approval-1"},
+    )
+    resumed_step = graph.step(
+        request=resumed_request,
+        tool_results=resumed_context.tool_results,
+        session=resumed_session,
+    )
+
+    assert first_step.tool_call is not None
+    assert first_step.tool_call.tool_call_id == "call-alpha"
+    assert resumed_step.tool_call is not None
+    assert resumed_step.tool_call.tool_call_id == "call-beta"
+    assert resumed_step.events == ()
+
+
 def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
     provider = _CapturingTurnProvider()
     provider_model = resolve_provider_model(
