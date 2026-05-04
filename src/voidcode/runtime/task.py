@@ -104,13 +104,13 @@ _CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
     "low": "worker",
     "deep": "worker",
     "brain": "advisor",
-    "writing": "product",
-    "visual-engineering": "product",
+    "writing": "worker",
+    "visual-engineering": "worker",
     "high": "worker",
 }
 SUPPORTED_SUBAGENT_CATEGORIES: tuple[str, ...] = tuple(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
 
-_CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
+_CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
 _BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _CONTINUATION_LOOP_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "exhausted"})
 _CONTINUATION_LOOP_ALLOWED_TRANSITIONS: dict[
@@ -146,6 +146,11 @@ def resolve_subagent_route(
     if requested.subagent_type is not None:
         if requested.subagent_type == "leader":
             raise ValueError("subagent_type 'leader' is not a callable child preset")
+        if requested.subagent_type == "product":
+            raise ValueError(
+                "subagent_type 'product' is a top-level planning preset, "
+                "not a callable child preset"
+            )
         if requested.subagent_type not in callable_presets:
             valid_presets = ", ".join(sorted(callable_presets))
             raise ValueError(

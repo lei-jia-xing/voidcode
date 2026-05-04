@@ -13450,8 +13450,9 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
 
     assert leader_prompt is not None
     assert "Delegate when the task is multi-step" in leader_prompt
-    assert "Use category for broad domain routing" in leader_prompt
-    assert "Use subagent_type when the needed role is already clear" in leader_prompt
+    assert "Use category when you know the kind of work" in leader_prompt
+    assert "Use subagent_type when you already know the specialist you need" in leader_prompt
+    assert "Product is a separate top-level planning preset" in leader_prompt
     assert "Use run_in_background=true" in leader_prompt
     assert "Use background_output to collect child results" in leader_prompt
     assert "background_output(full_session=true) is an explicit tool result" in leader_prompt

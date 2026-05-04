@@ -41,7 +41,7 @@
 - [x] **极简 hooks/config MVP 闭环**：运行时已实现最小 pre/post tool hooks，并补齐了 `session_start` / `session_end` / `session_idle` 与后台任务相关的 lifecycle hook 配置面；同时也已具备 `approval_mode` / `model` / `execution_engine` / `max_steps` 的恢复关键优先级基础、provider fallback 与 step budget 的持久化恢复语义，以及 CLI `config show` 检查路径。
 - [x] **动态工具注册**：运行时现在包括工具的类型化配置和发现基础设施，支持 `BuiltinToolProvider`。
 - [x] **Provider-backed execution engine 路径**：运行时已经具备 provider fallback、context window 管理、approval resume 连续性与可配置 step budget 的运行时治理基础。
-- [x] **预定义 agent 声明边界**：`src/voidcode/agent/` 现在已经具备真实的声明层与多角色 skeleton；`leader` 与 `product` 可作为顶层 active preset，`advisor`、`explore`、`product`、`researcher`、`worker` 可通过 runtime-owned delegation path 进入 child execution。当前仍未实现的是任意拓扑 multi-agent 协作平台。
+- [x] **预定义 agent 声明边界**：`src/voidcode/agent/` 现在已经具备真实的声明层与多角色 skeleton；`leader` 与 `product` 可作为顶层 active preset，`advisor`、`explore`、`researcher`、`worker` 可通过 runtime-owned delegation path 进入 child execution。当前仍未实现的是任意拓扑 multi-agent 协作平台。
 - [~] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件之外，仓库现在已经落地最小的 runtime skill execution model；manifest `skill_refs` 是默认选择，`force_load_skills` / delegated `load_skills` 是目标上下文的 full-body 注入。更完整的 skill context 能力绑定与产品化语义仍未完成。
 - [~] **ACP 能力面**：`acp` 已具备 runtime-managed transport / lifecycle、run / approval-resume integration 与事件基线；当前仍未进入更宽的 agent control-plane 或跨运行时协作语义。
 - [~] **当前剩余的 runtime / tooling 主线 gap**：最近已经完成 agent preset 最小接入、runtime skill execution 最小模型、session continuity memory 第一切片、`#174` background approval notification，以及 issue #289 delegated child execution E2E 基线。下一轮 backlog 应围绕这些能力的深化与产品化缺口继续推进，而不是继续沿用已完成的最小接入 issue 作为“当前剩余主线”。

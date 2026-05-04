@@ -83,8 +83,8 @@ def _expected_category_models(
         "high": "worker",
         "low": "worker",
         "quick": "worker",
-        "visual-engineering": "product",
-        "writing": "product",
+        "visual-engineering": "worker",
+        "writing": "worker",
     }
     return {
         category: {

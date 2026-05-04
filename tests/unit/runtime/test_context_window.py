@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, cast
 from unittest.mock import patch
@@ -181,6 +182,83 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
     assert [segment.metadata for segment in assembled.segments if segment.role == "system"] == [
         {"source": "runtime_todo_state"}
     ]
+
+
+def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: Any) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    source_dir = workspace / "src"
+    source_dir.mkdir()
+    (source_dir / "AGENTS.md").write_text("Runtime rules", encoding="utf-8")
+
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="content",
+                data={"path": "src/app.py", "arguments": {"filePath": "src/app.py"}},
+            ),
+        ),
+        session_metadata={},
+        workspace=workspace,
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    rule_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata is not None and segment.metadata.get("source") == "runtime_file_rules"
+    ]
+    assert [(segment.metadata or {})["path"] for segment in rule_segments] == [
+        "AGENTS.md",
+        "src/AGENTS.md",
+    ]
+    assert "Project rules" in (rule_segments[0].content or "")
+    assert "Runtime rules" in (rule_segments[1].content or "")
+
+
+def test_assemble_provider_context_uses_full_tool_history_for_rules_not_compacted_window(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    source_dir = workspace / "src"
+    source_dir.mkdir()
+    (source_dir / "AGENTS.md").write_text("Runtime rules", encoding="utf-8")
+
+    # 8 results: 6 path-bearing, then 2 non-path. Compaction retains 4.
+    # Full tool history (not compacted window) must still inject rules.
+    results: list[ToolResult] = []
+    for i in range(6):
+        results.append(
+            ToolResult(
+                tool_name="read_file" if i % 2 == 0 else "edit",
+                status="ok",
+                content="content",
+                data={"path": "src/module.py"},
+            )
+        )
+    results.append(ToolResult(tool_name="web_search", status="ok", content="sr1", data={}))
+    results.append(ToolResult(tool_name="web_search", status="ok", content="sr2", data={}))
+
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=tuple(results),
+        session_metadata={},
+        workspace=workspace,
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    rule_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata is not None and segment.metadata.get("source") == "runtime_file_rules"
+    ]
+    paths = [(segment.metadata or {}).get("path") for segment in rule_segments]
+    assert "AGENTS.md" in paths
+    assert "src/AGENTS.md" in paths
 
 
 def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:

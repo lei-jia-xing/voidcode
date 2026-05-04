@@ -370,7 +370,7 @@ from .workflow_snapshot import (
 )
 
 if TYPE_CHECKING:
-    from ..tools.lsp import FormatTool
+    from ..tools.format_file import FormatTool
     from .execution_seams import RuntimeGraphSelection, RuntimeSessionRouting
 
 logger = logging.getLogger(__name__)
@@ -383,7 +383,7 @@ _ACTIVE_SESSION_COMPAT_EXPORTS = (
 )
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
-_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
+_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
 _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
     {
         "approval_mode",
@@ -1280,7 +1280,7 @@ class VoidCodeRuntime:
         return LspTool(requester=self.request_lsp)
 
     def _build_format_tool(self) -> FormatTool:
-        from ..tools.lsp import FormatTool
+        from ..tools.format_file import FormatTool
 
         return FormatTool(self._config.hooks or RuntimeHooksConfig(), self._workspace)
 
@@ -5987,6 +5987,7 @@ class VoidCodeRuntime:
             preserved_continuity_state=self._continuity_state_from_session_metadata(
                 session_metadata
             ),
+            workspace=self._workspace,
         )
 
     @staticmethod
