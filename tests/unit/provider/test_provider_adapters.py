@@ -1897,6 +1897,36 @@ def test_provider_adapter_preserves_multiple_provider_tool_calls(
     assert result.tool_call is result.tool_calls[0]
 
 
+def test_provider_adapter_generates_unique_fallback_ids_for_batched_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek")
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        tool_calls=[
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": json.dumps({"filePath": "alpha.txt"}),
+                },
+            },
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": json.dumps({"filePath": "beta.txt"}),
+                },
+            },
+        ],
+    )
+
+    result = provider.propose_turn(request)
+
+    assert [call.tool_call_id for call in result.tool_calls] == ["read_file_1", "read_file_2"]
+    assert len({call.tool_call_id for call in result.tool_calls}) == 2
+
+
 def test_provider_adapter_caps_long_sanitized_tool_names_to_provider_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3089,9 +3119,9 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
             text=(
                 '{"tool_calls": [{"tool_name": "write_file", '
                 '"arguments": {"path": "out.txt", "content": "ok"}, '
-                '"tool_call_id": "write_file"}, {"tool_name": "read_file", '
+                '"tool_call_id": "write_file_1"}, {"tool_name": "read_file", '
                 '"arguments": {"filePath": "sample.txt"}, '
-                '"tool_call_id": "read_file"}]}'
+                '"tool_call_id": "read_file_2"}]}'
             ),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),

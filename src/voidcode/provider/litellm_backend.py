@@ -664,8 +664,9 @@ class LiteLLMBackendSingleAgentProvider:
         if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
             return ()
         tool_calls = cast(list[object], raw_tool_calls)
+        use_unique_fallback_ids = len(tool_calls) > 1
         parsed_calls: list[ToolCall] = []
-        for raw_call_obj in tool_calls:
+        for index, raw_call_obj in enumerate(tool_calls):
             if not isinstance(raw_call_obj, dict):
                 continue
             raw_call = cast(dict[str, object], raw_call_obj)
@@ -691,9 +692,15 @@ class LiteLLMBackendSingleAgentProvider:
                     if isinstance(decoded, dict):
                         parsed_arguments = cast(dict[str, object], decoded)
             tool_call_id_obj = raw_call.get("id")
+            explicit_tool_call_id = tool_call_id_obj if isinstance(tool_call_id_obj, str) else None
+            fallback_tool_call_id = (
+                f"{runtime_tool_name}_{index + 1}"
+                if explicit_tool_call_id is None and use_unique_fallback_ids
+                else runtime_tool_name
+            )
             tool_call_id = _normalize_tool_call_id(
-                tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
-                fallback=runtime_tool_name,
+                explicit_tool_call_id,
+                fallback=fallback_tool_call_id,
             )
             parsed_calls.append(
                 ToolCall(
