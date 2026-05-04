@@ -125,8 +125,10 @@ def test_continuation_loop_command_creates_runtime_owned_loop(tmp_path: Path) ->
     assert loop_metadata["intensive"] is False
     assert persisted_loop.prompt == "finish the migration"
     assert persisted_loop.intensive is False
+    assert persisted_loop.max_iterations == 100
     assert response.output is not None
     assert "Runtime continuation loop state:" in response.output
+    assert "Runtime continuation mode: intensive." not in response.output
     assert loop_id in response.output
 
 
@@ -147,7 +149,13 @@ def test_intensive_loop_command_marks_runtime_loop_intensive(tmp_path: Path) -> 
         "original_prompt": "/intensive-loop finish the migration",
     }
     assert loop_metadata["intensive"] is True
+    assert loop_metadata["max_iterations"] == 500
     assert persisted_loop.intensive is True
+    assert persisted_loop.max_iterations == 500
+    assert response.output is not None
+    assert "Runtime continuation mode: intensive." in response.output
+    assert "Iteration budget: 500." in response.output
+    assert "strongest targeted checks" in response.output
 
 
 def test_cancel_continuation_command_cancels_persisted_loop(tmp_path: Path) -> None:
