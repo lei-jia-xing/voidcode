@@ -83,7 +83,7 @@
 要称之为 MVP 可演示，贡献者必须提供：
 - `mise run check` 的输出（全绿）。
 - 在新工作区成功执行**规范演示流程**（步骤 1-5）的日志，特别是包含内联审批交互和失败诊断快照的部分。
-- 验证 `.voidcode/sessions.sqlite3` 中包含对应的会话和事件行。
+- 验证 `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 中包含对应的会话和事件行。
 
 ## 故障模式与恢复
 

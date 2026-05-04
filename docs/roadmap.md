@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-VoidCode 仍处于 pre-MVP 开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的 deterministic reference/debug engine、已落地的 provider-backed execution path，以及 runtime-owned delegated child execution 基线。同时，为工具、技能以及 LSP/ACP/MCP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。post-MVP 的明确方向之一是 multi-agent 支持，但这不会改变 runtime 作为系统控制面的边界。
+VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的 deterministic reference/debug engine、已落地的 provider-backed execution path，以及 runtime-owned delegated child execution 基线。同时，为工具、技能以及 LSP/ACP/MCP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。post-MVP 的明确方向之一是 multi-agent 支持，但这不会改变 runtime 作为系统控制面的边界。
 
 ## MVP 边界
 

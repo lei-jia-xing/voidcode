@@ -6,7 +6,7 @@
 
 ## 状态
 
-VoidCode 已经拥有扎实的 pre-MVP 基础：
+VoidCode 已经拥有扎实的基础：
 
 - Python 3.13 仓库/工具链基准
 - 确定性 CLI → 运行时 (runtime) → 图 (graph) → 稳定的运行时执行循环

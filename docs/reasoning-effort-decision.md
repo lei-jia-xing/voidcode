@@ -86,7 +86,7 @@ runtime 持有 hint；真正翻译成 provider 请求参数的责任仍在 `void
 
 ## Capability-aware validation
 
-当前 pre-MVP 阶段采用 fail-fast 策略：
+当前采用 fail-fast 策略：
 
 - 如果 `ProviderModelMetadata.supports_reasoning_effort` 显式为 `False`，runtime 在 `_runtime_config_for_request()` 中拒绝请求，错误信息提示 “remove the reasoning_effort hint or pick a reasoning-effort capable model”
 - 如果 metadata 未知（`None`），runtime 不阻塞，按 best-effort 透传；diagnostics 仍可通过 `voidcode provider inspect <provider>` 查询 model 的 `supports_reasoning_effort` / `default_reasoning_effort`
