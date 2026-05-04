@@ -122,6 +122,15 @@ def test_builtin_agent_manifests_have_materialized_prompt_profiles_and_execution
         assert prompt
 
 
+def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
+    prompt = render_builtin_prompt_profile("leader")
+
+    assert prompt is not None
+    assert "background_retry" in prompt
+    assert "inspect the returned retry task id with background_output" in prompt
+    assert "do not manually reconstruct child requests" in prompt
+
+
 def test_builtin_agent_prompt_materialization_versions_match_prompt_contracts() -> None:
     expected_versions = {
         "leader": 2,
@@ -225,6 +234,18 @@ def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -
 
         assert manifest is not None
         assert "task" not in manifest.tool_allowlist
+
+
+def test_builtin_retry_tool_is_leader_only_runtime_recovery_surface() -> None:
+    leader = get_builtin_agent_manifest("leader")
+    assert leader is not None
+    assert "background_retry" in leader.tool_allowlist
+
+    for preset in _CALLABLE_CHILD_AGENT_PRESETS:
+        manifest = get_builtin_agent_manifest(preset)
+
+        assert manifest is not None
+        assert "background_retry" not in manifest.tool_allowlist
 
 
 def test_builtin_read_only_role_prompts_and_manifests_align() -> None:
@@ -399,11 +420,13 @@ def test_builtin_workflow_presets_validate_with_empty_capability_catalogs() -> N
     assert workflow_by_id["implementation"].hook_preset_refs == (
         "role_reminder",
         "delegated_task_timing_guidance",
+        "delegated_retry_guidance",
         "todo_continuation_guidance",
     )
     assert workflow_by_id["frontend"].hook_preset_refs == (
         "role_reminder",
         "delegated_task_timing_guidance",
+        "delegated_retry_guidance",
         "todo_continuation_guidance",
     )
 
@@ -655,6 +678,7 @@ def test_builtin_agent_manifests_use_explicit_preset_hook_refs_not_formatter_ref
     assert worker is not None
     assert "delegation_guard" in leader.preset_hook_refs
     assert "background_output_quality_guidance" in leader.preset_hook_refs
+    assert "delegated_retry_guidance" in leader.preset_hook_refs
     assert "todo_continuation_guidance" in leader.preset_hook_refs
     assert worker.preset_hook_refs == ("role_reminder", "delegation_guard")
 

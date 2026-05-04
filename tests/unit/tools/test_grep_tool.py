@@ -337,3 +337,7 @@ def test_tools_package_and_default_registry_export_grep_tool() -> None:
     assert "GrepTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("grep").definition.name == "grep"
     assert registry.resolve("grep").definition.read_only is True
+
+
+def test_tools_package_exports_background_retry_tool() -> None:
+    assert "BackgroundRetryTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__

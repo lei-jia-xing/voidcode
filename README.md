@@ -4,7 +4,6 @@
   </a>
   <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13" />
   <img src="https://img.shields.io/badge/bun-1.3+-fbf0df.svg" alt="Bun 1.3+" />
-  <img src="https://img.shields.io/badge/status-pre--MVP-orange.svg" alt="Project status" />
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome" />
 </p>
 
@@ -12,7 +11,7 @@
 
 VoidCode is a local-first coding agent runtime inspired by OpenCode and Claude Code.
 
-> **Status:** VoidCode is still pre-MVP. The current focus is tightening runtime boundaries, improving the execution control plane, and delivering a repeatable end-to-end single-agent loop.
+> **Status:** VoidCode is shipping its first productionized release of the runtime control plane. The current focus is tightening runtime boundaries, improving the execution control plane, and shipping a repeatable end-to-end single-agent loop.
 
 > **Documentation note:** contributor-facing documents at the repository root are in English. Internal design and planning documents under `docs/` are currently mostly written in Chinese.
 

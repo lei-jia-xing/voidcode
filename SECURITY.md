@@ -4,12 +4,12 @@ We take the security of VoidCode seriously. If you discover a potential vulnerab
 
 ## Supported versions
 
-VoidCode is currently pre-MVP. At this stage, security fixes are only supported for the latest code on the `master` branch.
+VoidCode is shipping its first productionized runtime release. At this stage, security fixes are only supported for the latest code on the `master` branch.
 
 | Version | Supported |
 | :--- | :--- |
 | `master` | ✅ |
-| pre-MVP historical revisions | ❌ |
+| historical revisions | ❌ |
 
 ## Reporting a vulnerability
 

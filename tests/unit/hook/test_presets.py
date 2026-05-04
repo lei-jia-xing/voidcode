@@ -21,6 +21,7 @@ def test_builtin_hook_preset_catalog_contains_agent_manifest_refs() -> None:
         "role_reminder",
         "delegation_guard",
         "background_output_quality_guidance",
+        "delegated_retry_guidance",
         "delegated_task_timing_guidance",
         "todo_continuation_guidance",
     )
@@ -30,16 +31,21 @@ def test_builtin_hook_preset_catalog_contains_agent_manifest_refs() -> None:
 def test_builtin_hook_presets_carry_guidance_metadata() -> None:
     role_reminder = get_builtin_hook_preset("role_reminder")
     background_guidance = get_builtin_hook_preset("background_output_quality_guidance")
+    delegated_retry = get_builtin_hook_preset("delegated_retry_guidance")
     delegated_timing = get_builtin_hook_preset("delegated_task_timing_guidance")
 
     assert role_reminder is not None
     assert background_guidance is not None
+    assert delegated_retry is not None
     assert delegated_timing is not None
     assert role_reminder.kind == "guidance"
     assert "role" in role_reminder.description.lower()
     assert "active agent preset" in role_reminder.guidance
     assert "do not poll immediately" in background_guidance.guidance
     assert "runtime completion reminder" in background_guidance.guidance
+    assert delegated_retry.kind == "guard"
+    assert "background_retry" in delegated_retry.guidance
+    assert "escalate repeated failures" in delegated_retry.guidance
     assert delegated_timing.kind == "guidance"
     assert "continue other safe work first" in delegated_timing.guidance
     assert (

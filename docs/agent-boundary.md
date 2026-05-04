@@ -8,7 +8,7 @@
 
 ## 为什么需要这份文档
 
-在当前 MVP / pre-MVP 阶段，VoidCode 已经形成了比较清晰的 runtime-centric 架构：
+在当前 MVP 阶段，VoidCode 已经形成了比较清晰的 runtime-centric 架构：
 
 - `runtime/` 是系统控制面
 - `graph/` 负责执行循环与步骤推进

@@ -775,7 +775,7 @@ def test_cli_parser_has_tasks_lifecycle_subcommands() -> None:
             break
     assert tasks_parser is not None
     sub_actions = {a.dest for a in tasks_parser._subparsers._group_actions[0]._choices_actions}
-    assert sub_actions == {"status", "output", "cancel", "list"}
+    assert sub_actions == {"status", "output", "cancel", "retry", "list"}
 
 
 def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any) -> None:
@@ -1245,6 +1245,34 @@ def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: An
     assert "error=cancelled before start" in captured.out
 
 
+def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    task_state = SimpleNamespace(
+        task=SimpleNamespace(id="task-retried"),
+        status="queued",
+        parent_session_id="leader-session",
+        request=SimpleNamespace(session_id="child-requested"),
+        child_session_id=None,
+        approval_request_id=None,
+        question_request_id=None,
+        result_available=False,
+        cancellation_cause=None,
+        error=None,
+        routing_identity=None,
+    )
+
+    with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+        runtime_class.return_value.retry_background_task.return_value = task_state
+        result = cli.main(["tasks", "retry", "task-1", "--workspace", str(workspace)])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    runtime_class.return_value.retry_background_task.assert_called_once_with("task-1")
+    assert "TASK id=task-retried status=queued" in captured.out
+    assert "RETRY previous_task_id=task-1 new_task_id=task-retried" in captured.out
+
+
 def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
@@ -1399,6 +1427,34 @@ def test_runtime_exposes_cancel_background_task(tmp_path: Path) -> None:
 
     cancelled = runtime.cancel_background_task("task-cancel-test")
     assert cancelled.status == "cancelled"
+
+
+def test_runtime_exposes_retry_background_task(tmp_path: Path) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime")
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
+    runtime._background_tasks_reconciled = True
+    store = runtime._session_store
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-retry-test"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="background work"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+    cancelled = runtime.cancel_background_task("task-retry-test")
+
+    retried = runtime.retry_background_task(cancelled.task.id)
+    _ = _wait_for_background_task(
+        runtime,
+        retried.task.id,
+        predicate=_is_terminal_background_task,
+    )
+
+    assert retried.task.id != cancelled.task.id
+    assert retried.request.prompt == "background work"
 
 
 def test_runtime_exposes_list_background_tasks(tmp_path: Path) -> None:

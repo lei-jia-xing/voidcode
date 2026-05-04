@@ -28,6 +28,7 @@ _LEADER_TOOL_ALLOWLIST = (
     "task",
     "todo_write",
     "background_cancel",
+    "background_retry",
     "ast_grep_preview",
     "ast_grep_replace",
     "web_search",
@@ -42,6 +43,7 @@ _LEADER_PRESET_HOOK_REFS = (
     "role_reminder",
     "delegation_guard",
     "background_output_quality_guidance",
+    "delegated_retry_guidance",
     "todo_continuation_guidance",
 )
 

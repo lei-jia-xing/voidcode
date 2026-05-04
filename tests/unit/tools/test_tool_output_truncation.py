@@ -140,7 +140,8 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
     assert artifact["byte_count"] == len(raw_content.encode("utf-8"))
     assert artifact["line_count"] == 40
     assert capped.data["output_path"] == artifact["path"]
-    assert str(tmp_path) not in cast(str, artifact["path"])
+    assert str(tmp_path / ".voidcode") not in cast(str, artifact["path"])
+    assert ".xdg-cache" in cast(str, artifact["path"])
 
     retrieved = read_tool_output_artifact(artifact, limit=10)
     assert retrieved["artifact_missing"] is False

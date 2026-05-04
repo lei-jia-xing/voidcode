@@ -8,7 +8,7 @@
 
 - CLI：`voidcode run`、`voidcode sessions list`、`voidcode sessions resume`、`voidcode sessions answer`、`voidcode serve`、`voidcode tasks` 子命令、`voidcode config show`、`voidcode doctor`
 - HTTP 传输：`voidcode serve` 暴露的 `/api/sessions`、`/api/tasks`、`/api/runtime/run/stream` 等端点
-- SQLite 持久化：`.voidcode/sessions.sqlite3` 中面向操作员排障最重要的 `sessions`、`session_events`、`background_tasks`、`session_notifications` 表（另有用于事件投递去重的 `session_event_deliveries` 表）
+- SQLite 持久化：`$XDG_STATE_HOME/voidcode/sessions.sqlite3`（POSIX 默认 `~/.local/state/voidcode/sessions.sqlite3`，可被 `VOIDCODE_DB_PATH` 覆盖）中面向操作员排障最重要的 `sessions`、`session_events`、`background_tasks`、`session_notifications` 表（另有用于事件投递去重的 `session_event_deliveries` 表）。该数据库使用 SQLite `PRAGMA user_version` 做 runtime schema 版本门禁，工作区作用域列使用 `workspace_id`。
 - 会话状态字面量：`idle`、`running`、`waiting`、`completed`、`failed`
 - 审批决策：`allow`、`deny`、`ask`
 - 恢复检查点类型：`approval_wait`、`question_wait`、`terminal`
@@ -25,7 +25,7 @@
 | 任务执行失败 | CLI 打印 `EVENT runtime.failed`，RESULT 为空或含错误信息 | `failed` | `runtime.failed` 事件的 `error` payload |
 | 会话未找到 | `sessions resume` 或 HTTP `/api/sessions/{id}` 返回 404 | 无记录 | SQLite `sessions` 表中是否存在对应 `session_id` |
 | 后台子任务卡住 | `tasks list` 显示 `queued` 或 `running` 但长时间无进展 | 父会话可能 `running` 或 `waiting` | `background_tasks` 表的 `status`、`error`、`cancellation_cause` 列 |
-| 数据库损坏或 schema 不匹配 | 启动任何命令即报 `sqlite runtime schema mismatch` | 不可用 | `.voidcode/sessions.sqlite3` 文件是否存在、schema 是否与代码中 `_CANONICAL_SCHEMA` 一致 |
+| 数据库损坏或 schema 不匹配 | 启动任何命令即报 `sqlite runtime schema mismatch`，并提示 `Reset the runtime database with \`uv run voidcode storage reset\` or remove '<path>' plus matching -wal/-shm files.` | 不可用 | `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 文件是否存在、`PRAGMA user_version` 是否匹配、schema 是否与代码中 `_CANONICAL_SCHEMA` 一致 |
 | 工作区路径错误 | 命令报 `workspace does not exist` | 不可用 | `--workspace` 参数指向的目录是否存在 |
 | 配置解析失败 | `doctor` 返回非零退出码，或 `config show` 报错 | 不可用 | `.voidcode/config.json`（如存在）是否为合法 JSON |
 | Provider / model 未就绪 | `doctor` 报 `provider.readiness`，`runtime.failed` 含 `provider_error_kind` | `failed` 或不可用 | `voidcode config show` 的 `provider_readiness` 与 `context_budget` |
@@ -182,31 +182,31 @@ Common recovery actions:
 
 ### 3.3 SQLite 直接检查
 
-数据库路径：`.voidcode/sessions.sqlite3`
+数据库路径：`$XDG_STATE_HOME/voidcode/sessions.sqlite3`（POSIX 默认 `~/.local/state/voidcode/sessions.sqlite3`，可通过 `VOIDCODE_DB_PATH` 覆盖）
 
 ```bash
 # 查看会话列表
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT session_id, status, turn, prompt, last_event_sequence, updated_at FROM sessions ORDER BY updated_at DESC;"
 
 # 查看特定会话的事件时间线
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT sequence, event_type, source, payload_json FROM session_events WHERE session_id = '<id>' ORDER BY sequence;"
 
 # 查看待审批信息
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT session_id, pending_approval_json, pending_question_json, resume_checkpoint_json FROM sessions WHERE session_id = '<id>';"
 
 # 查看后台任务状态
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT task_id, status, prompt, error, cancellation_cause, result_available FROM background_tasks ORDER BY updated_at DESC;"
 
 # 查看未读通知
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT notification_id, session_id, kind, status, summary FROM session_notifications WHERE status = 'unread';"
 
 # 如需确认事件是否已被投递/去重，可查看投递记录
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT workspace, session_id, dedupe_key, delivered_at FROM session_event_deliveries ORDER BY delivered_at DESC LIMIT 20;"
 ```
 
@@ -242,13 +242,13 @@ sqlite3 .voidcode/sessions.sqlite3 \
 
 ```bash
 # 确认工作区目录存在
-ls -la .voidcode/sessions.sqlite3 2>/dev/null || echo "数据库不存在"
+uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path
 
 # 运行能力检查
 uv run voidcode doctor --workspace .
 ```
 
-如果数据库不存在，说明尚未执行过任何会话。直接运行 `voidcode run` 即可创建。
+如果数据库不存在，说明尚未执行过任何会话。直接运行 `voidcode run` 即可创建；如需确认默认路径，也可以检查 `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 或 `VOIDCODE_DB_PATH`。
 
 ### 步骤 2：查看会话状态
 
@@ -301,7 +301,7 @@ curl -s -X POST http://127.0.0.1:8000/api/sessions/{id}/approval \
 
 ```bash
 # 查看最近会话的完整事件时间线
-sqlite3 .voidcode/sessions.sqlite3 \
+sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.database_path)" \
   "SELECT e.session_id, e.sequence, e.event_type, e.source, e.payload_json
    FROM session_events e
    JOIN sessions s ON e.session_id = s.session_id
@@ -314,7 +314,8 @@ sqlite3 .voidcode/sessions.sqlite3 \
 如果数据库损坏或 schema 不匹配：
 
 ```bash
-rm .voidcode/sessions.sqlite3
+uv run voidcode storage reset
+# 或者手动删除数据库文件及其 -wal/-shm 文件：$XDG_STATE_HOME/voidcode/sessions.sqlite3
 # 重新运行任意 voidcode 命令将自动重建数据库
 ```
 
@@ -328,7 +329,7 @@ rm .voidcode/sessions.sqlite3
 
 1. `mise run check` 全绿
 2. 规范演示流程（步骤 1.4）成功执行
-3. `.voidcode/sessions.sqlite3` 中包含对应的会话和事件行
+3. `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 中包含对应的会话和事件行
 
 本手册提供的诊断和恢复流程用于支撑 MVP 证据标准：
 

@@ -10,6 +10,7 @@ import pytest
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.paths import sessions_db_path, state_home
 from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
@@ -23,6 +24,24 @@ from voidcode.runtime.task import (
 
 def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
+
+
+def test_runtime_paths_honor_explicit_empty_env_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_db_path = tmp_path / "host" / "sessions.sqlite3"
+    host_state_home = tmp_path / "host-state"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(host_db_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(host_state_home))
+
+    assert sessions_db_path({}) == (
+        Path.home() / ".local" / "state" / "voidcode" / "sessions.sqlite3"
+    )
+    assert state_home({}) == Path.home() / ".local" / "state" / "voidcode"
+    assert sessions_db_path({"XDG_STATE_HOME": str(tmp_path / "mapped-state")}) == (
+        tmp_path / "mapped-state" / "voidcode" / "sessions.sqlite3"
+    )
 
 
 def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: Path) -> None:
@@ -324,6 +343,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
             row[1]
             for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()
         ]
+        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
         notification_indexes = connection.execute(
             "PRAGMA index_list(session_notifications)"
         ).fetchall()
@@ -331,7 +351,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
     assert session_columns == [
         "session_id",
         "parent_session_id",
-        "workspace",
+        "workspace_id",
         "status",
         "turn",
         "prompt",
@@ -345,6 +365,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "last_event_sequence",
     ]
     assert todo_columns == [
+        "workspace_id",
         "session_id",
         "position",
         "content",
@@ -352,7 +373,8 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "priority",
         "updated_at",
     ]
-    assert delivery_columns == ["workspace", "session_id", "dedupe_key", "delivered_at"]
+    assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
+    assert schema_version == 2
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -459,16 +481,54 @@ def test_session_storage_configures_sqlite_operability_pragmas(tmp_path: Path) -
     }
 
 
+def test_session_storage_rejects_existing_unversioned_runtime_schema_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "unversioned-runtime.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL)"
+        )
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"schema version mismatch: expected 2 got 0.*unversioned-runtime\.sqlite3",
+    ):
+        store.list_sessions(workspace=tmp_path)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+
+
+def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path) -> None:
+    database_path = tmp_path / "future-runtime.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute("PRAGMA user_version = 999")
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"schema version mismatch: expected 2 got 999.*future-runtime\.sqlite3",
+    ):
+        store.list_sessions(workspace=tmp_path)
+
+
 def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "invalid-sessions.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute("PRAGMA user_version = 2")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 turn INTEGER NOT NULL,
                 prompt TEXT NOT NULL,
@@ -476,19 +536,21 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
                 metadata_json TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                last_event_sequence INTEGER NOT NULL
+                last_event_sequence INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, session_id)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE session_events (
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
                 event_type TEXT NOT NULL,
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
-                PRIMARY KEY (session_id, sequence)
+                PRIMARY KEY (workspace_id, session_id, sequence)
             )
             """
         )
@@ -496,7 +558,7 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
             """
             CREATE TABLE session_notifications (
                 notification_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -506,15 +568,15 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
                 dedupe_key TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 acknowledged_at INTEGER,
-                UNIQUE(workspace, dedupe_key)
+                UNIQUE(workspace_id, dedupe_key)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE background_tasks (
-                task_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 request_session_id TEXT,
@@ -526,7 +588,8 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 started_at INTEGER,
-                finished_at INTEGER
+                finished_at INTEGER,
+                PRIMARY KEY (workspace_id, task_id)
             )
             """
         )
@@ -537,8 +600,8 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
         RuntimeError,
         match=(
             r"table 'sessions' missing columns: .*"
-            r"This pre-MVP build does not migrate old schemas\. "
-            r"Reset local runtime storage with: remove '.*[\\/]invalid-sessions\.sqlite3' "
+            r"Reset the runtime database with `uv run voidcode storage reset` "
+            r"or remove '.*[\\/]invalid-sessions\.sqlite3' "
             r"plus matching -wal/-shm files\."
         ),
     ):
@@ -558,12 +621,13 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
 ) -> None:
     database_path = tmp_path / "wrong-table-shape.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute("PRAGMA user_version = 2")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
                 parent_session_id TEXT,
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 turn INTEGER NOT NULL,
                 prompt TEXT NOT NULL,
@@ -574,27 +638,29 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
                 resume_checkpoint_json TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
-                last_event_sequence INTEGER NOT NULL
+                last_event_sequence INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, session_id)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE session_events (
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
                 event_type TEXT NOT NULL,
                 source TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
-                PRIMARY KEY (session_id, sequence)
+                PRIMARY KEY (workspace_id, session_id, sequence)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE background_tasks (
-                task_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 request_session_id TEXT,
@@ -617,7 +683,8 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 started_at INTEGER,
-                finished_at INTEGER
+                finished_at INTEGER,
+                PRIMARY KEY (workspace_id, task_id)
             )
             """
         )
@@ -625,7 +692,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
             """
             CREATE TABLE session_notifications (
                 notification_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -635,17 +702,17 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
                 dedupe_key TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 acknowledged_at INTEGER,
-                UNIQUE(workspace, dedupe_key)
+                UNIQUE(workspace_id, dedupe_key)
             )
             """
         )
         _ = connection.execute(
             """
             CREATE TABLE session_event_deliveries (
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 delivered_at INTEGER NOT NULL,
-                PRIMARY KEY (workspace, session_id)
+                PRIMARY KEY (workspace_id, session_id)
             )
             """
         )
@@ -658,8 +725,8 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         match=(
             r"table 'background_tasks' missing columns: created_at_unix_ms, "
             r"finished_at_unix_ms, started_at_unix_ms.*"
-            r"This pre-MVP build does not migrate old schemas\. "
-            r"Reset local runtime storage with: remove '.*[\\/]wrong-table-shape\.sqlite3' "
+            r"Reset the runtime database with `uv run voidcode storage reset` "
+            r"or remove '.*[\\/]wrong-table-shape\.sqlite3' "
             r"plus matching -wal/-shm files\."
         ),
     ):
@@ -762,7 +829,7 @@ def test_session_storage_load_resume_checkpoint_rejects_corrupt_json(tmp_path: P
     )
     store.save_run(workspace=tmp_path, request=request, response=response)
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute(
             "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",
@@ -788,7 +855,7 @@ def test_session_storage_load_resume_checkpoint_rejects_invalid_kind(tmp_path: P
     )
     store.save_run(workspace=tmp_path, request=request, response=response)
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute(
             "UPDATE sessions SET resume_checkpoint_json = ? WHERE session_id = ?",

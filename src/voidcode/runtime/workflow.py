@@ -439,6 +439,7 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             hook_preset_refs=(
                 "role_reminder",
                 "delegated_task_timing_guidance",
+                "delegated_retry_guidance",
                 "todo_continuation_guidance",
             ),
             permission_policy_ref="runtime_default",
@@ -457,6 +458,7 @@ _VALIDATED_BUILTIN_WORKFLOW_PRESETS = validate_workflow_presets(
             hook_preset_refs=(
                 "role_reminder",
                 "delegated_task_timing_guidance",
+                "delegated_retry_guidance",
                 "todo_continuation_guidance",
             ),
             mcp_binding_intents=(

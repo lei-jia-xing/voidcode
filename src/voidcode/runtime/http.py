@@ -81,6 +81,8 @@ class RuntimeTransport(Protocol):
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
+    def retry_background_task(self, task_id: str) -> BackgroundTaskState: ...
+
     def cancel_session(
         self,
         session_id: str,
@@ -593,11 +595,14 @@ class RuntimeTransportApp:
             task_path = path.removeprefix(task_prefix)
             is_cancel_route = task_path.endswith("/cancel")
             is_output_route = task_path.endswith("/output")
+            is_retry_route = task_path.endswith("/retry")
             task_id = (
                 task_path.removesuffix("/cancel")
                 if is_cancel_route
                 else task_path.removesuffix("/output")
                 if is_output_route
+                else task_path.removesuffix("/retry")
+                if is_retry_route
                 else task_path
             )
             try:
@@ -618,6 +623,16 @@ class RuntimeTransportApp:
                     )
                     return
                 await self._handle_cancel_background_task(task_id=task_id, send=send)
+                return
+            if is_retry_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_retry_background_task(task_id=task_id, send=send)
                 return
             if is_output_route:
                 if method != "GET":
@@ -1220,6 +1235,25 @@ class RuntimeTransportApp:
             send,
             status=200,
             payload=self._serialize_background_task_state(task),
+        )
+
+    async def _handle_retry_background_task(self, *, task_id: str, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task = runtime.retry_background_task(task_id)
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=201,
+            payload={
+                "retry_of_task_id": task_id,
+                "task": self._serialize_background_task_state(task),
+            },
         )
 
     async def _handle_cancel_session(

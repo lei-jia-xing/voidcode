@@ -1,6 +1,6 @@
 # Contributing to VoidCode
 
-Thanks for contributing to VoidCode. The project is still pre-MVP, so clear communication, focused changes, and repeatable local verification matter more than speed.
+Thanks for contributing to VoidCode. The project is moving through its first productionized runtime release, so clear communication, focused changes, and repeatable local verification matter more than speed.
 
 ## Development setup
 

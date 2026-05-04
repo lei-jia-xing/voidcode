@@ -15,6 +15,7 @@ from voidcode.runtime.events import (
     DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS,
     EventEnvelope,
 )
+from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
@@ -476,7 +477,7 @@ def test_background_task_storage_terminal_states_persist_result_availability_and
         error="operator cancelled",
     )
 
-    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
+    with closing(sqlite3.connect(sessions_db_path())) as connection:
         rows = connection.execute(
             """
             SELECT task_id, result_available, cancellation_cause
@@ -503,7 +504,7 @@ def test_background_task_storage_cancel_semantics(tmp_path: Path) -> None:
     assert cancelled.status == "cancelled"
     assert cancelled.error == "cancelled before start"
 
-    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
+    with closing(sqlite3.connect(sessions_db_path())) as connection:
         row = connection.execute(
             "SELECT cancellation_cause, result_available FROM background_tasks WHERE task_id = ?",
             ("task-c",),
@@ -659,7 +660,7 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
     )
     store.save_run(workspace=tmp_path, request=approval_request, response=terminal_response)
 
-    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
+    with closing(sqlite3.connect(sessions_db_path())) as connection:
         row = connection.execute(
             """
             SELECT requested_child_session_id, session_id, approval_request_id,
@@ -893,6 +894,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
 
 def test_background_task_storage_queued_cancel_race_does_not_overwrite_running_task(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = SqliteSessionStore()
     store.create_background_task(workspace=tmp_path, task=_task(task_id="task-c-race"))
@@ -917,7 +919,7 @@ def test_background_task_storage_queued_cancel_race_does_not_overwrite_running_t
             )
         return original_load_background_task(workspace=workspace, task_id=task_id)
 
-    store.load_background_task = _stale_queued_load
+    monkeypatch.setattr(store, "load_background_task", _stale_queued_load)
 
     cancelled = store.request_background_task_cancel(
         workspace=tmp_path,
@@ -1056,6 +1058,7 @@ def test_background_task_storage_running_cancel_is_idempotent_on_repeat_requests
 
 def test_background_task_storage_running_cancel_race_does_not_overwrite_terminal_state(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = SqliteSessionStore()
     store.create_background_task(workspace=tmp_path, task=_task(task_id="task-d-race"))
@@ -1090,7 +1093,7 @@ def test_background_task_storage_running_cancel_race_does_not_overwrite_terminal
             )
         return original_load_background_task(workspace=workspace, task_id=task_id)
 
-    store.load_background_task = _stale_running_load
+    monkeypatch.setattr(store, "load_background_task", _stale_running_load)
 
     cancelled = store.request_background_task_cancel(
         workspace=tmp_path,
@@ -1336,7 +1339,7 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
         message="background task interrupted before completion",
     )
 
-    with closing(sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")) as connection:
+    with closing(sqlite3.connect(sessions_db_path())) as connection:
         row = connection.execute(
             """
             SELECT status, approval_request_id, requested_child_session_id,

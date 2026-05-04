@@ -27,6 +27,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "ast_grep_search",
         "background_cancel",
         "background_output",
+        "background_retry",
         "code_search",
         "edit",
         "format_file",
@@ -196,6 +197,7 @@ class BuiltinToolProvider:
     _question_tool: Tool | None
     _background_output_tool: Tool | None
     _background_cancel_tool: Tool | None
+    _background_retry_tool: Tool | None
 
     def __init__(
         self,
@@ -209,6 +211,7 @@ class BuiltinToolProvider:
         question_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
+        background_retry_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
         self._format_tool = format_tool
@@ -219,6 +222,7 @@ class BuiltinToolProvider:
         self._question_tool = question_tool
         self._background_output_tool = background_output_tool
         self._background_cancel_tool = background_cancel_tool
+        self._background_retry_tool = background_retry_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
         edit_tool = EditTool(hooks_config=self._hooks_config)
@@ -256,6 +260,9 @@ class BuiltinToolProvider:
 
         if self._background_cancel_tool is not None:
             tools.append(self._background_cancel_tool)
+
+        if self._background_retry_tool is not None:
+            tools.append(self._background_retry_tool)
 
         tools.extend(self._mcp_tools)
 

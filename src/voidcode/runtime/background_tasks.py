@@ -388,6 +388,29 @@ class RuntimeBackgroundTaskSupervisor:
         self._drain_background_task_queue()
         return runtime.load_background_task(task_id)
 
+    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
+        runtime = self._runtime
+        self.reconcile_background_tasks_if_needed()
+        validate_background_task_id(task_id)
+        previous_task = runtime._session_store.load_background_task(
+            workspace=runtime._workspace,
+            task_id=task_id,
+        )
+        if previous_task.status not in ("failed", "cancelled", "interrupted"):
+            raise ValueError(
+                "background task retry requires a failed, cancelled, or interrupted task; "
+                f"task {task_id} is {previous_task.status}"
+            )
+        return self.start_background_task(
+            RuntimeRequest(
+                prompt=previous_task.request.prompt,
+                session_id=previous_task.request.session_id,
+                parent_session_id=previous_task.request.parent_session_id,
+                metadata=cast(RuntimeRequestMetadataPayload, previous_task.request.metadata),
+                allocate_session_id=previous_task.request.allocate_session_id,
+            )
+        )
+
     def _concurrency_identity_for_request(
         self, request: RuntimeRequest
     ) -> _BackgroundTaskConcurrencyIdentity:
@@ -607,6 +630,8 @@ class RuntimeBackgroundTaskSupervisor:
 
     def _drain_background_task_queue(self) -> None:
         runtime = self._runtime
+        if runtime._background_task_shutdown_requested:
+            return
         failed_tasks: list[BackgroundTaskState] = []
         started_tasks: list[
             tuple[
@@ -665,10 +690,24 @@ class RuntimeBackgroundTaskSupervisor:
                 def run_worker_after_started_hook(
                     *,
                     background_task_id: str = task.task.id,
+                    reserved_identity: _BackgroundTaskConcurrencyIdentity = identity,
                     start_gate: threading.Event = worker_start_gate,
                 ) -> None:
-                    start_gate.wait()
-                    runtime._run_background_task_worker(background_task_id)
+                    try:
+                        start_gate.wait()
+                        if runtime._background_task_shutdown_requested:
+                            try:
+                                self._mark_background_task_interrupted_before_worker(
+                                    task_id=background_task_id
+                                )
+                            finally:
+                                with self._queue_lock:
+                                    self._release_slot(reserved_identity)
+                            return
+                        runtime._run_background_task_worker(background_task_id)
+                    finally:
+                        with self._queue_lock:
+                            runtime._background_task_threads.pop(background_task_id, None)
 
                 worker = threading.Thread(
                     target=run_worker_after_started_hook,
@@ -704,6 +743,30 @@ class RuntimeBackgroundTaskSupervisor:
                 worker_start_gate.set()
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
+
+    def _mark_background_task_interrupted_before_worker(self, *, task_id: str) -> None:
+        runtime = self._runtime
+        try:
+            terminal_task = runtime._session_store.mark_background_task_terminal(
+                workspace=runtime._workspace,
+                task_id=task_id,
+                status="interrupted",
+                error="runtime shutdown requested before delegated worker execution started",
+            )
+        except Exception as exc:
+            if "unknown background task" in str(exc):
+                logger.debug(
+                    "background task %s disappeared before shutdown interruption: %s",
+                    task_id,
+                    exc,
+                )
+                return
+            logger.exception(
+                "background task %s could not persist shutdown interruption state",
+                task_id,
+            )
+            return
+        self.run_background_task_lifecycle_hook(terminal_task)
 
     def load_background_task_result(
         self,
@@ -1481,19 +1544,48 @@ class RuntimeBackgroundTaskSupervisor:
                 return
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
-            terminal_task = runtime._session_store.mark_background_task_terminal(
-                workspace=runtime._workspace,
-                task_id=task_id,
-                status="failed",
-                error=str(exc),
-            )
+            try:
+                terminal_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=task_id,
+                    status="failed",
+                    error=str(exc),
+                )
+            except Exception as terminal_exc:
+                if runtime._background_task_shutdown_requested:
+                    logger.debug(
+                        "background task %s skipped terminal update during shutdown: %s",
+                        task_id,
+                        terminal_exc,
+                    )
+                    return
+                if "unknown background task" in str(terminal_exc):
+                    logger.debug(
+                        "background task %s disappeared before terminal update: %s",
+                        task_id,
+                        terminal_exc,
+                    )
+                    return
+                logger.exception(
+                    "background task %s could not persist terminal failure state",
+                    task_id,
+                )
+                return
             self.run_background_task_lifecycle_hook(terminal_task)
         finally:
             if slot_identity is not None and slot_reserved:
                 with self._queue_lock:
                     self._release_slot(slot_identity)
             runtime._background_task_threads.pop(task_id, None)
-            self._drain_background_task_queue()
+            if not runtime._background_task_shutdown_requested:
+                try:
+                    self._drain_background_task_queue()
+                except (RuntimeError, ValueError) as drain_exc:
+                    logger.debug(
+                        "background task %s skipped queue drain during worker cleanup: %s",
+                        task_id,
+                        drain_exc,
+                    )
 
     @staticmethod
     def _response_has_rate_limit_error(response: RuntimeResponse) -> bool:

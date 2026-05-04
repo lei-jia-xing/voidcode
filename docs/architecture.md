@@ -2,7 +2,7 @@
 
 ## 状态与初衷
 
-VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的 pre-MVP 本地优先（local-first）编程智能体运行时。当前的直接目标不是构建一个完整的平台，而是让 runtime 能够稳定承载一个受监管的开发任务执行闭环：
+VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的本地优先（local-first）编程智能体运行时。当前的直接目标不是构建一个完整的平台，而是让 runtime 能够稳定承载一个受监管的开发任务执行闭环：
 
 1. 用户提交开发任务
 2. 运行时驱动执行引擎，调用工具，在需要时请求审批，并执行更改
@@ -46,7 +46,7 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 - 权限决策（`allow`、`deny`、`ask`）
 - 钩子执行
 - 会话创建、加载与恢复
-- 基于 SQLite 的存储抽象
+- 基于 SQLite 的用户全局存储抽象（XDG state 路径、`workspace_id` scoped rows、`PRAGMA user_version` schema gate）
 - 面向 CLI 或未来客户端的流式传输
 - 上下文管理与压缩
 - delegated child routing、background result retrieval、cancel/retry guidance 与 lifecycle hook guardrails

@@ -2,6 +2,7 @@ from .apply_patch import ApplyPatchTool
 from .ast_grep import AstGrepPreviewTool, AstGrepReplaceTool, AstGrepSearchTool
 from .background_cancel import BackgroundCancelTool
 from .background_output import BackgroundOutputTool
+from .background_retry import BackgroundRetryTool
 from .code_search import CodeSearchTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
@@ -39,6 +40,7 @@ from .write_file import WriteFileTool
 __all__ = [
     "BackgroundCancelTool",
     "BackgroundOutputTool",
+    "BackgroundRetryTool",
     "EditTool",
     "FormatTool",
     "GlobTool",

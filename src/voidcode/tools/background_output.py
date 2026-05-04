@@ -223,18 +223,12 @@ def _background_output_guidance(
             "report it or call background_output again later, but do not loop indefinitely."
         )
     if result.status == "failed":
-        retry_hint = ""
-        if result.child_session_id is not None:
-            retry_hint = (
-                f" If the user explicitly asks to retry or continue, start a delegated task with "
-                f"session_id='{result.child_session_id}' so the child context is preserved."
-            )
         return (
             "The delegated child failed. Inspect the returned error/session details, summarize the "
             "failure for the parent, and do not retry automatically unless the user "
-            "explicitly asks. "
+            f"explicitly asks. Use background_retry(task_id='{result.task_id}') for an explicit "
+            "runtime-owned retry instead of manually reconstructing the delegated request. "
             "After repeated failures, stop retrying and escalate the failure with the latest error."
-            f"{retry_hint}"
         )
     if result.status == "cancelled":
         return "The delegated child was cancelled; do not retry automatically."
@@ -242,7 +236,8 @@ def _background_output_guidance(
         return (
             "The delegated child was interrupted before completion. Treat this as a terminal "
             "runtime outcome, inspect the returned error/session details, and do not retry "
-            "automatically unless the user explicitly asks."
+            "automatically unless the user explicitly asks. Use background_retry for an explicit "
+            "runtime-owned retry."
         )
     if not result.result_available:
         return (
