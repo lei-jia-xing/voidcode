@@ -1865,6 +1865,42 @@ def test_runtime_exit_waits_for_background_task_worker(
     assert runtime._background_task_threads == {}
 
 
+def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-shutdown-before-worker"),
+        request=BackgroundTaskRequestSnapshot(prompt="background shutdown race"),
+    )
+    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+
+    def request_shutdown_from_started_hook(
+        *,
+        task: BackgroundTaskState,
+        surface: str,
+        session_id: str,
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        _ = task, surface, session_id, extra_payload
+        runtime._background_task_shutdown_requested = True
+
+    run_mock = Mock(side_effect=AssertionError("worker must not run after shutdown"))
+    cast(Any, runtime)._run_background_task_worker = run_mock
+    cast(Any, supervisor).run_background_task_lifecycle_surface = request_shutdown_from_started_hook
+
+    supervisor._drain_background_task_queue()
+    final_task = runtime.load_background_task("task-shutdown-before-worker")
+
+    assert final_task.status == "interrupted"
+    assert final_task.error == (
+        "runtime shutdown requested before delegated worker execution started"
+    )
+    assert runtime._background_task_threads == {}
+    run_mock.assert_not_called()
+
+
 def test_runtime_background_task_started_hook_skips_when_thread_start_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

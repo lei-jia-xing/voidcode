@@ -690,12 +690,24 @@ class RuntimeBackgroundTaskSupervisor:
                 def run_worker_after_started_hook(
                     *,
                     background_task_id: str = task.task.id,
+                    reserved_identity: _BackgroundTaskConcurrencyIdentity = identity,
                     start_gate: threading.Event = worker_start_gate,
                 ) -> None:
-                    start_gate.wait()
-                    if runtime._background_task_shutdown_requested:
-                        return
-                    runtime._run_background_task_worker(background_task_id)
+                    try:
+                        start_gate.wait()
+                        if runtime._background_task_shutdown_requested:
+                            try:
+                                self._mark_background_task_interrupted_before_worker(
+                                    task_id=background_task_id
+                                )
+                            finally:
+                                with self._queue_lock:
+                                    self._release_slot(reserved_identity)
+                            return
+                        runtime._run_background_task_worker(background_task_id)
+                    finally:
+                        with self._queue_lock:
+                            runtime._background_task_threads.pop(background_task_id, None)
 
                 worker = threading.Thread(
                     target=run_worker_after_started_hook,
@@ -731,6 +743,30 @@ class RuntimeBackgroundTaskSupervisor:
                 worker_start_gate.set()
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
+
+    def _mark_background_task_interrupted_before_worker(self, *, task_id: str) -> None:
+        runtime = self._runtime
+        try:
+            terminal_task = runtime._session_store.mark_background_task_terminal(
+                workspace=runtime._workspace,
+                task_id=task_id,
+                status="interrupted",
+                error="runtime shutdown requested before delegated worker execution started",
+            )
+        except Exception as exc:
+            if "unknown background task" in str(exc):
+                logger.debug(
+                    "background task %s disappeared before shutdown interruption: %s",
+                    task_id,
+                    exc,
+                )
+                return
+            logger.exception(
+                "background task %s could not persist shutdown interruption state",
+                task_id,
+            )
+            return
+        self.run_background_task_lifecycle_hook(terminal_task)
 
     def load_background_task_result(
         self,

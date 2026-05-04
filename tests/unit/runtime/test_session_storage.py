@@ -10,7 +10,7 @@ import pytest
 
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
-from voidcode.runtime.paths import sessions_db_path
+from voidcode.runtime.paths import sessions_db_path, state_home
 from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
@@ -24,6 +24,24 @@ from voidcode.runtime.task import (
 
 def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
+
+
+def test_runtime_paths_honor_explicit_empty_env_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_db_path = tmp_path / "host" / "sessions.sqlite3"
+    host_state_home = tmp_path / "host-state"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(host_db_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(host_state_home))
+
+    assert sessions_db_path({}) == (
+        Path.home() / ".local" / "state" / "voidcode" / "sessions.sqlite3"
+    )
+    assert state_home({}) == Path.home() / ".local" / "state" / "voidcode"
+    assert sessions_db_path({"XDG_STATE_HOME": str(tmp_path / "mapped-state")}) == (
+        tmp_path / "mapped-state" / "voidcode" / "sessions.sqlite3"
+    )
 
 
 def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: Path) -> None:

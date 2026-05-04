@@ -43,7 +43,7 @@ def _running_on_windows() -> bool:
 
 
 def _xdg_dir(env: Mapping[str, str], var: str, posix_fallback: Path) -> Path:
-    value = env.get(var) or os.environ.get(var)
+    value = env.get(var)
     if value:
         return Path(value).expanduser() / VOIDCODE_DIR_NAME
     return posix_fallback / VOIDCODE_DIR_NAME
@@ -57,7 +57,7 @@ def state_home(env: Mapping[str, str] | None = None) -> Path:
     """
     e = _envmap(env)
     if _running_on_windows():
-        local_appdata = e.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
+        local_appdata = e.get("LOCALAPPDATA")
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
         return base / VOIDCODE_DIR_NAME / "state"
     return _xdg_dir(e, "XDG_STATE_HOME", Path.home() / ".local" / "state")
@@ -71,7 +71,7 @@ def cache_home(env: Mapping[str, str] | None = None) -> Path:
     """
     e = _envmap(env)
     if _running_on_windows():
-        local_appdata = e.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
+        local_appdata = e.get("LOCALAPPDATA")
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
         return base / VOIDCODE_DIR_NAME / "cache"
     return _xdg_dir(e, "XDG_CACHE_HOME", Path.home() / ".cache")
@@ -85,7 +85,7 @@ def data_home(env: Mapping[str, str] | None = None) -> Path:
     """
     e = _envmap(env)
     if _running_on_windows():
-        appdata = e.get("APPDATA") or os.environ.get("APPDATA")
+        appdata = e.get("APPDATA")
         base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
         return base / VOIDCODE_DIR_NAME
     return _xdg_dir(e, "XDG_DATA_HOME", Path.home() / ".local" / "share")
@@ -100,7 +100,7 @@ def sessions_db_path(env: Mapping[str, str] | None = None) -> Path:
     2. ``state_home()/sessions.sqlite3`` (XDG default)
     """
     e = _envmap(env)
-    override = e.get(DB_PATH_ENV) or os.environ.get(DB_PATH_ENV)
+    override = e.get(DB_PATH_ENV)
     if override:
         return Path(override).expanduser()
     return state_home(e) / SESSIONS_DB_FILENAME
