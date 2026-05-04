@@ -63,7 +63,8 @@ from .session import SessionState
 from .tool_display import build_tool_display, build_tool_status
 
 if TYPE_CHECKING:
-    from .service import ToolRegistry, VoidCodeRuntime
+    from .service import VoidCodeRuntime
+    from .tool_registry import ToolRegistry
 
 
 logger = logging.getLogger(__name__)

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from .active_session import ActiveRunInterruptResult
 from .config import RuntimeConfig
 from .contracts import (
     AgentSummary,
@@ -50,7 +51,7 @@ from .contracts import (
 from .events import DelegatedLifecycleEventPayload, EventEnvelope, redact_reasoning_payload
 from .permission import PermissionResolution
 from .question import QuestionResponse
-from .service import ActiveRunInterruptResult, VoidCodeRuntime
+from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .task import (
     BackgroundTaskRequestSnapshot,

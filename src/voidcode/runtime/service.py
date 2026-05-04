@@ -7,7 +7,6 @@ import subprocess
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 from uuid import uuid4
@@ -83,10 +82,8 @@ from ..tools.contracts import (
     ToolDefinition,
     ToolResult,
 )
-from ..tools.guidance import definition_with_guidance
 from ..tools.output import (
     read_tool_output_artifact,
-    sanitize_tool_result_data,
     search_tool_output_artifact,
 )
 from ..tools.output import (
@@ -97,6 +94,22 @@ from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
 from ..tools.task import TaskTool
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
+from .active_session import (
+    _ACTIVE_SESSION_REGISTRY,
+    ActiveRunInterruptResult,
+)
+from .active_session import (
+    ActiveSessionRegistry as _ActiveSessionRegistry,
+)
+from .active_session import (
+    _ActiveRunAbortSignal as _ActiveRunAbortSignal,
+)
+from .active_session import (
+    _ActiveRunHandle as _ActiveRunHandle,
+)
+from .active_session import (
+    _ActiveSessionKey as _ActiveSessionKey,
+)
 from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .bundle import (
     SessionBundle,
@@ -150,6 +163,10 @@ from .context_window import (
     prepare_provider_context,
     project_tool_results_for_context_window,
 )
+from .context_window_policy import (
+    context_window_config_from_policy,
+    context_window_policy_from_config,
+)
 from .continuity_distillation import build_distillation_input_envelope
 from .contracts import (
     AgentSummary,
@@ -189,36 +206,30 @@ from .contracts import (
     validate_session_id,
     validate_session_reference_id,
 )
+from .delegation_routing import (
+    delegated_model_for_route_from_configs,
+    provider_fallback_for_agent_selection,
+    provider_fallback_with_preferred_model,
+)
+from .event_envelopes import (
+    ReasoningCaptureState as _ReasoningCaptureState,
+)
+from .event_envelopes import (
+    envelopes_for_acp_events,
+    envelopes_for_lsp_events,
+    envelopes_for_mcp_events,
+    renumber_events,
+    resequence_event,
+)
 from .events import (
-    REASONING_SESSION_PART_LIMIT,
-    REASONING_SESSION_TEXT_LIMIT_CHARS,
-    RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
-    RUNTIME_ACP_DISCONNECTED,
-    RUNTIME_ACP_FAILED,
-    RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
     RUNTIME_HOOK_PRESETS_LOADED,
-    RUNTIME_LSP_SERVER_FAILED,
-    RUNTIME_LSP_SERVER_REUSED,
-    RUNTIME_LSP_SERVER_STARTED,
-    RUNTIME_LSP_SERVER_STARTUP_REJECTED,
-    RUNTIME_LSP_SERVER_STOPPED,
-    RUNTIME_MCP_SERVER_ACQUIRED,
-    RUNTIME_MCP_SERVER_FAILED,
-    RUNTIME_MCP_SERVER_IDLE_CLEANED,
-    RUNTIME_MCP_SERVER_RELEASED,
-    RUNTIME_MCP_SERVER_REUSED,
-    RUNTIME_MCP_SERVER_STARTED,
-    RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_QUESTION_ANSWERED,
-    RUNTIME_QUESTION_REQUESTED,
     RUNTIME_REASONING_DIAGNOSTIC,
-    RUNTIME_REASONING_PART,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     EventEnvelope,
-    runtime_reasoning_part_from_provider_stream,
 )
 from .execution_seams import (
     cache_key_for_effective_config,
@@ -226,6 +237,12 @@ from .execution_seams import (
     provider_model_required_message,
     resolve_runtime_session_routing,
     select_graph_for_effective_config,
+)
+from .hook_preset_metadata import (
+    debug_hook_preset_snapshot,
+    hook_preset_event_payload_from_session_metadata,
+    hook_preset_refs_for_agent,
+    resolved_hook_preset_snapshot_from_session_metadata,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager
@@ -244,18 +261,82 @@ from .permission import (
     evaluate_pattern_permission_rules,
     resolve_permission,
 )
-from .permission_context import RuntimePermissionContextResolver, extract_shell_path_candidates
+from .permission_context import RuntimePermissionContextResolver
+from .permission_path_helpers import (
+    extract_paths_from_patch,
+    shell_command_for_tool_call,
+    shell_path_candidates,
+)
+from .permission_policy import (
+    approval_request_id_from_waiting_response,
+    operation_class_or_none,
+    path_scope_or_none,
+    pending_approval_from_response,
+    pending_question_from_response,
+    permission_decision_or_none,
+    permission_policy_for_session,
+    request_event_and_resolution_state,
+    waiting_request_id_from_response,
+)
 from .provider_context import inspect_provider_context
+from .provider_execution_metadata import (
+    provider_attempt_from_metadata,
+    provider_retry_attempt_from_metadata,
+    run_id_from_session_metadata,
+    session_with_provider_usage_metadata,
+)
+from .provider_metadata import (
+    catalog_metadata_from_payload,
+    contract_metadata_from_catalog,
+    contract_metadata_from_payload,
+    optional_bool,
+    optional_positive_float,
+    optional_positive_int,
+    optional_string,
+    optional_string_tuple,
+    tool_feedback_mode,
+)
 from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
 from .review import WorkspaceReviewService
 from .run_loop import RuntimeRunLoopCoordinator
+from .runtime_debug import (
+    artifact_debug_metadata,
+    current_debug_status,
+    debug_event,
+    debug_failure,
+    debug_session_state_inconsistency,
+    last_tool_summary,
+    operator_guidance,
+    payload_with_artifact_status,
+    prompt_and_tool_results_from_debug_events,
+    prompt_from_events,
+    provider_visible_tool_result_data,
+)
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
+from .session_metadata_helpers import (
+    plan_state_from_metadata,
+    session_with_context_window_payload_metadata,
+    session_with_todo_state,
+)
+from .skill_metadata import (
+    available_runtime_contexts,
+    catalog_skill_context,
+    effective_selected_skill_names,
+    force_loaded_skill_payloads,
+    fresh_request_metadata,
+    loaded_skill_names,
+    persisted_selected_skill_names,
+    request_skill_names_from_metadata,
+    selected_skill_names_for_agent,
+    skill_binding_snapshot_from_agent_capability_snapshot,
+    skill_snapshot_from_metadata,
+    snapshot_to_session_metadata,
+)
 from .skills import (
     SkillExecutionSnapshot,
     SkillRuntimeContext,
-    build_runtime_context,
     build_runtime_contexts,
     build_skill_execution_snapshot,
     snapshot_from_payload,
@@ -274,25 +355,32 @@ from .task import (
     validate_background_task_id,
     validate_continuation_loop_id,
 )
-from .todos import (
-    runtime_todos_from_tool_payload,
-    todo_event_payload,
-    todo_state_payload,
-)
 from .tool_provider import (
     BUILTIN_TOOL_NAMES,
-    BuiltinToolProvider,
     LocalCustomToolProvider,
     scoped_tool_registry_for_agent,
     tool_name_matches_patterns,
 )
+from .tool_registry import ToolRegistry
 from .workflow import WorkflowPreset, load_builtin_workflow_preset_registry
+from .workflow_snapshot import (
+    read_only_workflow_tool_names,
+    workflow_snapshot_from_metadata,
+    workflow_snapshot_selected_preset,
+)
 
 if TYPE_CHECKING:
     from ..tools.lsp import FormatTool
     from .execution_seams import RuntimeGraphSelection, RuntimeSessionRouting
 
 logger = logging.getLogger(__name__)
+
+_ACTIVE_SESSION_COMPAT_EXPORTS = (
+    _ActiveRunAbortSignal,
+    _ActiveRunHandle,
+    _ActiveSessionKey,
+    _ActiveSessionRegistry,
+)
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
 _EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
@@ -322,13 +410,7 @@ _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
 
 
 def _permission_decision_or_none(value: object) -> PermissionDecision | None:
-    if value == "allow":
-        return "allow"
-    if value == "deny":
-        return "deny"
-    if value == "ask":
-        return "ask"
-    return None
+    return permission_decision_or_none(value)
 
 
 def _execution_engine_or_none(value: object) -> ExecutionEngineName | None:
@@ -340,21 +422,11 @@ def _execution_engine_or_none(value: object) -> ExecutionEngineName | None:
 
 
 def _path_scope_or_none(value: object) -> PathScope | None:
-    if value == "workspace":
-        return "workspace"
-    if value == "external":
-        return "external"
-    return None
+    return path_scope_or_none(value)
 
 
 def _operation_class_or_none(value: object) -> OperationClass | None:
-    if value == "read":
-        return "read"
-    if value == "write":
-        return "write"
-    if value == "execute":
-        return "execute"
-    return None
+    return operation_class_or_none(value)
 
 
 _ACP_CONNECTIVITY_ERRORS = frozenset(
@@ -381,70 +453,6 @@ _SKILL_BINDING_SCOPE_KEYS = (
 _AGENT_CAPABILITY_SNAPSHOT_VERSION = 1
 
 
-@dataclass(frozen=True, slots=True)
-class _ActiveSessionKey:
-    workspace: Path
-    session_id: str
-
-
-@dataclass(slots=True)
-class _ActiveRunAbortSignal:
-    _cancelled: bool = False
-    _reason: str | None = None
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancelled
-
-    @property
-    def reason(self) -> str | None:
-        return self._reason
-
-    def set_cancelled(self, value: bool, *, reason: str | None = None) -> None:
-        self._cancelled = value
-        if value:
-            self._reason = reason
-
-
-@dataclass(frozen=True, slots=True)
-class ActiveRunInterruptResult:
-    session_id: str
-    status: Literal["interrupted", "not_active", "stale"]
-    run_id: str | None = None
-    reason: str | None = None
-
-    @property
-    def interrupted(self) -> bool:
-        return self.status == "interrupted"
-
-    def as_payload(self) -> dict[str, object]:
-        return {
-            "session_id": self.session_id,
-            "status": self.status,
-            "interrupted": self.interrupted,
-            "cancelled": self.interrupted,
-            "run_id": self.run_id,
-            "reason": self.reason,
-        }
-
-
-@dataclass(slots=True)
-class _ActiveRunHandle:
-    run_id: str
-    abort_signal: _ActiveRunAbortSignal
-    metadata: dict[str, object]
-
-
-@dataclass(slots=True)
-class _ReasoningCaptureState:
-    part_count: int = 0
-    text_char_count: int = 0
-    limit_diagnostic_emitted: bool = False
-    stream_observed: bool = False
-    reasoning_observed: bool = False
-    output_diagnostic_emitted: bool = False
-
-
 def _provider_target_label(target: ResolvedProviderModel) -> str:
     provider = target.selection.provider
     model = target.selection.model
@@ -457,142 +465,6 @@ def _provider_target_label(target: ResolvedProviderModel) -> str:
     return f"{provider}/{model}"
 
 
-class _ActiveSessionRegistry:
-    def __init__(self) -> None:
-        self._runs: dict[_ActiveSessionKey, dict[str, _ActiveRunHandle]] = {}
-        self._lock = threading.Lock()
-
-    @staticmethod
-    def _latest_handle(handles: dict[str, _ActiveRunHandle]) -> _ActiveRunHandle | None:
-        if not handles:
-            return None
-        return next(reversed(handles.values()))
-
-    def register(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        run_id: str,
-        metadata: dict[str, object],
-    ) -> ProviderAbortSignal:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        abort_signal = _ActiveRunAbortSignal()
-        with self._lock:
-            handles = self._runs.setdefault(key, {})
-            handles[run_id] = _ActiveRunHandle(
-                run_id=run_id,
-                abort_signal=abort_signal,
-                metadata=dict(metadata),
-            )
-        return abort_signal
-
-    def remember_metadata(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        metadata: dict[str, object],
-        run_id: str | None = None,
-    ) -> None:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        with self._lock:
-            handles = self._runs.get(key)
-            if handles is None:
-                return
-            handle = handles.get(run_id) if run_id is not None else self._latest_handle(handles)
-            if handle is None:
-                return
-            handle.metadata = dict(metadata)
-
-    def unregister(self, *, workspace: Path, session_id: str, run_id: str | None = None) -> None:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        with self._lock:
-            handles = self._runs.get(key)
-            if handles is None:
-                return
-            if run_id is None:
-                self._runs.pop(key, None)
-                return
-            handles.pop(run_id, None)
-            if not handles:
-                self._runs.pop(key, None)
-
-    def contains(self, *, workspace: Path, session_id: str) -> bool:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        with self._lock:
-            return key in self._runs
-
-    def metadata(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        with self._lock:
-            handles = self._runs.get(key)
-            handle = self._latest_handle(handles) if handles is not None else None
-            return dict(handle.metadata) if handle is not None else None
-
-    def abort_signal(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        run_id: str,
-    ) -> ProviderAbortSignal | None:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        with self._lock:
-            handles = self._runs.get(key)
-            if handles is None:
-                return None
-            handle = handles.get(run_id)
-            if handle is None:
-                return None
-            return handle.abort_signal
-
-    def interrupt(
-        self,
-        *,
-        workspace: Path,
-        session_id: str,
-        run_id: str | None = None,
-        reason: str | None = None,
-    ) -> ActiveRunInterruptResult:
-        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
-        with self._lock:
-            handles = self._runs.get(key)
-            handle = self._latest_handle(handles) if handles is not None else None
-            if handle is None:
-                return ActiveRunInterruptResult(
-                    session_id=session_id,
-                    status="not_active",
-                    run_id=run_id,
-                    reason=reason,
-                )
-            if run_id is not None:
-                requested_handle = handles.get(run_id) if handles is not None else None
-                if requested_handle is None:
-                    return ActiveRunInterruptResult(
-                        session_id=session_id,
-                        status="stale",
-                        run_id=handle.run_id,
-                        reason=reason,
-                    )
-                handle = requested_handle
-            if run_id is not None and handle.run_id != run_id:
-                return ActiveRunInterruptResult(
-                    session_id=session_id,
-                    status="stale",
-                    run_id=handle.run_id,
-                    reason=reason,
-                )
-            handle.abort_signal.set_cancelled(True, reason=reason)
-            return ActiveRunInterruptResult(
-                session_id=session_id,
-                status="interrupted",
-                run_id=handle.run_id,
-                reason=reason,
-            )
-
-
-_ACTIVE_SESSION_REGISTRY = _ActiveSessionRegistry()
 _DELEGATION_GOVERNANCE = DelegationGovernance()
 
 
@@ -613,78 +485,6 @@ def _coerce_int_like(value: object | None, default: int) -> int:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return default
-
-
-@dataclass(slots=True)
-class ToolRegistry:
-    """Small in-memory registry used by the runtime boundary."""
-
-    tools: dict[str, Tool] = field(default_factory=dict)
-
-    @classmethod
-    def from_tools(cls, tools: Iterable[Tool]) -> ToolRegistry:
-        registry: dict[str, Tool] = {}
-        for tool in tools:
-            name = tool.definition.name
-            if name in registry:
-                raise ValueError(f"duplicate tool definition: {name}")
-            registry[name] = tool
-        return cls(tools=registry)
-
-    @classmethod
-    def with_defaults(
-        cls,
-        *,
-        lsp_tool: Tool | None = None,
-        format_tool: Tool | None = None,
-        mcp_tools: tuple[Tool, ...] = (),
-        hooks_config: RuntimeHooksConfig | None = None,
-        skill_tool: Tool | None = None,
-        task_tool: Tool | None = None,
-        question_tool: Tool | None = None,
-        background_output_tool: Tool | None = None,
-        background_cancel_tool: Tool | None = None,
-        background_retry_tool: Tool | None = None,
-    ) -> ToolRegistry:
-        return cls.from_tools(
-            BuiltinToolProvider(
-                lsp_tool=lsp_tool,
-                format_tool=format_tool,
-                mcp_tools=mcp_tools,
-                hooks_config=hooks_config,
-                skill_tool=skill_tool,
-                task_tool=task_tool,
-                question_tool=question_tool,
-                background_output_tool=background_output_tool,
-                background_cancel_tool=background_cancel_tool,
-                background_retry_tool=background_retry_tool,
-            ).provide_tools()
-        )
-
-    def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(definition_with_guidance(tool.definition) for tool in self.tools.values())
-
-    def resolve(self, tool_name: str) -> Tool:
-        try:
-            return self.tools[tool_name]
-        except KeyError as exc:
-            raise ValueError(f"unknown tool: {tool_name}") from exc
-
-    def filtered(self, patterns: Iterable[str]) -> ToolRegistry:
-        normalized_patterns = tuple(pattern for pattern in patterns if pattern)
-        return ToolRegistry(
-            tools={
-                name: tool
-                for name, tool in self.tools.items()
-                if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)
-            }
-        )
-
-    def excluding(self, tool_names: Iterable[str]) -> ToolRegistry:
-        excluded = frozenset(tool_names)
-        return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if name not in excluded}
-        )
 
 
 @final
@@ -956,30 +756,13 @@ class VoidCodeRuntime:
         blocked_tool: str | None = None,
         error: str | None = None,
     ) -> dict[str, object] | None:
-        existing_plan_state = metadata.get("plan_state")
-        if not isinstance(existing_plan_state, dict):
-            return None
-        plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
-
-        if status is not None:
-            plan_state["status"] = status
-
-        if approval_request_id is not None:
-            plan_state["approval_request_id"] = approval_request_id
-        else:
-            plan_state.pop("approval_request_id", None)
-
-        if blocked_tool is not None:
-            plan_state["blocked_tool"] = blocked_tool
-        else:
-            plan_state.pop("blocked_tool", None)
-
-        if error is not None:
-            plan_state["last_error"] = error
-        else:
-            plan_state.pop("last_error", None)
-
-        return plan_state
+        return plan_state_from_metadata(
+            metadata,
+            status=status,
+            approval_request_id=approval_request_id,
+            blocked_tool=blocked_tool,
+            error=error,
+        )
 
     def _session_with_plan_state(
         self,
@@ -1017,13 +800,7 @@ class VoidCodeRuntime:
     @staticmethod
     def _resequence_event(event: EventEnvelope, *, sequence: int) -> EventEnvelope:
         # Referenced via extracted collaborators.
-        return EventEnvelope(
-            session_id=event.session_id,
-            sequence=sequence,
-            event_type=event.event_type,
-            source=event.source,
-            payload=event.payload,
-        )
+        return resequence_event(event, sequence=sequence)
 
     def _emit_acp_events(
         self,
@@ -1383,29 +1160,11 @@ class VoidCodeRuntime:
     def _workflow_snapshot_from_metadata(
         metadata: dict[str, object] | None,
     ) -> dict[str, object] | None:
-        if metadata is None:
-            return None
-        raw_workflow = metadata.get("workflow")
-        if isinstance(raw_workflow, dict):
-            return dict(cast(dict[str, object], raw_workflow))
-        raw_runtime_config = metadata.get("runtime_config")
-        if isinstance(raw_runtime_config, dict):
-            runtime_config = cast(dict[str, object], raw_runtime_config)
-            runtime_workflow = runtime_config.get("workflow")
-            if isinstance(runtime_workflow, dict):
-                return dict(cast(dict[str, object], runtime_workflow))
-        raw_capability_snapshot = metadata.get("agent_capability_snapshot")
-        if isinstance(raw_capability_snapshot, dict):
-            capability_snapshot = cast(dict[str, object], raw_capability_snapshot)
-            capability_workflow = capability_snapshot.get("workflow")
-            if isinstance(capability_workflow, dict):
-                return dict(cast(dict[str, object], capability_workflow))
-        return None
+        return workflow_snapshot_from_metadata(metadata)
 
     @staticmethod
     def _workflow_snapshot_selected_preset(snapshot: dict[str, object]) -> str | None:
-        selected_preset = snapshot.get("selected_preset")
-        return selected_preset if isinstance(selected_preset, str) and selected_preset else None
+        return workflow_snapshot_selected_preset(snapshot)
 
     def _validate_delegated_workflow_snapshot(
         self,
@@ -1621,7 +1380,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _read_only_workflow_tool_names(registry: ToolRegistry) -> tuple[str, ...]:
-        return tuple(name for name, tool in registry.tools.items() if tool.definition.read_only)
+        return read_only_workflow_tool_names(registry)
 
     def _tool_registry_with_workflow_policy(
         self,
@@ -2987,10 +2746,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
-        if tool_call.tool_name != "shell_exec":
-            return None
-        command = tool_call.arguments.get("command")
-        return command if isinstance(command, str) else None
+        return shell_command_for_tool_call(tool_call)
 
     @staticmethod
     def _operation_class_for_tool(
@@ -3020,21 +2776,11 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _extract_paths_from_patch(patch_text: str) -> tuple[str, ...]:
-        paths: list[str] = []
-        for line in patch_text.splitlines():
-            if line.startswith("*** Add File: "):
-                paths.append(line.removeprefix("*** Add File: ").strip())
-            elif line.startswith("*** Update File: "):
-                paths.append(line.removeprefix("*** Update File: ").strip())
-            elif line.startswith("*** Delete File: "):
-                paths.append(line.removeprefix("*** Delete File: ").strip())
-            elif line.startswith("*** Move to: "):
-                paths.append(line.removeprefix("*** Move to: ").strip())
-        return tuple(path for path in paths if path)
+        return extract_paths_from_patch(patch_text)
 
     @staticmethod
     def _extract_shell_path_candidates(command: str) -> tuple[str, ...]:
-        return extract_shell_path_candidates(command)
+        return shell_path_candidates(command)
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
@@ -3924,30 +3670,7 @@ class VoidCodeRuntime:
     def _contract_metadata_from_catalog(
         catalog_metadata: CatalogProviderModelMetadata,
     ) -> ProviderModelMetadata:
-        return ProviderModelMetadata(
-            context_window=catalog_metadata.context_window,
-            max_input_tokens=catalog_metadata.max_input_tokens,
-            max_output_tokens=catalog_metadata.max_output_tokens,
-            supports_tools=catalog_metadata.supports_tools,
-            supports_vision=catalog_metadata.supports_vision,
-            supports_streaming=catalog_metadata.supports_streaming,
-            supports_reasoning=catalog_metadata.supports_reasoning,
-            supports_json_mode=catalog_metadata.supports_json_mode,
-            cost_per_input_token=catalog_metadata.cost_per_input_token,
-            cost_per_output_token=catalog_metadata.cost_per_output_token,
-            cost_per_cache_read_token=catalog_metadata.cost_per_cache_read_token,
-            cost_per_cache_write_token=catalog_metadata.cost_per_cache_write_token,
-            supports_reasoning_effort=catalog_metadata.supports_reasoning_effort,
-            default_reasoning_effort=catalog_metadata.default_reasoning_effort,
-            supports_reasoning_summary=catalog_metadata.supports_reasoning_summary,
-            supports_thinking_budget=catalog_metadata.supports_thinking_budget,
-            supports_interleaved_reasoning=catalog_metadata.supports_interleaved_reasoning,
-            reasoning_visibility=catalog_metadata.reasoning_visibility,
-            modalities_input=catalog_metadata.modalities_input,
-            modalities_output=catalog_metadata.modalities_output,
-            model_status=catalog_metadata.model_status,
-            tool_feedback_mode=catalog_metadata.tool_feedback_mode,
-        )
+        return contract_metadata_from_catalog(catalog_metadata)
 
     @staticmethod
     def _contract_metadata_for_model_payload(
@@ -4330,104 +4053,39 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _optional_positive_int(value: object) -> int | None:
-        if isinstance(value, bool) or not isinstance(value, int):
-            return None
-        return value if value > 0 else None
+        return optional_positive_int(value)
 
     @staticmethod
     def _optional_bool(value: object) -> bool | None:
-        return value if isinstance(value, bool) else None
+        return optional_bool(value)
 
     @staticmethod
     def _optional_positive_float(value: object) -> float | None:
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            return None
-        normalized = float(value)
-        return normalized if normalized > 0 else None
+        return optional_positive_float(value)
 
     @staticmethod
     def _optional_string(value: object) -> str | None:
-        return value if isinstance(value, str) and value else None
+        return optional_string(value)
 
     @staticmethod
     def _optional_string_tuple(value: object) -> tuple[str, ...] | None:
-        if not isinstance(value, list | tuple):
-            return None
-        raw_items = cast(Iterable[object], value)
-        items = tuple(item for item in raw_items if isinstance(item, str) and item)
-        return items or None
+        return optional_string_tuple(value)
 
     @staticmethod
     def _tool_feedback_mode(
         value: object,
     ) -> Literal["standard", "synthetic_user_message"] | None:
-        if value in {"standard", "synthetic_user_message"}:
-            return cast(Literal["standard", "synthetic_user_message"], value)
-        return None
+        return tool_feedback_mode(value)
 
     @staticmethod
     def _catalog_metadata_from_payload(
         payload: dict[str, object],
     ) -> CatalogProviderModelMetadata:
-        return CatalogProviderModelMetadata(
-            context_window=VoidCodeRuntime._optional_positive_int(payload.get("context_window")),
-            max_input_tokens=VoidCodeRuntime._optional_positive_int(
-                payload.get("max_input_tokens")
-            ),
-            max_output_tokens=VoidCodeRuntime._optional_positive_int(
-                payload.get("max_output_tokens")
-            ),
-            supports_tools=VoidCodeRuntime._optional_bool(payload.get("supports_tools")),
-            supports_vision=VoidCodeRuntime._optional_bool(payload.get("supports_vision")),
-            supports_streaming=VoidCodeRuntime._optional_bool(payload.get("supports_streaming")),
-            supports_reasoning=VoidCodeRuntime._optional_bool(payload.get("supports_reasoning")),
-            supports_json_mode=VoidCodeRuntime._optional_bool(payload.get("supports_json_mode")),
-            cost_per_input_token=VoidCodeRuntime._optional_positive_float(
-                payload.get("cost_per_input_token")
-            ),
-            cost_per_output_token=VoidCodeRuntime._optional_positive_float(
-                payload.get("cost_per_output_token")
-            ),
-            cost_per_cache_read_token=VoidCodeRuntime._optional_positive_float(
-                payload.get("cost_per_cache_read_token")
-            ),
-            cost_per_cache_write_token=VoidCodeRuntime._optional_positive_float(
-                payload.get("cost_per_cache_write_token")
-            ),
-            supports_reasoning_effort=VoidCodeRuntime._optional_bool(
-                payload.get("supports_reasoning_effort")
-            ),
-            default_reasoning_effort=VoidCodeRuntime._optional_string(
-                payload.get("default_reasoning_effort")
-            ),
-            supports_reasoning_summary=VoidCodeRuntime._optional_bool(
-                payload.get("supports_reasoning_summary")
-            ),
-            supports_thinking_budget=VoidCodeRuntime._optional_bool(
-                payload.get("supports_thinking_budget")
-            ),
-            supports_interleaved_reasoning=VoidCodeRuntime._optional_bool(
-                payload.get("supports_interleaved_reasoning")
-            ),
-            reasoning_visibility=VoidCodeRuntime._optional_string(
-                payload.get("reasoning_visibility")
-            ),
-            modalities_input=VoidCodeRuntime._optional_string_tuple(
-                payload.get("modalities_input")
-            ),
-            modalities_output=VoidCodeRuntime._optional_string_tuple(
-                payload.get("modalities_output")
-            ),
-            model_status=VoidCodeRuntime._optional_string(payload.get("model_status")),
-            tool_feedback_mode=VoidCodeRuntime._tool_feedback_mode(
-                payload.get("tool_feedback_mode")
-            ),
-        )
+        return catalog_metadata_from_payload(payload)
 
     @staticmethod
     def _contract_metadata_from_payload(payload: dict[str, object]) -> ProviderModelMetadata:
-        catalog_metadata = VoidCodeRuntime._catalog_metadata_from_payload(payload)
-        return VoidCodeRuntime._contract_metadata_from_catalog(catalog_metadata)
+        return contract_metadata_from_payload(payload)
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []
@@ -4848,14 +4506,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _debug_event(event: EventEnvelope | None) -> RuntimeSessionDebugEvent | None:
-        if event is None:
-            return None
-        return RuntimeSessionDebugEvent(
-            sequence=event.sequence,
-            event_type=event.event_type,
-            source=event.source,
-            payload=dict(event.payload),
-        )
+        return debug_event(event)
 
     @staticmethod
     def _current_debug_status(
@@ -4865,15 +4516,12 @@ class VoidCodeRuntime:
         pending_approval: PendingApproval | None,
         pending_question: PendingQuestion | None,
     ) -> str:
-        if active and result.session.status == "running":
-            return "running"
-        if pending_approval is not None:
-            return "waiting_for_approval"
-        if pending_question is not None:
-            return "waiting_for_question"
-        if active and result.session.status == "waiting":
-            return "waiting_active"
-        return result.session.status
+        return current_debug_status(
+            result=result,
+            active=active,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+        )
 
     @staticmethod
     def _debug_failure(
@@ -4886,53 +4534,15 @@ class VoidCodeRuntime:
         resume_checkpoint: dict[str, object] | None,
         persistence_error: str | None,
     ) -> RuntimeSessionDebugFailure | None:
-        if persistence_error is not None:
-            return RuntimeSessionDebugFailure(
-                classification="session_state_inconsistency",
-                message=persistence_error,
-            )
-        if (
-            inconsistency_message := VoidCodeRuntime._debug_session_state_inconsistency(
-                result=result,
-                pending_approval=pending_approval,
-                pending_question=pending_question,
-                resume_checkpoint=resume_checkpoint,
-            )
-        ) is not None:
-            return RuntimeSessionDebugFailure(
-                classification="session_state_inconsistency",
-                message=inconsistency_message,
-            )
-        message = None
-        classification = "runtime_internal_failure"
-        if last_failure_event is not None:
-            provider_error_kind = last_failure_event.payload.get("provider_error_kind")
-            if isinstance(provider_error_kind, str) and provider_error_kind:
-                classification = "provider_failure"
-            raw_error = last_failure_event.payload.get("error")
-            if raw_error is not None:
-                message = str(raw_error)
-        elif result.error is not None:
-            message = result.error
-        if message is None:
-            if last_tool is not None and last_tool.status == "error":
-                return RuntimeSessionDebugFailure(
-                    classification="tool_execution_failure",
-                    message=last_tool.summary,
-                )
-            return None
-        lowered = message.lower()
-        if "permission denied" in lowered:
-            classification = "approval_denied"
-        elif pending_approval is not None or "approval" in lowered or "question" in lowered:
-            classification = "approval_interruption"
-        elif "cancel" in lowered:
-            classification = "cancelled"
-        elif last_tool is not None and last_tool.status == "error":
-            classification = "tool_execution_failure"
-        elif "tool" in lowered:
-            classification = "tool_execution_failure"
-        return RuntimeSessionDebugFailure(classification=classification, message=message)
+        return debug_failure(
+            result=result,
+            last_failure_event=last_failure_event,
+            last_tool=last_tool,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+            resume_checkpoint=resume_checkpoint,
+            persistence_error=persistence_error,
+        )
 
     @staticmethod
     def _debug_session_state_inconsistency(
@@ -4942,89 +4552,25 @@ class VoidCodeRuntime:
         pending_question: PendingQuestion | None,
         resume_checkpoint: dict[str, object] | None,
     ) -> str | None:
-        checkpoint_kind = (
-            cast(str, resume_checkpoint.get("kind"))
-            if isinstance(resume_checkpoint, dict)
-            and isinstance(resume_checkpoint.get("kind"), str)
-            else None
+        return debug_session_state_inconsistency(
+            result=result,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+            resume_checkpoint=resume_checkpoint,
         )
-        if result.session.status == "waiting":
-            if pending_approval is None and pending_question is None:
-                return "waiting session is missing pending approval/question state"
-            if pending_approval is not None and checkpoint_kind != "approval_wait":
-                return "pending approval does not match the persisted resume checkpoint"
-            if pending_question is not None and checkpoint_kind != "question_wait":
-                return "pending question does not match the persisted resume checkpoint"
-        if result.session.status in {"completed", "failed"}:
-            if checkpoint_kind not in {None, "provider_failure_retryable", "terminal"}:
-                return "terminal session resume checkpoint does not match persisted terminal state"
-            if pending_approval is not None or pending_question is not None:
-                return "terminal session still has pending approval/question state"
-        return None
 
     @staticmethod
     def _last_tool_summary(result: RuntimeSessionResult) -> RuntimeSessionDebugToolSummary | None:
-        for event in reversed(result.transcript):
-            if event.event_type != "runtime.tool_completed":
-                continue
-            payload = event.payload
-            tool_name = payload.get("tool")
-            if not isinstance(tool_name, str) or not tool_name:
-                continue
-            raw_status = payload.get("status")
-            status = raw_status if isinstance(raw_status, str) and raw_status else "ok"
-            if status not in {"ok", "error"}:
-                status = "error" if payload.get("error") is not None else "ok"
-            if status == "error":
-                summary_source = payload.get("error_summary") or payload.get("error")
-            else:
-                summary_source = payload.get("content")
-            summary = str(summary_source).strip() if summary_source is not None else tool_name
-            if len(summary) > 160:
-                summary = summary[:157] + "..."
-            arguments = payload.get("arguments")
-            artifact = VoidCodeRuntime._artifact_debug_metadata(payload)
-            return RuntimeSessionDebugToolSummary(
-                tool_name=tool_name,
-                status=status,
-                summary=summary,
-                arguments=(
-                    dict(cast(dict[str, object], arguments)) if isinstance(arguments, dict) else {}
-                ),
-                artifact=artifact,
-                sequence=event.sequence,
-            )
-        return None
+        return last_tool_summary(result)
 
     @staticmethod
     def _artifact_debug_metadata(payload: dict[str, object]) -> dict[str, object]:
-        artifact = payload.get("artifact")
-        if not isinstance(artifact, dict):
-            return {}
-        artifact_metadata = dict(cast(dict[str, object], artifact))
-        read_result = read_tool_output_artifact(artifact_metadata, offset=0, limit=0)
-        status = read_result.get("status")
-        if isinstance(status, str):
-            artifact_metadata["status"] = status
-        artifact_metadata["artifact_missing"] = bool(read_result.get("artifact_missing"))
-        if "content" in artifact_metadata:
-            artifact_metadata.pop("content")
-        return artifact_metadata
+        return artifact_debug_metadata(payload)
 
     @classmethod
     def _payload_with_artifact_status(cls, payload: dict[str, object]) -> dict[str, object]:
-        artifact = payload.get("artifact")
-        if not isinstance(artifact, dict):
-            return dict(payload)
-        artifact_metadata = cls._artifact_debug_metadata(payload)
-        return {
-            **payload,
-            "artifact": artifact_metadata,
-            "artifact_status": artifact_metadata.get("status", payload.get("artifact_status")),
-            "artifact_missing": artifact_metadata.get(
-                "artifact_missing", payload.get("artifact_missing")
-            ),
-        }
+        _ = cls
+        return payload_with_artifact_status(payload)
 
     def _provider_context_debug_snapshot(
         self,
@@ -5107,69 +4653,11 @@ class VoidCodeRuntime:
     def _prompt_and_tool_results_from_debug_events(
         events: tuple[EventEnvelope, ...],
     ) -> tuple[str, list[ToolResult]]:
-        prompt = VoidCodeRuntime._prompt_from_events(events)
-        tool_results: list[ToolResult] = []
-        for event in events:
-            if event.event_type != "runtime.tool_completed":
-                continue
-            error_value = event.payload.get("error")
-            raw_content = event.payload.get("content")
-            is_error = error_value is not None
-            tool_results.append(
-                ToolResult(
-                    tool_name=str(event.payload.get("tool", "unknown")),
-                    status="error" if is_error else "ok",
-                    content=str(raw_content) if raw_content is not None and not is_error else None,
-                    data=VoidCodeRuntime._provider_visible_tool_result_data(event.payload),
-                    error=str(error_value) if is_error else None,
-                    truncated=event.payload.get("truncated") is True,
-                    partial=event.payload.get("partial") is True,
-                    reference=(
-                        cast(str, event.payload.get("reference"))
-                        if isinstance(event.payload.get("reference"), str)
-                        else None
-                    ),
-                    error_kind=(
-                        cast(str, event.payload.get("error_kind"))
-                        if isinstance(event.payload.get("error_kind"), str) and is_error
-                        else None
-                    ),
-                    error_summary=(
-                        cast(str, event.payload.get("error_summary"))
-                        if isinstance(event.payload.get("error_summary"), str) and is_error
-                        else None
-                    ),
-                    error_details=(
-                        cast(dict[str, object], event.payload.get("error_details"))
-                        if isinstance(event.payload.get("error_details"), dict) and is_error
-                        else None
-                    ),
-                    retry_guidance=(
-                        cast(str, event.payload.get("retry_guidance"))
-                        if isinstance(event.payload.get("retry_guidance"), str) and is_error
-                        else None
-                    ),
-                )
-            )
-        return prompt, tool_results
+        return prompt_and_tool_results_from_debug_events(events)
 
     @staticmethod
     def _provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, object]:
-        runtime_envelope_keys = {
-            "content",
-            "display",
-            "error",
-            "error_details",
-            "error_summary",
-            "retry_guidance",
-            "status",
-            "tool",
-            "tool_status",
-        }
-        payload = VoidCodeRuntime._payload_with_artifact_status(payload)
-        return sanitize_tool_result_data(
-            {key: value for key, value in payload.items() if key not in runtime_envelope_keys}
-        )
+        return provider_visible_tool_result_data(payload)
 
     def _debug_skill_prompt_context(self, metadata: dict[str, object]) -> str:
         snapshot = self._skill_snapshot_from_metadata(metadata)
@@ -5188,44 +4676,15 @@ class VoidCodeRuntime:
         terminal: bool,
         failure: RuntimeSessionDebugFailure | None,
     ) -> tuple[str, str]:
-        if pending_approval is not None:
-            return (
-                "resolve_approval",
-                "Resolve approval request "
-                f"{pending_approval.request_id} for {pending_approval.tool_name}.",
-            )
-        if pending_question is not None:
-            return (
-                "answer_question",
-                f"Answer pending question request {pending_question.request_id} before resuming.",
-            )
-        if failure is not None and failure.classification == "session_state_inconsistency":
-            return (
-                "inspect_failure",
-                "Inspect persisted session state before attempting resume or replay.",
-            )
-        if active:
-            return ("wait", "Session is currently active in the runtime.")
-        if terminal and failure is not None:
-            if failure.classification == "provider_failure" and current_status == "failed":
-                if not resumable:
-                    return (
-                        "inspect_failure",
-                        f"Inspect {failure.classification} and rerun if needed.",
-                    )
-                return (
-                    "resume_provider_failure",
-                    "Resume this session to continue from the provider failure checkpoint.",
-                )
-            return ("inspect_failure", f"Inspect {failure.classification} and rerun if needed.")
-        if terminal:
-            return ("replay", "Session is terminal; replay or inspect transcript if needed.")
-        if current_status == "waiting_active":
-            return (
-                "inspect_wait",
-                "Session is waiting but still marked active; inspect runtime ownership.",
-            )
-        return ("inspect_session", "Inspect the persisted session state.")
+        return operator_guidance(
+            current_status=current_status,
+            pending_approval=pending_approval,
+            pending_question=pending_question,
+            active=active,
+            resumable=resumable,
+            terminal=terminal,
+            failure=failure,
+        )
 
     def _active_only_session_debug_snapshot(
         self,
@@ -5314,12 +4773,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
-        runtime_state = metadata.get("runtime_state")
-        if not isinstance(runtime_state, dict):
-            return None
-        runtime_state_dict = cast(dict[str, object], runtime_state)
-        run_id = runtime_state_dict.get("run_id")
-        return run_id if isinstance(run_id, str) and run_id else None
+        return run_id_from_session_metadata(metadata)
 
     def resume(
         self,
@@ -5569,63 +5023,7 @@ class VoidCodeRuntime:
             self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
-        approval_event = next(
-            (
-                event
-                for event in reversed(response.events)
-                if event.event_type == "runtime.approval_requested"
-            ),
-            None,
-        )
-        if approval_event is None:
-            raise ValueError("waiting runtime response must include an approval event")
-        payload = approval_event.payload
-        raw_policy = cast(dict[str, object], payload.get("policy", {}))
-        raw_policy_mode = raw_policy.get("mode", "ask")
-        policy_mode = _permission_decision_or_none(raw_policy_mode)
-        if policy_mode is None:
-            raise ValueError(f"invalid approval policy mode: {raw_policy_mode}")
-        path_scope = payload.get("path_scope")
-        operation_class = payload.get("operation_class")
-        return PendingApproval(
-            request_id=str(payload["request_id"]),
-            tool_name=str(payload["tool"]),
-            arguments=cast(dict[str, object], payload.get("arguments", {})),
-            target_summary=str(payload.get("target_summary", "")),
-            reason=str(payload.get("reason", "")),
-            policy_mode=policy_mode,
-            request_event_sequence=approval_event.sequence,
-            owner_session_id=(
-                str(payload["owner_session_id"])
-                if payload.get("owner_session_id") is not None
-                else None
-            ),
-            owner_parent_session_id=(
-                str(payload["owner_parent_session_id"])
-                if payload.get("owner_parent_session_id") is not None
-                else None
-            ),
-            delegated_task_id=(
-                str(payload["delegated_task_id"])
-                if payload.get("delegated_task_id") is not None
-                else None
-            ),
-            path_scope=_path_scope_or_none(path_scope),
-            operation_class=_operation_class_or_none(operation_class),
-            canonical_path=(
-                str(payload["canonical_path"])
-                if payload.get("canonical_path") is not None
-                else None
-            ),
-            matched_rule=(
-                str(payload["matched_rule"]) if payload.get("matched_rule") is not None else None
-            ),
-            policy_surface=(
-                str(payload["policy_surface"])
-                if payload.get("policy_surface") is not None
-                else None
-            ),
-        )
+        return pending_approval_from_response(response)
 
     @staticmethod
     def _request_event_and_resolution_state(
@@ -5634,23 +5032,11 @@ class VoidCodeRuntime:
         request_kind: Literal["approval", "question"],
         request_id: str,
     ) -> tuple[EventEnvelope | None, bool]:
-        request_event_type = (
-            RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
+        return request_event_and_resolution_state(
+            events,
+            request_kind=request_kind,
+            request_id=request_id,
         )
-        resolution_event_type = (
-            "runtime.approval_resolved" if request_kind == "approval" else RUNTIME_QUESTION_ANSWERED
-        )
-        request_event: EventEnvelope | None = None
-        resolved = False
-        for event in events:
-            event_request_id = event.payload.get("request_id")
-            if event_request_id != request_id:
-                continue
-            if event.event_type == request_event_type:
-                request_event = event
-            elif event.event_type == resolution_event_type:
-                resolved = True
-        return request_event, resolved
 
     def _validate_pending_approval_matches_recorded_request(
         self,
@@ -5810,30 +5196,7 @@ class VoidCodeRuntime:
             )
 
     def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
-        answered_request_ids = {
-            str(event.payload.get("request_id"))
-            for event in response.events
-            if event.event_type == RUNTIME_QUESTION_ANSWERED and event.payload.get("request_id")
-        }
-        for event in reversed(response.events):
-            if event.event_type != RUNTIME_QUESTION_REQUESTED:
-                continue
-            payload = event.payload
-            request_id = str(payload["request_id"])
-            if request_id in answered_request_ids:
-                continue
-            raw_questions = payload.get("questions")
-            if not isinstance(raw_questions, list):
-                raise ValueError("waiting runtime response must include question prompts")
-            return PendingQuestion(
-                request_id=request_id,
-                tool_name=str(payload.get("tool", QuestionTool.definition.name)),
-                arguments={},
-                prompts=QuestionTool.parse_prompts(
-                    {"questions": cast(list[object], raw_questions)}
-                ),
-            )
-        return None
+        return pending_question_from_response(response)
 
     def _resume_pending_approval_stream(
         self,
@@ -6315,23 +5678,16 @@ class VoidCodeRuntime:
     @staticmethod
     def _prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:
         # Referenced via extracted collaborators.
-        if not events:
-            return ""
-        prompt = events[0].payload.get("prompt")
-        if isinstance(prompt, str):
-            return prompt
-        return ""
+        return prompt_from_events(events)
 
     @staticmethod
     def _provider_attempt_from_metadata(metadata: dict[str, object]) -> int:
         # Referenced via extracted collaborators.
-        raw_provider_attempt = metadata.get("provider_attempt", 0)
-        return raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
+        return provider_attempt_from_metadata(metadata)
 
     @staticmethod
     def _provider_retry_attempt_from_metadata(metadata: dict[str, object]) -> int:
-        raw_provider_retry_attempt = metadata.get("provider_retry_attempt", 0)
-        return raw_provider_retry_attempt if isinstance(raw_provider_retry_attempt, int) else 0
+        return provider_retry_attempt_from_metadata(metadata)
 
     def _provider_transient_retry_config(
         self,
@@ -6378,33 +5734,7 @@ class VoidCodeRuntime:
     def _context_window_config_from_policy(
         policy: ContextWindowPolicy | None,
     ) -> RuntimeContextWindowConfig | None:
-        if policy is None:
-            return None
-        return RuntimeContextWindowConfig(
-            auto_compaction=policy.auto_compaction,
-            max_tool_results=policy.max_tool_results,
-            max_tool_result_tokens=policy.max_tool_result_tokens,
-            max_context_ratio=policy.max_context_ratio,
-            model_context_window_tokens=policy.model_context_window_tokens,
-            reserved_output_tokens=policy.reserved_output_tokens,
-            minimum_retained_tool_results=policy.minimum_retained_tool_results,
-            recent_tool_result_count=policy.recent_tool_result_count,
-            recent_tool_result_tokens=policy.recent_tool_result_tokens,
-            default_tool_result_tokens=policy.default_tool_result_tokens,
-            per_tool_result_tokens=dict(policy.per_tool_result_tokens),
-            tokenizer_model=policy.tokenizer_model,
-            continuity_preview_items=policy.continuity_preview_items,
-            continuity_preview_chars=policy.continuity_preview_chars,
-            context_pressure_threshold=policy.context_pressure_threshold,
-            context_pressure_cooldown_steps=policy.context_pressure_cooldown_steps,
-            continuity_distillation_enabled=policy.continuity_distillation_enabled,
-            continuity_distillation_max_input_items=(
-                policy.continuity_distillation_max_input_items
-            ),
-            continuity_distillation_max_input_chars=(
-                policy.continuity_distillation_max_input_chars
-            ),
-        )
+        return context_window_config_from_policy(policy)
 
     @staticmethod
     def _context_window_policy_from_config(
@@ -6413,43 +5743,10 @@ class VoidCodeRuntime:
         resolved_provider: ResolvedProviderConfig | None,
         provider_attempt: int = 0,
     ) -> ContextWindowPolicy:
-        if config is None:
-            return ContextWindowPolicy()
-        model_context_window_tokens = config.model_context_window_tokens
-        if model_context_window_tokens is None and resolved_provider is not None:
-            provider_target = resolved_provider.target_chain.target_at(provider_attempt)
-            if provider_target is None:
-                provider_target = resolved_provider.active_target
-            provider = provider_target.selection.provider
-            model = provider_target.selection.model
-            if provider is not None and model is not None:
-                metadata = infer_model_metadata(provider, model)
-                if metadata is not None:
-                    model_context_window_tokens = metadata.context_window
-        return ContextWindowPolicy(
-            auto_compaction=config.auto_compaction,
-            max_tool_results=config.max_tool_results,
-            max_tool_result_tokens=config.max_tool_result_tokens,
-            max_context_ratio=config.max_context_ratio,
-            model_context_window_tokens=model_context_window_tokens,
-            reserved_output_tokens=config.reserved_output_tokens,
-            minimum_retained_tool_results=config.minimum_retained_tool_results,
-            recent_tool_result_count=config.recent_tool_result_count,
-            recent_tool_result_tokens=config.recent_tool_result_tokens,
-            default_tool_result_tokens=config.default_tool_result_tokens,
-            per_tool_result_tokens=dict(config.per_tool_result_tokens),
-            tokenizer_model=config.tokenizer_model,
-            continuity_preview_items=config.continuity_preview_items,
-            continuity_preview_chars=config.continuity_preview_chars,
-            context_pressure_threshold=config.context_pressure_threshold,
-            context_pressure_cooldown_steps=config.context_pressure_cooldown_steps,
-            continuity_distillation_enabled=config.continuity_distillation_enabled,
-            continuity_distillation_max_input_items=(
-                config.continuity_distillation_max_input_items
-            ),
-            continuity_distillation_max_input_chars=(
-                config.continuity_distillation_max_input_chars
-            ),
+        return context_window_policy_from_config(
+            config,
+            resolved_provider=resolved_provider,
+            provider_attempt=provider_attempt,
         )
 
     def _prepare_provider_context_window(
@@ -6718,54 +6015,7 @@ class VoidCodeRuntime:
     def _session_with_context_window_payload_metadata(
         session: SessionState, context_window_payload: dict[str, object]
     ) -> SessionState:
-        # Referenced via extracted run-loop collaborator.
-        raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = (
-            dict(cast(dict[str, object], raw_runtime_state))
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
-        continuity_payload_raw = context_window_payload.get("continuity_state")
-        continuity_payload = (
-            cast(dict[str, object], continuity_payload_raw)
-            if isinstance(continuity_payload_raw, dict)
-            else None
-        )
-        summary_anchor = context_window_payload.get("summary_anchor")
-        summary_source = context_window_payload.get("summary_source")
-        continuity_summary_payload = (
-            {
-                "anchor": summary_anchor,
-                "source": summary_source,
-                "distillation_source": (
-                    continuity_payload.get("distillation_source", "deterministic")
-                    if continuity_payload is not None
-                    else "deterministic"
-                ),
-            }
-            if isinstance(summary_anchor, str)
-            else None
-        )
-        return SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={
-                **session.metadata,
-                "context_window": context_window_payload,
-                "runtime_state": {
-                    **runtime_state,
-                    **(
-                        {"continuity": continuity_payload} if continuity_payload is not None else {}
-                    ),
-                    **(
-                        {"continuity_summary": continuity_summary_payload}
-                        if continuity_summary_payload is not None
-                        else {}
-                    ),
-                },
-            },
-        )
+        return session_with_context_window_payload_metadata(session, context_window_payload)
 
     @staticmethod
     def _session_with_todo_state(
@@ -6774,79 +6024,13 @@ class VoidCodeRuntime:
         raw_todos: object,
         revision: int,
     ) -> tuple[SessionState, dict[str, object]]:
-        raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = (
-            dict(cast(dict[str, object], raw_runtime_state))
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
-        todos = runtime_todos_from_tool_payload(raw_todos, updated_at=revision)
-        state_payload = todo_state_payload(todos, revision=revision)
-        runtime_state["todos"] = state_payload
-        next_session = SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={
-                **session.metadata,
-                "runtime_state": runtime_state,
-            },
-        )
-        event_payload = todo_event_payload(
-            session_id=session.session.id,
-            todos=todos,
-            revision=revision,
-        )
-        return next_session, event_payload
+        return session_with_todo_state(session, raw_todos=raw_todos, revision=revision)
 
     @staticmethod
     def _session_with_provider_usage_metadata(
         session: SessionState, usage: ProviderTokenUsage | None
     ) -> SessionState:
-        if usage is None:
-            return session
-        usage_payload = usage.metadata_payload()
-        raw_provider_usage = session.metadata.get("provider_usage")
-        provider_usage = (
-            dict(cast(dict[str, object], raw_provider_usage))
-            if isinstance(raw_provider_usage, dict)
-            else {}
-        )
-        raw_cumulative = provider_usage.get("cumulative")
-        cumulative = (
-            dict(cast(dict[str, object], raw_cumulative))
-            if isinstance(raw_cumulative, dict)
-            else {}
-        )
-
-        def _int_value(key: str) -> int:
-            raw_value = cumulative.get(key, 0)
-            if isinstance(raw_value, int) and not isinstance(raw_value, bool):
-                return raw_value
-            return 0
-
-        cumulative_payload = {key: _int_value(key) + value for key, value in usage_payload.items()}
-        raw_turn_count = provider_usage.get("turn_count", 0)
-        turn_count = 0
-        if isinstance(raw_turn_count, int) and not isinstance(raw_turn_count, bool):
-            turn_count = raw_turn_count
-        current_run_id = VoidCodeRuntime._run_id_from_session_metadata(session.metadata)
-        current_provider_attempt = VoidCodeRuntime._provider_attempt_from_metadata(session.metadata)
-        return SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={
-                **session.metadata,
-                "provider_usage": {
-                    "latest": usage_payload,
-                    "latest_run_id": current_run_id,
-                    "latest_provider_attempt": current_provider_attempt,
-                    "cumulative": cumulative_payload,
-                    "turn_count": turn_count + 1,
-                },
-            },
-        )
+        return session_with_provider_usage_metadata(session, usage)
 
     @staticmethod
     def _reasoning_capture_state() -> _ReasoningCaptureState:
@@ -6905,70 +6089,16 @@ class VoidCodeRuntime:
         reasoning_capture_state: _ReasoningCaptureState | None = None,
     ) -> tuple[EventEnvelope, ...]:
         # Referenced via extracted run-loop collaborator.
-        envelopes: list[EventEnvelope] = []
-        capture_state = reasoning_capture_state or _ReasoningCaptureState()
-        for event in events:
-            event_type = event.event_type
-            source = event.source
-            payload = event.payload
-            reasoning_payload = None
-            if event.event_type == "graph.provider_stream":
-                capture_state.stream_observed = True
-                reasoning_payload = runtime_reasoning_part_from_provider_stream(event.payload)
-            if reasoning_payload is not None:
-                capture_state.reasoning_observed = True
-                text_char_count = reasoning_payload.get("text_char_count")
-                bounded_text = reasoning_payload.get("text")
-                next_text_count = capture_state.text_char_count + (
-                    len(bounded_text) if isinstance(bounded_text, str) else 0
-                )
-                if (
-                    capture_state.part_count >= REASONING_SESSION_PART_LIMIT
-                    or next_text_count > REASONING_SESSION_TEXT_LIMIT_CHARS
-                ):
-                    event_type = RUNTIME_REASONING_DIAGNOSTIC
-                    source = "runtime"
-                    diagnostic_payload: dict[str, object] = {
-                        "severity": "warning",
-                        "category": "reasoning_capture_limit",
-                        "reason": "session_reasoning_capture_limit_exceeded",
-                        "captured_part_count": capture_state.part_count,
-                        "captured_text_char_count": capture_state.text_char_count,
-                        "omitted_text_char_count": text_char_count
-                        if isinstance(text_char_count, int)
-                        else None,
-                    }
-                    payload = diagnostic_payload
-                    if capture_state.limit_diagnostic_emitted:
-                        continue
-                    capture_state.limit_diagnostic_emitted = True
-                else:
-                    event_type = RUNTIME_REASONING_PART
-                    source = "runtime"
-                    payload = reasoning_payload
-                    capture_state.part_count += 1
-                    capture_state.text_char_count = next_text_count
-            envelopes.append(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=start_sequence + len(envelopes),
-                    event_type=event_type,
-                    source=source,
-                    payload=payload,
-                )
-            )
-        return tuple(envelopes)
+        return renumber_events(
+            events,
+            session_id=session_id,
+            start_sequence=start_sequence,
+            reasoning_capture_state=reasoning_capture_state,
+        )
 
     @staticmethod
     def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
-        # Builtin skills are catalog resources: they stay resolvable through the
-        # skill tool and selected workflow refs, but they are not workspace skills
-        # that were actively loaded for an ordinary run.
-        return sorted(
-            skill_name
-            for skill_name, skill in skill_registry.skills.items()
-            if skill.origin != "builtin"
-        )
+        return loaded_skill_names(skill_registry)
 
     def _applied_skill_contexts(
         self,
@@ -7000,17 +6130,7 @@ class VoidCodeRuntime:
         *,
         key: str,
     ) -> tuple[str, ...] | None:
-        if metadata is None or key not in metadata:
-            return None
-        raw_skills = metadata[key]
-        if not isinstance(raw_skills, list):
-            raise ValueError(f"request metadata '{key}' must be a list of skill names")
-        parsed_names: list[str] = []
-        for index, raw_name in enumerate(cast(list[object], raw_skills)):
-            if not isinstance(raw_name, str) or not raw_name:
-                raise ValueError(f"request metadata '{key}[{index}]' must be a non-empty string")
-            parsed_names.append(raw_name)
-        return tuple(parsed_names)
+        return request_skill_names_from_metadata(metadata, key=key)
 
     def _build_skill_snapshot(
         self,
@@ -7072,14 +6192,7 @@ class VoidCodeRuntime:
         selected_skill_names: tuple[str, ...] | None,
         force_load_skill_names: tuple[str, ...] | None,
     ) -> tuple[str, ...] | None:
-        if force_load_skill_names is None:
-            return selected_skill_names
-
-        merged_names: list[str] = []
-        for skill_name in (*(selected_skill_names or ()), *force_load_skill_names):
-            if skill_name not in merged_names:
-                merged_names.append(skill_name)
-        return tuple(merged_names)
+        return effective_selected_skill_names(selected_skill_names, force_load_skill_names)
 
     def _skill_binding_snapshot(
         self,
@@ -7110,38 +6223,7 @@ class VoidCodeRuntime:
     def _skill_binding_snapshot_from_agent_capability_snapshot(
         capability_snapshot: dict[str, object],
     ) -> dict[str, object]:
-        snapshot: dict[str, object] = {}
-        execution = capability_snapshot.get("execution")
-        if isinstance(execution, dict):
-            execution_payload = cast(dict[str, object], execution)
-            execution_key_map = {
-                "execution_engine": "execution_engine",
-                "model": "model",
-                "fallback_models": "fallback_models",
-                "resolved_provider": "resolved_provider",
-                "reasoning_effort": "reasoning_effort",
-            }
-            for source_key, target_key in execution_key_map.items():
-                if source_key in execution_payload:
-                    snapshot[target_key] = execution_payload[source_key]
-        agent = capability_snapshot.get("agent")
-        if isinstance(agent, dict):
-            snapshot["agent"] = cast(dict[str, object], agent)
-        runtime = capability_snapshot.get("runtime")
-        if isinstance(runtime, dict):
-            runtime_payload = cast(dict[str, object], runtime)
-            for key in (
-                "approval_mode",
-                "max_steps",
-                "tool_timeout_seconds",
-                "permission",
-            ):
-                if key in runtime_payload:
-                    snapshot[key] = runtime_payload[key]
-        mcp = capability_snapshot.get("mcp")
-        if isinstance(mcp, dict):
-            snapshot["mcp"] = cast(dict[str, object], mcp)
-        return snapshot
+        return skill_binding_snapshot_from_agent_capability_snapshot(capability_snapshot)
 
     def _agent_capability_snapshot(
         self,
@@ -7381,11 +6463,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
-        return {
-            "selected_skill_names": list(snapshot.selected_skill_names),
-            "applied_skills": [payload["name"] for payload in snapshot.applied_skill_payloads],
-            "skill_snapshot": snapshot_payload(snapshot),
-        }
+        return snapshot_to_session_metadata(snapshot)
 
     def _build_hook_preset_snapshot(
         self,
@@ -7396,11 +6474,7 @@ class VoidCodeRuntime:
 
     @staticmethod
     def _hook_preset_refs_for_agent(agent: RuntimeAgentConfig | None) -> tuple[str, ...]:
-        if agent is None:
-            return ()
-        if agent.hook_refs:
-            return agent.hook_refs
-        return agent.manifest_hook_refs
+        return hook_preset_refs_for_agent(agent)
 
     def _hook_preset_context_from_metadata(
         self,
@@ -7428,25 +6502,13 @@ class VoidCodeRuntime:
     def _force_loaded_skill_payloads(
         snapshot: SkillExecutionSnapshot,
     ) -> tuple[dict[str, object], ...]:
-        payloads: list[dict[str, object]] = []
-        for payload in snapshot.applied_skill_payloads:
-            payloads.append(
-                {
-                    "name": payload.get("name"),
-                    "source": "force_load",
-                    "source_path": payload.get("source_path"),
-                }
-            )
-        return tuple(payloads)
+        return force_loaded_skill_payloads(snapshot)
 
     def _skill_snapshot_from_metadata(
         self,
         metadata: dict[str, object],
     ) -> SkillExecutionSnapshot | None:
-        raw_snapshot = metadata.get("skill_snapshot")
-        if isinstance(raw_snapshot, dict):
-            return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
-        return None
+        return skill_snapshot_from_metadata(metadata)
 
     @staticmethod
     def _selected_skill_names_for_agent(
@@ -7455,63 +6517,28 @@ class VoidCodeRuntime:
         request_skill_names: tuple[str, ...] | None,
         persisted_selected_skill_names: tuple[str, ...] | None = None,
     ) -> tuple[str, ...] | None:
-        manifest_skill_refs: tuple[str, ...] = ()
-        persisted_selected_explicit = persisted_selected_skill_names is not None
-        if persisted_selected_skill_names is not None:
-            manifest_skill_refs = persisted_selected_skill_names
-        if agent is not None:
-            if not persisted_selected_explicit and not manifest_skill_refs:
-                manifest_skill_refs = agent.manifest_skill_refs
-
-        if request_skill_names is None:
-            if persisted_selected_explicit:
-                return manifest_skill_refs
-            return manifest_skill_refs if manifest_skill_refs else None
-
-        selected_names: list[str] = []
-        for skill_name in (*manifest_skill_refs, *request_skill_names):
-            if skill_name not in selected_names:
-                selected_names.append(skill_name)
-        return tuple(selected_names)
+        return selected_skill_names_for_agent(
+            agent,
+            request_skill_names=request_skill_names,
+            persisted_selected_skill_names=persisted_selected_skill_names,
+        )
 
     @staticmethod
     def _fresh_request_metadata(metadata: RuntimeRequestMetadataPayload) -> dict[str, object]:
-        sanitized = dict(metadata)
-        sanitized.pop("applied_skills", None)
-        sanitized.pop("applied_skill_payloads", None)
-        sanitized.pop("selected_skill_names", None)
-        sanitized.pop("skill_snapshot", None)
-        return sanitized
+        return fresh_request_metadata(cast(dict[str, object], metadata))
 
     @staticmethod
     def _persisted_selected_skill_names(
         metadata: dict[str, object],
     ) -> tuple[str, ...] | None:
-        if "selected_skill_names" not in metadata:
-            return None
-        raw_skill_names = metadata["selected_skill_names"]
-        if not isinstance(raw_skill_names, list):
-            raise ValueError("persisted selected skill names must be a list")
-
-        selected_skill_names: list[str] = []
-        for index, raw_name in enumerate(cast(list[object], raw_skill_names)):
-            if not isinstance(raw_name, str):
-                raise ValueError(f"persisted selected skill names[{index}] must be a string")
-            selected_skill_names.append(raw_name)
-        return tuple(selected_skill_names)
+        return persisted_selected_skill_names(metadata)
 
     @staticmethod
     def _available_runtime_contexts(
         skill_registry: SkillRegistry,
         skill_names: Iterable[str],
     ) -> tuple[SkillRuntimeContext, ...]:
-        contexts: list[SkillRuntimeContext] = []
-        for skill_name in skill_names:
-            skill = skill_registry.skills.get(skill_name)
-            if skill is None:
-                continue
-            contexts.append(build_runtime_context(skill))
-        return tuple(contexts)
+        return available_runtime_contexts(skill_registry, skill_names)
 
     @staticmethod
     def _catalog_skill_context(
@@ -7520,30 +6547,11 @@ class VoidCodeRuntime:
         available_skill_names: tuple[str, ...],
         selected_skill_names: tuple[str, ...],
     ) -> str:
-        names = selected_skill_names or available_skill_names
-        if not names:
-            return ""
-        lines = [
-            "Runtime skills catalog (recommended/visible).",
-            "Load full instructions with tool: skill(name=...).",
-            "",
-            "<available_skills>",
-        ]
-        for skill_name in names:
-            skill = skill_registry.skills.get(skill_name)
-            if skill is None:
-                continue
-            lines.extend(
-                (
-                    "  <skill>",
-                    f"    <name>{skill.name}</name>",
-                    f"    <description>{skill.description}</description>",
-                    f"    <location>{skill.entry_path.as_uri()}</location>",
-                    "  </skill>",
-                )
-            )
-        lines.append("</available_skills>")
-        return "\n".join(lines)
+        return catalog_skill_context(
+            skill_registry,
+            available_skill_names=available_skill_names,
+            selected_skill_names=selected_skill_names,
+        )
 
     def _runtime_config_metadata(
         self,
@@ -7940,15 +6948,14 @@ class VoidCodeRuntime:
         agents: Mapping[str, RuntimeAgentConfig],
         base_model: str | None,
     ) -> str | None:
-        if request_agent is not None and request_agent.model is not None:
-            return request_agent.model
-        category_config = categories.get(category) if category is not None else None
-        if category_config is not None and category_config.model is not None:
-            return category_config.model
-        preset_agent = agents.get(selected_preset)
-        if preset_agent is not None and preset_agent.model is not None:
-            return preset_agent.model
-        return base_model
+        return delegated_model_for_route_from_configs(
+            category=category,
+            selected_preset=selected_preset,
+            request_agent=request_agent,
+            categories=categories,
+            agents=agents,
+            base_model=base_model,
+        )
 
     def _delegated_provider_fallback_for_route(
         self,
@@ -7987,32 +6994,18 @@ class VoidCodeRuntime:
         preset_agent: RuntimeAgentConfig | None,
         base_provider_fallback: RuntimeProviderFallbackConfig | None,
     ) -> RuntimeProviderFallbackConfig | None:
-        if preset_agent is not None and preset_agent.provider_fallback is not None:
-            if model is None or model == preset_agent.provider_fallback.preferred_model:
-                return preset_agent.provider_fallback
-            return self._provider_fallback_with_preferred_model(
-                preset_agent.provider_fallback,
-                model,
-            )
-        if base_provider_fallback is None:
-            return None
-        if model is None or model == base_provider_fallback.preferred_model:
-            return base_provider_fallback
-        return self._provider_fallback_with_preferred_model(base_provider_fallback, model)
+        return provider_fallback_for_agent_selection(
+            model=model,
+            preset_agent=preset_agent,
+            base_provider_fallback=base_provider_fallback,
+        )
 
     @staticmethod
     def _provider_fallback_with_preferred_model(
         provider_fallback: RuntimeProviderFallbackConfig,
         preferred_model: str,
     ) -> RuntimeProviderFallbackConfig:
-        return RuntimeProviderFallbackConfig(
-            preferred_model=preferred_model,
-            fallback_models=tuple(
-                fallback_model
-                for fallback_model in provider_fallback.fallback_models
-                if fallback_model != preferred_model
-            ),
-        )
+        return provider_fallback_with_preferred_model(provider_fallback, preferred_model)
 
     def _category_config(self, category: str | None) -> RuntimeCategoryConfig | None:
         if category is None or self._config.categories is None:
@@ -8088,48 +7081,23 @@ class VoidCodeRuntime:
     def _resolved_hook_preset_snapshot_from_session_metadata(
         metadata: dict[str, object],
     ) -> ResolvedHookPresetSnapshot | None:
-        raw_snapshot = metadata.get("resolved_hook_presets")
-        if isinstance(raw_snapshot, dict):
-            return hook_preset_snapshot_from_payload(cast(dict[object, object], raw_snapshot))
-        raw_runtime_config = metadata.get("runtime_config")
-        if not isinstance(raw_runtime_config, dict):
-            return None
-        runtime_config_payload = cast(dict[object, object], raw_runtime_config)
-        nested_snapshot = runtime_config_payload.get("resolved_hook_presets")
-        if not isinstance(nested_snapshot, dict):
-            return None
-        return hook_preset_snapshot_from_payload(cast(dict[object, object], nested_snapshot))
+        return resolved_hook_preset_snapshot_from_session_metadata(metadata)
 
     @classmethod
     def _hook_preset_event_payload_from_session_metadata(
         cls,
         metadata: dict[str, object],
     ) -> dict[str, object] | None:
-        snapshot = cls._resolved_hook_preset_snapshot_from_session_metadata(metadata)
-        if snapshot is None or not snapshot.presets:
-            return None
-        kinds = [preset["kind"] for preset in snapshot.presets]
-        return {
-            "refs": list(snapshot.refs),
-            "kinds": kinds,
-            "source": "builtin",
-            "count": len(snapshot.presets),
-        }
+        _ = cls
+        return hook_preset_event_payload_from_session_metadata(metadata)
 
     @classmethod
     def _debug_hook_preset_snapshot(
         cls,
         metadata: dict[str, object],
     ) -> RuntimeHookPresetSnapshot | None:
-        payload = cls._hook_preset_event_payload_from_session_metadata(metadata)
-        if payload is None:
-            return None
-        return RuntimeHookPresetSnapshot(
-            refs=tuple(cast(list[str], payload["refs"])),
-            kinds=tuple(cast(list[str], payload["kinds"])),
-            source=cast(str, payload["source"]),
-            count=cast(int, payload["count"]),
-        )
+        _ = cls
+        return debug_hook_preset_snapshot(metadata)
 
     @staticmethod
     def _envelopes_for_lsp_events(
@@ -8138,36 +7106,11 @@ class VoidCodeRuntime:
         start_sequence: int,
         lsp_events: tuple[object, ...],
     ) -> tuple[EventEnvelope, ...]:
-        known_event_types = {
-            RUNTIME_LSP_SERVER_STARTED,
-            RUNTIME_LSP_SERVER_REUSED,
-            RUNTIME_LSP_SERVER_STARTUP_REJECTED,
-            RUNTIME_LSP_SERVER_STOPPED,
-            RUNTIME_LSP_SERVER_FAILED,
-        }
-        envelopes: list[EventEnvelope] = []
-        sequence = start_sequence
-        for raw_event in lsp_events:
-            if isinstance(raw_event, dict):
-                raw_event_dict = cast(dict[str, object], raw_event)
-                event_type = raw_event_dict.get("event_type")
-                payload = raw_event_dict.get("payload")
-            else:
-                event_type = getattr(raw_event, "event_type", None)
-                payload = getattr(raw_event, "payload", None)
-            if event_type not in known_event_types or not isinstance(payload, dict):
-                continue
-            envelopes.append(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=sequence,
-                    event_type=cast(str, event_type),
-                    source="runtime",
-                    payload=cast(dict[str, object], payload),
-                )
-            )
-            sequence += 1
-        return tuple(envelopes)
+        return envelopes_for_lsp_events(
+            session_id=session_id,
+            start_sequence=start_sequence,
+            lsp_events=lsp_events,
+        )
 
     @staticmethod
     def _envelopes_for_acp_events(
@@ -8176,68 +7119,11 @@ class VoidCodeRuntime:
         start_sequence: int,
         acp_events: tuple[object, ...],
     ) -> tuple[EventEnvelope, ...]:
-        known_event_types = {
-            RUNTIME_ACP_CONNECTED,
-            RUNTIME_ACP_DELEGATED_LIFECYCLE,
-            RUNTIME_ACP_DISCONNECTED,
-            RUNTIME_ACP_FAILED,
-        }
-        envelopes: list[EventEnvelope] = []
-        sequence = start_sequence
-        for raw_event in acp_events:
-            acp_session_id: str | None = None
-            acp_parent_session_id: str | None = None
-            acp_delegation: AcpDelegatedExecution | None = None
-            if isinstance(raw_event, dict):
-                raw_event_dict = cast(dict[str, object], raw_event)
-                event_type = raw_event_dict.get("event_type")
-                payload = raw_event_dict.get("payload")
-            else:
-                event_type = getattr(raw_event, "event_type", None)
-                payload = getattr(raw_event, "payload", None)
-                acp_session_id = cast(str | None, getattr(raw_event, "session_id", None))
-                acp_parent_session_id = cast(
-                    str | None, getattr(raw_event, "parent_session_id", None)
-                )
-                acp_delegation = cast(
-                    AcpDelegatedExecution | None,
-                    getattr(raw_event, "delegation", None),
-                )
-            if event_type not in known_event_types or not isinstance(payload, dict):
-                continue
-            envelopes.append(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=sequence,
-                    event_type=cast(str, event_type),
-                    source="runtime",
-                    payload={
-                        **cast(dict[str, object], payload),
-                        **(
-                            {
-                                "session_id": acp_session_id,
-                                "parent_session_id": acp_parent_session_id,
-                                "delegation": acp_delegation.as_payload(),
-                            }
-                            if acp_delegation is not None
-                            else {
-                                **(
-                                    {"session_id": acp_session_id}
-                                    if acp_session_id is not None
-                                    else {}
-                                ),
-                                **(
-                                    {"parent_session_id": acp_parent_session_id}
-                                    if acp_parent_session_id is not None
-                                    else {}
-                                ),
-                            }
-                        ),
-                    },
-                )
-            )
-            sequence += 1
-        return tuple(envelopes)
+        return envelopes_for_acp_events(
+            session_id=session_id,
+            start_sequence=start_sequence,
+            acp_events=acp_events,
+        )
 
     @staticmethod
     def _envelopes_for_mcp_events(
@@ -8246,58 +7132,22 @@ class VoidCodeRuntime:
         start_sequence: int,
         mcp_events: tuple[object, ...],
     ) -> tuple[EventEnvelope, ...]:
-        known_event_types = {
-            RUNTIME_MCP_SERVER_FAILED,
-            RUNTIME_MCP_SERVER_ACQUIRED,
-            RUNTIME_MCP_SERVER_IDLE_CLEANED,
-            RUNTIME_MCP_SERVER_RELEASED,
-            RUNTIME_MCP_SERVER_REUSED,
-            RUNTIME_MCP_SERVER_STARTED,
-            RUNTIME_MCP_SERVER_STOPPED,
-        }
-        envelopes: list[EventEnvelope] = []
-        sequence = start_sequence
-        for raw_event in mcp_events:
-            if isinstance(raw_event, dict):
-                raw_event_dict = cast(dict[str, object], raw_event)
-                event_type = raw_event_dict.get("event_type")
-                payload = raw_event_dict.get("payload")
-            else:
-                event_type = getattr(raw_event, "event_type", None)
-                payload = getattr(raw_event, "payload", None)
-            if event_type not in known_event_types or not isinstance(payload, dict):
-                continue
-            envelopes.append(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=sequence,
-                    event_type=cast(str, event_type),
-                    source="runtime",
-                    payload=cast(dict[str, object], payload),
-                )
-            )
-            sequence += 1
-        return tuple(envelopes)
+        return envelopes_for_mcp_events(
+            session_id=session_id,
+            start_sequence=start_sequence,
+            mcp_events=mcp_events,
+        )
 
     def _permission_policy_for_session(
         self, metadata: dict[str, object] | None
     ) -> PermissionPolicy:
         # Referenced via extracted resume collaborator.
-        approval_mode: PermissionDecision = self._permission_policy.mode
-        if metadata is not None:
-            persisted_runtime_config = metadata.get("runtime_config")
-            if isinstance(persisted_runtime_config, dict):
-                runtime_config = cast(dict[str, object], persisted_runtime_config)
-                persisted_approval_mode = runtime_config.get("approval_mode")
-                parsed_approval_mode = _permission_decision_or_none(persisted_approval_mode)
-                if parsed_approval_mode is not None:
-                    approval_mode = parsed_approval_mode
-        return PermissionPolicy(mode=approval_mode)
+        return permission_policy_for_session(base_policy=self._permission_policy, metadata=metadata)
 
     @staticmethod
     def _approval_request_id_from_waiting_response(response: RuntimeResponse) -> str | None:
         # Referenced via extracted background-task collaborator.
-        return VoidCodeRuntime._waiting_request_id_from_response(response, request_kind="approval")
+        return approval_request_id_from_waiting_response(response)
 
     @staticmethod
     def _waiting_request_id_from_response(
@@ -8305,16 +7155,7 @@ class VoidCodeRuntime:
         *,
         request_kind: Literal["approval", "question"],
     ) -> str | None:
-        if response.session.status != "waiting":
-            return None
-        target_event_type = (
-            RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
-        )
-        for event in reversed(response.events):
-            if event.event_type == target_event_type:
-                request_id = event.payload.get("request_id")
-                return str(request_id) if request_id is not None else None
-        return None
+        return waiting_request_id_from_response(response, request_kind=request_kind)
 
     def _load_background_task_child_response(
         self,

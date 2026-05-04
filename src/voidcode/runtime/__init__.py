@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
+from .active_session import ActiveRunInterruptResult
 from .contracts import (
     BackgroundTaskResult,
     BackgroundTaskRuntimeEntrypoint,
@@ -45,7 +46,8 @@ from .task import (
 
 if TYPE_CHECKING:
     from .http import RuntimeTransportApp, create_runtime_app
-    from .service import ToolRegistry, VoidCodeRuntime
+    from .service import VoidCodeRuntime
+    from .tool_registry import ToolRegistry
 
 __all__ = [
     "EventEnvelope",
@@ -60,6 +62,7 @@ __all__ = [
     "BackgroundTaskRuntimeEntrypoint",
     "BackgroundTaskState",
     "BackgroundTaskStatus",
+    "ActiveRunInterruptResult",
     "ContinuationLoopRef",
     "ContinuationLoopState",
     "ContinuationLoopStatus",
@@ -95,7 +98,10 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name in {"ToolRegistry", "VoidCodeRuntime"}:
+    if name == "ToolRegistry":
+        tool_registry_module = import_module(".tool_registry", __name__)
+        return getattr(tool_registry_module, name)
+    if name == "VoidCodeRuntime":
         service_module = import_module(".service", __name__)
         return getattr(service_module, name)
     if name in {"RuntimeTransportApp", "create_runtime_app"}:
