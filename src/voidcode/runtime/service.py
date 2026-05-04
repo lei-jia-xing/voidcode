@@ -6690,6 +6690,7 @@ class VoidCodeRuntime:
             preserved_continuity_state=self._continuity_state_from_session_metadata(
                 session_metadata
             ),
+            workspace=self._workspace,
         )
 
     @staticmethod

@@ -6,9 +6,11 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
+from .context_rules import runtime_file_rule_contexts
 from .continuity_distillation import (
     ContinuityDistillationRecord,
     build_distillation_input_envelope,
@@ -1809,6 +1811,7 @@ def assemble_provider_context(
     preserved_system_segments: tuple[str, ...] = (),
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: RuntimeContinuityState | None = None,
+    workspace: Path | None = None,
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
@@ -1837,6 +1840,27 @@ def assemble_provider_context(
     for segment_content in preserved_system_segments:
         _append_system_segment(segment_content, source="preserved_system_segment")
     _append_system_segment(skill_prompt_context, source="skill_prompt")
+    rule_contexts = runtime_file_rule_contexts(
+        workspace=workspace,
+        tool_results=context_window.tool_results,
+    )
+    for rule_context in rule_contexts:
+        rule_content = (
+            "Runtime file rules are active for touched workspace paths.\n"
+            f"Rule file: {rule_context.path}\n"
+            f"{rule_context.content}"
+        )
+        normalized = rule_content.strip()
+        if not normalized or normalized in seen_system_contents:
+            continue
+        seen_system_contents.add(normalized)
+        segments.append(
+            RuntimeContextSegment(
+                role="system",
+                content=normalized,
+                metadata=rule_context.metadata_payload(),
+            )
+        )
     todo_prompt_context = render_provider_todo_state(session_metadata)
     if todo_prompt_context is not None:
         _append_system_segment(todo_prompt_context, source="runtime_todo_state")

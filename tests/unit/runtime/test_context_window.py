@@ -183,6 +183,41 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
     ]
 
 
+def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: Any) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    source_dir = workspace / "src"
+    source_dir.mkdir()
+    (source_dir / "AGENTS.md").write_text("Runtime rules", encoding="utf-8")
+
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="content",
+                data={"path": "src/app.py", "arguments": {"filePath": "src/app.py"}},
+            ),
+        ),
+        session_metadata={},
+        workspace=workspace,
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    rule_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata is not None and segment.metadata.get("source") == "runtime_file_rules"
+    ]
+    assert [(segment.metadata or {})["path"] for segment in rule_segments] == [
+        "AGENTS.md",
+        "src/AGENTS.md",
+    ]
+    assert "Project rules" in (rule_segments[0].content or "")
+    assert "Runtime rules" in (rule_segments[1].content or "")
+
+
 def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
     assembled = assemble_provider_context(
         prompt="continue",
