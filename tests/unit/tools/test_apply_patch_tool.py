@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from voidcode.formatter import RuntimeFormatterPresetConfig
+from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.tools import ApplyPatchTool, ToolCall
 
 

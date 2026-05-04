@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Protocol, cast
 from lsprotocol import converters as lsp_converters
 from lsprotocol import types as lsp_types
 
+from ..formatter import FormatterExecutor
 from ..hook.config import RuntimeHooksConfig
-from ._formatter import FormatterExecutor
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 

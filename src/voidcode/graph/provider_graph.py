@@ -25,19 +25,24 @@ from .contracts import GraphEvent, GraphRunRequest
 class ProviderStep:
     events: tuple[GraphEvent, ...] = ()
     tool_call: ToolCall | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
     output: str | None = None
     is_finished: bool = False
     provider_usage: ProviderTokenUsage | None = None
 
     def __post_init__(self) -> None:
+        if self.tool_call is not None and not self.tool_calls:
+            object.__setattr__(self, "tool_calls", (self.tool_call,))
+        elif self.tool_call is None and self.tool_calls:
+            object.__setattr__(self, "tool_call", self.tool_calls[0])
         if self.is_finished:
-            if self.tool_call is not None:
-                raise ValueError("finished graph steps must not include a tool call")
+            if self.tool_calls:
+                raise ValueError("finished graph steps must not include tool calls")
             if self.output is None:
                 raise ValueError("finished graph steps must include output")
             return
-        if self.tool_call is None:
-            raise ValueError("non-finished graph steps must include a tool call")
+        if not self.tool_calls:
+            raise ValueError("non-finished graph steps must include at least one tool call")
         if self.output is not None:
             raise ValueError("non-finished graph steps must not include output")
 
@@ -68,6 +73,10 @@ class ProviderGraph:
         self._provider_model = provider_model
         self._max_steps = max_steps
         self._abort_signal = _GraphAbortSignal(_cancelled=False)
+        self._pending_tool_calls: list[ToolCall] = []
+        self._pending_tool_calls_session_id: str | None = None
+        self._pending_tool_calls_run_id: str | None = None
+        self._pending_tool_calls_min_tool_result_count: int | None = None
 
     def cancel_current_turn(self) -> None:
         self._abort_signal.set_cancelled(True)
@@ -83,6 +92,30 @@ class ProviderGraph:
         current_turn = len(tool_results) + 1
         if self._max_steps is not None and current_turn > self._max_steps:
             raise ValueError(f"graph exceeded max steps: {self._max_steps}")
+
+        session_id = request.session.session.id
+        run_id = self._run_id_from_metadata(request.session.metadata)
+        if (
+            self._pending_tool_calls
+            and self._pending_tool_calls_session_id == session_id
+            and (
+                self._pending_tool_calls_run_id == run_id
+                or self._is_approval_resume(request.metadata)
+            )
+            and self._pending_tool_calls_min_tool_result_count is not None
+            and len(tool_results) >= self._pending_tool_calls_min_tool_result_count
+        ):
+            next_tool_call = self._pending_tool_calls.pop(0)
+            if not self._pending_tool_calls:
+                self._clear_pending_tool_calls()
+            else:
+                self._pending_tool_calls_min_tool_result_count = len(tool_results) + 1
+            return ProviderStep(
+                events=(),
+                tool_call=next_tool_call,
+            )
+        if self._pending_tool_calls:
+            self._clear_pending_tool_calls()
 
         provider_stream = request.metadata.get("provider_stream", False)
         if isinstance(provider_stream, bool):
@@ -153,13 +186,23 @@ class ProviderGraph:
                 planning_events=planning_events,
                 turn_request=turn_request,
                 current_turn=current_turn,
+                session_id=session_id,
+                run_id=run_id,
             )
 
         turn_result = self._provider.propose_turn(turn_request)
-        if turn_result.tool_call is not None:
+        if turn_result.tool_calls:
+            tool_calls = list(turn_result.tool_calls)
+            first_tool_call = tool_calls.pop(0)
+            self._pending_tool_calls.extend(tool_calls)
+            if tool_calls:
+                self._pending_tool_calls_session_id = session_id
+                self._pending_tool_calls_run_id = run_id
+                self._pending_tool_calls_min_tool_result_count = len(tool_results) + 1
             return ProviderStep(
                 events=planning_events,
-                tool_call=turn_result.tool_call,
+                tool_call=first_tool_call,
+                tool_calls=turn_result.tool_calls,
                 provider_usage=turn_result.usage,
             )
 
@@ -178,11 +221,11 @@ class ProviderGraph:
                 provider_usage=turn_result.usage,
             )
 
-        if turn_result.tool_call is None:
+        if not turn_result.tool_calls:
             raise self._provider_execution_error(
                 kind="transient_failure",
                 model_name=turn_request.model_name,
-                message="provider turn produced neither output nor a tool call",
+                message="provider turn produced neither output nor tool calls",
                 details={
                     "source": "graph_nonstream",
                     "reason": "missing_terminal_outcome",
@@ -191,7 +234,7 @@ class ProviderGraph:
 
         return ProviderStep(
             events=planning_events,
-            tool_call=turn_result.tool_call,
+            tool_calls=turn_result.tool_calls,
             provider_usage=turn_result.usage,
         )
 
@@ -201,6 +244,8 @@ class ProviderGraph:
         planning_events: tuple[GraphEvent, ...],
         turn_request: ProviderTurnRequest,
         current_turn: int,
+        session_id: str,
+        run_id: str | None,
     ) -> ProviderStep:
         stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         stream_events: list[GraphEvent] = []
@@ -289,16 +334,24 @@ class ProviderGraph:
                 details={"source": "graph_stream", "reason": "done_error"},
             )
 
-        streamed_tool_call = self._parse_streamed_tool_call(
+        streamed_tool_calls = self._parse_streamed_tool_calls(
             tool_payload_parts,
             model_name=turn_request.model_name,
         )
         output = "".join(output_parts)
 
-        if streamed_tool_call is not None:
+        if streamed_tool_calls:
+            tool_calls = list(streamed_tool_calls)
+            first_tool_call = tool_calls.pop(0)
+            self._pending_tool_calls.extend(tool_calls)
+            if tool_calls:
+                self._pending_tool_calls_session_id = session_id
+                self._pending_tool_calls_run_id = run_id
+                self._pending_tool_calls_min_tool_result_count = current_turn
             return ProviderStep(
                 events=planning_events + tuple(stream_events),
-                tool_call=streamed_tool_call,
+                tool_call=first_tool_call,
+                tool_calls=streamed_tool_calls,
                 provider_usage=provider_usage,
             )
 
@@ -324,14 +377,14 @@ class ProviderGraph:
             provider_usage=provider_usage,
         )
 
-    def _parse_streamed_tool_call(
+    def _parse_streamed_tool_calls(
         self,
         payload_parts: list[str],
         *,
         model_name: str | None,
-    ) -> ToolCall | None:
+    ) -> tuple[ToolCall, ...]:
         if not payload_parts:
-            return None
+            return ()
         raw_payload_text = payload_parts[-1]
         try:
             raw_tool_payload = json.loads(raw_payload_text)
@@ -350,7 +403,16 @@ class ProviderGraph:
                     },
                 ) from exc
 
-        if not isinstance(raw_tool_payload, dict):
+        if isinstance(raw_tool_payload, list):
+            tool_payloads = cast(list[object], raw_tool_payload)
+        elif isinstance(raw_tool_payload, dict):
+            raw_payload = cast(dict[str, Any], raw_tool_payload)
+            raw_tool_calls = raw_payload.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                tool_payloads = cast(list[object], raw_tool_calls)
+            else:
+                tool_payloads = [raw_payload]
+        else:
             raise self._provider_execution_error(
                 kind="transient_failure",
                 model_name=model_name,
@@ -361,36 +423,66 @@ class ProviderGraph:
                 },
             )
 
-        tool_payload = cast(dict[str, Any], raw_tool_payload)
-        tool_call_id_obj = tool_payload.get("tool_call_id")
-        tool_name_obj = tool_payload.get("tool_name")
-        arguments_obj = tool_payload.get("arguments")
-        if not isinstance(tool_name_obj, str) or not tool_name_obj.strip():
-            raise self._provider_execution_error(
-                kind="transient_failure",
-                model_name=model_name,
-                message="provider stream tool payload must include a non-empty tool_name",
-                details={
-                    "source": "graph_stream",
-                    "reason": "missing_tool_name",
-                },
+        parsed_tool_calls: list[ToolCall] = []
+        for payload_obj in tool_payloads:
+            if not isinstance(payload_obj, dict):
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=model_name,
+                    message="provider stream tool payload entries must be JSON objects",
+                    details={"source": "graph_stream", "reason": "tool_payload_entry_not_object"},
+                )
+            tool_payload = cast(dict[str, Any], payload_obj)
+            tool_call_id_obj = tool_payload.get("tool_call_id")
+            tool_name_obj = tool_payload.get("tool_name")
+            arguments_obj = tool_payload.get("arguments")
+            if not isinstance(tool_name_obj, str) or not tool_name_obj.strip():
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=model_name,
+                    message="provider stream tool payload must include a non-empty tool_name",
+                    details={
+                        "source": "graph_stream",
+                        "reason": "missing_tool_name",
+                    },
+                )
+            if not isinstance(arguments_obj, dict):
+                raise self._provider_execution_error(
+                    kind="transient_failure",
+                    model_name=model_name,
+                    message="provider stream tool payload must include an arguments object",
+                    details={
+                        "source": "graph_stream",
+                        "reason": "invalid_tool_arguments",
+                    },
+                )
+            parsed_tool_calls.append(
+                ToolCall(
+                    tool_name=tool_name_obj,
+                    arguments=cast(dict[str, object], arguments_obj),
+                    tool_call_id=tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
+                )
             )
-        if not isinstance(arguments_obj, dict):
-            raise self._provider_execution_error(
-                kind="transient_failure",
-                model_name=model_name,
-                message="provider stream tool payload must include an arguments object",
-                details={
-                    "source": "graph_stream",
-                    "reason": "invalid_tool_arguments",
-                },
-            )
+        return tuple(parsed_tool_calls)
 
-        return ToolCall(
-            tool_name=tool_name_obj,
-            arguments=cast(dict[str, object], arguments_obj),
-            tool_call_id=tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
-        )
+    def _clear_pending_tool_calls(self) -> None:
+        self._pending_tool_calls.clear()
+        self._pending_tool_calls_session_id = None
+        self._pending_tool_calls_run_id = None
+        self._pending_tool_calls_min_tool_result_count = None
+
+    @staticmethod
+    def _run_id_from_metadata(metadata: dict[str, object]) -> str | None:
+        runtime_state = metadata.get("runtime_state")
+        if not isinstance(runtime_state, dict):
+            return None
+        runtime_state_payload = cast(dict[str, object], runtime_state)
+        run_id = runtime_state_payload.get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
+
+    @staticmethod
+    def _is_approval_resume(metadata: dict[str, object]) -> bool:
+        return metadata.get("resume_kind") == "approval"
 
     def _provider_execution_error(
         self,

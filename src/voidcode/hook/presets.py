@@ -125,6 +125,8 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             guidance=(
                 "After starting delegated background work, continue other safe work first. "
                 "Treat task ids as references, not immediate prompts to poll. "
+                "Use foreground multi-tool calls for short independent reads/searches instead "
+                "of spawning child work. "
                 "Check status only when it changes the next decision, prefer waiting for "
                 "runtime completion or failure reminders, and use blocking result reads "
                 "only when you intentionally want to wait in the current turn."

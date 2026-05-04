@@ -10,8 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
+from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.graph.contracts import GraphEvent, GraphStep
-from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.mcp import McpToolSafety
 from voidcode.runtime.config import (
     RuntimeAgentConfig,

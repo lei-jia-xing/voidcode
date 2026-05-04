@@ -13,6 +13,16 @@ _RUBY_ROOT_MARKERS = ("Gemfile", ".ruby-version", ".git")
 _PHP_ROOT_MARKERS = ("composer.json", ".git")
 _LUA_ROOT_MARKERS = (".luarc.json", ".luarc.jsonc", ".git")
 _WEB_ROOT_MARKERS = ("package.json", "tsconfig.json", "jsconfig.json", ".git")
+_TAILWIND_ROOT_MARKERS = (
+    "tailwind.config.js",
+    "tailwind.config.cjs",
+    "tailwind.config.mjs",
+    "tailwind.config.ts",
+    "tailwind.config.cts",
+    "tailwind.config.mts",
+    "package.json",
+    ".git",
+)
 _DOC_ROOT_MARKERS = (".git",)
 _XML_ROOT_MARKERS = ("pom.xml", "build.xml", ".git")
 _TOML_ROOT_MARKERS = ("pyproject.toml", "Cargo.toml", "taplo.toml", ".git")
@@ -191,6 +201,48 @@ _BUILTIN_LSP_SERVER_PRESETS: tuple[LspServerPreset, ...] = (
         extensions=(".tex", ".bib"),
         languages=("tex", "bibtex"),
         root_markers=_TEX_ROOT_MARKERS,
+    ),
+    LspServerPreset(
+        id="tailwindcss",
+        command=("tailwindcss-language-server", "--stdio"),
+        extensions=(
+            ".astro",
+            ".blade.php",
+            ".css",
+            ".heex",
+            ".html",
+            ".js",
+            ".jsx",
+            ".less",
+            ".md",
+            ".mdx",
+            ".php",
+            ".scss",
+            ".svelte",
+            ".ts",
+            ".tsx",
+            ".vue",
+        ),
+        languages=(
+            "astro",
+            "blade",
+            "css",
+            "heex",
+            "html",
+            "javascript",
+            "javascriptreact",
+            "less",
+            "markdown",
+            "mdx",
+            "php",
+            "scss",
+            "svelte",
+            "tailwindcss",
+            "typescript",
+            "typescriptreact",
+            "vue",
+        ),
+        root_markers=_TAILWIND_ROOT_MARKERS,
     ),
     LspServerPreset(
         id="tsserver",

@@ -5,14 +5,14 @@ from typing import ClassVar
 
 from pydantic import ValidationError
 
-from ..hook.config import RuntimeHooksConfig
-from ..security.path_policy import resolve_workspace_path
-from ._formatter import (
+from ..formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
     formatter_diagnostics,
     formatter_payload,
 )
+from ..hook.config import RuntimeHooksConfig
+from ..security.path_policy import resolve_workspace_path
 from ._pydantic_args import MultiEditArgs
 from ._repair import ToolDiagnosticError
 from .contracts import ToolCall, ToolDefinition, ToolResult

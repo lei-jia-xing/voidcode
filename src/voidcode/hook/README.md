@@ -11,7 +11,6 @@
 - hook 配置模型
 - builtin hook preset catalog，用于校验 agent preset hook refs
 - hook 执行器与执行协议
-- 与格式化 preset 相关的 hook 支撑逻辑
 - 当前 runtime-owned `pre_tool` / `post_tool` 执行面
 - 当前已落地的 session/background-task lifecycle hook phases 配置面
 
@@ -19,7 +18,7 @@
 
 - session 生命周期管理
 - 客户端事件协议设计
-- tool/provider/skill 的具体业务语义
+- tool/provider/skill/formatter 的具体业务语义
 - background task orchestration 与 leader notification
 - agent role 执行、delegation routing 或 multi-agent orchestration
 

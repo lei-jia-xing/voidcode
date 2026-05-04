@@ -655,50 +655,73 @@ class LiteLLMBackendSingleAgentProvider:
         return {"api_key": self.config.api_key}
 
     @staticmethod
+    def _extract_tool_calls(
+        message: dict[str, object],
+        *,
+        provider_to_original: Mapping[str, str] | None = None,
+    ) -> tuple[ToolCall, ...]:
+        raw_tool_calls = message.get("tool_calls")
+        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+            return ()
+        tool_calls = cast(list[object], raw_tool_calls)
+        use_unique_fallback_ids = len(tool_calls) > 1
+        parsed_calls: list[ToolCall] = []
+        for index, raw_call_obj in enumerate(tool_calls):
+            if not isinstance(raw_call_obj, dict):
+                continue
+            raw_call = cast(dict[str, object], raw_call_obj)
+            function_obj = raw_call.get("function")
+            if not isinstance(function_obj, dict):
+                continue
+            function = cast(dict[str, object], function_obj)
+            tool_name_obj = function.get("name")
+            if not isinstance(tool_name_obj, str) or not tool_name_obj:
+                continue
+            runtime_tool_name = LiteLLMBackendSingleAgentProvider._runtime_tool_name(
+                tool_name_obj,
+                provider_to_original=provider_to_original or {},
+            )
+            parsed_arguments: dict[str, object] = {}
+            arguments_obj = function.get("arguments")
+            if isinstance(arguments_obj, str) and arguments_obj.strip():
+                try:
+                    decoded = json.loads(arguments_obj)
+                except json.JSONDecodeError:
+                    parsed_arguments = {}
+                else:
+                    if isinstance(decoded, dict):
+                        parsed_arguments = cast(dict[str, object], decoded)
+            tool_call_id_obj = raw_call.get("id")
+            explicit_tool_call_id = tool_call_id_obj if isinstance(tool_call_id_obj, str) else None
+            fallback_tool_call_id = (
+                f"{runtime_tool_name}_{index + 1}"
+                if explicit_tool_call_id is None and use_unique_fallback_ids
+                else runtime_tool_name
+            )
+            tool_call_id = _normalize_tool_call_id(
+                explicit_tool_call_id,
+                fallback=fallback_tool_call_id,
+            )
+            parsed_calls.append(
+                ToolCall(
+                    tool_name=runtime_tool_name,
+                    arguments=parsed_arguments,
+                    tool_call_id=tool_call_id,
+                )
+            )
+        return tuple(parsed_calls)
+
+    @staticmethod
     def _extract_first_tool_call(
         message: dict[str, object],
         *,
         provider_to_original: Mapping[str, str] | None = None,
     ) -> ToolCall | None:
-        raw_tool_calls = message.get("tool_calls")
-        if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
-            return None
-        tool_calls = cast(list[object], raw_tool_calls)
-        first_tool_call_obj = tool_calls[0]
-        if not isinstance(first_tool_call_obj, dict):
-            return None
-        first_tool_call = cast(dict[str, object], first_tool_call_obj)
-        function_obj = first_tool_call.get("function")
-        if not isinstance(function_obj, dict):
-            return None
-        function = cast(dict[str, object], function_obj)
-        tool_name_obj = function.get("name")
-        if not isinstance(tool_name_obj, str) or not tool_name_obj:
-            return None
-        runtime_tool_name = LiteLLMBackendSingleAgentProvider._runtime_tool_name(
-            tool_name_obj,
-            provider_to_original=provider_to_original or {},
+        tool_calls = LiteLLMBackendSingleAgentProvider._extract_tool_calls(
+            message,
+            provider_to_original=provider_to_original,
         )
-        parsed_arguments: dict[str, object] = {}
-        arguments_obj = function.get("arguments")
-        if isinstance(arguments_obj, str) and arguments_obj.strip():
-            try:
-                decoded = json.loads(arguments_obj)
-            except json.JSONDecodeError:
-                parsed_arguments = {}
-            else:
-                if isinstance(decoded, dict):
-                    parsed_arguments = cast(dict[str, object], decoded)
-        tool_call_id_obj = first_tool_call.get("id")
-        tool_call_id = _normalize_tool_call_id(
-            tool_call_id_obj if isinstance(tool_call_id_obj, str) else None,
-            fallback=runtime_tool_name,
-        )
-        return ToolCall(
-            tool_name=runtime_tool_name,
-            arguments=parsed_arguments,
-            tool_call_id=tool_call_id,
-        )
+        return tool_calls[0] if tool_calls else None
 
     @staticmethod
     def _map_exception(
@@ -785,12 +808,12 @@ class LiteLLMBackendSingleAgentProvider:
                 return ProviderTurnResult(output="", usage=usage)
             message = cast(dict[str, object], message_obj)
 
-            tool_call = self._extract_first_tool_call(
+            tool_calls = self._extract_tool_calls(
                 message,
                 provider_to_original=provider_to_original,
             )
-            if tool_call is not None:
-                return ProviderTurnResult(tool_call=tool_call, usage=usage)
+            if tool_calls:
+                return ProviderTurnResult(tool_calls=tool_calls, usage=usage)
 
             content_obj = message.get("content")
             if isinstance(content_obj, str):
@@ -937,28 +960,35 @@ class LiteLLMBackendSingleAgentProvider:
             if accumulator.tool_name is not None
         ]
         if completed_tool_calls:
-            _index, selected_tool = completed_tool_calls[0]
-            tool_payload = self._extract_first_tool_call(
+            tool_payloads = [
                 {
-                    "tool_calls": [
-                        {
-                            "id": selected_tool.tool_call_id,
-                            "function": {
-                                "name": selected_tool.tool_name,
-                                "arguments": selected_tool.arguments,
-                            },
-                        }
-                    ]
-                },
+                    "id": accumulator.tool_call_id,
+                    "function": {
+                        "name": accumulator.tool_name,
+                        "arguments": accumulator.arguments,
+                    },
+                }
+                for _index, accumulator in completed_tool_calls
+            ]
+            tool_calls = self._extract_tool_calls(
+                {"tool_calls": tool_payloads},
                 provider_to_original=provider_to_original,
             )
-            if tool_payload is not None:
-                event_payload: dict[str, object] = {
-                    "tool_name": tool_payload.tool_name,
-                    "arguments": tool_payload.arguments,
-                }
-                if tool_payload.tool_call_id is not None:
-                    event_payload["tool_call_id"] = tool_payload.tool_call_id
+            if tool_calls:
+                event_tool_payloads: list[dict[str, object]] = []
+                for tool_payload in tool_calls:
+                    event_tool_payload: dict[str, object] = {
+                        "tool_name": tool_payload.tool_name,
+                        "arguments": tool_payload.arguments,
+                    }
+                    if tool_payload.tool_call_id is not None:
+                        event_tool_payload["tool_call_id"] = tool_payload.tool_call_id
+                    event_tool_payloads.append(event_tool_payload)
+                event_payload: dict[str, object]
+                if len(event_tool_payloads) == 1:
+                    event_payload = event_tool_payloads[0]
+                else:
+                    event_payload = {"tool_calls": event_tool_payloads}
                 yield ProviderStreamEvent(
                     kind="content",
                     channel="tool",

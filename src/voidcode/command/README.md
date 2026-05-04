@@ -25,6 +25,7 @@ description: Review a target
 agent: reviewer
 enabled: true
 ---
+
 Review $1 with full context: $ARGUMENTS
 ```
 
@@ -36,13 +37,14 @@ The minimal builtin set provides exactly six product commands. These commands pa
 workflow intent into prompts; they do not directly call tools or bypass runtime approval/session
 governance.
 
-| Command | Arguments | Execution mode | Default behavior | Verification guidance |
-|---------|-----------|----------------|------------------|-----------------------|
-| `/review [target]` | File, directory, PR/diff target, or empty for current changes | Default runtime prompt | Read-only | Report missing/unreadable targets instead of generic reviews |
-| `/fix [problem]` | Concrete failing test, lint/type error, review comment, or bug | Default runtime prompt | May edit | Locate root cause, minimally edit, and run targeted checks |
-| `/explain [target]` | File, module, stack trace, error, or behavior | Default runtime prompt | Read-only | State clearly when the target cannot be found or read |
-| `/plan [goal]` | Implementation goal, acceptance criteria request, or issue shape | `product` agent | Read-only | Produce plan, risks, acceptance criteria, and verification strategy |
-| `/test [target]` | Code or behavior to test, or failing test output | Default runtime prompt | May edit tests | Prefer targeted tests before broad suites; never delete/weaken tests |
-| `/commit [context]` | Optional commit intent/context | Default runtime prompt | Read-only | Inspect status/diff; report clean tree instead of inventing a message |
+| Command              | Arguments                                                              | Execution mode                      | Default behavior                                   | Verification guidance                                                                   |
+| -------------------- | ---------------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `/review [target]`   | File, directory, PR/diff target, or empty for current changes          | Default runtime prompt              | Read-only                                          | Report missing/unreadable targets instead of generic reviews                            |
+| `/fix [problem]`     | Concrete failing test, lint/type error, review comment, or bug         | Default runtime prompt              | May edit                                           | Locate root cause, minimally edit, and run targeted checks                              |
+| `/explain [target]`  | File, module, stack trace, error, or behavior                          | Default runtime prompt              | Read-only                                          | State clearly when the target cannot be found or read                                   |
+| `/plan [goal]`       | Implementation goal, acceptance criteria request, or issue shape       | `product` agent + `review` workflow | Read-only workspace; may update runtime todo state | Produce plan, risks, acceptance criteria, verification strategy, and start-work handoff |
+| `/start-work [plan]` | Accepted plan, handoff, issue, session summary, or implementation goal | `implementation` workflow           | May edit                                           | Restate target, execute smallest safe change, track progress, and verify                |
+| `/test [target]`     | Code or behavior to test, or failing test output                       | Default runtime prompt              | May edit tests                                     | Prefer targeted tests before broad suites; never delete/weaken tests                    |
+| `/commit [context]`  | Optional commit intent/context                                         | Default runtime prompt              | Read-only                                          | Inspect status/diff; report clean tree instead of inventing a message                   |
 
 Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before graph or provider execution. Builtins are defined in `loader.py` as `_BUILTIN_COMMANDS` and can be overridden by project-local `commands/**/*.md` files.

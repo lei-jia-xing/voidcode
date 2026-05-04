@@ -102,9 +102,9 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
 
 
 class TestBuiltinCommandDiscovery:
-    _EXPECTED_NAMES = ("commit", "explain", "fix", "plan", "review", "test")
+    _EXPECTED_NAMES = ("commit", "explain", "fix", "plan", "start-work", "review", "test")
 
-    def test_exactly_six_expected_builtins_present(self) -> None:
+    def test_expected_builtins_present(self) -> None:
         commands = builtin_commands()
         names = tuple(c.name for c in commands)
         assert names == self._EXPECTED_NAMES, f"expected {self._EXPECTED_NAMES}, got {names}"
@@ -124,6 +124,13 @@ class TestBuiltinCommandDiscovery:
     def test_plan_command_targets_product_agent(self) -> None:
         plan = [c for c in builtin_commands() if c.name == "plan"][0]
         assert plan.agent == "product", f"/plan agent should be product, got {plan.agent}"
+        assert plan.workflow_preset == "review"
+
+    def test_start_work_command_targets_implementation_workflow(self) -> None:
+        start_work = [c for c in builtin_commands() if c.name == "start-work"][0]
+
+        assert start_work.agent is None
+        assert start_work.workflow_preset == "implementation"
 
     def test_commands_are_disabled_when_hidden_flag_set(self) -> None:
         registry = CommandRegistry(builtin_commands())
@@ -171,6 +178,21 @@ class TestBuiltinCommandRendering:
         assert "do not write code" in rendered
         assert "Target agent: product" in rendered
         assert "acceptance criteria" in rendered
+        assert "Use todo_write only for session planning/progress state" in rendered
+        assert "Start-work handoff" in rendered
+
+    def test_start_work_renders_handoff_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "start-work"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="plan from session abc",
+            arguments=split_command_arguments("plan from session abc"),
+        )
+
+        assert "plan from session abc" in rendered
+        assert "accepted plan or handoff" in rendered
+        assert "Use todo_write for multi-step progress tracking" in rendered
+        assert "run targeted checks" in rendered
 
     def test_commit_renders_conventional_commits_guidance(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "commit"][0]
@@ -255,7 +277,7 @@ class TestBuiltinCommandProjectOverride:
         fix_cmd = registry.get("fix")
         assert fix_cmd is not None
         assert fix_cmd.source == "project"
-        for name in ("review", "explain", "plan", "test", "commit"):
+        for name in ("review", "explain", "plan", "start-work", "test", "commit"):
             cmd = registry.get(name)
             assert cmd is not None, f"{name} should still be registered"
             assert cmd.source == "builtin", (

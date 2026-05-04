@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from voidcode.formatter import RuntimeFormatterPresetConfig
+from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WriteFileTool
 

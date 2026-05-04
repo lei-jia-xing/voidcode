@@ -7,14 +7,14 @@ from typing import ClassVar
 
 from rapidfuzz.distance import Levenshtein
 
-from ..hook.config import RuntimeHooksConfig
-from ..security.path_policy import resolve_workspace_path
-from ._formatter import (
+from ..formatter import (
     FormatterExecutionResult,
     FormatterExecutor,
     formatter_diagnostics,
     formatter_payload,
 )
+from ..hook.config import RuntimeHooksConfig
+from ..security.path_policy import resolve_workspace_path
 from ._repair import (
     bounded_block_preview,
     bounded_candidate_diff,
