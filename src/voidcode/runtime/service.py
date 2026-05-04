@@ -18,6 +18,7 @@ from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agen
 from ..agent.prompts import render_agent_prompt
 from ..command import (
     COMMAND_RESOLVED,
+    CommandResolution,
     is_prompt_command,
     load_command_registry,
     resolve_prompt_command,
@@ -2080,9 +2081,21 @@ class VoidCodeRuntime:
             final_session,
             events=tuple(events),
         )
+        workflow_request_metadata = {
+            key: final_session.metadata[key]
+            for key in ("command", "workflow_preset")
+            if key in final_session.metadata
+        }
+        validated_request = RuntimeRequest(
+            prompt=request.prompt,
+            session_id=final_session.session.id,
+            parent_session_id=final_session.session.parent_id,
+            metadata=validate_runtime_request_metadata(workflow_request_metadata),
+            allocate_session_id=request.allocate_session_id,
+        )
         final_session = self._session_with_workflow_plan_artifact(
             final_session,
-            request=self._validated_request(request),
+            request=validated_request,
             output=output,
         )
 
@@ -6169,6 +6182,10 @@ class VoidCodeRuntime:
             return prompt, metadata
 
         normalized = dict(cast(dict[str, object], metadata))
+        prompt, normalized = self._apply_continuation_loop_command(
+            resolution=resolution,
+            metadata=normalized,
+        )
         normalized["command"] = {
             "name": resolution.invocation.name,
             "source": resolution.invocation.source,
@@ -6189,12 +6206,87 @@ class VoidCodeRuntime:
                 arguments=resolution.invocation.arguments,
                 metadata=normalized,
             )
-        else:
+        elif prompt == resolution.invocation.original_prompt:
             prompt = resolution.invocation.rendered_prompt
         return prompt, validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=allow_internal_fields or "workflow_plan" in normalized,
         )
+
+    def _apply_continuation_loop_command(
+        self,
+        *,
+        resolution: CommandResolution,
+        metadata: dict[str, object],
+    ) -> tuple[str, dict[str, object]]:
+        invocation = resolution.invocation
+        command_name = invocation.name
+        if command_name not in {"continuation-loop", "intensive-loop", "cancel-continuation"}:
+            return invocation.original_prompt, metadata
+        raw_arguments = invocation.raw_arguments.strip()
+        if command_name == "cancel-continuation":
+            try:
+                cancelled = self._cancel_requested_continuation_loop(raw_arguments)
+            except ValueError as exc:
+                raise RuntimeRequestError(str(exc)) from exc
+            loop_payload = self._continuation_loop_metadata(cancelled)
+            metadata["continuation_loop"] = loop_payload
+            prompt = "\n\n".join(
+                (
+                    invocation.rendered_prompt,
+                    "Runtime continuation loop cancellation result:",
+                    json.dumps(loop_payload, sort_keys=True),
+                )
+            )
+            return prompt, metadata
+
+        try:
+            loop = self.start_continuation_loop(
+                prompt=raw_arguments or invocation.original_prompt,
+                intensive=command_name == "intensive-loop",
+            )
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
+        loop_payload = self._continuation_loop_metadata(loop)
+        metadata["continuation_loop"] = loop_payload
+        prompt = "\n\n".join(
+            (
+                invocation.rendered_prompt,
+                "Runtime continuation loop state:",
+                json.dumps(loop_payload, sort_keys=True),
+            )
+        )
+        return prompt, metadata
+
+    def _cancel_requested_continuation_loop(self, raw_loop_id: str) -> ContinuationLoopState:
+        if raw_loop_id:
+            return self.cancel_continuation_loop(raw_loop_id)
+        active_loop = next(
+            (loop for loop in self.list_continuation_loops() if loop.status == "active"),
+            None,
+        )
+        if active_loop is None:
+            raise ValueError("no active continuation loop to cancel")
+        return self.cancel_continuation_loop(active_loop.loop.id)
+
+    @staticmethod
+    def _continuation_loop_metadata(loop: ContinuationLoopState) -> dict[str, object]:
+        return {
+            "loop_id": loop.loop.id,
+            "status": loop.status,
+            "prompt": loop.prompt,
+            "session_id": loop.session_id,
+            "completion_promise": loop.completion_promise,
+            "max_iterations": loop.max_iterations,
+            "iteration": loop.iteration,
+            "intensive": loop.intensive,
+            "strategy": loop.strategy,
+            "created_at": loop.created_at,
+            "updated_at": loop.updated_at,
+            "finished_at": loop.finished_at,
+            "cancel_requested_at": loop.cancel_requested_at,
+            "error": loop.error,
+        }
 
     def _hydrate_start_work_prompt(
         self,
