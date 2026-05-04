@@ -5,7 +5,7 @@
 **Branch:** master
 
 ## OVERVIEW
-Local-first coding agent runtime. Python backend (`src/voidcode`) plus Bun/React frontend shell (`frontend/`), both still pre-MVP.
+Local-first coding agent runtime. Python backend (`src/voidcode`) plus Bun/React frontend shell (`frontend/`).
 
 ## STRUCTURE
 ```text
@@ -60,13 +60,13 @@ voidcode/
 - Do not have UI clients call tools directly.
 - Do not have LangGraph talk directly to UI clients; flow goes CLI/client → runtime → graph/tools.
 - Do not claim full frontend/runtime parity; the web client now has a minimal live runtime path, but it is not yet a fully productized runtime-driven app.
-- Do not expand pre-MVP scope into multi-agent/cloud/IDE-plugin work unless the task explicitly targets roadmap changes.
+- Do not expand current MVP scope into multi-agent/cloud/IDE-plugin work unless the task explicitly targets roadmap changes.
 - Do not commit generated frontend artifacts.
 - Do not open public issues for security-sensitive reports.
 
 ## UNIQUE STYLES
 - Backend architecture is intentionally split into `runtime/`, `graph/`, and `tools/` with contract files marking boundaries.
-- Session recovery is local and SQLite-backed under `.voidcode/`.
+- Session recovery is user-global and SQLite-backed under `$XDG_STATE_HOME/voidcode/sessions.sqlite3` (POSIX default `~/.local/state/voidcode/sessions.sqlite3`), with workspace-scoped `.voidcode/` still reserved for project config and agent assets. The runtime schema is versioned with SQLite `PRAGMA user_version` and stores scoped columns as `workspace_id`.
 - The backend now exposes a broader tool surface including read/write/edit/search/web and patch workflows under `src/voidcode/tools/`.
 - Runtime-owned delegated child execution exists for supported child presets through background task and child session surfaces; it is not an arbitrary multi-agent topology.
 - Portable session import/export is runtime-owned through `src/voidcode/runtime/bundle.py`; CLI import/export must not read or write SQLite bundle rows directly.

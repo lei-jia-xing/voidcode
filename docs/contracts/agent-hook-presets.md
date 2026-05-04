@@ -26,6 +26,7 @@
 | `role_reminder` | `guidance` | 提醒 active agent 遵守当前角色边界、工具范围与输出责任。 |
 | `delegation_guard` | `guard` | 约束 delegation 必须通过 runtime-owned task routing、child preset 与治理路径。 |
 | `background_output_quality_guidance` | `guidance` | 引导 agent 有界读取 background output，并先总结再行动。 |
+| `delegated_retry_guidance` | `guard` | 引导 failed/cancelled/interrupted delegated task 的 retry 必须显式、leader-owned，并通过 runtime-owned `background_retry` 执行。 |
 | `delegated_task_timing_guidance` | `guidance` | 提醒 agent 把 delegated background task 当作异步引用处理，只在真的需要时检查状态或阻塞等待。 |
 | `todo_continuation_guidance` | `continuation` | 引导多步任务保持 todo 状态，并用剩余 todo 继续下一步。 |
 
