@@ -97,10 +97,12 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         template=(
             "Workflow: continue under the runtime-owned intensive continuation loop recorded for "
             "this request. Task: $ARGUMENTS. The runtime persists intensive=true before execution "
-            "to signal deeper exploration and stricter verification. Do not use external product "
-            "names for this mode. Preserve runtime session/storage ownership, avoid prompt-only "
-            "continuation hacks, and stop only after concrete verification passes or a runtime "
-            "terminal loop state is reached."
+            "to signal deeper exploration and stricter runtime verification. Completion is not "
+            "terminal when the normal promise is reached; the runtime keeps verification_status "
+            "pending until independent verification succeeds and the verification promise is met. "
+            "Do not use external product names for this mode. Preserve runtime session/storage "
+            "ownership, avoid prompt-only continuation hacks, and stop only after concrete "
+            "verification passes or a runtime terminal loop state is reached."
         ),
         source="builtin",
         workflow_preset="implementation",

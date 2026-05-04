@@ -151,6 +151,7 @@ class TestBuiltinCommandDiscovery:
         assert commands["cancel-continuation"].workflow_preset is None
         assert "runtime-owned" in commands["continuation-loop"].template
         assert "intensive=true" in commands["intensive-loop"].template
+        assert "verification_status" in commands["intensive-loop"].template
         assert "latest active loop" in commands["cancel-continuation"].template
 
     def test_commands_are_disabled_when_hidden_flag_set(self) -> None:
