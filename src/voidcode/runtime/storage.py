@@ -580,10 +580,14 @@ class SqliteSessionStore:
             )
             """
         )
-        self._assert_schema_version(connection=connection, database_path=database_path)
+        # Validate the freshly-created/already-present schema before stamping the
+        # user_version. Stamping after validation keeps schema setup atomic from the
+        # caller's perspective: if any CREATE TABLE / canonical check fails, the
+        # database is never marked as the canonical version.
         self._assert_canonical_schema(connection=connection, database_path=database_path)
         self._ensure_workspace_indexes(connection=connection)
         self._ensure_storage_sequences(connection=connection)
+        self._assert_schema_version(connection=connection, database_path=database_path)
         connection.commit()
 
     @staticmethod
@@ -705,6 +709,13 @@ class SqliteSessionStore:
     def _assert_existing_schema_version(
         cls, *, connection: sqlite3.Connection, database_path: Path
     ) -> None:
+        """Validate persisted ``user_version`` before any schema mutation.
+
+        Fresh databases are not stamped here. Version stamping is deferred until
+        ``_ensure_schema`` finishes all ``CREATE TABLE`` statements and the
+        canonical-schema check succeeds, so partial bootstrap failures cannot
+        leave a database marked as the canonical version with missing tables.
+        """
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == cls._SCHEMA_VERSION:
             return
@@ -717,9 +728,12 @@ class SqliteSessionStore:
                 ).fetchall(),
             )
         }
-        if version == 0 and not existing_tables.intersection(cls._CANONICAL_SCHEMA):
-            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
-            return
+        if version == 0:
+            canonical_tables = set(cls._CANONICAL_SCHEMA)
+            if not existing_tables.intersection(canonical_tables):
+                return
+            if canonical_tables.issubset(existing_tables):
+                return
         cls._raise_schema_mismatch(
             database_path=database_path,
             detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),
@@ -727,6 +741,7 @@ class SqliteSessionStore:
 
     @classmethod
     def _assert_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        """Stamp ``PRAGMA user_version`` only after the schema is fully validated."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == 0:
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
@@ -1434,12 +1449,44 @@ class SqliteSessionStore:
         payload = cast(str | None, row["pending_approval_json"])
         if payload is None:
             return None
-        data = cast(dict[str, object], json.loads(payload))
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} is corrupt: "
+                f"{exc}. Run `voidcode sessions debug {session_id}` to inspect, "
+                "or `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} is corrupt: "
+                "payload must decode to an object."
+            )
+        data = cast(dict[str, object], decoded)
+        try:
+            request_id = data["request_id"]
+            tool_name = data["tool_name"]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} is missing "
+                f"required field {exc}; run `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(request_id, str) or not isinstance(tool_name, str):
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} has invalid "
+                "request_id/tool_name types; run `voidcode storage reset` to recover."
+            )
         raw_policy_mode = data.get("policy_mode", "ask")
-        policy_mode = _pending_permission_decision(raw_policy_mode)
+        try:
+            policy_mode = _pending_permission_decision(raw_policy_mode)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} has invalid "
+                f"policy_mode {raw_policy_mode!r}: {exc}"
+            ) from exc
         return PendingApproval(
-            request_id=cast(str, data["request_id"]),
-            tool_name=cast(str, data["tool_name"]),
+            request_id=request_id,
+            tool_name=tool_name,
             arguments=cast(dict[str, object], data.get("arguments", {})),
             target_summary=cast(str, data.get("target_summary", "")),
             reason=cast(str, data.get("reason", "")),
@@ -1551,31 +1598,108 @@ class SqliteSessionStore:
         payload = cast(str | None, row["pending_question_json"])
         if payload is None:
             return None
-        data = cast(dict[str, object], json.loads(payload))
-        raw_prompts = cast(list[object], data.get("prompts", []))
-        prompts: list[PendingQuestionPrompt] = []
-        for raw_prompt in raw_prompts:
-            prompt_payload = cast(dict[str, object], raw_prompt)
-            raw_options = cast(list[object], prompt_payload.get("options", []))
-            options = tuple(
-                PendingQuestionOption(
-                    label=cast(str, cast(dict[str, object], option)["label"]),
-                    description=cast(str, cast(dict[str, object], option).get("description", "")),
-                )
-                for option in raw_options
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} is corrupt: "
+                f"{exc}. Run `voidcode sessions debug {session_id}` to inspect, "
+                "or `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} is corrupt: "
+                "payload must decode to an object."
             )
+        data = cast(dict[str, object], decoded)
+        try:
+            request_id = data["request_id"]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} is missing "
+                f"required field {exc}; run `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(request_id, str):
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} has invalid "
+                "request_id type; run `voidcode storage reset` to recover."
+            )
+        raw_prompts = data.get("prompts", [])
+        if not isinstance(raw_prompts, list):
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} has invalid "
+                "prompts payload (must be a list)."
+            )
+        prompts: list[PendingQuestionPrompt] = []
+        for prompt_index, raw_prompt in enumerate(cast(list[object], raw_prompts)):
+            if not isinstance(raw_prompt, dict):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}] (must be an object)."
+                )
+            prompt_payload = cast(dict[str, object], raw_prompt)
+            raw_options = prompt_payload.get("options", [])
+            if not isinstance(raw_options, list):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}].options (must be a list)."
+                )
+            options_list: list[PendingQuestionOption] = []
+            for option_index, raw_option in enumerate(cast(list[object], raw_options)):
+                if not isinstance(raw_option, dict):
+                    raise RuntimeError(
+                        f"persisted pending question for session {session_id!r} has "
+                        f"invalid prompts[{prompt_index}].options[{option_index}] "
+                        "(must be an object)."
+                    )
+                option_payload = cast(dict[str, object], raw_option)
+                option_label = option_payload.get("label")
+                if not isinstance(option_label, str):
+                    raise RuntimeError(
+                        f"persisted pending question for session {session_id!r} has "
+                        f"invalid prompts[{prompt_index}].options[{option_index}].label "
+                        "(must be a string)."
+                    )
+                option_description = option_payload.get("description", "")
+                if not isinstance(option_description, str):
+                    option_description = ""
+                options_list.append(
+                    PendingQuestionOption(
+                        label=option_label,
+                        description=option_description,
+                    )
+                )
+            prompt_question = prompt_payload.get("question")
+            prompt_header = prompt_payload.get("header")
+            if not isinstance(prompt_question, str) or not isinstance(prompt_header, str):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}].question/header (must be strings)."
+                )
+            raw_multiple = prompt_payload.get("multiple", False)
+            if not isinstance(raw_multiple, bool):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}].multiple (must be a boolean)."
+                )
             prompts.append(
                 PendingQuestionPrompt(
-                    question=cast(str, prompt_payload["question"]),
-                    header=cast(str, prompt_payload["header"]),
-                    options=options,
-                    multiple=bool(prompt_payload.get("multiple", False)),
+                    question=prompt_question,
+                    header=prompt_header,
+                    options=tuple(options_list),
+                    multiple=raw_multiple,
                 )
             )
+        tool_name_value = data.get("tool_name", "question")
+        if not isinstance(tool_name_value, str):
+            tool_name_value = "question"
+        arguments_value = data.get("arguments", {})
+        if not isinstance(arguments_value, dict):
+            arguments_value = {}
         return PendingQuestion(
-            request_id=cast(str, data["request_id"]),
-            tool_name=cast(str, data.get("tool_name", "question")),
-            arguments=cast(dict[str, object], data.get("arguments", {})),
+            request_id=request_id,
+            tool_name=tool_name_value,
+            arguments=cast(dict[str, object], arguments_value),
             prompts=tuple(prompts),
         )
 
@@ -1629,6 +1753,38 @@ class SqliteSessionStore:
                 event_type=event_type,
                 payload=payload,
             )
+            # Verify the session exists before mutating any session state. We hold a
+            # write lock from BEGIN IMMEDIATE, so this read is consistent with the
+            # subsequent UPDATE.
+            existing_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT 1
+                    FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if existing_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            # Claim the dedupe slot before touching the session row. Losing the
+            # race means this is a duplicate delivery, and duplicate deliveries
+            # must not perturb session ordering or sequence counters.
+            if dedupe_key is not None:
+                delivered_at = self._next_auxiliary_timestamp(connection=connection)
+                inserted_delivery = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO session_event_deliveries (
+                        workspace_id, session_id, dedupe_key, delivered_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (str(workspace), session_id, dedupe_key, delivered_at),
+                )
+                if inserted_delivery.rowcount == 0:
+                    connection.commit()
+                    return None
             updated_at = self._next_timestamp(connection=connection)
             sequence_row = cast(
                 sqlite3.Row | None,
@@ -1643,28 +1799,9 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
             if sequence_row is None:
+                # Session disappeared mid-transaction; should not happen under
+                # BEGIN IMMEDIATE but kept defensively.
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            if dedupe_key is not None:
-                delivered_at = self._next_auxiliary_timestamp(connection=connection)
-                inserted_delivery = connection.execute(
-                    """
-                    INSERT OR IGNORE INTO session_event_deliveries (
-                        workspace_id, session_id, dedupe_key, delivered_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (str(workspace), session_id, dedupe_key, delivered_at),
-                )
-                if inserted_delivery.rowcount == 0:
-                    _ = connection.execute(
-                        """
-                        UPDATE sessions
-                        SET updated_at = ?, last_event_sequence = last_event_sequence - 1
-                        WHERE workspace_id = ? AND session_id = ?
-                        """,
-                        (updated_at, str(workspace), session_id),
-                    )
-                    connection.commit()
-                    return None
             sequence = cast(int, sequence_row["last_event_sequence"])
             event = EventEnvelope(
                 session_id=session_id,
@@ -2564,7 +2701,7 @@ class SqliteSessionStore:
                            intensive, created_at, updated_at, error
                     FROM continuation_loops
                     WHERE workspace_id = ?
-                    ORDER BY updated_at DESC, loop_id ASC
+                    ORDER BY updated_at DESC, created_at DESC, loop_id ASC
                     """,
                     (str(workspace),),
                 ).fetchall(),
