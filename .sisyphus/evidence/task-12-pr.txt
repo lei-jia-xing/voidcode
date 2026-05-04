@@ -1,5 +1,0 @@
-PR URL: https://github.com/lei-jia-xing/voidcode/pull/319
-
-Branch: feat/web-opencode-ui-redesign
-Upstream: origin/feat/web-opencode-ui-redesign
-Final verification: mise run check passed; see .sisyphus/evidence/task-12-mise-check.txt
