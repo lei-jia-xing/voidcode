@@ -23,7 +23,7 @@
 1. `VoidCodeRuntime` 仍是系统控制面，负责 session、approval、permission、persistence、event、transport、tool execution 与 capability lifecycle。
 2. `graph/` 仍是 orchestration / execution layer，而不是产品级治理边界。
 3. graph 层继续承载 deterministic/reference orchestration；provider-backed 与 delegated child execution 由 runtime 统一治理。
-4. 顶层 active run 默认使用 `leader`，也可以显式选择 `product` 进入规划/需求模式；runtime-owned delegation path 上的 child run 还可执行 `advisor`、`explore`、`product`、`researcher`、`worker`。
+4. 顶层 active run 默认使用 `leader`，也可以显式选择 `product` 进入规划/需求模式；runtime-owned delegation path 上的 child run 还可执行 `advisor`、`explore`、`researcher`、`worker`。
 5. 仓库已经具备 background task、parent/child session linkage、task notification/result retrieval 等 delegated substrate，但仍未扩展成任意拓扑的成熟 multi-agent 平台。
 
 因此，`voidcode.agent` 的设计目标不是引入第二套 runtime，而是补上“agent 定义层”。
@@ -117,7 +117,7 @@
 
 让 runtime 在现有 execution path 中能够解析和应用 agent preset，同时继续保持 runtime 对 approval、permission、event、persistence 的控制。
 
-当前实现已经完成 runtime 对 agent preset 的第一阶段落地：`leader` 作为默认顶层 active preset 进入 provider-backed 主路径，`product` 可以作为显式顶层 planning preset 被选择。runtime 会向 provider 注入所选 preset 的 `prompt_profile` / `prompt_materialization`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，校验 agent hook preset refs，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。runtime 还会把 tools、skills、hook preset guidance、MCP binding intent 与 provider/model metadata materialize 成 `agent_capability_snapshot` 并持久化到 session metadata；skill snapshot 的 binding 也引用这份 snapshot，从而让 replay/debug 使用历史 truth，而不是重新从变动后的 catalog 推导。`advisor`、`explore`、`product`、`researcher`、`worker` 现在也可以作为 delegated child preset 进入 runtime-owned child execution，但除 `leader` 与 `product` 外，它们仍不能被当作任意顶层 active agent 直接启动。
+当前实现已经完成 runtime 对 agent preset 的第一阶段落地：`leader` 作为默认顶层 active preset 进入 provider-backed 主路径，`product` 可以作为显式顶层 planning preset 被选择。runtime 会向 provider 注入所选 preset 的 `prompt_profile` / `prompt_materialization`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，校验 agent hook preset refs，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。runtime 还会把 tools、skills、hook preset guidance、MCP binding intent 与 provider/model metadata materialize 成 `agent_capability_snapshot` 并持久化到 session metadata；skill snapshot 的 binding 也引用这份 snapshot，从而让 replay/debug 使用历史 truth，而不是重新从变动后的 catalog 推导。`advisor`、`explore`、`researcher`、`worker` 现在可以作为 delegated child preset 进入 runtime-owned child execution，但除 `leader` 与 `product` 外，它们仍不能被当作任意顶层 active agent 直接启动。
 
 ### Phase 3：再评估 multi-agent orchestration
 

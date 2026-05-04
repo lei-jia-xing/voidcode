@@ -225,7 +225,7 @@ def test_background_task_result_delegated_event_payload_names_are_explicit() -> 
         "approval_request_id": None,
         "question_request_id": None,
         "routing": {"mode": "background", "category": "visual-engineering"},
-        "selected_preset": "product",
+        "selected_preset": "worker",
         "selected_execution_engine": "provider",
         "lifecycle_status": "completed",
         "approval_blocked": False,

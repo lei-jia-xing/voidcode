@@ -1,6 +1,6 @@
 # Review Work - VoidCode-Compatible Read-Only Review Guidance
 
-Use this skill when asked to review, verify, QA, or validate implementation work. It is a local VoidCode adaptation, not an OhMyOpenAgent orchestration copy. It must only describe capabilities VoidCode actually supports: top-level `leader` and `product` execution, delegated child presets `advisor`, `explore`, `product`, `researcher`, and `worker`, runtime tools, local files, git history, and configured MCP descriptors such as `context7`, `websearch`, `grep_app`, and `playwright`.
+Use this skill when asked to review, verify, QA, or validate implementation work. It is a local VoidCode adaptation, not an OhMyOpenAgent orchestration copy. It must only describe capabilities VoidCode actually supports: top-level `leader` and `product` execution, delegated child presets `advisor`, `explore`, `researcher`, and `worker`, runtime tools, local files, git history, and configured MCP descriptors such as `context7`, `websearch`, `grep_app`, and `playwright`.
 
 ## Review Contract
 

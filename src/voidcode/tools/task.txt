@@ -12,4 +12,4 @@ Usage:
 - Use `background_output` to read status/results and `background_cancel` to cancel a task by id.
 - Example background call: `task(prompt="Inspect the auth flow", run_in_background=true, load_skills=[], subagent_type="explore")`
 - Example sync call: `task(prompt="Summarize these findings", run_in_background=false, load_skills=[], category="writing")`
-- The current runtime preserves parent/child lineage, requested skills, and delegated task correlation. Top-level active runs still execute as `leader`, while delegated child runs can execute routed `advisor`, `explore`, `product`, `researcher`, or `worker` presets through the runtime-owned delegation path.
+- The current runtime preserves parent/child lineage, requested skills, and delegated task correlation. Top-level active runs execute as `leader` by default and may explicitly select the top-level `product` planning preset. Delegated child runs can execute routed `advisor`, `explore`, `researcher`, or `worker` presets through the runtime-owned delegation path; `product` is not callable through `task`.

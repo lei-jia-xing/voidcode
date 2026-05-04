@@ -236,7 +236,7 @@ def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
     assert "Requested subagent_type: explore" in runtime.requests[0].prompt
 
 
-@pytest.mark.parametrize("subagent_type", ("worker", "advisor", "explore", "researcher", "product"))
+@pytest.mark.parametrize("subagent_type", ("worker", "advisor", "explore", "researcher"))
 def test_task_tool_accepts_valid_direct_child_subagent_presets(
     tmp_path: Path,
     subagent_type: str,
@@ -269,6 +269,7 @@ def test_task_tool_accepts_valid_direct_child_subagent_presets(
     ("subagent_type", "message"),
     (
         ("leader", "subagent_type 'leader' is not a callable child preset"),
+        ("product", "subagent_type 'product' is a top-level planning preset"),
         ("unknown", "unknown subagent_type 'unknown'"),
     ),
 )
@@ -341,8 +342,8 @@ def test_task_category_mapping_contract_is_exact() -> None:
         "deep": "worker",
         "high": "worker",
         "brain": "advisor",
-        "writing": "product",
-        "visual-engineering": "product",
+        "writing": "worker",
+        "visual-engineering": "worker",
     }
 
 

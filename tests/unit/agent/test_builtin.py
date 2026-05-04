@@ -32,7 +32,7 @@ from voidcode.runtime.workflow import (
 
 _READ_ONLY_AGENT_PRESETS = ("advisor", "explore", "researcher", "product")
 _DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher")
-_CALLABLE_CHILD_AGENT_PRESETS = (*_DELEGATED_ONLY_AGENT_PRESETS, "product")
+_CALLABLE_CHILD_AGENT_PRESETS = _DELEGATED_ONLY_AGENT_PRESETS
 _MUTATING_TOOL_PATTERNS = frozenset(
     {
         "write_file",
@@ -137,8 +137,9 @@ def test_leader_prompt_distinguishes_product_from_delegated_worker_roles() -> No
     assert prompt is not None
     assert "Use category when you know the kind of work" in prompt
     assert "Use subagent_type when you already know the specialist you need" in prompt
-    assert "Use product when the next best move is product thinking" in prompt
-    assert "not an implementation worker" in prompt
+    assert "Product is a separate top-level planning preset" in prompt
+    assert "do not call `task` with product" in prompt
+    assert "give the user a concise product handoff" in prompt
     assert "or product for planning" not in prompt
 
 
@@ -214,6 +215,8 @@ def test_builtin_callable_child_presets_align_with_runtime_delegation_routes() -
 
     with pytest.raises(ValueError, match="leader.*not a callable child preset"):
         _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="leader"))
+    with pytest.raises(ValueError, match="product.*top-level planning preset"):
+        _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="product"))
 
 
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:

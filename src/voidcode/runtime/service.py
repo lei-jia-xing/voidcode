@@ -295,7 +295,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
-_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "product", "researcher", "worker"})
+_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
 _PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
     {
         "approval_mode",
