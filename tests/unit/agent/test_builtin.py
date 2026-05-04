@@ -131,6 +131,17 @@ def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
     assert "do not manually reconstruct child requests" in prompt
 
 
+def test_leader_prompt_distinguishes_product_from_delegated_worker_roles() -> None:
+    prompt = render_builtin_prompt_profile("leader")
+
+    assert prompt is not None
+    assert "Use category when you know the kind of work" in prompt
+    assert "Use subagent_type when you already know the specialist you need" in prompt
+    assert "Use product when the next best move is product thinking" in prompt
+    assert "not an implementation worker" in prompt
+    assert "or product for planning" not in prompt
+
+
 def test_builtin_agent_prompt_materialization_versions_match_prompt_contracts() -> None:
     expected_versions = {
         "leader": 2,
