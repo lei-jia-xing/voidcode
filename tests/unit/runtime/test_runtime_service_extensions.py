@@ -100,6 +100,7 @@ from voidcode.runtime.mcp import (
     McpToolCallResult,
     McpToolDescriptor,
 )
+from voidcode.runtime.paths import sessions_db_path
 from voidcode.runtime.permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
@@ -1531,6 +1532,20 @@ class _BackgroundTaskFailureGraph:
         raise RuntimeError("background boom")
 
 
+class _ParentSuccessBackgroundTaskFailureGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = tool_results, session
+        if request.prompt == "parent":
+            return _StubStep(output=request.prompt, is_finished=True)
+        raise RuntimeError("background boom")
+
+
 class _DisconnectingDelegatedRequestAcpAdapter(ManagedAcpAdapter):
     def __init__(self) -> None:
         super().__init__(RuntimeAcpConfig(enabled=True))
@@ -1815,6 +1830,39 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
 
     assert worker_started.wait(timeout=2.0)
     assert lifecycle_calls == ["background_task_started", "worker_started"]
+
+
+def test_runtime_exit_waits_for_background_task_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-exit-joins-worker"),
+        request=BackgroundTaskRequestSnapshot(prompt="background exit join"),
+    )
+    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+
+    def blocking_worker(task_id: str) -> None:
+        assert task_id == "task-exit-joins-worker"
+        worker_started.set()
+        assert release_worker.wait(timeout=2.0)
+        worker_finished.set()
+
+    monkeypatch.setattr(runtime, "_run_background_task_worker", blocking_worker)
+
+    supervisor._drain_background_task_queue()
+    assert worker_started.wait(timeout=2.0)
+    release_worker.set()
+    runtime.__exit__(None, None, None)
+
+    assert worker_finished.is_set()
+    assert runtime._background_task_shutdown_requested is True
+    assert runtime._background_task_threads == {}
 
 
 def test_runtime_background_task_started_hook_skips_when_thread_start_fails(
@@ -2684,6 +2732,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
             "role_reminder",
             "delegation_guard",
             "background_output_quality_guidance",
+            "delegated_retry_guidance",
             "todo_continuation_guidance",
         ],
         "presets": [
@@ -2715,6 +2764,18 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                     "unless you need a real status check, prefer waiting for the runtime "
                     "completion "
                     "reminder, and summarize results before acting on them."
+                ),
+            },
+            {
+                "ref": "delegated_retry_guidance",
+                "kind": "guard",
+                "source": "builtin",
+                "guidance": (
+                    "Retry failed, cancelled, or interrupted delegated background tasks only when "
+                    "it is the next explicit recovery step. Use the runtime-owned "
+                    "background_retry tool from a leader context instead of manually "
+                    "reconstructing child requests, inspect the new task id with "
+                    "background_output, and escalate repeated failures rather than looping."
                 ),
             },
             {
@@ -2830,7 +2891,7 @@ def test_runtime_resume_rejects_tampered_hook_preset_snapshot(tmp_path: Path) ->
     waiting = runtime.run(RuntimeRequest(prompt="approval", session_id="tampered-hook-resume"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -3388,7 +3449,7 @@ def test_runtime_session_debug_snapshot_classifies_session_state_inconsistency(
     )
     assert waiting.session.status == "waiting"
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -4037,6 +4098,7 @@ def test_runtime_snapshots_manifest_default_hook_refs(tmp_path: Path) -> None:
         "role_reminder",
         "delegation_guard",
         "background_output_quality_guidance",
+        "delegated_retry_guidance",
         "todo_continuation_guidance",
     ]
     hook_event = next(
@@ -4047,11 +4109,12 @@ def test_runtime_snapshots_manifest_default_hook_refs(tmp_path: Path) -> None:
             "role_reminder",
             "delegation_guard",
             "background_output_quality_guidance",
+            "delegated_retry_guidance",
             "todo_continuation_guidance",
         ],
-        "kinds": ["guidance", "guard", "guidance", "continuation"],
+        "kinds": ["guidance", "guard", "guidance", "guard", "continuation"],
         "source": "builtin",
-        "count": 4,
+        "count": 5,
     }
 
 
@@ -6183,7 +6246,7 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="malformed-pending-approval"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -6230,7 +6293,7 @@ def test_runtime_resume_rejects_persisted_approval_owned_by_different_session(
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="owned-approval-child"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -6280,7 +6343,7 @@ def test_runtime_resume_rejects_tampered_pending_approval_payload_against_record
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="approval-binding-mismatch"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -6335,7 +6398,7 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
         approval_decision="allow",
     )
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -6704,7 +6767,7 @@ def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="wrong-workspace-approval"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -6755,7 +6818,7 @@ def test_runtime_answer_question_rejects_wrong_workspace_metadata(tmp_path: Path
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="wrong-workspace-question"))
     question_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -6808,7 +6871,7 @@ def test_runtime_answer_question_rejects_tampered_pending_question_payload_again
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="question-binding-mismatch"))
     question_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -7121,6 +7184,141 @@ def test_runtime_background_task_persists_failure_state(tmp_path: Path) -> None:
     assert failed.observability.terminal_reason == failed.error
 
 
+def test_runtime_retries_failed_background_task_as_fresh_queued_task(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ParentSuccessBackgroundTaskFailureGraph(),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="parent", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="background fail",
+            parent_session_id="leader-session",
+            metadata={
+                "delegation": {
+                    "mode": "background",
+                    "category": "quick",
+                    "description": "Retry me",
+                    "command": "test retry",
+                },
+                "force_load_skills": ["demo"],
+            },
+            allocate_session_id=True,
+        )
+    )
+    failed = _wait_for_background_task(runtime, started.task.id)
+
+    retried = runtime.retry_background_task(failed.task.id)
+    retried_terminal = _wait_for_background_task(runtime, retried.task.id)
+
+    assert failed.status == "failed"
+    assert retried.task.id != failed.task.id
+    assert retried_terminal.status == "failed"
+    assert retried.request.prompt == failed.request.prompt
+    assert retried.request.parent_session_id == "leader-session"
+    assert retried.request.session_id == failed.request.session_id
+    assert retried.request.allocate_session_id is True
+    assert retried.request.metadata == failed.request.metadata
+    assert retried.routing_identity == failed.routing_identity
+
+
+def test_runtime_retries_cancelled_background_task(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-retry-cancelled"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="cancelled retry"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+    cancelled = runtime.cancel_background_task("task-retry-cancelled")
+
+    retried = runtime.retry_background_task(cancelled.task.id)
+    retried_terminal = _wait_for_background_task(runtime, retried.task.id)
+
+    assert cancelled.status == "cancelled"
+    assert retried.task.id != cancelled.task.id
+    assert retried.request.prompt == "cancelled retry"
+    assert retried_terminal.status == "completed"
+
+
+def test_runtime_base_registry_exposes_background_retry_tool(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    retry_tool = runtime._base_tool_registry.resolve("background_retry")
+
+    assert retry_tool.definition.name == "background_retry"
+    assert retry_tool.definition.read_only is True
+
+
+def test_runtime_agent_tool_scoping_keeps_background_retry_leader_only(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(agent=RuntimeAgentConfig(preset="leader")),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    worker_response = runtime.run(
+        RuntimeRequest(
+            prompt="worker child",
+            session_id="worker-child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+        )
+    )
+    explore_response = runtime.run(
+        RuntimeRequest(
+            prompt="explore child",
+            session_id="explore-child",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "subagent_type": "explore"}},
+        )
+    )
+
+    leader_tools = runtime._tool_registry_for_effective_config(
+        runtime.effective_runtime_config()
+    ).tools
+    worker_tools = runtime._tool_registry_for_effective_config(
+        runtime._effective_runtime_config_from_metadata(worker_response.session.metadata)
+    ).tools
+    explore_tools = runtime._tool_registry_for_effective_config(
+        runtime._effective_runtime_config_from_metadata(explore_response.session.metadata)
+    ).tools
+
+    assert "background_retry" in leader_tools
+    assert "background_retry" not in worker_tools
+    assert "background_retry" not in explore_tools
+
+
+def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    store = _private_attr(runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id="task-retry-queued"),
+            request=task_module.BackgroundTaskRequestSnapshot(prompt="queued retry"),
+            created_at=1,
+            updated_at=1,
+        ),
+    )
+    runtime._background_tasks_reconciled = True
+
+    with pytest.raises(ValueError, match="requires a failed, cancelled, or interrupted task"):
+        runtime.retry_background_task("task-retry-queued")
+
+
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     store = _private_attr(runtime, "_session_store")
@@ -7234,7 +7432,7 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
             updated_at=2,
         ),
     )
-    connection = sqlite3.connect(tmp_path / ".voidcode" / "sessions.sqlite3")
+    connection = sqlite3.connect(sessions_db_path())
     try:
         _ = connection.execute(
             """
@@ -9201,6 +9399,7 @@ def test_runtime_request_metadata_accepts_review_workflow_without_child_agent_pr
         "role_reminder",
         "delegation_guard",
         "background_output_quality_guidance",
+        "delegated_retry_guidance",
         "todo_continuation_guidance",
     ]
     assert request.metadata["workflow_preset"] == "review"
@@ -10324,7 +10523,7 @@ def test_runtime_resume_rejects_invalid_persisted_skill_payload_with_source_path
     )
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -11122,7 +11321,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_tool_timeout
     )
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-tool-timeout"))
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -11167,7 +11366,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
     )
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-max-steps"))
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -13133,7 +13332,9 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert "Use run_in_background=true" in leader_prompt
     assert "Use background_output to collect child results" in leader_prompt
     assert "background_output(full_session=true) is an explicit tool result" in leader_prompt
-    assert "passing its session_id" in leader_prompt
+    assert "Use background_retry with the failed task id" in leader_prompt
+    assert "inspect the returned retry task id with background_output" in leader_prompt
+    assert "do not manually reconstruct child requests" in leader_prompt
     assert "Escalate to the user after repeated child failure" in leader_prompt
 
     assert explore_prompt is not None
@@ -14162,7 +14363,7 @@ def test_runtime_resume_uses_persisted_selected_skill_names_when_payloads_missin
     assert waiting.session.metadata["selected_skill_names"] == ["alpha"]
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -14402,7 +14603,7 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
         RuntimeRequest(prompt="read sample.txt", session_id="fallback-config-missing-key")
     )
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -14511,7 +14712,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_provider_f
         RuntimeRequest(prompt="read sample.txt", session_id="malformed-provider-fallback")
     )
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -14673,7 +14874,7 @@ def test_runtime_effective_runtime_config_accepts_non_first_active_target_in_sna
     )
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="active-target-fallback"))
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -14728,7 +14929,7 @@ def test_runtime_effective_runtime_config_rejects_malformed_persisted_resolved_p
         RuntimeRequest(prompt="read sample.txt", session_id="malformed-resolved-provider")
     )
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -14788,7 +14989,7 @@ def test_runtime_persists_resume_checkpoint_for_waiting_session(tmp_path: Path) 
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-waiting-session"))
 
     assert waiting.session.status == "waiting"
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15194,7 +15395,7 @@ def test_runtime_resume_approval_rebuilds_from_persisted_checkpoint_after_restar
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-resume-session"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -15237,7 +15438,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-binding-mismatch"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15308,7 +15509,7 @@ def test_runtime_resume_falls_back_when_skill_snapshot_hash_mismatches_checkpoin
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-hash-mismatch"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15360,7 +15561,7 @@ def test_runtime_resume_falls_back_when_persisted_checkpoint_is_missing(tmp_path
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-fallback-session"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -15401,7 +15602,7 @@ def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-corrupt-json-session"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -15440,7 +15641,7 @@ def test_runtime_resume_rejects_persisted_checkpoint_payload_is_not_object(
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-non-object-session"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -15482,7 +15683,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_payload_with_vali
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-malformed-object"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -15534,7 +15735,7 @@ def test_runtime_resume_rejects_checkpoint_kind_mismatch(tmp_path: Path) -> None
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-kind-mismatch"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15584,7 +15785,7 @@ def test_runtime_resume_rejects_checkpoint_version_mismatch(tmp_path: Path) -> N
     waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-version-mismatch"))
     approval_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15639,7 +15840,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
     )
     second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15696,7 +15897,7 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
     )
     question_request_id = str(waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         row = connection.execute(
@@ -15757,7 +15958,7 @@ def test_runtime_resume_fallback_keeps_successful_tool_results_with_null_error(
     assert second_waiting.session.status == "waiting"
     second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -15811,7 +16012,7 @@ def test_runtime_resume_fallback_preserves_successful_null_tool_content(
         if event.event_type == "runtime.tool_completed" and event.payload.get("path") == "alpha.txt"
     )
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         _ = connection.execute(
@@ -17326,7 +17527,7 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     second_runtime = VoidCodeRuntime(workspace=tmp_path, config=config)
     result = second_runtime.provider_models_result("litellm")
 
-    assert (tmp_path / ".voidcode" / "provider-model-catalog.json").is_file()
+    assert (tmp_path / ".xdg-cache" / "voidcode" / "provider-model-catalog.json").is_file()
     assert result.models == models
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
@@ -17338,8 +17539,8 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
 def test_runtime_hydrates_provider_tool_feedback_mode_from_catalog_cache(
     tmp_path: Path,
 ) -> None:
-    cache_dir = tmp_path / ".voidcode"
-    cache_dir.mkdir()
+    cache_dir = tmp_path / ".xdg-cache" / "voidcode"
+    cache_dir.mkdir(parents=True)
     (cache_dir / "provider-model-catalog.json").write_text(
         json.dumps(
             {
@@ -17374,8 +17575,8 @@ def test_runtime_hydrates_provider_tool_feedback_mode_from_catalog_cache(
 def test_runtime_provider_validation_refreshes_past_persisted_catalog_cache(
     tmp_path: Path,
 ) -> None:
-    cache_dir = tmp_path / ".voidcode"
-    cache_dir.mkdir()
+    cache_dir = tmp_path / ".xdg-cache" / "voidcode"
+    cache_dir.mkdir(parents=True)
     (cache_dir / "provider-model-catalog.json").write_text(
         json.dumps(
             {

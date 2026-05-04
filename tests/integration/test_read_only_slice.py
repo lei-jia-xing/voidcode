@@ -20,6 +20,8 @@ from unittest.mock import ANY, patch
 
 import pytest
 
+from voidcode.runtime.paths import sessions_db_path
+
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 _DEFAULT_PERMISSION_METADATA = {
@@ -31,11 +33,12 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
         "role_reminder",
         "delegation_guard",
         "background_output_quality_guidance",
+        "delegated_retry_guidance",
         "todo_continuation_guidance",
     ],
-    "kinds": ["guidance", "guard", "guidance", "continuation"],
+    "kinds": ["guidance", "guard", "guidance", "guard", "continuation"],
     "source": "builtin",
-    "count": 4,
+    "count": 5,
 }
 
 
@@ -1135,7 +1138,7 @@ def test_runtime_background_subagent_failure_guides_session_id_retry_and_escalat
     assert result.status == "ok"
     assert result.data["status"] == "failed"
     assert result.data["child_session_id"] == "retry-child"
-    assert "session_id='retry-child'" in cast(str, result.data["guidance"])
+    assert f"background_retry(task_id='{started.task.id}')" in cast(str, result.data["guidance"])
     assert "After repeated failures, stop retrying and escalate" in cast(
         str, result.data["guidance"]
     )
@@ -4073,7 +4076,7 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
         approval_decision="allow",
     )
 
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
         approval_event = next(
@@ -4421,7 +4424,7 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
 
 def test_runtime_rejects_stale_session_schema_for_pending_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
-    database_path = tmp_path / ".voidcode" / "sessions.sqlite3"
+    database_path = sessions_db_path()
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
     connection = sqlite3.connect(database_path)
@@ -4430,7 +4433,7 @@ def test_runtime_rejects_stale_session_schema_for_pending_approval(tmp_path: Pat
             """
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
-                workspace TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 turn INTEGER NOT NULL,
                 prompt TEXT NOT NULL,
