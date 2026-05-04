@@ -74,6 +74,7 @@ class ProviderGraph:
         self._max_steps = max_steps
         self._abort_signal = _GraphAbortSignal(_cancelled=False)
         self._pending_tool_calls: list[ToolCall] = []
+        self._pending_tool_calls_session_id: str | None = None
 
     def cancel_current_turn(self) -> None:
         self._abort_signal.set_cancelled(True)
@@ -90,12 +91,18 @@ class ProviderGraph:
         if self._max_steps is not None and current_turn > self._max_steps:
             raise ValueError(f"graph exceeded max steps: {self._max_steps}")
 
-        if self._pending_tool_calls:
+        session_id = request.session.session.id
+        if self._pending_tool_calls and self._pending_tool_calls_session_id == session_id:
             next_tool_call = self._pending_tool_calls.pop(0)
+            if not self._pending_tool_calls:
+                self._pending_tool_calls_session_id = None
             return ProviderStep(
                 events=(),
                 tool_call=next_tool_call,
             )
+        if self._pending_tool_calls:
+            self._pending_tool_calls.clear()
+            self._pending_tool_calls_session_id = None
 
         provider_stream = request.metadata.get("provider_stream", False)
         if isinstance(provider_stream, bool):
@@ -166,6 +173,7 @@ class ProviderGraph:
                 planning_events=planning_events,
                 turn_request=turn_request,
                 current_turn=current_turn,
+                session_id=session_id,
             )
 
         turn_result = self._provider.propose_turn(turn_request)
@@ -173,6 +181,7 @@ class ProviderGraph:
             tool_calls = list(turn_result.tool_calls)
             first_tool_call = tool_calls.pop(0)
             self._pending_tool_calls.extend(tool_calls)
+            self._pending_tool_calls_session_id = session_id if tool_calls else None
             return ProviderStep(
                 events=planning_events,
                 tool_call=first_tool_call,
@@ -218,6 +227,7 @@ class ProviderGraph:
         planning_events: tuple[GraphEvent, ...],
         turn_request: ProviderTurnRequest,
         current_turn: int,
+        session_id: str,
     ) -> ProviderStep:
         stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         stream_events: list[GraphEvent] = []
@@ -316,6 +326,7 @@ class ProviderGraph:
             tool_calls = list(streamed_tool_calls)
             first_tool_call = tool_calls.pop(0)
             self._pending_tool_calls.extend(tool_calls)
+            self._pending_tool_calls_session_id = session_id if tool_calls else None
             return ProviderStep(
                 events=planning_events + tuple(stream_events),
                 tool_call=first_tool_call,
