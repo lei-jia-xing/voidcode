@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from voidcode.formatter import RuntimeFormatterPresetConfig
+from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.tools import MultiEditTool, ToolCall
 
 
@@ -213,7 +214,7 @@ def test_multi_edit_keeps_edits_successful_when_formatter_times_out(tmp_path: Pa
     )
 
     with patch(
-        "voidcode.tools._formatter.subprocess.run",
+        "voidcode.formatter.executor.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd=["slow-formatter"], timeout=10.0),
     ):
         result = tool.invoke(

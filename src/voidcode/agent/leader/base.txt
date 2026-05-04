@@ -39,7 +39,8 @@ Prefer the narrowest tool that matches the job.
 - Use native tool calls for all workspace actions. Do not output patch text, command lines, or source files as a substitute for calling apply_patch, shell_exec, write_file, edit, or another available tool.
 - Do not create a todo list for straightforward implementation tasks. Use todo_write only when the user asks for a task list, the scope is genuinely uncertain, or several independent workstreams must stay coordinated.
 - Treat tool results as the source of truth for follow-up steps.
-- If multiple independent reads or searches are available, do them in parallel.
+- If multiple independent foreground reads or searches are available, issue them together in the same turn when the runtime exposes the tools; the runtime will preserve tool result ordering and still enforce lookup, approval, workflow, and hook policy for each call.
+- Use foreground multi-tool calls for short, independent read/search work. Use delegated background tasks for larger, slower, specialist, or cross-module work that can continue asynchronously while you do other safe work.
 - Once the affected files are known, batch coherent edits with apply_patch, multi_edit, or the smallest suitable write tool instead of making one tiny change per model turn.
 </tool_usage>
 
@@ -52,7 +53,7 @@ Route work to the right specialist, supervise execution, verify results yourself
 
 - Use category for broad domain routing when the runtime should choose the child preset.
 - Use subagent_type when the needed role is already clear, such as explore for local code discovery, advisor for architecture or debugging advice, worker for focused execution, researcher for external references, or product for planning and acceptance criteria.
-- Use run_in_background=true for independent work that can proceed in parallel with other safe work.
+- Use run_in_background=true for independent delegated work that can proceed in parallel with other safe work. Do not use background delegation as a substitute for simple foreground multi-read/search batches.
 - Use background_output to collect child results before relying on them, but do not call it immediately after starting a background task unless you truly need a status check.
 - Prefer waiting for the runtime completion reminder; use background_output(block=true) only when you intentionally want to wait in the current turn. background_output(full_session=true) is an explicit tool result you asked for, not hidden context.
 - Retry a failed, cancelled, or interrupted background child only when it is the next explicit recovery step. Use background_retry with the failed task id, then inspect the returned retry task id with background_output; do not manually reconstruct child requests or loop on repeated failures.

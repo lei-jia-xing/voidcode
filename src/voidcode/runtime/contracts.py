@@ -56,6 +56,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
+    workflow_plan: dict[str, object]
     workflow_preset: str
     workflow: dict[str, object]
 
@@ -103,6 +104,7 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "show_thinking",
         "skills",
         "force_load_skills",
+        "workflow_plan",
         "workflow_preset",
         "workflow",
     }
@@ -449,6 +451,18 @@ def validate_runtime_request_metadata(
             metadata["workflow_preset"],
             field_name="workflow_preset",
         )
+
+    if "workflow_plan" in metadata:
+        if not allow_internal_fields:
+            raise RuntimeRequestError(
+                "request metadata 'workflow_plan' is internal runtime state and cannot be supplied"
+            )
+        workflow_plan = metadata["workflow_plan"]
+        if not isinstance(workflow_plan, dict):
+            raise RuntimeRequestError(
+                "request metadata 'workflow_plan' must be an object when provided"
+            )
+        normalized["workflow_plan"] = dict(cast(dict[str, object], workflow_plan))
 
     if "workflow" in metadata:
         if not allow_internal_fields:

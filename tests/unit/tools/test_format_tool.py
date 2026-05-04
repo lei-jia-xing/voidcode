@@ -6,7 +6,8 @@ import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
-from voidcode.hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from voidcode.formatter import RuntimeFormatterPresetConfig
+from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.lsp import FormatTool
 
@@ -225,7 +226,8 @@ def test_format_tool_treats_non_enoent_launch_failure_as_formatter_attempt_failu
     )
 
     with patch(
-        "voidcode.tools._formatter.subprocess.run", side_effect=PermissionError("permission denied")
+        "voidcode.formatter.executor.subprocess.run",
+        side_effect=PermissionError("permission denied"),
     ):
         result = tool.invoke(
             ToolCall(tool_name="format_file", arguments={"path": "example.py"}),
@@ -260,7 +262,7 @@ def test_format_tool_bounds_formatter_timeout(tmp_path: Path) -> None:
     )
 
     with patch(
-        "voidcode.tools._formatter.subprocess.run",
+        "voidcode.formatter.executor.subprocess.run",
         side_effect=subprocess.TimeoutExpired(cmd=["custom-formatter"], timeout=30.0),
     ):
         result = tool.invoke(

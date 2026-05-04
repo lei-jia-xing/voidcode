@@ -201,8 +201,15 @@ class ProviderTokenUsage:
 @dataclass(frozen=True, slots=True)
 class ProviderTurnResult:
     tool_call: ToolCall | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
     output: str | None = None
     usage: ProviderTokenUsage | None = None
+
+    def __post_init__(self) -> None:
+        if self.tool_call is not None and not self.tool_calls:
+            object.__setattr__(self, "tool_calls", (self.tool_call,))
+        elif self.tool_call is None and self.tool_calls:
+            object.__setattr__(self, "tool_call", self.tool_calls[0])
 
 
 @runtime_checkable

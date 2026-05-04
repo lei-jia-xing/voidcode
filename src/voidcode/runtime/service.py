@@ -2040,6 +2040,11 @@ class VoidCodeRuntime:
                 final_session,
                 events=tuple(events),
             )
+            final_session = self._session_with_workflow_plan_artifact(
+                final_session,
+                request=request,
+                output=output,
+            )
 
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
@@ -2067,6 +2072,11 @@ class VoidCodeRuntime:
         final_session = self._session_with_loaded_skill_metadata(
             final_session,
             events=tuple(events),
+        )
+        final_session = self._session_with_workflow_plan_artifact(
+            final_session,
+            request=self._validated_request(request),
+            output=output,
         )
 
         return RuntimeResponse(session=final_session, events=tuple(events), output=output)
@@ -6089,9 +6099,91 @@ class VoidCodeRuntime:
         command_agent = resolution.definition.agent
         if command_agent is not None and "agent" not in normalized:
             normalized["agent"] = {"preset": command_agent}
-        return resolution.invocation.rendered_prompt, validate_runtime_request_metadata(
+        command_workflow_preset = resolution.definition.workflow_preset
+        if command_workflow_preset is not None and "workflow_preset" not in normalized:
+            normalized["workflow_preset"] = command_workflow_preset
+        if resolution.invocation.name == "start-work":
+            prompt, normalized = self._hydrate_start_work_prompt(
+                prompt=resolution.invocation.rendered_prompt,
+                raw_arguments=resolution.invocation.raw_arguments,
+                arguments=resolution.invocation.arguments,
+                metadata=normalized,
+            )
+        else:
+            prompt = resolution.invocation.rendered_prompt
+        return prompt, validate_runtime_request_metadata(
             normalized,
-            allow_internal_fields=allow_internal_fields,
+            allow_internal_fields=allow_internal_fields or "workflow_plan" in normalized,
+        )
+
+    def _hydrate_start_work_prompt(
+        self,
+        *,
+        prompt: str,
+        raw_arguments: str,
+        arguments: tuple[str, ...],
+        metadata: dict[str, object],
+    ) -> tuple[str, dict[str, object]]:
+        if not arguments:
+            return prompt, metadata
+        plan_session_id = arguments[0]
+        plan_response = self._load_existing_session_if_present(session_id=plan_session_id)
+        if plan_response is None:
+            return prompt, metadata
+        raw_plan = plan_response.session.metadata.get("workflow_plan")
+        if not isinstance(raw_plan, dict):
+            return prompt, metadata
+        plan = dict(cast(dict[str, object], raw_plan))
+        hydrated_prompt = "\n\n".join(
+            (
+                prompt,
+                "<workflow_plan_artifact>",
+                f"source_session_id: {plan_session_id}",
+                f"requested_plan_reference: {raw_arguments}",
+                f"plan_goal: {plan.get('goal', '')}",
+                "plan_handoff:",
+                str(plan.get("handoff", "")),
+                "</workflow_plan_artifact>",
+            )
+        )
+        normalized = dict(metadata)
+        normalized["workflow_plan"] = {
+            "snapshot_version": 1,
+            "source": "start-work",
+            "source_session_id": plan_session_id,
+            "plan": plan,
+        }
+        return hydrated_prompt, normalized
+
+    @staticmethod
+    def _session_with_workflow_plan_artifact(
+        session: SessionState,
+        *,
+        request: RuntimeRequest,
+        output: str | None,
+    ) -> SessionState:
+        command = request.metadata.get("command")
+        if not isinstance(command, dict) or command.get("name") != "plan":
+            return session
+        workflow_preset = request.metadata.get("workflow_preset")
+        if workflow_preset != "review":
+            return session
+        plan_output = output or ""
+        raw_arguments = command.get("raw_arguments")
+        workflow_plan = {
+            "snapshot_version": 1,
+            "source": "plan-command",
+            "session_id": session.session.id,
+            "command": dict(cast(dict[str, object], command)),
+            "goal": raw_arguments if isinstance(raw_arguments, str) else "",
+            "handoff": plan_output,
+            "status": "draft" if session.status != "completed" else "ready",
+        }
+        return SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={**session.metadata, "workflow_plan": workflow_plan},
         )
 
     def _metadata_with_delegation_governance(

@@ -10,6 +10,7 @@ from voidcode.doctor.checker import (
     LspServerChecker,
     McpServerChecker,
 )
+from voidcode.formatter import RuntimeFormatterPresetConfig
 
 
 class TestExecutableChecker:
@@ -53,8 +54,6 @@ class TestFormatterPresetChecker:
 
     def test_check_with_available_formatter(self) -> None:
         """Test checker with an available formatter preset."""
-        from voidcode.hook.config import RuntimeFormatterPresetConfig
-
         preset = RuntimeFormatterPresetConfig(
             command=("python", "--version"),
             extensions=(".py",),
@@ -68,8 +67,6 @@ class TestFormatterPresetChecker:
 
     def test_check_with_missing_formatter(self) -> None:
         """Test checker with a missing formatter preset."""
-        from voidcode.hook.config import RuntimeFormatterPresetConfig
-
         preset = RuntimeFormatterPresetConfig(
             command=("definitely-not-a-formatter-xyz",),
             extensions=(".xyz",),

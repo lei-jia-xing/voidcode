@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .config import RuntimeFormatterPresetConfig, RuntimeHooksConfig, RuntimeHookSurface
+from ..formatter import RuntimeFormatterPresetConfig
+from .config import RuntimeHooksConfig, RuntimeHookSurface
 from .executor import (
     HookExecutionEvent,
     HookExecutionOutcome,

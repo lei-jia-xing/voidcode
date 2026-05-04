@@ -11,9 +11,9 @@ from typing import ClassVar, cast
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
-from ._formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 

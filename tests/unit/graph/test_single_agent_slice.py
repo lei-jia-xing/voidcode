@@ -112,6 +112,27 @@ class _MixedNonStreamingTurnProvider:
         )
 
 
+class _BatchNonStreamingTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(
+            tool_calls=(
+                ToolCall(
+                    tool_name="read_file",
+                    arguments={"filePath": "alpha.txt"},
+                    tool_call_id="call-alpha",
+                ),
+                ToolCall(
+                    tool_name="read_file",
+                    arguments={"filePath": "beta.txt"},
+                    tool_call_id="call-beta",
+                ),
+            )
+        )
+
+
 class _MixedStreamingTurnProvider:
     name = "opencode"
 
@@ -304,6 +325,33 @@ class _StreamToolSnapshotTurnProvider:
         )
 
 
+class _StreamToolBatchTurnProvider:
+    name = "opencode"
+
+    def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+        _ = request
+        return ProviderTurnResult(output="should-not-be-used")
+
+    def stream_turn(self, request: ProviderTurnRequest):
+        _ = request
+        return iter(
+            (
+                ProviderStreamEvent(
+                    kind="content",
+                    channel="tool",
+                    text=(
+                        '{"tool_calls":['
+                        '{"tool_name":"read_file","tool_call_id":"call-alpha",'
+                        '"arguments":{"filePath":"alpha.txt"}},'
+                        '{"tool_name":"read_file","tool_call_id":"call-beta",'
+                        '"arguments":{"filePath":"beta.txt"}}]}'
+                    ),
+                ),
+                ProviderStreamEvent(kind="done", done_reason="completed"),
+            )
+        )
+
+
 class _StreamMalformedToolTurnProvider:
     name = "opencode"
 
@@ -393,6 +441,36 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
         "streaming": False,
         "prompt": "read sample.txt",
     }
+
+
+def test_provider_graph_queues_non_streaming_tool_call_batch() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
+    request_context = RuntimeContextWindow(prompt="read two files")
+    request = GraphRunRequest(
+        session=_session(),
+        prompt="read two files",
+        available_tools=_tool_definitions(),
+        context_window=request_context,
+        assembled_context=_assembled_from_context_window(request_context),
+    )
+
+    first_step = graph.step(request=request, tool_results=(), session=_session())
+    second_step = graph.step(
+        request=request,
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        session=_session(),
+    )
+
+    assert first_step.tool_call is not None
+    assert first_step.tool_call.tool_call_id == "call-alpha"
+    assert len(first_step.tool_calls) == 2
+    assert second_step.tool_call is not None
+    assert second_step.tool_call.tool_call_id == "call-beta"
+    assert second_step.events == ()
 
 
 def test_provider_graph_passes_runtime_abort_signal_to_provider() -> None:
@@ -560,7 +638,7 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
 
     with pytest.raises(
         ProviderExecutionError,
-        match="neither output nor a tool call",
+        match="neither output nor tool calls",
     ) as exc_info:
         _ = graph.step(
             request=GraphRunRequest(
@@ -1243,6 +1321,38 @@ def test_provider_provider_graph_uses_latest_complete_tool_snapshot() -> None:
     assert step.tool_call is not None
     assert step.tool_call.tool_name == "read_file"
     assert step.tool_call.arguments == {"path": "sample.txt"}
+
+
+def test_provider_provider_graph_returns_streamed_tool_call_batch() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=_StreamToolBatchTurnProvider(), provider_model=provider_model)
+    request_context = RuntimeContextWindow(prompt="read two files")
+    request = GraphRunRequest(
+        session=_session(),
+        prompt="read two files",
+        available_tools=_tool_definitions(),
+        context_window=request_context,
+        assembled_context=_assembled_from_context_window(request_context),
+        metadata={"provider_stream": True},
+    )
+
+    first_step = graph.step(request=request, tool_results=(), session=_session())
+    second_step = graph.step(
+        request=request,
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        session=_session(),
+    )
+
+    assert first_step.is_finished is False
+    assert first_step.tool_call is not None
+    assert first_step.tool_call.tool_call_id == "call-alpha"
+    assert len(first_step.tool_calls) == 2
+    assert second_step.tool_call is not None
+    assert second_step.tool_call.tool_call_id == "call-beta"
+    assert second_step.events == ()
 
 
 def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> None:

@@ -9,6 +9,7 @@ import pytest
 
 from voidcode.agent import LEADER_AGENT_MANIFEST, get_builtin_agent_manifest
 from voidcode.agent.models import AgentMcpBindingIntent
+from voidcode.formatter import RuntimeFormatterPresetConfig, default_formatter_presets
 from voidcode.provider.config import (
     AnthropicProviderConfig,
     CopilotProviderAuthConfig,
@@ -33,7 +34,6 @@ from voidcode.runtime.config import (
     RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
-    RuntimeFormatterPresetConfig,
     RuntimeHooksConfig,
     RuntimeLspConfig,
     RuntimeLspServerConfig,
@@ -69,20 +69,6 @@ _parse_tui_config = runtime_config.__dict__["_parse_tui_config"]
 _parse_tools_config = runtime_config.__dict__["_parse_tools_config"]
 _parse_skills_config = runtime_config.__dict__["_parse_skills_config"]
 
-PRETTIER_ROOT_MARKERS = (
-    "package.json",
-    ".prettierrc",
-    ".prettierrc.json",
-    ".prettierrc.yml",
-    ".prettierrc.yaml",
-    ".prettierrc.js",
-    ".prettierrc.cjs",
-    ".prettierrc.mjs",
-    "prettier.config.js",
-    "prettier.config.cjs",
-    "prettier.config.mjs",
-)
-
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
     return {"profile": profile, "version": 2, "source": "builtin", "format": "text"}
@@ -93,129 +79,8 @@ def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prom
     path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
 
 
-PRETTIER_FALLBACK_COMMANDS = (
-    ("bunx", "prettier", "--write"),
-    ("pnpm", "exec", "prettier", "--write"),
-    ("npx", "prettier", "--write"),
-)
-
-
-def _prettier_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
-    return RuntimeFormatterPresetConfig(
-        command=("prettier", "--write"),
-        extensions=extensions,
-        root_markers=PRETTIER_ROOT_MARKERS,
-        fallback_commands=PRETTIER_FALLBACK_COMMANDS,
-        cwd_policy="nearest_root",
-    )
-
-
-def _shfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
-    return RuntimeFormatterPresetConfig(
-        command=("shfmt", "-w"),
-        extensions=extensions,
-        root_markers=(".editorconfig", ".shfmt.conf", ".shfmt"),
-        cwd_policy="nearest_root",
-    )
-
-
-def _dockerfmt_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
-    return RuntimeFormatterPresetConfig(
-        command=("dockerfmt", "--write"),
-        extensions=extensions,
-        root_markers=(".dockerfmt.toml", ".dockerfmt.hcl", "Dockerfile"),
-        cwd_policy="nearest_root",
-    )
-
-
-def _clang_format_preset(*extensions: str) -> RuntimeFormatterPresetConfig:
-    return RuntimeFormatterPresetConfig(
-        command=("clang-format", "-i"),
-        extensions=extensions,
-        root_markers=(".clang-format", "_clang-format", "compile_commands.json", "CMakeLists.txt"),
-        cwd_policy="nearest_root",
-    )
-
-
-def _sql_formatter_preset() -> RuntimeFormatterPresetConfig:
-    return RuntimeFormatterPresetConfig(
-        command=("sql-formatter", "--fix"),
-        extensions=(".sql",),
-        root_markers=(".sql-formatter.json", ".sql-formatter.jsonc", "package.json"),
-        fallback_commands=(
-            ("bunx", "sql-formatter", "--fix"),
-            ("pnpm", "exec", "sql-formatter", "--fix"),
-            ("npx", "sql-formatter", "--fix"),
-        ),
-        cwd_policy="nearest_root",
-    )
-
-
-DEFAULT_FORMATTER_PRESETS = {
-    "python": RuntimeFormatterPresetConfig(
-        command=("ruff", "format"),
-        extensions=(".py", ".pyi"),
-        root_markers=("pyproject.toml", "ruff.toml", ".ruff.toml"),
-        fallback_commands=(("uvx", "ruff", "format"), ("python", "-m", "ruff", "format")),
-        cwd_policy="nearest_root",
-    ),
-    "typescript": _prettier_preset(".ts", ".tsx", ".mts", ".cts"),
-    "javascript": _prettier_preset(".js", ".jsx", ".mjs", ".cjs"),
-    "json": _prettier_preset(".json", ".jsonc"),
-    "markdown": _prettier_preset(".md", ".mdx"),
-    "yaml": _prettier_preset(".yaml", ".yml"),
-    "html": _prettier_preset(".html", ".htm"),
-    "css": _prettier_preset(".css"),
-    "scss": _prettier_preset(".scss"),
-    "less": _prettier_preset(".less"),
-    "vue": _prettier_preset(".vue"),
-    "svelte": _prettier_preset(".svelte"),
-    "astro": _prettier_preset(".astro"),
-    "graphql": _prettier_preset(".graphql", ".gql"),
-    "handlebars": _prettier_preset(".hbs", ".handlebars"),
-    "toml": RuntimeFormatterPresetConfig(
-        command=("taplo", "fmt"),
-        extensions=(".toml",),
-        root_markers=("taplo.toml", ".taplo.toml", "pyproject.toml", "Cargo.toml"),
-        cwd_policy="nearest_root",
-    ),
-    "shell": _shfmt_preset(".sh", ".bash", ".zsh"),
-    "dockerfile": _dockerfmt_preset("Dockerfile"),
-    "nix": RuntimeFormatterPresetConfig(
-        command=("nixfmt",),
-        extensions=(".nix",),
-        root_markers=("flake.nix", "shell.nix", "default.nix"),
-        cwd_policy="nearest_root",
-    ),
-    "sql": _sql_formatter_preset(),
-    "rust": RuntimeFormatterPresetConfig(
-        command=("rustfmt",),
-        extensions=(".rs",),
-        root_markers=("Cargo.toml", "rustfmt.toml", ".rustfmt.toml"),
-        cwd_policy="nearest_root",
-    ),
-    "go": RuntimeFormatterPresetConfig(
-        command=("gofmt", "-w"),
-        extensions=(".go",),
-        root_markers=("go.mod",),
-        cwd_policy="nearest_root",
-    ),
-    "c": _clang_format_preset(".c", ".h"),
-    "cpp": _clang_format_preset(".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"),
-    "java": RuntimeFormatterPresetConfig(
-        command=("google-java-format", "--replace"),
-        extensions=(".java",),
-        root_markers=(".google-java-format", "pom.xml", "build.gradle", "build.gradle.kts"),
-        cwd_policy="nearest_root",
-    ),
-    "kotlin": RuntimeFormatterPresetConfig(
-        command=("ktlint", "-F"),
-        extensions=(".kt", ".kts"),
-        root_markers=("ktlint.yml", ".editorconfig", "build.gradle.kts"),
-        cwd_policy="nearest_root",
-    ),
-    "xml": _prettier_preset(".xml"),
-}
+DEFAULT_FORMATTER_PRESETS = default_formatter_presets()
+PRETTIER_ROOT_MARKERS = DEFAULT_FORMATTER_PRESETS["typescript"].root_markers
 
 
 def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> None:

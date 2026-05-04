@@ -50,10 +50,31 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "Workflow: produce an implementation plan, acceptance criteria, risks, and a "
             "verification strategy for the requested goal. Arguments describe the planning "
             "target: $ARGUMENTS. Target agent: product. Read-only by default: do not write "
-            "code or modify files unless explicitly instructed after the plan is accepted."
+            "code or modify files unless explicitly instructed after the plan is accepted. "
+            "Use todo_write only for session planning/progress state; it is runtime state, not "
+            "workspace mutation. If this plan should be executed later, include a concise "
+            "Start-work handoff section with the exact goal, files/modules, verification, and "
+            "open risks."
         ),
         source="builtin",
         agent="product",
+        workflow_preset="review",
+    ),
+    CommandDefinition(
+        name="start-work",
+        description="Start implementation from a previously accepted plan or handoff.",
+        template=(
+            "Workflow: execute the accepted plan or handoff using runtime tools. Arguments "
+            "identify the plan text, plan file, plan session id, issue, or goal to implement: "
+            "$ARGUMENTS. If a plan session id is provided, use the runtime-hydrated plan "
+            "artifact included below as the source of truth. First restate the concrete "
+            "implementation target and constraints, then "
+            "make the smallest safe changes. Use todo_write for multi-step progress tracking, "
+            "but do not treat todos as the durable plan artifact. Verification: run targeted "
+            "checks that cover the changed behavior and report any unverified risk."
+        ),
+        source="builtin",
+        workflow_preset="implementation",
     ),
     CommandDefinition(
         name="review",

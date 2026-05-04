@@ -26,7 +26,7 @@
 今天的 VoidCode 已经可以：
 
 - 启动、加载、列出、取消和显式 retry 后台任务
-- 在 workspace-local SQLite 中持久化后台任务真相
+- 在用户全局 XDG SQLite 中以 `workspace_id` scoped rows 持久化后台任务真相
 - 让后台任务继续走现有 runtime 执行路径
 - 通过 `task` 工具路由受支持的 child preset，并建立 parent / child session linkage
 - 通过 runtime events 通知 parent session
@@ -75,8 +75,19 @@ runtime 已有的基础能力：
 
 - `BackgroundTaskState`，包含 `queued/running/completed/failed/cancelled/interrupted` 状态
 - `start_background_task` / `load_background_task` / `list_background_tasks` / `cancel_background_task` / `retry_background_task`
-- workspace-local 的后台任务持久化
+- 用户全局 XDG SQLite 中以 `workspace_id` scoped rows 保存的后台任务持久化
 - 已有的 session truth，以及通过 `resume(session_id)` 恢复 transcript 的路径
+
+## 并行性边界
+
+当前实现需要区分 foreground tool execution 与 background/delegated execution：
+
+- provider-backed foreground loop 可接收同一 provider turn 返回的多个 tool calls；runtime 会按 provider 返回顺序把它们排入同一 foreground execution episode，并让每个 call 继续经过 `tool lookup → permission → hook → execute → result` 治理路径。
+- foreground multi-tool calls 适合短小、独立的 read/search 类工作；它们不是绕过审批的并行写入通道，也不是 delegated child execution。
+- foreground `shell_exec` 会在工具内部 worker thread 中运行，以便流式转发 progress events；这不是同一 turn 内的多工具并行执行。
+- `task(..., run_in_background=true)` 会创建 persisted `queued` background task，runtime queue 会按 provider/model/default concurrency limit 启动多个 worker thread；默认 concurrency 由 `RuntimeBackgroundTaskConfig.default_concurrency` 控制，并可被 provider/model 级配置覆盖。
+- background worker lifecycle、queued/running/completed/failed/cancelled/interrupted 状态、parent notification events 与 result retrieval 都持久化在同一 runtime truth 中；leader 不需要靠 prompt 文本或客户端本地状态推断完成情况。
+- `background_output(block=true)` 是显式阻塞等待 surface；常规 agent flow 应优先继续其他安全工作，等待 parent-session notification event 或稍后读取 `background_output(task_id)`。
 
 当前 shipped baseline 还必须保持以下限制：
 

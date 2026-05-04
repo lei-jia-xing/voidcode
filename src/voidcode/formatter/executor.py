@@ -4,9 +4,12 @@ import errno
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from ..hook.config import RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from .config import RuntimeFormatterPresetConfig
+
+if TYPE_CHECKING:
+    from ..hook.config import RuntimeHooksConfig
 
 FORMATTER_TIMEOUT_SECONDS = 30.0
 

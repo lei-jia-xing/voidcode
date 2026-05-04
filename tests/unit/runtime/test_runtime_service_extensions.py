@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
@@ -782,9 +782,9 @@ class _FailingProviderGraph:
 
 
 class _ScriptedTurnProvider:
-    def __init__(self, *, name: str, outcomes: tuple[object, ...]) -> None:
+    def __init__(self, *, name: str, outcomes: tuple[object, ...] | list[object]) -> None:
         self.name = name
-        self._outcomes = list(outcomes)
+        self._outcomes = outcomes if isinstance(outcomes, list) else list(outcomes)
         self.requests: list[ProviderTurnRequest] = []
 
     def propose_turn(self, request: object) -> ProviderTurnResult:
@@ -851,9 +851,20 @@ class _ScriptedModelProvider:
     name: str
     outcomes: tuple[object, ...]
     created_providers: list[_ScriptedTurnProvider] | None = None
+    shared_outcomes: bool = False
+    _shared_outcomes: list[object] | None = field(default=None, init=False, compare=False)
 
     def turn_provider(self) -> _ScriptedTurnProvider:
-        provider = _ScriptedTurnProvider(name=self.name, outcomes=self.outcomes)
+        provider_outcomes: tuple[object, ...] | list[object]
+        if self.shared_outcomes:
+            shared_outcomes = self._shared_outcomes
+            if not isinstance(shared_outcomes, list):
+                shared_outcomes = list(self.outcomes)
+                object.__setattr__(self, "_shared_outcomes", shared_outcomes)
+            provider_outcomes = shared_outcomes
+        else:
+            provider_outcomes = self.outcomes
+        provider = _ScriptedTurnProvider(name=self.name, outcomes=provider_outcomes)
         if self.created_providers is not None:
             self.created_providers.append(provider)
         return provider
@@ -930,6 +941,41 @@ class _WriteThenResultAwareTurnProvider:
                 )
             )
         return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+class _BatchedReadsTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_calls=(
+                    ToolCall(
+                        tool_name="read_file",
+                        arguments={"filePath": "alpha.txt"},
+                        tool_call_id="call-alpha",
+                    ),
+                    ToolCall(
+                        tool_name="read_file",
+                        arguments={"filePath": "beta.txt"},
+                        tool_call_id="call-beta",
+                    ),
+                )
+            )
+        return ProviderTurnResult(output="done")
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchedReadsModelProvider:
+    name: str
+    provider: _BatchedReadsTurnProvider
+
+    def turn_provider(self) -> _BatchedReadsTurnProvider:
+        return self.provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -3290,6 +3336,41 @@ def test_runtime_provider_recovers_after_permission_denial_feedback(tmp_path: Pa
     denied_tool_result = created_providers[-1].requests[1].tool_results[-1]
     assert denied_tool_result.status == "error"
     assert denied_tool_result.data["permission_denied"] is True
+
+
+def test_runtime_provider_executes_batched_tool_calls_before_next_model_turn(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "alpha.txt").write_text("alpha", encoding="utf-8")
+    (tmp_path / "beta.txt").write_text("beta", encoding="utf-8")
+    provider = _BatchedReadsTurnProvider(name="opencode")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+        ),
+        model_provider_registry=ModelProviderRegistry(
+            providers={"opencode": _BatchedReadsModelProvider(name="opencode", provider=provider)}
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read alpha and beta"))
+
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    assert len(provider.requests) == 2
+    assert provider.requests[1].tool_results[0].data["tool_call_id"] == "call-alpha"
+    assert provider.requests[1].tool_results[1].data["tool_call_id"] == "call-beta"
+    completed_reads = [
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"
+    ]
+    assert [event.payload["tool_call_id"] for event in completed_reads] == [
+        "call-alpha",
+        "call-beta",
+    ]
 
 
 def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path) -> None:
@@ -13666,6 +13747,7 @@ def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Pa
         "original_prompt": "/plan add command presets",
     }
     assert response.session.metadata["agent"] == {"preset": "product"}
+    assert response.session.metadata["workflow_preset"] == "review"
     assert created_providers[-1].requests[0].agent_preset == {
         "preset": "product",
         "prompt_profile": "product",
@@ -13674,6 +13756,93 @@ def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Pa
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+    assert workflow["selected_preset"] == "review"
+    assert workflow["read_only_default"] is True
+    workflow_plan = cast(dict[str, object], response.session.metadata["workflow_plan"])
+    assert workflow_plan == {
+        "snapshot_version": 1,
+        "source": "plan-command",
+        "session_id": response.session.session.id,
+        "command": response.session.metadata["command"],
+        "goal": "add command presets",
+        "handoff": "plan complete",
+        "status": "ready",
+    }
+
+
+def test_runtime_start_work_command_selects_implementation_workflow(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="work complete"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="/start-work plan from previous session"))
+
+    assert response.session.status == "completed"
+    assert response.output == "work complete"
+    assert response.session.metadata["command"] == {
+        "name": "start-work",
+        "source": "builtin",
+        "arguments": ["plan", "from", "previous", "session"],
+        "raw_arguments": "plan from previous session",
+        "original_prompt": "/start-work plan from previous session",
+    }
+    assert response.session.metadata["workflow_preset"] == "implementation"
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+    assert workflow["selected_preset"] == "implementation"
+    assert workflow["read_only_default"] is False
+
+
+def test_runtime_start_work_hydrates_plan_artifact_from_session(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(output="plan handoff text"),
+                    ProviderTurnResult(output="implementation complete"),
+                ),
+                created_providers=created_providers,
+                shared_outcomes=True,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+    plan_response = runtime.run(
+        RuntimeRequest(prompt="/plan add durable handoff", session_id="plan-session")
+    )
+
+    work_response = runtime.run(RuntimeRequest(prompt="/start-work plan-session"))
+
+    assert work_response.session.status == "completed"
+    assert work_response.output == "implementation complete"
+    workflow_plan = cast(dict[str, object], work_response.session.metadata["workflow_plan"])
+    assert workflow_plan["source"] == "start-work"
+    assert workflow_plan["source_session_id"] == "plan-session"
+    assert workflow_plan["plan"] == plan_response.session.metadata["workflow_plan"]
+    implementation_prompt = created_providers[-1].requests[-1].prompt
+    assert "<workflow_plan_artifact>" in implementation_prompt
+    assert "source_session_id: plan-session" in implementation_prompt
+    assert "plan_goal: add durable handoff" in implementation_prompt
+    assert "plan handoff text" in implementation_prompt
 
 
 def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields(

@@ -25,7 +25,8 @@ from ..agent import (
     load_agent_manifest_registry,
 )
 from ..agent.prompts import has_builtin_prompt_profile, render_builtin_prompt_profile
-from ..hook.config import FormatterCwdPolicy, RuntimeFormatterPresetConfig, RuntimeHooksConfig
+from ..formatter import FormatterCwdPolicy, RuntimeFormatterPresetConfig
+from ..hook.config import RuntimeHooksConfig
 from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset

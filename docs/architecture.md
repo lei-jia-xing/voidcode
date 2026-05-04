@@ -84,7 +84,7 @@ graph 是执行引擎和编排层，当前包含两条并行路径：
 
 图工具请求 → 运行时元数据查询 → 权限检查 → 前置钩子 → 工具执行 → 后置钩子 → 持久化 → 结果返回至图
 
-设计假设读取操作可以并发运行，而写入操作则保持受控且由审批驱动。
+provider-backed foreground loop 支持同一模型 turn 返回多个 tool calls，并按 provider 顺序把它们送入现有 `tool lookup → permission → hook → execute → result` 治理路径；这适合短小、独立的 read/search 批次。更重、更慢或 specialist work 的并行执行面来自 runtime-owned background task / delegated child workers，并由 provider/model/default concurrency limit 控制。写入操作仍保持受控且由审批驱动。
 
 ### `hook/`
 
