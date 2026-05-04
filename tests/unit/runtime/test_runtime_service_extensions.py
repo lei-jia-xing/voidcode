@@ -13845,6 +13845,82 @@ def test_runtime_start_work_hydrates_plan_artifact_from_session(tmp_path: Path) 
     assert "plan handoff text" in implementation_prompt
 
 
+def test_runtime_start_work_uses_resumed_plan_artifact(tmp_path: Path) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="question",
+                            arguments={
+                                "questions": [
+                                    {
+                                        "question": "Is the handoff ready?",
+                                        "header": "Plan readiness",
+                                        "options": [
+                                            {"label": "Ready", "description": ""},
+                                            {"label": "Revise", "description": ""},
+                                        ],
+                                        "multiple": False,
+                                    }
+                                ]
+                            },
+                        )
+                    ),
+                    ProviderTurnResult(output="final handoff after approval"),
+                    ProviderTurnResult(output="implementation complete"),
+                ),
+                created_providers=created_providers,
+                shared_outcomes=True,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="ask",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "review": WorkflowPreset(
+                        id="review",
+                        default_agent="advisor",
+                        category="review",
+                        permission_policy_ref="runtime_default",
+                    )
+                }
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="/plan resumed handoff", session_id="plan-session"))
+    question_event = next(
+        event for event in waiting.events if event.event_type == "runtime.question_requested"
+    )
+    question_request_id = str(question_event.payload["request_id"])
+    resumed = runtime.answer_question(
+        session_id="plan-session",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Plan readiness", answers=("Ready",)),),
+    )
+
+    work_response = runtime.run(RuntimeRequest(prompt="/start-work plan-session"))
+
+    assert resumed.session.status == "completed"
+    workflow_plan = cast(dict[str, object], resumed.session.metadata["workflow_plan"])
+    assert workflow_plan["handoff"] == "final handoff after approval"
+    assert workflow_plan["status"] == "ready"
+    start_work_plan = cast(dict[str, object], work_response.session.metadata["workflow_plan"])
+    assert start_work_plan["plan"] == workflow_plan
+    implementation_prompt = created_providers[-1].requests[-1].prompt
+    assert "final handoff after approval" in implementation_prompt
+
+
 def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields(
     tmp_path: Path,
 ) -> None:

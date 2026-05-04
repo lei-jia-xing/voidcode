@@ -374,12 +374,11 @@ class RuntimeResumeCoordinator:
                     events=stored.events + tuple(loop_events),
                     output=output,
                 )
-                request = RuntimeRequest(
+                _ = self._persist_resumed_response(
+                    stored_response=stored,
                     prompt=prompt,
-                    session_id=stored.session.session.id,
-                    parent_session_id=stored.session.session.parent_id,
+                    response=response,
                 )
-                runtime._persist_response(request=request, response=response)
                 return
             raise
 
@@ -416,6 +415,7 @@ class RuntimeResumeCoordinator:
                 session=final_session,
                 sequence=last_sequence,
             )
+            final_session = runtime._session_with_plan_state(final_session, status="completed")
             for chunk in final_chunks:
                 if chunk.event is not None:
                     last_sequence += 1
@@ -459,12 +459,11 @@ class RuntimeResumeCoordinator:
             events=stored.events + tuple(loop_events),
             output=output,
         )
-        request = RuntimeRequest(
+        _ = self._persist_resumed_response(
+            stored_response=stored,
             prompt=prompt,
-            session_id=stored.session.session.id,
-            parent_session_id=stored.session.session.parent_id,
+            response=response,
         )
-        runtime._persist_response(request=request, response=response)
 
     def response_from_resumed_chunks(
         self,
@@ -481,10 +480,72 @@ class RuntimeResumeCoordinator:
                 session_id=final_session.session.id
             )
         resolved_session = cast(SessionState, final_session)
-        return RuntimeResponse(
+        response = RuntimeResponse(
             session=resolved_session,
             events=stored_response.events + tuple(streamed_events),
             output=output,
+        )
+        return self._response_with_refreshed_workflow_plan(
+            stored_response=stored_response,
+            response=response,
+        )
+
+    def _persist_resumed_response(
+        self,
+        *,
+        stored_response: Any,
+        prompt: str,
+        response: RuntimeResponse,
+    ) -> RuntimeResponse:
+        request = self._resumed_runtime_request(
+            stored_response=stored_response,
+            prompt=prompt,
+        )
+        refreshed_response = self._response_with_refreshed_workflow_plan(
+            request=request,
+            response=response,
+        )
+        self._runtime._persist_response(request=request, response=refreshed_response)
+        return refreshed_response
+
+    def _response_with_refreshed_workflow_plan(
+        self,
+        *,
+        request: RuntimeRequest | None = None,
+        stored_response: Any | None = None,
+        response: RuntimeResponse,
+    ) -> RuntimeResponse:
+        if request is None:
+            if stored_response is None:
+                return response
+            stored_prompt = getattr(stored_response, "prompt", None)
+            prompt = (
+                stored_prompt
+                if isinstance(stored_prompt, str)
+                else self._runtime._prompt_from_events(stored_response.events)
+            )
+            request = self._resumed_runtime_request(
+                stored_response=stored_response,
+                prompt=prompt,
+            )
+        session = self._runtime._session_with_workflow_plan_artifact(
+            response.session,
+            request=request,
+            output=response.output,
+        )
+        return RuntimeResponse(
+            session=session,
+            events=response.events,
+            output=response.output,
+        )
+
+    @staticmethod
+    def _resumed_runtime_request(*, stored_response: Any, prompt: str) -> RuntimeRequest:
+        return RuntimeRequest(
+            prompt=prompt,
+            session_id=stored_response.session.session.id,
+            parent_session_id=stored_response.session.session.parent_id,
+            metadata=stored_response.session.metadata,
         )
 
     def resume_pending_approval_impl(
@@ -653,12 +714,11 @@ class RuntimeResumeCoordinator:
                 events=stored.events + tuple(loop_events) + (resequenced_failed,),
                 output=output,
             )
-            request = RuntimeRequest(
+            _ = self._persist_resumed_response(
+                stored_response=stored,
                 prompt=prompt,
-                session_id=stored.session.session.id,
-                parent_session_id=stored.session.session.parent_id,
+                response=response,
             )
-            runtime._persist_response(request=request, response=response)
             yield RuntimeStreamChunk(
                 kind="event",
                 session=mcp_failed_chunk.session,
@@ -706,12 +766,11 @@ class RuntimeResumeCoordinator:
                 events=stored.events + tuple(loop_events) + (resequenced_failed,),
                 output=output,
             )
-            request = RuntimeRequest(
+            _ = self._persist_resumed_response(
+                stored_response=stored,
                 prompt=prompt,
-                session_id=stored.session.session.id,
-                parent_session_id=stored.session.session.parent_id,
+                response=response,
             )
-            runtime._persist_response(request=request, response=response)
             yield RuntimeStreamChunk(
                 kind="event",
                 session=startup_failed_chunk.session,
@@ -858,12 +917,11 @@ class RuntimeResumeCoordinator:
                     events=stored.events + tuple(loop_events),
                     output=output,
                 )
-                request = RuntimeRequest(
+                _ = self._persist_resumed_response(
+                    stored_response=stored,
                     prompt=prompt,
-                    session_id=stored.session.session.id,
-                    parent_session_id=stored.session.session.parent_id,
+                    response=response,
                 )
-                runtime._persist_response(request=request, response=response)
                 return
             raise
 
@@ -949,12 +1007,11 @@ class RuntimeResumeCoordinator:
             events=stored.events + tuple(loop_events),
             output=output,
         )
-        request = RuntimeRequest(
+        _ = self._persist_resumed_response(
+            stored_response=stored,
             prompt=prompt,
-            session_id=stored.session.session.id,
-            parent_session_id=stored.session.session.parent_id,
+            response=response,
         )
-        runtime._persist_response(request=request, response=response)
 
     def approval_resume_state_from_checkpoint(
         self,
@@ -1238,12 +1295,11 @@ class RuntimeResumeCoordinator:
                     events=stored.events + tuple(loop_events),
                     output=output,
                 )
-                request = RuntimeRequest(
+                response = self._persist_resumed_response(
+                    stored_response=stored,
                     prompt=prompt,
-                    session_id=stored.session.session.id,
-                    parent_session_id=stored.session.session.parent_id,
+                    response=response,
                 )
-                runtime._persist_response(request=request, response=response)
                 if finalize_background_task:
                     runtime._background_task_supervisor.finalize_background_task_from_session_response(
                         session_response=response
@@ -1318,12 +1374,11 @@ class RuntimeResumeCoordinator:
             events=stored.events + tuple(loop_events),
             output=output,
         )
-        request = RuntimeRequest(
+        response = self._persist_resumed_response(
+            stored_response=stored,
             prompt=prompt,
-            session_id=stored.session.session.id,
-            parent_session_id=stored.session.session.parent_id,
+            response=response,
         )
-        runtime._persist_response(request=request, response=response)
         if finalize_background_task:
             runtime._background_task_supervisor.finalize_background_task_from_session_response(
                 session_response=response
