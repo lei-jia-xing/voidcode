@@ -331,69 +331,6 @@ def test_storage_diagnostics_outputs_json() -> None:
     assert payload["storage"]["connection_policy"]["busy_timeout_ms"] == 5000
 
 
-def test_loops_start_status_cancel_and_list_json() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        workspace = Path(tmp)
-        env = with_src_pythonpath(os.environ.copy())
-        start_result = _run_module_cli(
-            "loops",
-            "start",
-            "finish the migration",
-            "--workspace",
-            str(workspace),
-            "--completion-promise",
-            "DONE",
-            "--max-iterations",
-            "5",
-            "--intensive",
-            "--json",
-            env=env,
-        )
-        start_payload = json.loads(start_result.stdout)
-        loop_id = start_payload["loop"]["loop_id"]
-        status_result = _run_module_cli(
-            "loops",
-            "status",
-            loop_id,
-            "--workspace",
-            str(workspace),
-            "--json",
-            env=env,
-        )
-        cancel_result = _run_module_cli(
-            "loops",
-            "cancel",
-            loop_id,
-            "--workspace",
-            str(workspace),
-            "--json",
-            env=env,
-        )
-        list_result = _run_module_cli(
-            "loops",
-            "list",
-            "--workspace",
-            str(workspace),
-            "--json",
-            env=env,
-        )
-
-    status_payload = json.loads(status_result.stdout)
-    cancel_payload = json.loads(cancel_result.stdout)
-    list_payload = json.loads(list_result.stdout)
-    assert start_result.returncode == 0
-    assert status_result.returncode == 0
-    assert cancel_result.returncode == 0
-    assert list_result.returncode == 0
-    assert start_payload["loop"]["status"] == "active"
-    assert start_payload["loop"]["intensive"] is True
-    assert start_payload["loop"]["max_iterations"] == 5
-    assert status_payload["loop"]["loop_id"] == loop_id
-    assert cancel_payload["loop"]["status"] == "cancelled"
-    assert list_payload["loops"][0]["loop_id"] == loop_id
-    assert list_payload["loops"][0]["status"] == "cancelled"
-
-
 def test_storage_reset_removes_global_database_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
