@@ -46,7 +46,7 @@ def runtime_file_rule_contexts(
     for rule_path in rule_paths:
         try:
             content = rule_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         truncated = len(content) > max_rule_file_chars
         if truncated:
@@ -108,9 +108,9 @@ def _applicable_rule_paths(
                 continue
             seen.add(rule_path)
             ordered.append(rule_path)
-            if len(ordered) >= max_rule_files:
-                return tuple(ordered)
-    return tuple(ordered)
+    if len(ordered) <= max_rule_files:
+        return tuple(ordered)
+    return tuple(ordered[-max_rule_files:])
 
 
 def _workspace_path(*, workspace_root: Path, raw_path: str) -> Path | None:
