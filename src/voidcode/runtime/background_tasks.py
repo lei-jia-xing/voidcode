@@ -132,9 +132,54 @@ class RuntimeBackgroundTaskSupervisor:
         self._runtime = runtime
         self._queue_lock = threading.RLock()
         self._slot_available = threading.Condition(self._queue_lock)
+        self._threads: dict[str, threading.Thread] = {}
+        self._shutdown_requested = False
+        self._reconciled = False
         self._provider_running_counts: dict[str, int] = {}
         self._model_running_counts: dict[str, int] = {}
         self._rate_limit_retries: dict[str, _BackgroundTaskRetrySnapshot] = {}
+
+    @property
+    def threads(self) -> dict[str, threading.Thread]:
+        return self._threads
+
+    @threads.setter
+    def threads(self, value: dict[str, threading.Thread]) -> None:
+        self._threads = value
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._shutdown_requested
+
+    @shutdown_requested.setter
+    def shutdown_requested(self, value: bool) -> None:
+        self._shutdown_requested = value
+
+    @property
+    def reconciled(self) -> bool:
+        return self._reconciled
+
+    @reconciled.setter
+    def reconciled(self, value: bool) -> None:
+        self._reconciled = value
+
+    def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
+        self._shutdown_requested = True
+        deadline = time.monotonic() + max(timeout_seconds, 0.0)
+        while True:
+            with self._queue_lock:
+                threads = tuple(self._threads.items())
+            if not threads:
+                return
+            for task_id, thread in threads:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                thread.join(timeout=min(remaining, 0.1))
+                if not thread.is_alive():
+                    with self._queue_lock:
+                        if self._threads.get(task_id) is thread:
+                            self._threads.pop(task_id, None)
 
     def task_observability(
         self,
@@ -630,7 +675,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def _drain_background_task_queue(self) -> None:
         runtime = self._runtime
-        if runtime._background_task_shutdown_requested:
+        if self._shutdown_requested:
             return
         failed_tasks: list[BackgroundTaskState] = []
         started_tasks: list[
@@ -653,7 +698,7 @@ class RuntimeBackgroundTaskSupervisor:
                     workspace=runtime._workspace,
                     task_id=summary.task.id,
                 )
-                if task.status != "queued" or task.task.id in runtime._background_task_threads:
+                if task.status != "queued" or task.task.id in self._threads:
                     continue
                 request = RuntimeRequest(
                     prompt=task.request.prompt,
@@ -695,7 +740,7 @@ class RuntimeBackgroundTaskSupervisor:
                 ) -> None:
                     try:
                         start_gate.wait()
-                        if runtime._background_task_shutdown_requested:
+                        if self._shutdown_requested:
                             try:
                                 self._mark_background_task_interrupted_before_worker(
                                     task_id=background_task_id
@@ -707,21 +752,21 @@ class RuntimeBackgroundTaskSupervisor:
                         runtime._run_background_task_worker(background_task_id)
                     finally:
                         with self._queue_lock:
-                            runtime._background_task_threads.pop(background_task_id, None)
+                            self._threads.pop(background_task_id, None)
 
                 worker = threading.Thread(
                     target=run_worker_after_started_hook,
                     name=f"voidcode-background-task-{task.task.id}",
                     daemon=True,
                 )
-                runtime._background_task_threads[task.task.id] = worker
+                self._threads[task.task.id] = worker
                 started_tasks.append((running_task, worker, identity, worker_start_gate))
         for started_task, worker, identity, worker_start_gate in started_tasks:
             try:
                 worker.start()
             except RuntimeError as exc:
                 with self._queue_lock:
-                    runtime._background_task_threads.pop(started_task.task.id, None)
+                    self._threads.pop(started_task.task.id, None)
                     self._release_slot(identity)
                 failed_task = runtime._session_store.mark_background_task_terminal(
                     workspace=runtime._workspace,
@@ -1302,7 +1347,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def reconcile_background_tasks_if_needed(self) -> None:
         runtime = self._runtime
-        if runtime._background_tasks_reconciled:
+        if self._reconciled:
             return
         task_summaries = runtime._session_store.list_background_tasks(workspace=runtime._workspace)
         for task_summary in task_summaries:
@@ -1336,7 +1381,7 @@ class RuntimeBackgroundTaskSupervisor:
                 task_id=task_summary.task.id,
             )
             self.backfill_parent_background_task_event(task=task)
-        runtime._background_tasks_reconciled = True
+        self._reconciled = True
         self._drain_background_task_queue()
 
     def run_background_task_worker(self, task_id: str) -> None:
@@ -1552,7 +1597,7 @@ class RuntimeBackgroundTaskSupervisor:
                     error=str(exc),
                 )
             except Exception as terminal_exc:
-                if runtime._background_task_shutdown_requested:
+                if self._shutdown_requested:
                     logger.debug(
                         "background task %s skipped terminal update during shutdown: %s",
                         task_id,
@@ -1576,8 +1621,8 @@ class RuntimeBackgroundTaskSupervisor:
             if slot_identity is not None and slot_reserved:
                 with self._queue_lock:
                     self._release_slot(slot_identity)
-            runtime._background_task_threads.pop(task_id, None)
-            if not runtime._background_task_shutdown_requested:
+            self._threads.pop(task_id, None)
+            if not self._shutdown_requested:
                 try:
                     self._drain_background_task_queue()
                 except (RuntimeError, ValueError) as drain_exc:
