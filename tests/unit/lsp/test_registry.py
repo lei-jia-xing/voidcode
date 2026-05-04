@@ -29,6 +29,7 @@ def test_builtin_lsp_preset_catalog_covers_common_languages() -> None:
         "yamlls",
         "bashls",
         "csharp-ls",
+        "tailwindcss",
     }.issubset(preset_ids)
 
 
@@ -90,6 +91,17 @@ def test_resolve_lsp_server_config_supports_builtin_catalog_entry_for_clangd() -
     assert config.command == ("clangd",)
     assert config.languages == ("c", "cpp", "objective-c", "objective-cpp")
     assert config.matches_path(Path("main.cpp")) is True
+
+
+def test_resolve_lsp_server_config_supports_tailwindcss_preset() -> None:
+    config = resolve_lsp_server_config("tailwindcss", LspServerConfigOverride())
+
+    assert config.command == ("tailwindcss-language-server", "--stdio")
+    assert "tailwindcss" in config.languages
+    assert "typescriptreact" in config.languages
+    assert "tailwind.config.ts" in config.root_markers
+    assert config.matches_path(Path("component.tsx")) is True
+    assert config.matches_path(Path("style.css")) is True
 
 
 def test_resolve_lsp_server_configs_matches_servers_by_extension() -> None:
@@ -271,6 +283,7 @@ def test_derive_workspace_lsp_defaults_does_not_enable_web_auxiliary_servers_fro
                 "vscode-eslint-language-server",
                 "vscode-html-language-server",
                 "vscode-css-language-server",
+                "tailwindcss-language-server",
                 "vue-language-server",
             }
         ),
