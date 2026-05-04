@@ -137,3 +137,46 @@ def test_runtime_file_rule_contexts_extracts_apply_patch_change_paths(
         ("AGENTS.md", "Root rules"),
         ("src/AGENTS.md", "Src rules"),
     ]
+
+
+def test_runtime_file_rule_contexts_cap_preserves_latest_revisited_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path
+    for directory_name in ("active", "one_off_a", "one_off_b"):
+        directory = workspace / directory_name
+        directory.mkdir()
+        (directory / "AGENTS.md").write_text(f"{directory_name} rules", encoding="utf-8")
+        (directory / "module.py").write_text("print('ok')\n", encoding="utf-8")
+
+    contexts = runtime_file_rule_contexts(
+        workspace=workspace,
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                data={"path": "active/module.py"},
+            ),
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                data={"path": "one_off_a/module.py"},
+            ),
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                data={"path": "one_off_b/module.py"},
+            ),
+            ToolResult(
+                tool_name="edit",
+                status="ok",
+                data={"path": "active/module.py"},
+            ),
+        ),
+        max_rule_files=2,
+    )
+
+    assert [context.path for context in contexts] == [
+        "one_off_b/AGENTS.md",
+        "active/AGENTS.md",
+    ]

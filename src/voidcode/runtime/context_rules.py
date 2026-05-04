@@ -70,9 +70,12 @@ def _touched_paths_from_tool_results(tool_results: tuple[ToolResult, ...]) -> tu
         if not isinstance(value, str):
             return
         stripped = value.strip()
-        if not stripped or stripped in seen:
+        if not stripped:
             return
-        seen.add(stripped)
+        if stripped in seen:
+            paths.remove(stripped)
+        else:
+            seen.add(stripped)
         paths.append(stripped)
 
     for result in tool_results:
