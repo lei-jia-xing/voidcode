@@ -12,6 +12,21 @@ os.environ.setdefault("PYTHONUTF8", "1")
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="voidcode-pytest-config-")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_xdg_runtime_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-test isolation for XDG state/cache/data directories.
+
+    The runtime SQLite database (XDG_STATE_HOME), provider catalog cache
+    (XDG_CACHE_HOME), and exported user data (XDG_DATA_HOME) all default to
+    user-global locations. Without per-test override, tests would share these
+    files and corrupt each other. XDG_CONFIG_HOME is intentionally session-
+    scoped at module import time because runtime config loaders cache it.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / ".xdg-state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".xdg-cache"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".xdg-data"))
+
+
 _TEST_ROOT = Path(__file__).resolve().parent
 
 _SLOW_TEST_FILES = {
