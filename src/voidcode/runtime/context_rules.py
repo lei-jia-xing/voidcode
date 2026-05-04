@@ -91,6 +91,13 @@ def _touched_paths_from_tool_results(tool_results: tuple[ToolResult, ...]) -> tu
                 match = cast(dict[str, object], raw_match)
                 append(match.get("file"))
                 append(match.get("path"))
+        raw_changes = result.data.get("changes")
+        if isinstance(raw_changes, list | tuple):
+            for raw_change in raw_changes:
+                if not isinstance(raw_change, dict):
+                    continue
+                change = cast(dict[str, object], raw_change)
+                append(change.get("path"))
     return tuple(paths)
 
 

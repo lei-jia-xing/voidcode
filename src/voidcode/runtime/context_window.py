@@ -1842,7 +1842,7 @@ def assemble_provider_context(
     _append_system_segment(skill_prompt_context, source="skill_prompt")
     rule_contexts = runtime_file_rule_contexts(
         workspace=workspace,
-        tool_results=context_window.tool_results,
+        tool_results=tool_results,
     )
     for rule_context in rule_contexts:
         rule_content = (

@@ -105,3 +105,35 @@ def test_runtime_file_rule_contexts_skip_invalid_utf8_rule_files(tmp_path: Path)
     assert [(context.path, context.content) for context in contexts] == [
         ("src/AGENTS.md", "Src rules")
     ]
+
+
+def test_runtime_file_rule_contexts_extracts_apply_patch_change_paths(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Root rules", encoding="utf-8")
+    nested = workspace / "src" / "voidcode" / "runtime"
+    nested.mkdir(parents=True)
+    (workspace / "src" / "AGENTS.md").write_text("Src rules", encoding="utf-8")
+    (nested / "service.py").write_text("print('ok')\n", encoding="utf-8")
+
+    contexts = runtime_file_rule_contexts(
+        workspace=workspace,
+        tool_results=(
+            ToolResult(
+                tool_name="apply_patch",
+                status="ok",
+                data={
+                    "changes": [
+                        {"path": "src/voidcode/runtime/service.py", "status": "M"},
+                    ],
+                    "count": 1,
+                },
+            ),
+        ),
+    )
+
+    assert [(context.path, context.content) for context in contexts] == [
+        ("AGENTS.md", "Root rules"),
+        ("src/AGENTS.md", "Src rules"),
+    ]
