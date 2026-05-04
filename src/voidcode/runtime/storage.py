@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from time import time
+from time import sleep, time
 from typing import Protocol, cast, final, runtime_checkable
 
 from .contracts import (
@@ -262,6 +262,7 @@ class SessionEventAppender(Protocol):
 @dataclass(frozen=True, slots=True)
 class _SQLitePolicy:
     busy_timeout_ms: int = 5_000
+    configure_retry_interval_seconds: float = 0.05
     synchronous: str = "NORMAL"
     wal_autocheckpoint_pages: int = 1_000
 
@@ -417,14 +418,24 @@ class SqliteSessionStore:
             connection.close()
 
     def _configure_connection(self, *, connection: sqlite3.Connection) -> None:
-        _ = connection.execute(f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}")
-        _ = connection.execute("PRAGMA journal_mode = WAL")
-        _ = connection.execute(f"PRAGMA synchronous = {self._sqlite_policy.synchronous}")
-        _ = connection.execute("PRAGMA foreign_keys = ON")
-        _ = connection.execute(
-            f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}"
-        )
-        _ = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        deadline = time() + (self._sqlite_policy.busy_timeout_ms / 1_000)
+        while True:
+            try:
+                _ = connection.execute(
+                    f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}"
+                )
+                _ = connection.execute("PRAGMA journal_mode = WAL")
+                _ = connection.execute(f"PRAGMA synchronous = {self._sqlite_policy.synchronous}")
+                _ = connection.execute("PRAGMA foreign_keys = ON")
+                _ = connection.execute(
+                    f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}"
+                )
+                _ = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+                return
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower() or time() >= deadline:
+                    raise
+                sleep(self._sqlite_policy.configure_retry_interval_seconds)
 
     @contextmanager
     def _write_connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
@@ -719,21 +730,14 @@ class SqliteSessionStore:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == cls._SCHEMA_VERSION:
             return
-        existing_tables = {
-            cast(str, row["name"])
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                ).fetchall(),
-            )
-        }
         if version == 0:
-            canonical_tables = set(cls._CANONICAL_SCHEMA)
-            if not existing_tables.intersection(canonical_tables):
-                return
-            if canonical_tables.issubset(existing_tables):
-                return
+            # A fresh database can briefly expose a partially-created canonical
+            # table set to concurrent connections while the bootstrapper is still
+            # validating and stamping ``user_version``. Let version-0 databases
+            # continue through the idempotent CREATE TABLE path; the canonical
+            # schema assertion below still rejects legacy or corrupt tables before
+            # the database is stamped as current.
+            return
         cls._raise_schema_mismatch(
             database_path=database_path,
             detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),

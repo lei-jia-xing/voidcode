@@ -495,7 +495,7 @@ def test_session_storage_rejects_existing_unversioned_runtime_schema_without_mut
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 3 got 0.*unversioned-runtime\.sqlite3",
+        match=r"table 'sessions' missing columns: .*workspace_id.*unversioned-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
