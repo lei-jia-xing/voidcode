@@ -55,6 +55,8 @@ class RuntimeContinuationLoopMetadata(TypedDict, total=False):
     iteration: int
     intensive: bool
     strategy: str
+    verification_status: str
+    verification_promise: str
     created_at: int
     updated_at: int
     finished_at: int | None
@@ -224,6 +226,8 @@ def validate_runtime_continuation_loop_metadata(
         "iteration",
         "intensive",
         "strategy",
+        "verification_status",
+        "verification_promise",
         "created_at",
         "updated_at",
         "finished_at",
@@ -252,6 +256,14 @@ def validate_runtime_continuation_loop_metadata(
         ),
         "strategy": _validate_optional_runtime_metadata_string(
             loop_payload.get("strategy"), field_name="continuation_loop.strategy"
+        ),
+        "verification_status": _validate_optional_runtime_metadata_string(
+            loop_payload.get("verification_status"),
+            field_name="continuation_loop.verification_status",
+        ),
+        "verification_promise": _validate_optional_runtime_metadata_string(
+            loop_payload.get("verification_promise"),
+            field_name="continuation_loop.verification_promise",
         ),
     }
     optional_string_fields = ("session_id", "error")

@@ -178,6 +178,8 @@ def continuation_loop_metadata(loop: ContinuationLoopState) -> dict[str, object]
         "iteration": loop.iteration,
         "intensive": loop.intensive,
         "strategy": loop.strategy,
+        "verification_status": loop.verification_status,
+        "verification_promise": loop.verification_promise,
         "created_at": loop.created_at,
         "updated_at": loop.updated_at,
         "finished_at": loop.finished_at,
@@ -193,8 +195,13 @@ def render_intensive_loop_prefix(loop: ContinuationLoopState) -> str:
             "Runtime continuation mode: intensive.",
             f"Iteration budget: {loop.max_iterations}.",
             f"Completion promise: {loop.completion_promise}.",
-            "Before declaring completion, verify the result with the strongest targeted "
-            "checks available and explicitly account for unresolved risks.",
+            f"Verification promise: {loop.verification_promise}.",
+            f"Verification status: {loop.verification_status}.",
+            "Before declaring completion, move through runtime verification: first produce "
+            f"the completion promise <promise>{loop.completion_promise}</promise>, then "
+            "perform the strongest targeted checks available, consult Oracle or an equivalent "
+            "independent verifier, and only finish after "
+            f"<promise>{loop.verification_promise}</promise>.",
         )
     )
 

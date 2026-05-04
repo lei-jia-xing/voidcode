@@ -3113,6 +3113,7 @@ class VoidCodeRuntime:
             max_iterations=max_iterations,
             intensive=intensive,
             strategy=strategy,
+            verification_status="pending" if intensive else "not_required",
         )
         self._session_store.create_continuation_loop(workspace=self._workspace, loop=loop)
         return self._session_store.load_continuation_loop(
@@ -3135,6 +3136,33 @@ class VoidCodeRuntime:
         return self._session_store.record_continuation_loop_iteration(
             workspace=self._workspace,
             loop_id=loop_id,
+        )
+
+    def mark_continuation_loop_verification_pending(self, loop_id: str) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.mark_continuation_loop_verification_pending(
+            workspace=self._workspace,
+            loop_id=loop_id,
+        )
+
+    def mark_continuation_loop_verified(self, loop_id: str) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.mark_continuation_loop_verified(
+            workspace=self._workspace,
+            loop_id=loop_id,
+        )
+
+    def mark_continuation_loop_verification_failed(
+        self,
+        loop_id: str,
+        *,
+        error: str | None = None,
+    ) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.mark_continuation_loop_verification_failed(
+            workspace=self._workspace,
+            loop_id=loop_id,
+            error=error,
         )
 
     def mark_continuation_loop_terminal(

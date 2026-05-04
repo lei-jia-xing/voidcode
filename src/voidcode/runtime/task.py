@@ -18,6 +18,12 @@ type ContinuationLoopStatus = Literal[
     "cancelled",
     "exhausted",
 ]
+type ContinuationLoopVerificationStatus = Literal[
+    "not_required",
+    "pending",
+    "verified",
+    "failed",
+]
 type ContinuationLoopStrategy = Literal["continue", "reset"]
 type SubagentExecutionMode = Literal["sync", "background"]
 type SubagentResultOwner = Literal["child_session"]
@@ -484,6 +490,8 @@ class ContinuationLoopState:
     iteration: int = 0
     intensive: bool = False
     strategy: ContinuationLoopStrategy = "continue"
+    verification_status: ContinuationLoopVerificationStatus = "not_required"
+    verification_promise: str = "VERIFIED"
     created_at: int = 0
     updated_at: int = 0
     finished_at: int | None = None
@@ -500,6 +508,8 @@ class StoredContinuationLoopSummary:
     iteration: int
     max_iterations: int
     intensive: bool
+    verification_status: ContinuationLoopVerificationStatus
+    verification_promise: str
     created_at: int
     updated_at: int
     error: str | None = None
@@ -527,3 +537,19 @@ def parse_continuation_loop_strategy(value: str) -> ContinuationLoopStrategy:
     if value == "reset":
         return "reset"
     raise ValueError("continuation loop strategy must be 'continue' or 'reset'")
+
+
+def parse_continuation_loop_verification_status(
+    value: str,
+) -> ContinuationLoopVerificationStatus:
+    if value == "not_required":
+        return "not_required"
+    if value == "pending":
+        return "pending"
+    if value == "verified":
+        return "verified"
+    if value == "failed":
+        return "failed"
+    raise ValueError(
+        "continuation loop verification_status must be not_required, pending, verified, or failed"
+    )
