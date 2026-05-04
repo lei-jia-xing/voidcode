@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from voidcode.runtime.events import runtime_reasoning_part_payload
+from voidcode.runtime.paths import sessions_db_path
 
 from .._paths import with_src_pythonpath
 
@@ -330,7 +331,7 @@ def test_storage_diagnostics_outputs_json() -> None:
     assert payload["storage"]["connection_policy"]["busy_timeout_ms"] == 5000
 
 
-def test_storage_reset_removes_local_database_files() -> None:
+def test_storage_reset_removes_global_database_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
@@ -344,6 +345,7 @@ def test_storage_reset_removes_local_database_files() -> None:
             "reset-session",
             env=env,
         )
+        database_path = sessions_db_path(env)
         reset_result = _run_module_cli(
             "storage",
             "reset",
@@ -351,7 +353,6 @@ def test_storage_reset_removes_local_database_files() -> None:
             str(workspace),
             env=env,
         )
-        database_path = workspace / ".voidcode" / "sessions.sqlite3"
 
     payload = json.loads(reset_result.stdout)
     assert setup_result.returncode == 0

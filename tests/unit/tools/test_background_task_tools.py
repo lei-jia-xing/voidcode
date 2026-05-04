@@ -17,7 +17,12 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.tools import BackgroundCancelTool, BackgroundOutputTool, ToolCall
+from voidcode.tools import (
+    BackgroundCancelTool,
+    BackgroundOutputTool,
+    BackgroundRetryTool,
+    ToolCall,
+)
 
 
 class _StubBackgroundRuntime:
@@ -71,6 +76,16 @@ class _StubBackgroundRuntime:
                 prompt="delegated", parent_session_id="leader-session"
             ),
             error="cancelled before start",
+        )
+
+    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
+        assert task_id == "task-1"
+        return BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-2"),
+            status="queued",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegated", parent_session_id="leader-session"
+            ),
         )
 
 
@@ -313,6 +328,21 @@ class _UnknownCancelRuntime(_StubBackgroundRuntime):
         raise ValueError("unknown background task: missing-task")
 
 
+class _UnknownRetryRuntime(_StubBackgroundRuntime):
+    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
+        assert task_id == "missing-task"
+        raise ValueError("unknown background task: missing-task")
+
+
+class _NonTerminalRetryRuntime(_StubBackgroundRuntime):
+    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
+        assert task_id == "task-1"
+        raise ValueError(
+            "background task retry requires a failed, cancelled, or interrupted task; "
+            "task task-1 is running"
+        )
+
+
 def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     tool = BackgroundOutputTool(runtime=_StubBackgroundRuntime())
 
@@ -523,7 +553,7 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
     assert result.status == "ok"
     assert result.content is not None
     assert "do not retry automatically" in result.content
-    assert "session_id='child-session'" in result.content
+    assert "background_retry(task_id='task-1')" in result.content
     assert "After repeated failures" in result.content
     assert "do not retry automatically" in str(result.data["guidance"])
 
@@ -543,6 +573,7 @@ def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Pat
     handoff = cast(dict[str, object], result.data["handoff_summary"])
     assert handoff["blocked_reason"] == "background task interrupted before completion"
     assert "interrupted before completion" in str(result.data["guidance"])
+    assert "background_retry" in str(result.data["guidance"])
 
 
 def test_background_output_tool_guides_unavailable_result_without_looping(tmp_path: Path) -> None:
@@ -717,6 +748,84 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
     with pytest.raises(ValueError, match=missing_task_id_error):
         tool.invoke(
             ToolCall(tool_name="background_cancel", arguments={}),
+            workspace=tmp_path,
+        )
+
+
+def test_background_retry_tool_starts_fresh_task(tmp_path: Path) -> None:
+    tool = BackgroundRetryTool(runtime=_StubBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_retry", arguments={"task_id": "task-1"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["task_id"] == "task-1"
+    assert result.data["retry_task_id"] == "task-2"
+    assert result.data["status"] == "queued"
+    assert result.data["retry_started"] is True
+    assert result.data["terminal"] is False
+    assert result.data["retrieval_instruction"] == 'background_output(task_id="task-2")'
+    assert result.content is not None
+    assert "Retried background task task-1 as task-2" in result.content
+
+
+def test_background_retry_tool_reports_unknown_task_deterministically(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundRetryTool(runtime=_UnknownRetryRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_retry", arguments={"task_id": "missing-task"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data == {
+        "task_id": "missing-task",
+        "retry_task_id": None,
+        "status": "unknown",
+        "session_id": None,
+        "parent_session_id": None,
+        "error": "unknown background task: missing-task",
+        "terminal": True,
+        "retry_started": False,
+    }
+
+
+def test_background_retry_tool_rejects_non_terminal_retry(tmp_path: Path) -> None:
+    tool = BackgroundRetryTool(runtime=_NonTerminalRetryRuntime())
+
+    with pytest.raises(ValueError, match="task task-1 is running"):
+        tool.invoke(
+            ToolCall(tool_name="background_retry", arguments={"task_id": "task-1"}),
+            workspace=tmp_path,
+        )
+
+
+def test_background_retry_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
+    tool = BackgroundRetryTool(runtime=_StubBackgroundRuntime())
+    task_id_type_error = (
+        r"background_retry Validation error: task_id: "
+        r"Input should be a valid string \(received int\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+
+    with pytest.raises(ValueError, match=task_id_type_error):
+        tool.invoke(
+            ToolCall(tool_name="background_retry", arguments={"task_id": 123}),
+            workspace=tmp_path,
+        )
+
+    task_id_empty_error = (
+        r"background_retry Validation error: task_id: Value error, "
+        r"task_id must be a non-empty string \(received str\)"
+        r"\. Please retry with corrected arguments that satisfy the tool schema\."
+    )
+    with pytest.raises(ValueError, match=task_id_empty_error):
+        tool.invoke(
+            ToolCall(tool_name="background_retry", arguments={"task_id": "   "}),
             workspace=tmp_path,
         )
 
