@@ -289,7 +289,7 @@ from .tool_provider import (
 from .workflow import WorkflowPreset, load_builtin_workflow_preset_registry
 
 if TYPE_CHECKING:
-    from ..tools.lsp import FormatTool
+    from ..tools.format_file import FormatTool
     from .execution_seams import RuntimeGraphSelection, RuntimeSessionRouting
 
 logger = logging.getLogger(__name__)
@@ -1521,7 +1521,7 @@ class VoidCodeRuntime:
         return LspTool(requester=self.request_lsp)
 
     def _build_format_tool(self) -> FormatTool:
-        from ..tools.lsp import FormatTool
+        from ..tools.format_file import FormatTool
 
         return FormatTool(self._config.hooks or RuntimeHooksConfig(), self._workspace)
 

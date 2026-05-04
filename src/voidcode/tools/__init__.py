@@ -6,10 +6,11 @@ from .background_retry import BackgroundRetryTool
 from .code_search import CodeSearchTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
+from .format_file import FormatTool
 from .glob import GlobTool
 from .grep import GrepTool
 from .local_custom import LocalCustomTool
-from .lsp import FormatTool, LspTool
+from .lsp import LspTool
 from .mcp import McpTool
 from .multi_edit import MultiEditTool
 from .output import (

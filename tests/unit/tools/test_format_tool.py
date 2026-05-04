@@ -9,7 +9,7 @@ from unittest.mock import patch
 from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.tools.contracts import ToolCall
-from voidcode.tools.lsp import FormatTool
+from voidcode.tools.format_file import FormatTool
 
 
 def test_format_tool_uses_nearest_formatter_root_for_cwd(tmp_path: Path) -> None:
