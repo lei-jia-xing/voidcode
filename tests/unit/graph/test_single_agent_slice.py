@@ -37,6 +37,15 @@ def _session(session_id: str = "s1") -> SessionState:
     return SessionState(session=SessionRef(id=session_id), status="running", turn=1, metadata={})
 
 
+def _session_with_run(session_id: str = "s1", run_id: str = "run-one") -> SessionState:
+    return SessionState(
+        session=SessionRef(id=session_id),
+        status="running",
+        turn=1,
+        metadata={"runtime_state": {"run_id": run_id}},
+    )
+
+
 def _assembled_from_context_window(context_window: RuntimeContextWindow) -> RuntimeAssembledContext:
     segments: list[RuntimeContextSegment] = [
         RuntimeContextSegment(role="user", content=context_window.prompt)
@@ -503,6 +512,42 @@ def test_provider_graph_discards_queued_tool_call_batch_for_different_session() 
         tool_results=(),
         session=_session("session-two"),
     )
+
+    assert first_step.tool_call is not None
+    assert first_step.tool_call.tool_call_id == "call-alpha"
+    assert second_step.tool_call is not None
+    assert second_step.tool_call.tool_call_id == "call-alpha"
+    assert second_step.events != ()
+
+
+def test_provider_graph_discards_queued_tool_call_batch_for_new_run() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
+    first_context = RuntimeContextWindow(prompt="read two files")
+    first_session = _session_with_run("shared-session", "run-one")
+    first_request = GraphRunRequest(
+        session=first_session,
+        prompt="read two files",
+        available_tools=_tool_definitions(),
+        context_window=first_context,
+        assembled_context=_assembled_from_context_window(first_context),
+    )
+
+    first_step = graph.step(request=first_request, tool_results=(), session=first_session)
+
+    second_context = RuntimeContextWindow(prompt="unrelated follow-up")
+    second_session = _session_with_run("shared-session", "run-two")
+    second_request = GraphRunRequest(
+        session=second_session,
+        prompt="unrelated follow-up",
+        available_tools=_tool_definitions(),
+        context_window=second_context,
+        assembled_context=_assembled_from_context_window(second_context),
+    )
+    second_step = graph.step(request=second_request, tool_results=(), session=second_session)
 
     assert first_step.tool_call is not None
     assert first_step.tool_call.tool_call_id == "call-alpha"

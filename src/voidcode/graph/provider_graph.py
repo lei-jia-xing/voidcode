@@ -75,6 +75,8 @@ class ProviderGraph:
         self._abort_signal = _GraphAbortSignal(_cancelled=False)
         self._pending_tool_calls: list[ToolCall] = []
         self._pending_tool_calls_session_id: str | None = None
+        self._pending_tool_calls_run_id: str | None = None
+        self._pending_tool_calls_min_tool_result_count: int | None = None
 
     def cancel_current_turn(self) -> None:
         self._abort_signal.set_cancelled(True)
@@ -92,17 +94,25 @@ class ProviderGraph:
             raise ValueError(f"graph exceeded max steps: {self._max_steps}")
 
         session_id = request.session.session.id
-        if self._pending_tool_calls and self._pending_tool_calls_session_id == session_id:
+        run_id = self._run_id_from_metadata(request.session.metadata)
+        if (
+            self._pending_tool_calls
+            and self._pending_tool_calls_session_id == session_id
+            and self._pending_tool_calls_run_id == run_id
+            and self._pending_tool_calls_min_tool_result_count is not None
+            and len(tool_results) >= self._pending_tool_calls_min_tool_result_count
+        ):
             next_tool_call = self._pending_tool_calls.pop(0)
             if not self._pending_tool_calls:
-                self._pending_tool_calls_session_id = None
+                self._clear_pending_tool_calls()
+            else:
+                self._pending_tool_calls_min_tool_result_count = len(tool_results) + 1
             return ProviderStep(
                 events=(),
                 tool_call=next_tool_call,
             )
         if self._pending_tool_calls:
-            self._pending_tool_calls.clear()
-            self._pending_tool_calls_session_id = None
+            self._clear_pending_tool_calls()
 
         provider_stream = request.metadata.get("provider_stream", False)
         if isinstance(provider_stream, bool):
@@ -174,6 +184,7 @@ class ProviderGraph:
                 turn_request=turn_request,
                 current_turn=current_turn,
                 session_id=session_id,
+                run_id=run_id,
             )
 
         turn_result = self._provider.propose_turn(turn_request)
@@ -181,7 +192,10 @@ class ProviderGraph:
             tool_calls = list(turn_result.tool_calls)
             first_tool_call = tool_calls.pop(0)
             self._pending_tool_calls.extend(tool_calls)
-            self._pending_tool_calls_session_id = session_id if tool_calls else None
+            if tool_calls:
+                self._pending_tool_calls_session_id = session_id
+                self._pending_tool_calls_run_id = run_id
+                self._pending_tool_calls_min_tool_result_count = len(tool_results) + 1
             return ProviderStep(
                 events=planning_events,
                 tool_call=first_tool_call,
@@ -228,6 +242,7 @@ class ProviderGraph:
         turn_request: ProviderTurnRequest,
         current_turn: int,
         session_id: str,
+        run_id: str | None,
     ) -> ProviderStep:
         stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         stream_events: list[GraphEvent] = []
@@ -326,7 +341,10 @@ class ProviderGraph:
             tool_calls = list(streamed_tool_calls)
             first_tool_call = tool_calls.pop(0)
             self._pending_tool_calls.extend(tool_calls)
-            self._pending_tool_calls_session_id = session_id if tool_calls else None
+            if tool_calls:
+                self._pending_tool_calls_session_id = session_id
+                self._pending_tool_calls_run_id = run_id
+                self._pending_tool_calls_min_tool_result_count = current_turn
             return ProviderStep(
                 events=planning_events + tuple(stream_events),
                 tool_call=first_tool_call,
@@ -443,6 +461,21 @@ class ProviderGraph:
                 )
             )
         return tuple(parsed_tool_calls)
+
+    def _clear_pending_tool_calls(self) -> None:
+        self._pending_tool_calls.clear()
+        self._pending_tool_calls_session_id = None
+        self._pending_tool_calls_run_id = None
+        self._pending_tool_calls_min_tool_result_count = None
+
+    @staticmethod
+    def _run_id_from_metadata(metadata: dict[str, object]) -> str | None:
+        runtime_state = metadata.get("runtime_state")
+        if not isinstance(runtime_state, dict):
+            return None
+        runtime_state_payload = cast(dict[str, object], runtime_state)
+        run_id = runtime_state_payload.get("run_id")
+        return run_id if isinstance(run_id, str) and run_id else None
 
     def _provider_execution_error(
         self,
