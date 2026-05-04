@@ -12,6 +12,7 @@ from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
 from .command_effects import session_with_command_artifacts
 from .config import serialize_runtime_agent_config
+from .context_continuity import verified_checkpoint_session_metadata
 from .contracts import (
     NoPendingQuestionError,
     RuntimeRequest,
@@ -1056,13 +1057,17 @@ class RuntimeResumeCoordinator:
             raise ValueError(
                 "persisted approval resume checkpoint session_metadata must be an object"
             )
-        if cast(dict[str, object], session_metadata) != stored_metadata:
+        recovered_metadata = verified_checkpoint_session_metadata(
+            checkpoint_metadata=cast(dict[str, object], session_metadata),
+            stored_metadata=stored_metadata,
+        )
+        if recovered_metadata is None:
             return None
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted approval resume checkpoint tool_results must be a list")
         return ApprovalResumeCheckpointState(
             prompt=prompt,
-            session_metadata=cast(dict[str, object], session_metadata),
+            session_metadata=recovered_metadata,
             tool_results=self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)),
         )
 
@@ -1093,13 +1098,17 @@ class RuntimeResumeCoordinator:
             raise ValueError(
                 "persisted question resume checkpoint session_metadata must be an object"
             )
-        if cast(dict[str, object], session_metadata) != stored_metadata:
+        recovered_metadata = verified_checkpoint_session_metadata(
+            checkpoint_metadata=cast(dict[str, object], session_metadata),
+            stored_metadata=stored_metadata,
+        )
+        if recovered_metadata is None:
             return None
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted question resume checkpoint tool_results must be a list")
         return ApprovalResumeCheckpointState(
             prompt=prompt,
-            session_metadata=cast(dict[str, object], session_metadata),
+            session_metadata=recovered_metadata,
             tool_results=self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)),
         )
 
