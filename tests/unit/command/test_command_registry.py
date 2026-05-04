@@ -102,7 +102,18 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
 
 
 class TestBuiltinCommandDiscovery:
-    _EXPECTED_NAMES = ("commit", "explain", "fix", "plan", "start-work", "review", "test")
+    _EXPECTED_NAMES = (
+        "commit",
+        "explain",
+        "fix",
+        "plan",
+        "start-work",
+        "continuation-loop",
+        "intensive-loop",
+        "cancel-continuation",
+        "review",
+        "test",
+    )
 
     def test_expected_builtins_present(self) -> None:
         commands = builtin_commands()
@@ -131,6 +142,16 @@ class TestBuiltinCommandDiscovery:
 
         assert start_work.agent is None
         assert start_work.workflow_preset == "implementation"
+
+    def test_continuation_loop_commands_target_runtime_owned_flow(self) -> None:
+        commands = {c.name: c for c in builtin_commands()}
+
+        assert commands["continuation-loop"].workflow_preset == "implementation"
+        assert commands["intensive-loop"].workflow_preset == "implementation"
+        assert commands["cancel-continuation"].workflow_preset is None
+        assert "runtime-owned" in commands["continuation-loop"].template
+        assert "intensive=true" in commands["intensive-loop"].template
+        assert "latest active loop" in commands["cancel-continuation"].template
 
     def test_commands_are_disabled_when_hidden_flag_set(self) -> None:
         registry = CommandRegistry(builtin_commands())

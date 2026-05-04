@@ -10,6 +10,7 @@ from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
+from .command_effects import session_with_command_artifacts
 from .config import serialize_runtime_agent_config
 from .contracts import (
     NoPendingQuestionError,
@@ -528,9 +529,8 @@ class RuntimeResumeCoordinator:
                 stored_response=stored_response,
                 prompt=prompt,
             )
-        session = self._runtime._session_with_workflow_plan_artifact(
+        session = session_with_command_artifacts(
             response.session,
-            request=request,
             output=response.output,
         )
         return RuntimeResponse(

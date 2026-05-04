@@ -84,7 +84,10 @@ from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState, StoredSessionSummary
-from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
+from ..runtime.task import (
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+)
 from ..server import serve, web
 
 print = _builtins.print

@@ -77,6 +77,47 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         workflow_preset="implementation",
     ),
     CommandDefinition(
+        name="continuation-loop",
+        description="Start or continue a runtime-owned continuation loop for a task.",
+        template=(
+            "Workflow: continue under the runtime-owned continuation loop recorded for this "
+            "request. Task: $ARGUMENTS. The runtime creates and persists the loop state before "
+            "execution; use the loop metadata in this session instead of prompt-only "
+            "self-reminders. Respect max iterations, completion promise, cancellation, "
+            "approval, and session persistence. Verification: after each iteration, run the "
+            "most relevant checks and mark completion only when the requested work is actually "
+            "done."
+        ),
+        source="builtin",
+        workflow_preset="implementation",
+    ),
+    CommandDefinition(
+        name="intensive-loop",
+        description="Start a higher-intensity runtime-owned continuation loop.",
+        template=(
+            "Workflow: continue under the runtime-owned intensive continuation loop recorded for "
+            "this request. Task: $ARGUMENTS. The runtime persists intensive=true before execution "
+            "to signal deeper exploration and stricter verification. Do not use external product "
+            "names for this mode. Preserve runtime session/storage ownership, avoid prompt-only "
+            "continuation hacks, and stop only after concrete verification passes or a runtime "
+            "terminal loop state is reached."
+        ),
+        source="builtin",
+        workflow_preset="implementation",
+    ),
+    CommandDefinition(
+        name="cancel-continuation",
+        description="Cancel the current runtime-owned continuation loop.",
+        template=(
+            "Workflow: cancel the current runtime-owned continuation loop. Optional target: "
+            "$ARGUMENTS. If a loop id is provided, the runtime cancels that durable loop state; "
+            "otherwise it cancels the latest active loop for this workspace during slash-command "
+            "resolution. Report the resulting loop status. If no active loop exists, say so "
+            "clearly instead of asking the user to hunt for an id."
+        ),
+        source="builtin",
+    ),
+    CommandDefinition(
         name="review",
         description="Review the requested code or change set.",
         template=(

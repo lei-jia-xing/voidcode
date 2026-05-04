@@ -6389,7 +6389,13 @@ def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    with pytest.raises(ValueError, match="invalid permission policy mode: not-a-real-mode"):
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "persisted pending approval for session 'malformed-pending-approval' "
+            "has invalid policy_mode 'not-a-real-mode'"
+        ),
+    ):
         _ = resumed_runtime.resume(
             "malformed-pending-approval",
             approval_request_id=approval_request_id,

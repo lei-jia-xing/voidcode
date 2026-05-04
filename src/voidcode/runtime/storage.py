@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from time import time
+from time import sleep, time
 from typing import Protocol, cast, final, runtime_checkable
 
 from .contracts import (
@@ -35,10 +35,18 @@ from .task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     BackgroundTaskStatus,
+    ContinuationLoopRef,
+    ContinuationLoopState,
+    ContinuationLoopStatus,
     StoredBackgroundTaskSummary,
+    StoredContinuationLoopSummary,
     is_background_task_terminal,
     is_background_task_transition_allowed,
+    is_continuation_loop_terminal,
+    is_continuation_loop_transition_allowed,
+    parse_continuation_loop_strategy,
     validate_background_task_id,
+    validate_continuation_loop_id,
 )
 from .todos import runtime_todos_from_state_payload, todo_state_payload
 
@@ -193,6 +201,36 @@ class SessionStore(Protocol):
         include_queued: bool = True,
     ) -> tuple[BackgroundTaskState, ...]: ...
 
+    def create_continuation_loop(
+        self,
+        *,
+        workspace: Path,
+        loop: ContinuationLoopState,
+    ) -> None: ...
+
+    def load_continuation_loop(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState: ...
+
+    def list_continuation_loops(
+        self, *, workspace: Path
+    ) -> tuple[StoredContinuationLoopSummary, ...]: ...
+
+    def record_continuation_loop_iteration(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState: ...
+
+    def mark_continuation_loop_terminal(
+        self,
+        *,
+        workspace: Path,
+        loop_id: str,
+        status: ContinuationLoopStatus,
+        error: str | None = None,
+    ) -> ContinuationLoopState: ...
+
+    def cancel_continuation_loop(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState: ...
+
     def storage_diagnostics(self, *, workspace: Path) -> dict[str, object]: ...
 
     def prune_runtime_storage(
@@ -224,6 +262,7 @@ class SessionEventAppender(Protocol):
 @dataclass(frozen=True, slots=True)
 class _SQLitePolicy:
     busy_timeout_ms: int = 5_000
+    configure_retry_interval_seconds: float = 0.05
     synchronous: str = "NORMAL"
     wal_autocheckpoint_pages: int = 1_000
 
@@ -231,7 +270,7 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 2
+    _SCHEMA_VERSION = 3
     _RESUME_CHECKPOINT_KINDS = frozenset(
         {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
     )
@@ -301,6 +340,23 @@ class SqliteSessionStore:
             ("started_at_unix_ms", "INTEGER", 0, None, 0),
             ("finished_at_unix_ms", "INTEGER", 0, None, 0),
         ),
+        "continuation_loops": (
+            ("loop_id", "TEXT", 1, None, 2),
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("status", "TEXT", 1, None, 0),
+            ("prompt", "TEXT", 1, None, 0),
+            ("session_id", "TEXT", 0, None, 0),
+            ("completion_promise", "TEXT", 1, None, 0),
+            ("max_iterations", "INTEGER", 1, None, 0),
+            ("iteration", "INTEGER", 1, None, 0),
+            ("intensive", "INTEGER", 1, None, 0),
+            ("strategy", "TEXT", 1, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("updated_at", "INTEGER", 1, None, 0),
+            ("finished_at", "INTEGER", 0, None, 0),
+            ("cancel_requested_at", "INTEGER", 0, None, 0),
+            ("error", "TEXT", 0, None, 0),
+        ),
         "session_notifications": (
             ("notification_id", "TEXT", 0, None, 1),
             ("workspace_id", "TEXT", 1, None, 0),
@@ -330,6 +386,7 @@ class SqliteSessionStore:
         "session_events": frozenset(),
         "session_todos": frozenset(),
         "background_tasks": frozenset(),
+        "continuation_loops": frozenset(),
         "session_notifications": frozenset({("workspace_id", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
         "storage_sequences": frozenset(),
@@ -361,14 +418,24 @@ class SqliteSessionStore:
             connection.close()
 
     def _configure_connection(self, *, connection: sqlite3.Connection) -> None:
-        _ = connection.execute(f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}")
-        _ = connection.execute("PRAGMA journal_mode = WAL")
-        _ = connection.execute(f"PRAGMA synchronous = {self._sqlite_policy.synchronous}")
-        _ = connection.execute("PRAGMA foreign_keys = ON")
-        _ = connection.execute(
-            f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}"
-        )
-        _ = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        deadline = time() + (self._sqlite_policy.busy_timeout_ms / 1_000)
+        while True:
+            try:
+                _ = connection.execute(
+                    f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}"
+                )
+                _ = connection.execute("PRAGMA journal_mode = WAL")
+                _ = connection.execute(f"PRAGMA synchronous = {self._sqlite_policy.synchronous}")
+                _ = connection.execute("PRAGMA foreign_keys = ON")
+                _ = connection.execute(
+                    f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}"
+                )
+                _ = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+                return
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower() or time() >= deadline:
+                    raise
+                sleep(self._sqlite_policy.configure_retry_interval_seconds)
 
     @contextmanager
     def _write_connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
@@ -467,6 +534,28 @@ class SqliteSessionStore:
         )
         _ = connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS continuation_loops (
+                loop_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                session_id TEXT,
+                completion_promise TEXT NOT NULL,
+                max_iterations INTEGER NOT NULL,
+                iteration INTEGER NOT NULL,
+                intensive INTEGER NOT NULL,
+                strategy TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                cancel_requested_at INTEGER,
+                error TEXT,
+                PRIMARY KEY (workspace_id, loop_id)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS session_notifications (
                 notification_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -502,10 +591,14 @@ class SqliteSessionStore:
             )
             """
         )
-        self._assert_schema_version(connection=connection, database_path=database_path)
+        # Validate the freshly-created/already-present schema before stamping the
+        # user_version. Stamping after validation keeps schema setup atomic from the
+        # caller's perspective: if any CREATE TABLE / canonical check fails, the
+        # database is never marked as the canonical version.
         self._assert_canonical_schema(connection=connection, database_path=database_path)
         self._ensure_workspace_indexes(connection=connection)
         self._ensure_storage_sequences(connection=connection)
+        self._assert_schema_version(connection=connection, database_path=database_path)
         connection.commit()
 
     @staticmethod
@@ -523,6 +616,10 @@ class SqliteSessionStore:
             "ON background_tasks(workspace_id, status, updated_at DESC)"
         )
         _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS continuation_loops_workspace_idx "
+            "ON continuation_loops(workspace_id, status, updated_at DESC)"
+        )
+        _ = connection.execute(
             "CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx "
             "ON session_notifications(workspace_id, session_id)"
         )
@@ -534,6 +631,10 @@ class SqliteSessionStore:
         )
         _ = connection.execute(
             "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('background_tasks', 0)"
+        )
+        _ = connection.execute(
+            "INSERT OR IGNORE INTO storage_sequences (scope, value) "
+            "VALUES ('continuation_loops', 0)"
         )
         _ = connection.execute(
             "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)"
@@ -557,6 +658,20 @@ class SqliteSessionStore:
                     "created_at",
                     "updated_at",
                     "started_at",
+                    "finished_at",
+                    "cancel_requested_at",
+                ),
+            ),
+        )
+        SqliteSessionStore._bump_sequence_floor(
+            connection=connection,
+            scope="continuation_loops",
+            floor=SqliteSessionStore._max_existing_timestamp(
+                connection=connection,
+                table="continuation_loops",
+                columns=(
+                    "created_at",
+                    "updated_at",
                     "finished_at",
                     "cancel_requested_at",
                 ),
@@ -605,20 +720,23 @@ class SqliteSessionStore:
     def _assert_existing_schema_version(
         cls, *, connection: sqlite3.Connection, database_path: Path
     ) -> None:
+        """Validate persisted ``user_version`` before any schema mutation.
+
+        Fresh databases are not stamped here. Version stamping is deferred until
+        ``_ensure_schema`` finishes all ``CREATE TABLE`` statements and the
+        canonical-schema check succeeds, so partial bootstrap failures cannot
+        leave a database marked as the canonical version with missing tables.
+        """
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == cls._SCHEMA_VERSION:
             return
-        existing_tables = {
-            cast(str, row["name"])
-            for row in cast(
-                list[sqlite3.Row],
-                connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                ).fetchall(),
-            )
-        }
-        if version == 0 and not existing_tables.intersection(cls._CANONICAL_SCHEMA):
-            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
+        if version == 0:
+            # A fresh database can briefly expose a partially-created canonical
+            # table set to concurrent connections while the bootstrapper is still
+            # validating and stamping ``user_version``. Let version-0 databases
+            # continue through the idempotent CREATE TABLE path; the canonical
+            # schema assertion below still rejects legacy or corrupt tables before
+            # the database is stamped as current.
             return
         cls._raise_schema_mismatch(
             database_path=database_path,
@@ -627,6 +745,7 @@ class SqliteSessionStore:
 
     @classmethod
     def _assert_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
+        """Stamp ``PRAGMA user_version`` only after the schema is fully validated."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == 0:
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
@@ -812,6 +931,18 @@ class SqliteSessionStore:
         if value == "interrupted":
             return "interrupted"
         raise ValueError(f"invalid background task status: {value}")
+
+    @staticmethod
+    def _parse_continuation_loop_status(value: str) -> ContinuationLoopStatus:
+        if value == "active":
+            return "active"
+        if value == "completed":
+            return "completed"
+        if value == "cancelled":
+            return "cancelled"
+        if value == "exhausted":
+            return "exhausted"
+        raise ValueError(f"invalid continuation loop status: {value}")
 
     @staticmethod
     def _session_last_event_sequence(events: tuple[EventEnvelope, ...]) -> int:
@@ -1322,12 +1453,44 @@ class SqliteSessionStore:
         payload = cast(str | None, row["pending_approval_json"])
         if payload is None:
             return None
-        data = cast(dict[str, object], json.loads(payload))
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} is corrupt: "
+                f"{exc}. Run `voidcode sessions debug {session_id}` to inspect, "
+                "or `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} is corrupt: "
+                "payload must decode to an object."
+            )
+        data = cast(dict[str, object], decoded)
+        try:
+            request_id = data["request_id"]
+            tool_name = data["tool_name"]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} is missing "
+                f"required field {exc}; run `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(request_id, str) or not isinstance(tool_name, str):
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} has invalid "
+                "request_id/tool_name types; run `voidcode storage reset` to recover."
+            )
         raw_policy_mode = data.get("policy_mode", "ask")
-        policy_mode = _pending_permission_decision(raw_policy_mode)
+        try:
+            policy_mode = _pending_permission_decision(raw_policy_mode)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"persisted pending approval for session {session_id!r} has invalid "
+                f"policy_mode {raw_policy_mode!r}: {exc}"
+            ) from exc
         return PendingApproval(
-            request_id=cast(str, data["request_id"]),
-            tool_name=cast(str, data["tool_name"]),
+            request_id=request_id,
+            tool_name=tool_name,
             arguments=cast(dict[str, object], data.get("arguments", {})),
             target_summary=cast(str, data.get("target_summary", "")),
             reason=cast(str, data.get("reason", "")),
@@ -1439,31 +1602,108 @@ class SqliteSessionStore:
         payload = cast(str | None, row["pending_question_json"])
         if payload is None:
             return None
-        data = cast(dict[str, object], json.loads(payload))
-        raw_prompts = cast(list[object], data.get("prompts", []))
-        prompts: list[PendingQuestionPrompt] = []
-        for raw_prompt in raw_prompts:
-            prompt_payload = cast(dict[str, object], raw_prompt)
-            raw_options = cast(list[object], prompt_payload.get("options", []))
-            options = tuple(
-                PendingQuestionOption(
-                    label=cast(str, cast(dict[str, object], option)["label"]),
-                    description=cast(str, cast(dict[str, object], option).get("description", "")),
-                )
-                for option in raw_options
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} is corrupt: "
+                f"{exc}. Run `voidcode sessions debug {session_id}` to inspect, "
+                "or `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} is corrupt: "
+                "payload must decode to an object."
             )
+        data = cast(dict[str, object], decoded)
+        try:
+            request_id = data["request_id"]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} is missing "
+                f"required field {exc}; run `voidcode storage reset` to recover."
+            ) from exc
+        if not isinstance(request_id, str):
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} has invalid "
+                "request_id type; run `voidcode storage reset` to recover."
+            )
+        raw_prompts = data.get("prompts", [])
+        if not isinstance(raw_prompts, list):
+            raise RuntimeError(
+                f"persisted pending question for session {session_id!r} has invalid "
+                "prompts payload (must be a list)."
+            )
+        prompts: list[PendingQuestionPrompt] = []
+        for prompt_index, raw_prompt in enumerate(cast(list[object], raw_prompts)):
+            if not isinstance(raw_prompt, dict):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}] (must be an object)."
+                )
+            prompt_payload = cast(dict[str, object], raw_prompt)
+            raw_options = prompt_payload.get("options", [])
+            if not isinstance(raw_options, list):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}].options (must be a list)."
+                )
+            options_list: list[PendingQuestionOption] = []
+            for option_index, raw_option in enumerate(cast(list[object], raw_options)):
+                if not isinstance(raw_option, dict):
+                    raise RuntimeError(
+                        f"persisted pending question for session {session_id!r} has "
+                        f"invalid prompts[{prompt_index}].options[{option_index}] "
+                        "(must be an object)."
+                    )
+                option_payload = cast(dict[str, object], raw_option)
+                option_label = option_payload.get("label")
+                if not isinstance(option_label, str):
+                    raise RuntimeError(
+                        f"persisted pending question for session {session_id!r} has "
+                        f"invalid prompts[{prompt_index}].options[{option_index}].label "
+                        "(must be a string)."
+                    )
+                option_description = option_payload.get("description", "")
+                if not isinstance(option_description, str):
+                    option_description = ""
+                options_list.append(
+                    PendingQuestionOption(
+                        label=option_label,
+                        description=option_description,
+                    )
+                )
+            prompt_question = prompt_payload.get("question")
+            prompt_header = prompt_payload.get("header")
+            if not isinstance(prompt_question, str) or not isinstance(prompt_header, str):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}].question/header (must be strings)."
+                )
+            raw_multiple = prompt_payload.get("multiple", False)
+            if not isinstance(raw_multiple, bool):
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has invalid "
+                    f"prompts[{prompt_index}].multiple (must be a boolean)."
+                )
             prompts.append(
                 PendingQuestionPrompt(
-                    question=cast(str, prompt_payload["question"]),
-                    header=cast(str, prompt_payload["header"]),
-                    options=options,
-                    multiple=bool(prompt_payload.get("multiple", False)),
+                    question=prompt_question,
+                    header=prompt_header,
+                    options=tuple(options_list),
+                    multiple=raw_multiple,
                 )
             )
+        tool_name_value = data.get("tool_name", "question")
+        if not isinstance(tool_name_value, str):
+            tool_name_value = "question"
+        arguments_value = data.get("arguments", {})
+        if not isinstance(arguments_value, dict):
+            arguments_value = {}
         return PendingQuestion(
-            request_id=cast(str, data["request_id"]),
-            tool_name=cast(str, data.get("tool_name", "question")),
-            arguments=cast(dict[str, object], data.get("arguments", {})),
+            request_id=request_id,
+            tool_name=tool_name_value,
+            arguments=cast(dict[str, object], arguments_value),
             prompts=tuple(prompts),
         )
 
@@ -1517,6 +1757,38 @@ class SqliteSessionStore:
                 event_type=event_type,
                 payload=payload,
             )
+            # Verify the session exists before mutating any session state. We hold a
+            # write lock from BEGIN IMMEDIATE, so this read is consistent with the
+            # subsequent UPDATE.
+            existing_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT 1
+                    FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if existing_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            # Claim the dedupe slot before touching the session row. Losing the
+            # race means this is a duplicate delivery, and duplicate deliveries
+            # must not perturb session ordering or sequence counters.
+            if dedupe_key is not None:
+                delivered_at = self._next_auxiliary_timestamp(connection=connection)
+                inserted_delivery = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO session_event_deliveries (
+                        workspace_id, session_id, dedupe_key, delivered_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (str(workspace), session_id, dedupe_key, delivered_at),
+                )
+                if inserted_delivery.rowcount == 0:
+                    connection.commit()
+                    return None
             updated_at = self._next_timestamp(connection=connection)
             sequence_row = cast(
                 sqlite3.Row | None,
@@ -1531,28 +1803,9 @@ class SqliteSessionStore:
                 ).fetchone(),
             )
             if sequence_row is None:
+                # Session disappeared mid-transaction; should not happen under
+                # BEGIN IMMEDIATE but kept defensively.
                 raise UnknownSessionError(f"unknown session: {session_id}")
-            if dedupe_key is not None:
-                delivered_at = self._next_auxiliary_timestamp(connection=connection)
-                inserted_delivery = connection.execute(
-                    """
-                    INSERT OR IGNORE INTO session_event_deliveries (
-                        workspace_id, session_id, dedupe_key, delivered_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (str(workspace), session_id, dedupe_key, delivered_at),
-                )
-                if inserted_delivery.rowcount == 0:
-                    _ = connection.execute(
-                        """
-                        UPDATE sessions
-                        SET updated_at = ?, last_event_sequence = last_event_sequence - 1
-                        WHERE workspace_id = ? AND session_id = ?
-                        """,
-                        (updated_at, str(workspace), session_id),
-                    )
-                    connection.commit()
-                    return None
             sequence = cast(int, sequence_row["last_event_sequence"])
             event = EventEnvelope(
                 session_id=session_id,
@@ -2384,6 +2637,211 @@ class SqliteSessionStore:
             connection.commit()
         return self._background_task_state_from_row(updated_row)
 
+    def create_continuation_loop(
+        self,
+        *,
+        workspace: Path,
+        loop: ContinuationLoopState,
+    ) -> None:
+        loop_id = validate_continuation_loop_id(loop.loop.id)
+        if not loop.prompt:
+            raise ValueError("continuation loop prompt must be a non-empty string")
+        if not loop.completion_promise:
+            raise ValueError("continuation loop completion_promise must be non-empty")
+        if loop.max_iterations < 1:
+            raise ValueError("continuation loop max_iterations must be positive")
+        if loop.iteration < 0:
+            raise ValueError("continuation loop iteration must be non-negative")
+        _ = parse_continuation_loop_strategy(loop.strategy)
+        with self._write_connect(workspace) as connection:
+            timestamp = self._next_continuation_loop_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                INSERT INTO continuation_loops (
+                    loop_id, workspace_id, status, prompt, session_id, completion_promise,
+                    max_iterations, iteration, intensive, strategy, created_at, updated_at,
+                    finished_at, cancel_requested_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    loop_id,
+                    str(workspace),
+                    loop.status,
+                    loop.prompt,
+                    loop.session_id,
+                    loop.completion_promise,
+                    loop.max_iterations,
+                    loop.iteration,
+                    1 if loop.intensive else 0,
+                    loop.strategy,
+                    timestamp,
+                    timestamp,
+                    loop.finished_at,
+                    loop.cancel_requested_at,
+                    loop.error,
+                ),
+            )
+            connection.commit()
+
+    def load_continuation_loop(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState:
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._connect(workspace) as connection:
+            row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+        return self._continuation_loop_state_from_row(row)
+
+    def list_continuation_loops(
+        self, *, workspace: Path
+    ) -> tuple[StoredContinuationLoopSummary, ...]:
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT loop_id, status, prompt, session_id, iteration, max_iterations,
+                           intensive, created_at, updated_at, error
+                    FROM continuation_loops
+                    WHERE workspace_id = ?
+                    ORDER BY updated_at DESC, created_at DESC, loop_id ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(self._continuation_loop_summary_from_row(row) for row in rows)
+
+    def record_continuation_loop_iteration(
+        self, *, workspace: Path, loop_id: str
+    ) -> ContinuationLoopState:
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._write_connect(workspace) as connection:
+            current = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
+            if current_status != "active":
+                connection.commit()
+                return self._continuation_loop_state_from_row(current)
+            next_iteration = cast(int, current["iteration"]) + 1
+            max_iterations = cast(int, current["max_iterations"])
+            next_status: ContinuationLoopStatus = (
+                "exhausted" if next_iteration >= max_iterations else "active"
+            )
+            updated_at = self._next_continuation_loop_timestamp(connection=connection)
+            finished_at = updated_at if next_status == "exhausted" else None
+            error = (
+                "continuation loop reached max iterations"
+                if next_status == "exhausted"
+                else cast(str | None, current["error"])
+            )
+            _ = connection.execute(
+                """
+                UPDATE continuation_loops
+                SET iteration = ?, status = ?, updated_at = ?, finished_at = ?, error = ?
+                WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
+                """,
+                (
+                    next_iteration,
+                    next_status,
+                    updated_at,
+                    finished_at,
+                    error,
+                    str(workspace),
+                    loop_id,
+                ),
+            )
+            updated_row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            connection.commit()
+        return self._continuation_loop_state_from_row(updated_row)
+
+    def mark_continuation_loop_terminal(
+        self,
+        *,
+        workspace: Path,
+        loop_id: str,
+        status: ContinuationLoopStatus,
+        error: str | None = None,
+    ) -> ContinuationLoopState:
+        if status not in ("completed", "cancelled", "exhausted"):
+            raise ValueError(
+                "continuation loop terminal status must be completed, cancelled, or exhausted"
+            )
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._write_connect(workspace) as connection:
+            current = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
+            if not is_continuation_loop_transition_allowed(
+                current_status=current_status,
+                next_status=status,
+            ):
+                connection.commit()
+                return self._continuation_loop_state_from_row(current)
+            updated_at = self._next_continuation_loop_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE continuation_loops
+                SET status = ?, error = ?, finished_at = ?, updated_at = ?
+                WHERE workspace_id = ? AND loop_id = ?
+                """,
+                (status, error, updated_at, updated_at, str(workspace), loop_id),
+            )
+            updated_row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            connection.commit()
+        return self._continuation_loop_state_from_row(updated_row)
+
+    def cancel_continuation_loop(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState:
+        loop_id = validate_continuation_loop_id(loop_id)
+        with self._write_connect(workspace) as connection:
+            current = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
+            if is_continuation_loop_terminal(current_status):
+                connection.commit()
+                return self._continuation_loop_state_from_row(current)
+            updated_at = self._next_continuation_loop_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE continuation_loops
+                SET status = 'cancelled', error = ?, cancel_requested_at = ?,
+                    finished_at = ?, updated_at = ?
+                WHERE workspace_id = ? AND loop_id = ? AND status = 'active'
+                """,
+                (
+                    "cancelled by user",
+                    updated_at,
+                    updated_at,
+                    updated_at,
+                    str(workspace),
+                    loop_id,
+                ),
+            )
+            updated_row = self._continuation_loop_row(
+                connection=connection,
+                workspace=workspace,
+                loop_id=loop_id,
+            )
+            connection.commit()
+        return self._continuation_loop_state_from_row(updated_row)
+
     def mark_background_task_terminal(
         self,
         *,
@@ -2719,8 +3177,66 @@ class SqliteSessionStore:
             raise ValueError(f"unknown background task: {task_id}")
         return row
 
+    def _continuation_loop_row(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        loop_id: str,
+    ) -> sqlite3.Row:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                """
+                SELECT * FROM continuation_loops
+                WHERE workspace_id = ? AND loop_id = ?
+                """,
+                (str(workspace), loop_id),
+            ).fetchone(),
+        )
+        if row is None:
+            raise ValueError(f"unknown continuation loop: {loop_id}")
+        return row
+
+    def _continuation_loop_state_from_row(self, row: sqlite3.Row) -> ContinuationLoopState:
+        return ContinuationLoopState(
+            loop=ContinuationLoopRef(id=cast(str, row["loop_id"])),
+            status=self._parse_continuation_loop_status(cast(str, row["status"])),
+            prompt=cast(str, row["prompt"]),
+            session_id=cast(str | None, row["session_id"]),
+            completion_promise=cast(str, row["completion_promise"]),
+            max_iterations=cast(int, row["max_iterations"]),
+            iteration=cast(int, row["iteration"]),
+            intensive=bool(cast(int, row["intensive"])),
+            strategy=parse_continuation_loop_strategy(cast(str, row["strategy"])),
+            created_at=cast(int, row["created_at"]),
+            updated_at=cast(int, row["updated_at"]),
+            finished_at=cast(int | None, row["finished_at"]),
+            cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
+            error=cast(str | None, row["error"]),
+        )
+
+    def _continuation_loop_summary_from_row(
+        self, row: sqlite3.Row
+    ) -> StoredContinuationLoopSummary:
+        return StoredContinuationLoopSummary(
+            loop=ContinuationLoopRef(id=cast(str, row["loop_id"])),
+            status=self._parse_continuation_loop_status(cast(str, row["status"])),
+            prompt=cast(str, row["prompt"]),
+            session_id=cast(str | None, row["session_id"]),
+            iteration=cast(int, row["iteration"]),
+            max_iterations=cast(int, row["max_iterations"]),
+            intensive=bool(cast(int, row["intensive"])),
+            created_at=cast(int, row["created_at"]),
+            updated_at=cast(int, row["updated_at"]),
+            error=cast(str | None, row["error"]),
+        )
+
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="background_tasks")
+
+    def _next_continuation_loop_timestamp(self, *, connection: sqlite3.Connection) -> int:
+        return self._next_sequence_value(connection=connection, scope="continuation_loops")
 
     def _next_auxiliary_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="auxiliary")

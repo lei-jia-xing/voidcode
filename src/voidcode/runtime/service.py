@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
+from uuid import uuid4
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
@@ -108,6 +109,7 @@ from .bundle import (
     read_session_bundle,
     write_session_bundle,
 )
+from .command_effects import apply_runtime_command_effects, session_with_command_artifacts
 from .config import (
     ExecutionEngineName,
     ExternalDirectoryPermissionConfig,
@@ -263,9 +265,15 @@ from .skills import (
 from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskState,
+    ContinuationLoopRef,
+    ContinuationLoopState,
+    ContinuationLoopStatus,
+    ContinuationLoopStrategy,
     StoredBackgroundTaskSummary,
+    StoredContinuationLoopSummary,
     supported_subagent_categories,
     validate_background_task_id,
+    validate_continuation_loop_id,
 )
 from .todos import (
     runtime_todos_from_tool_payload,
@@ -2040,9 +2048,8 @@ class VoidCodeRuntime:
                 final_session,
                 events=tuple(events),
             )
-            final_session = self._session_with_workflow_plan_artifact(
+            final_session = session_with_command_artifacts(
                 final_session,
-                request=request,
                 output=output,
             )
 
@@ -2073,9 +2080,8 @@ class VoidCodeRuntime:
             final_session,
             events=tuple(events),
         )
-        final_session = self._session_with_workflow_plan_artifact(
+        final_session = session_with_command_artifacts(
             final_session,
-            request=self._validated_request(request),
             output=output,
         )
 
@@ -3074,6 +3080,79 @@ class VoidCodeRuntime:
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._background_task_supervisor.retry_background_task(task_id)
+
+    def start_continuation_loop(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None = None,
+        completion_promise: str = "DONE",
+        max_iterations: int = 100,
+        intensive: bool = False,
+        strategy: ContinuationLoopStrategy = "continue",
+    ) -> ContinuationLoopState:
+        if not prompt.strip():
+            raise ValueError("continuation loop prompt must be a non-empty string")
+        if not completion_promise.strip():
+            raise ValueError("continuation loop completion_promise must be non-empty")
+        if max_iterations < 1:
+            raise ValueError("continuation loop max_iterations must be positive")
+        if session_id is not None:
+            session_id = validate_session_reference_id(session_id, field_name="session_id")
+        loop_id = f"loop-{uuid4().hex}"
+        loop = ContinuationLoopState(
+            loop=ContinuationLoopRef(id=loop_id),
+            prompt=prompt,
+            session_id=session_id,
+            completion_promise=completion_promise,
+            max_iterations=max_iterations,
+            intensive=intensive,
+            strategy=strategy,
+        )
+        self._session_store.create_continuation_loop(workspace=self._workspace, loop=loop)
+        return self._session_store.load_continuation_loop(
+            workspace=self._workspace,
+            loop_id=loop_id,
+        )
+
+    def load_continuation_loop(self, loop_id: str) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.load_continuation_loop(
+            workspace=self._workspace,
+            loop_id=loop_id,
+        )
+
+    def list_continuation_loops(self) -> tuple[StoredContinuationLoopSummary, ...]:
+        return self._session_store.list_continuation_loops(workspace=self._workspace)
+
+    def record_continuation_loop_iteration(self, loop_id: str) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.record_continuation_loop_iteration(
+            workspace=self._workspace,
+            loop_id=loop_id,
+        )
+
+    def mark_continuation_loop_terminal(
+        self,
+        loop_id: str,
+        *,
+        status: ContinuationLoopStatus,
+        error: str | None = None,
+    ) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.mark_continuation_loop_terminal(
+            workspace=self._workspace,
+            loop_id=loop_id,
+            status=status,
+            error=error,
+        )
+
+    def cancel_continuation_loop(self, loop_id: str) -> ContinuationLoopState:
+        validate_continuation_loop_id(loop_id)
+        return self._session_store.cancel_continuation_loop(
+            workspace=self._workspace,
+            loop_id=loop_id,
+        )
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         _ = self._load_session_result(session_id=session_id)
@@ -6089,6 +6168,11 @@ class VoidCodeRuntime:
             return prompt, metadata
 
         normalized = dict(cast(dict[str, object], metadata))
+        prompt, normalized = apply_runtime_command_effects(
+            host=self,
+            resolution=resolution,
+            metadata=normalized,
+        )
         normalized["command"] = {
             "name": resolution.invocation.name,
             "source": resolution.invocation.source,
@@ -6102,88 +6186,11 @@ class VoidCodeRuntime:
         command_workflow_preset = resolution.definition.workflow_preset
         if command_workflow_preset is not None and "workflow_preset" not in normalized:
             normalized["workflow_preset"] = command_workflow_preset
-        if resolution.invocation.name == "start-work":
-            prompt, normalized = self._hydrate_start_work_prompt(
-                prompt=resolution.invocation.rendered_prompt,
-                raw_arguments=resolution.invocation.raw_arguments,
-                arguments=resolution.invocation.arguments,
-                metadata=normalized,
-            )
-        else:
+        if prompt == resolution.invocation.original_prompt:
             prompt = resolution.invocation.rendered_prompt
         return prompt, validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=allow_internal_fields or "workflow_plan" in normalized,
-        )
-
-    def _hydrate_start_work_prompt(
-        self,
-        *,
-        prompt: str,
-        raw_arguments: str,
-        arguments: tuple[str, ...],
-        metadata: dict[str, object],
-    ) -> tuple[str, dict[str, object]]:
-        if not arguments:
-            return prompt, metadata
-        plan_session_id = arguments[0]
-        plan_response = self._load_existing_session_if_present(session_id=plan_session_id)
-        if plan_response is None:
-            return prompt, metadata
-        raw_plan = plan_response.session.metadata.get("workflow_plan")
-        if not isinstance(raw_plan, dict):
-            return prompt, metadata
-        plan = dict(cast(dict[str, object], raw_plan))
-        hydrated_prompt = "\n\n".join(
-            (
-                prompt,
-                "<workflow_plan_artifact>",
-                f"source_session_id: {plan_session_id}",
-                f"requested_plan_reference: {raw_arguments}",
-                f"plan_goal: {plan.get('goal', '')}",
-                "plan_handoff:",
-                str(plan.get("handoff", "")),
-                "</workflow_plan_artifact>",
-            )
-        )
-        normalized = dict(metadata)
-        normalized["workflow_plan"] = {
-            "snapshot_version": 1,
-            "source": "start-work",
-            "source_session_id": plan_session_id,
-            "plan": plan,
-        }
-        return hydrated_prompt, normalized
-
-    @staticmethod
-    def _session_with_workflow_plan_artifact(
-        session: SessionState,
-        *,
-        request: RuntimeRequest,
-        output: str | None,
-    ) -> SessionState:
-        command = request.metadata.get("command")
-        if not isinstance(command, dict) or command.get("name") != "plan":
-            return session
-        workflow_preset = request.metadata.get("workflow_preset")
-        if workflow_preset != "review":
-            return session
-        plan_output = output or ""
-        raw_arguments = command.get("raw_arguments")
-        workflow_plan = {
-            "snapshot_version": 1,
-            "source": "plan-command",
-            "session_id": session.session.id,
-            "command": dict(cast(dict[str, object], command)),
-            "goal": raw_arguments if isinstance(raw_arguments, str) else "",
-            "handoff": plan_output,
-            "status": "draft" if session.status != "completed" else "ready",
-        }
-        return SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={**session.metadata, "workflow_plan": workflow_plan},
         )
 
     def _metadata_with_delegation_governance(

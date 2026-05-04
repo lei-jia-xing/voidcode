@@ -374,7 +374,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 2
+    assert schema_version == 3
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -495,7 +495,7 @@ def test_session_storage_rejects_existing_unversioned_runtime_schema_without_mut
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 2 got 0.*unversioned-runtime\.sqlite3",
+        match=r"table 'sessions' missing columns: .*workspace_id.*unversioned-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -513,7 +513,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 2 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 3 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -523,7 +523,7 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
 ) -> None:
     database_path = tmp_path / "invalid-sessions.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("PRAGMA user_version = 2")
+        _ = connection.execute("PRAGMA user_version = 3")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
@@ -621,7 +621,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
 ) -> None:
     database_path = tmp_path / "wrong-table-shape.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("PRAGMA user_version = 2")
+        _ = connection.execute("PRAGMA user_version = 3")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
@@ -930,6 +930,111 @@ def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
     assert first_event.sequence == 2
     assert duplicate_event is None
     assert loaded.events[-1] == first_event
+    assert loaded.events[-1].sequence == 2
+
+
+def test_session_storage_deduped_session_event_does_not_advance_session_order(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    for session_id in ("first-session", "second-session"):
+        store.save_run(
+            workspace=tmp_path,
+            request=RuntimeRequest(prompt=session_id, session_id=session_id),
+            response=RuntimeResponse(
+                session=SessionState(
+                    session=SessionRef(id=session_id),
+                    status="completed",
+                    turn=1,
+                    metadata={},
+                ),
+                events=(
+                    EventEnvelope(
+                        session_id=session_id,
+                        sequence=1,
+                        event_type="graph.response_ready",
+                        source="graph",
+                    ),
+                ),
+                output="done",
+            ),
+        )
+    first_event = store.append_session_event(
+        workspace=tmp_path,
+        session_id="first-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={"task_id": "task-123"},
+        dedupe_key="background_task_waiting_approval:task-123:req-1",
+    )
+    assert first_event is not None
+    sessions_after_first_event = store.list_sessions(workspace=tmp_path)
+
+    duplicate_event = store.append_session_event(
+        workspace=tmp_path,
+        session_id="first-session",
+        event_type="runtime.background_task_waiting_approval",
+        source="runtime",
+        payload={"task_id": "task-123"},
+        dedupe_key="background_task_waiting_approval:task-123:req-1",
+    )
+    sessions_after_duplicate = store.list_sessions(workspace=tmp_path)
+
+    assert duplicate_event is None
+    assert [session.session.id for session in sessions_after_first_event] == [
+        "first-session",
+        "second-session",
+    ]
+    assert [session.session.id for session in sessions_after_duplicate] == [
+        "first-session",
+        "second-session",
+    ]
+    loaded = store.load_session(workspace=tmp_path, session_id="first-session")
+    assert [event.sequence for event in loaded.events] == [1, 2]
+
+
+def test_session_storage_reports_corrupt_pending_approval_payload(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="approval", session_id="approval-session"),
+        response=RuntimeResponse(
+            session=SessionState(session=SessionRef(id="approval-session"), status="waiting"),
+            events=(),
+        ),
+    )
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE sessions SET pending_approval_json = ? WHERE session_id = ?",
+            ('{"request_id": 1, "tool_name": "write_file"}', "approval-session"),
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="invalid request_id/tool_name types"):
+        _ = store.load_pending_approval(workspace=tmp_path, session_id="approval-session")
+
+
+def test_session_storage_reports_corrupt_pending_question_payload(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="question", session_id="question-session"),
+        response=RuntimeResponse(
+            session=SessionState(session=SessionRef(id="question-session"), status="waiting"),
+            events=(),
+        ),
+    )
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE sessions SET pending_question_json = ? WHERE session_id = ?",
+            ('{"request_id": "q1", "prompts": [{"question": 1}]}', "question-session"),
+        )
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match=r"prompts\[0\]\.question/header"):
+        _ = store.load_pending_question(workspace=tmp_path, session_id="question-session")
 
 
 def test_session_storage_append_session_event_allocates_sequences_atomically(
