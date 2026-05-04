@@ -5,7 +5,6 @@ import logging
 import os
 import subprocess
 import threading
-import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
@@ -711,9 +710,6 @@ class VoidCodeRuntime:
     _mcp_manager: McpManager
     _acp_adapter: AcpAdapter
     _graph_cache: dict[tuple[ExecutionEngineName, str], RuntimeGraph]
-    _background_task_threads: dict[str, threading.Thread]
-    _background_task_shutdown_requested: bool
-    _background_tasks_reconciled: bool
     _context_window_config_override: RuntimeContextWindowConfig | None
     _agent_registry: AgentManifestRegistry
     _run_loop_coordinator: RuntimeRunLoopCoordinator
@@ -827,9 +823,6 @@ class VoidCodeRuntime:
         )
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
-        self._background_task_threads = {}
-        self._background_task_shutdown_requested = False
-        self._background_tasks_reconciled = False
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
             resolved_provider=None,
@@ -849,22 +842,34 @@ class VoidCodeRuntime:
         _ = self.shutdown_lsp()
 
     def shutdown_background_tasks(self, *, timeout_seconds: float = 2.0) -> None:
-        self._background_task_shutdown_requested = True
-        deadline = time.monotonic() + max(timeout_seconds, 0.0)
-        while True:
-            with self._background_task_supervisor._queue_lock:
-                threads = tuple(self._background_task_threads.items())
-            if not threads:
-                return
-            for task_id, thread in threads:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return
-                thread.join(timeout=min(remaining, 0.1))
-                if not thread.is_alive():
-                    with self._background_task_supervisor._queue_lock:
-                        if self._background_task_threads.get(task_id) is thread:
-                            self._background_task_threads.pop(task_id, None)
+        self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
+
+    @property
+    def _background_task_threads(self) -> dict[str, threading.Thread]:
+        # Compatibility shim for tests/callers while the supervisor owns lifecycle state.
+        return self._background_task_supervisor.threads
+
+    @_background_task_threads.setter
+    def _background_task_threads(self, value: dict[str, threading.Thread]) -> None:
+        self._background_task_supervisor.threads = value
+
+    @property
+    def _background_task_shutdown_requested(self) -> bool:
+        # Compatibility shim for tests/callers while the supervisor owns lifecycle state.
+        return self._background_task_supervisor.shutdown_requested
+
+    @_background_task_shutdown_requested.setter
+    def _background_task_shutdown_requested(self, value: bool) -> None:
+        self._background_task_supervisor.shutdown_requested = value
+
+    @property
+    def _background_tasks_reconciled(self) -> bool:
+        # Compatibility shim for tests/callers while the supervisor owns lifecycle state.
+        return self._background_task_supervisor.reconciled
+
+    @_background_tasks_reconciled.setter
+    def _background_tasks_reconciled(self, value: bool) -> None:
+        self._background_task_supervisor.reconciled = value
 
     def _build_base_tool_registry(self) -> ToolRegistry:
         return ToolRegistry.with_defaults(
