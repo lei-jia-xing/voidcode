@@ -781,7 +781,16 @@ class VoidCodeRuntime:
             error=error,
         )
         if plan_state is None:
-            return session
+            if status is not None and status.startswith("waiting_"):
+                plan_state = {"status": status}
+                if approval_request_id is not None:
+                    plan_state["approval_request_id"] = approval_request_id
+                if blocked_tool is not None:
+                    plan_state["blocked_tool"] = blocked_tool
+                if error is not None:
+                    plan_state["last_error"] = error
+            else:
+                return session
         return self._session_with_metadata(
             session,
             {
@@ -2071,12 +2080,15 @@ class VoidCodeRuntime:
         yield from start_hook_outcome.chunks
         sequence = start_hook_outcome.last_sequence
         if start_hook_outcome.failed_error is not None:
-            yield self._failed_chunk(
+            failed_chunk = self._lifecycle_hook_failure_chunk(
                 session=session,
-                sequence=sequence + 1,
+                sequence=sequence,
+                surface="session_start",
                 error=start_hook_outcome.failed_error,
             )
-            return
+            if failed_chunk is not None:
+                yield failed_chunk
+                return
 
         loaded_skill_names = self._loaded_skill_names(skill_registry)
 
@@ -2227,16 +2239,18 @@ class VoidCodeRuntime:
                 session=last_chunk.session,
                 sequence=last_sequence,
                 surface="session_idle",
-                payload={"reason": "waiting_for_approval"},
+                payload={"reason": self._waiting_reason_from_session(last_chunk.session)},
             )
             yield from idle_hook_outcome.chunks
             if idle_hook_outcome.failed_error is not None:
-                failed_session = self._disconnect_acp_for_session_state(last_chunk.session)
-                yield self._failed_chunk(
-                    session=failed_session,
-                    sequence=idle_hook_outcome.last_sequence + 1,
+                failed_chunk = self._lifecycle_hook_failure_chunk(
+                    session=self._disconnect_acp_for_session_state(last_chunk.session),
+                    sequence=idle_hook_outcome.last_sequence,
+                    surface="session_idle",
                     error=idle_hook_outcome.failed_error,
                 )
+                if failed_chunk is not None:
+                    yield failed_chunk
             return
 
         final_chunks, finalized_session, final_sequence = self._finalize_run_acp(
@@ -2254,11 +2268,19 @@ class VoidCodeRuntime:
         yield from end_hook_outcome.chunks
         release_sequence = end_hook_outcome.last_sequence
         if end_hook_outcome.failed_error is not None:
-            logger.warning(
-                "session_end hook failed for %s: %s",
-                session.session.id,
-                end_hook_outcome.failed_error,
+            failed_chunk = self._lifecycle_hook_failure_chunk(
+                session=finalized_session,
+                sequence=end_hook_outcome.last_sequence,
+                surface="session_end",
+                error=end_hook_outcome.failed_error,
             )
+            if failed_chunk is not None:
+                yield failed_chunk
+                release_sequence = (
+                    failed_chunk.event.sequence
+                    if failed_chunk.event is not None
+                    else release_sequence
+                )
         release_session = getattr(self._mcp_manager, "release_session", None)
         release_events: tuple[object, ...] = ()
         if callable(release_session):
@@ -2336,7 +2358,23 @@ class VoidCodeRuntime:
             chunks=emitted_chunks,
             last_sequence=outcome.last_sequence,
             failed_error=outcome.failed_error,
+            action=outcome.action,
         )
+
+    def _lifecycle_hook_failure_chunk(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        surface: RuntimeHookSurface,
+        error: str | None,
+    ) -> RuntimeStreamChunk | None:
+        if error is None:
+            return None
+        if self._config.hooks is None or self._config.hooks.failure_mode != "fail":
+            logger.warning("%s hook failed for %s: %s", surface, session.session.id, error)
+            return None
+        return self._failed_chunk(session=session, sequence=sequence + 1, error=error)
 
     def _run_tool_hooks(
         self,
@@ -2377,6 +2415,7 @@ class VoidCodeRuntime:
             chunks=emitted_chunks,
             last_sequence=outcome.last_sequence,
             failed_error=outcome.failed_error,
+            action=outcome.action,
         )
 
     def _failed_chunk(
@@ -5288,6 +5327,19 @@ class VoidCodeRuntime:
             return "waiting_for_question"
         return "waiting"
 
+    @staticmethod
+    def _waiting_reason_from_session(session: SessionState) -> str:
+        plan_state = session.metadata.get("plan_state")
+        if not isinstance(plan_state, dict):
+            return "waiting"
+        plan_state_payload = cast(dict[str, object], plan_state)
+        status = plan_state_payload.get("status")
+        if status == "waiting_approval":
+            return "waiting_for_approval"
+        if status == "waiting_question":
+            return "waiting_for_question"
+        return "waiting"
+
     def _response_from_resumed_chunks(
         self,
         *,
@@ -7362,8 +7414,11 @@ class VoidCodeRuntime:
             if persisted_max_steps is None:
                 max_steps = None
             elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
-                if persisted_max_steps < 1:
-                    raise ValueError("persisted runtime_config max_steps must be at least 1")
+                if persisted_max_steps < 0:
+                    raise ValueError(
+                        "persisted runtime_config max_steps must be a non-negative integer "
+                        "(0 = unlimited)"
+                    )
                 max_steps = persisted_max_steps
         tool_timeout_seconds = self._config.tool_timeout_seconds
         if "tool_timeout_seconds" in runtime_config:
@@ -7846,3 +7901,4 @@ class _RuntimeHookOutcome:
     chunks: tuple[RuntimeStreamChunk, ...]
     last_sequence: int
     failed_error: str | None = None
+    action: Literal["continue", "cancel"] = "continue"

@@ -46,7 +46,7 @@ def apply_runtime_command_effects(
             metadata=metadata,
         )
     if command_name not in {"continuation-loop", "intensive-loop", "cancel-continuation"}:
-        return invocation.original_prompt, metadata
+        return invocation.rendered_prompt, metadata
     raw_arguments = invocation.raw_arguments.strip()
     if command_name == "cancel-continuation":
         try:

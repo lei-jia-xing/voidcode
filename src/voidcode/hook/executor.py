@@ -7,7 +7,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from ..runtime.events import (
     RUNTIME_BACKGROUND_TASK_CANCELLED,
@@ -23,8 +23,10 @@ from ..runtime.events import (
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
+    RUNTIME_STUCK_DETECTED,
     RUNTIME_TOOL_HOOK_POST,
     RUNTIME_TOOL_HOOK_PRE,
+    RUNTIME_TURN_PROGRESS,
 )
 from .config import RuntimeHooksConfig, RuntimeHookSurface
 
@@ -45,6 +47,7 @@ class HookExecutionOutcome:
     events: tuple[HookExecutionEvent, ...]
     last_sequence: int
     failed_error: str | None = None
+    action: Literal["continue", "cancel"] = "continue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +87,7 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
     for command in commands:
         last_sequence += 1
         try:
-            _run_hook_command(
+            command_result = _run_hook_command(
                 command=command,
                 workspace=request.workspace,
                 environment={**request.environment, request.recursion_env_var: "1"},
@@ -111,6 +114,7 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
                 failed_error=error_text,
             )
 
+        action = _hook_action_from_stdout(command_result.stdout)
         events.append(
             HookExecutionEvent(
                 sequence=last_sequence,
@@ -120,9 +124,16 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
                     "tool_name": request.tool_name,
                     "session_id": request.session_id,
                     "status": "ok",
+                    **({"action": action} if action != "continue" else {}),
                 },
             )
         )
+        if action == "cancel":
+            return HookExecutionOutcome(
+                events=tuple(events),
+                last_sequence=last_sequence,
+                action=action,
+            )
 
     return HookExecutionOutcome(events=tuple(events), last_sequence=last_sequence)
 
@@ -149,7 +160,7 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
     for command in commands:
         last_sequence += 1
         try:
-            _run_hook_command(
+            command_result = _run_hook_command(
                 command=command,
                 workspace=request.workspace,
                 environment={
@@ -178,13 +189,24 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
                 failed_error=error_text,
             )
 
+        action = _hook_action_from_stdout(command_result.stdout)
         events.append(
             HookExecutionEvent(
                 sequence=last_sequence,
                 event_type=_event_type_for_surface(request.surface),
-                payload={**base_payload, "hook_status": "ok"},
+                payload={
+                    **base_payload,
+                    "hook_status": "ok",
+                    **({"action": action} if action != "continue" else {}),
+                },
             )
         )
+        if action == "cancel":
+            return HookExecutionOutcome(
+                events=tuple(events),
+                last_sequence=last_sequence,
+                action=action,
+            )
 
     return HookExecutionOutcome(events=tuple(events), last_sequence=last_sequence)
 
@@ -208,6 +230,8 @@ def _event_type_for_surface(surface: RuntimeHookSurface) -> str:
         "background_task_result_read": RUNTIME_BACKGROUND_TASK_RESULT_READ,
         "delegated_result_available": RUNTIME_DELEGATED_RESULT_AVAILABLE,
         "context_pressure": RUNTIME_CONTEXT_PRESSURE,
+        "turn_progress": RUNTIME_TURN_PROGRESS,
+        "stuck_detected": RUNTIME_STUCK_DETECTED,
     }[surface]
 
 
@@ -227,14 +251,31 @@ def _lifecycle_hook_environment(request: LifecycleHookExecutionRequest) -> dict[
     return environment
 
 
+def _hook_action_from_stdout(stdout: str) -> Literal["continue", "cancel"]:
+    text = stdout.strip()
+    if not text:
+        return "continue"
+    try:
+        raw_payload = json.loads(text)
+    except json.JSONDecodeError:
+        return "continue"
+    if not isinstance(raw_payload, dict):
+        return "continue"
+    payload = cast(dict[str, object], raw_payload)
+    action = payload.get("action")
+    if action == "cancel":
+        return "cancel"
+    return "continue"
+
+
 def _run_hook_command(
     *,
     command: tuple[str, ...],
     workspace: Path,
     environment: Mapping[str, str],
     timeout_seconds: float | None,
-) -> None:
-    subprocess.run(
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         list(command),
         cwd=workspace,
         capture_output=True,

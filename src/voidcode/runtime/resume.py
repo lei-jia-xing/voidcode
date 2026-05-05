@@ -403,15 +403,17 @@ class RuntimeResumeCoordinator:
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
-                failed_chunk = runtime._failed_chunk(
+                failed_chunk = runtime._lifecycle_hook_failure_chunk(
                     session=final_session,
-                    sequence=idle_hook_outcome.last_sequence + 1,
+                    sequence=idle_hook_outcome.last_sequence,
+                    surface="session_idle",
                     error=idle_hook_outcome.failed_error,
                 )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                final_session = failed_chunk.session
-                yield failed_chunk
+                if failed_chunk is not None:
+                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    loop_events.append(failed_event)
+                    final_session = failed_chunk.session
+                    yield failed_chunk
         else:
             final_chunks, final_session, final_sequence = runtime._finalize_run_acp(
                 session=final_session,
@@ -440,11 +442,17 @@ class RuntimeResumeCoordinator:
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
-                logger.warning(
-                    "session_end hook failed for %s during question resume: %s",
-                    final_session.session.id,
-                    end_hook_outcome.failed_error,
+                failed_chunk = runtime._lifecycle_hook_failure_chunk(
+                    session=final_session,
+                    sequence=end_hook_outcome.last_sequence,
+                    surface="session_end",
+                    error=end_hook_outcome.failed_error,
                 )
+                if failed_chunk is not None:
+                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    loop_events.append(failed_event)
+                    final_session = failed_chunk.session
+                    yield failed_chunk
             for release_event in runtime._release_mcp_session_events(
                 session_id=final_session.session.id,
                 start_sequence=end_hook_outcome.last_sequence + 1,
@@ -945,22 +953,27 @@ class RuntimeResumeCoordinator:
                 session=session,
                 sequence=last_sequence,
                 surface="session_idle",
-                payload={"reason": "waiting_for_approval", "resume": True},
+                payload={
+                    "reason": runtime._waiting_reason_from_session(session),
+                    "resume": True,
+                },
             )
             for hook_chunk in idle_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
-                failed_chunk = runtime._failed_chunk(
+                failed_chunk = runtime._lifecycle_hook_failure_chunk(
                     session=session,
-                    sequence=idle_hook_outcome.last_sequence + 1,
+                    sequence=idle_hook_outcome.last_sequence,
+                    surface="session_idle",
                     error=idle_hook_outcome.failed_error,
                 )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                session = failed_chunk.session
-                yield failed_chunk
+                if failed_chunk is not None:
+                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    loop_events.append(failed_event)
+                    session = failed_chunk.session
+                    yield failed_chunk
         else:
             final_chunks, session, _ = runtime._finalize_run_acp(
                 session=session,
@@ -987,11 +1000,17 @@ class RuntimeResumeCoordinator:
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
-                logger.warning(
-                    "session_end hook failed for %s during approval resume: %s",
-                    session.session.id,
-                    end_hook_outcome.failed_error,
+                failed_chunk = runtime._lifecycle_hook_failure_chunk(
+                    session=session,
+                    sequence=end_hook_outcome.last_sequence,
+                    surface="session_end",
+                    error=end_hook_outcome.failed_error,
                 )
+                if failed_chunk is not None:
+                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    loop_events.append(failed_event)
+                    session = failed_chunk.session
+                    yield failed_chunk
             for release_event in runtime._release_mcp_session_events(
                 session_id=session.session.id,
                 start_sequence=end_hook_outcome.last_sequence + 1,
@@ -1322,22 +1341,27 @@ class RuntimeResumeCoordinator:
                 session=final_session,
                 sequence=last_sequence,
                 surface="session_idle",
-                payload={"reason": "provider_failure_resume_waiting", "resume": True},
+                payload={
+                    "reason": runtime._waiting_reason_from_session(final_session),
+                    "resume": True,
+                },
             )
             for hook_chunk in idle_hook_outcome.chunks:
                 hook_event = cast(EventEnvelope, hook_chunk.event)
                 loop_events.append(hook_event)
                 yield hook_chunk
             if idle_hook_outcome.failed_error is not None:
-                failed_chunk = runtime._failed_chunk(
+                failed_chunk = runtime._lifecycle_hook_failure_chunk(
                     session=final_session,
-                    sequence=idle_hook_outcome.last_sequence + 1,
+                    sequence=idle_hook_outcome.last_sequence,
+                    surface="session_idle",
                     error=idle_hook_outcome.failed_error,
                 )
-                failed_event = cast(EventEnvelope, failed_chunk.event)
-                loop_events.append(failed_event)
-                final_session = failed_chunk.session
-                yield failed_chunk
+                if failed_chunk is not None:
+                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    loop_events.append(failed_event)
+                    final_session = failed_chunk.session
+                    yield failed_chunk
         else:
             final_chunks, final_session, final_sequence = runtime._finalize_run_acp(
                 session=final_session,
@@ -1365,11 +1389,17 @@ class RuntimeResumeCoordinator:
                 loop_events.append(hook_event)
                 yield hook_chunk
             if end_hook_outcome.failed_error is not None:
-                logger.warning(
-                    "session_end hook failed for %s during provider failure resume: %s",
-                    final_session.session.id,
-                    end_hook_outcome.failed_error,
+                failed_chunk = runtime._lifecycle_hook_failure_chunk(
+                    session=final_session,
+                    sequence=end_hook_outcome.last_sequence,
+                    surface="session_end",
+                    error=end_hook_outcome.failed_error,
                 )
+                if failed_chunk is not None:
+                    failed_event = cast(EventEnvelope, failed_chunk.event)
+                    loop_events.append(failed_event)
+                    final_session = failed_chunk.session
+                    yield failed_chunk
             release_events = runtime._release_mcp_session_events(
                 session_id=final_session.session.id,
                 start_sequence=end_hook_outcome.last_sequence + 1,

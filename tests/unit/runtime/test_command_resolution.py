@@ -107,6 +107,23 @@ def test_runtime_command_metadata_validates_continuation_loop_shape() -> None:
     assert loop_metadata["status"] == "active"
 
 
+def test_compact_command_renders_runtime_continuity_prompt(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="/compact preserve test results"))
+
+    assert response.session.metadata.get("command") == {
+        "name": "compact",
+        "source": "builtin",
+        "arguments": ["preserve", "test", "results"],
+        "raw_arguments": "preserve test results",
+        "original_prompt": "/compact preserve test results",
+    }
+    assert response.output is not None
+    assert "runtime-owned continuity summary" in response.output
+    assert "preserve test results" in response.output
+
+
 def test_continuation_loop_command_creates_runtime_owned_loop(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
 

@@ -151,6 +151,30 @@ def test_parse_provider_configs_payload_parses_transient_retry_for_simplified_pr
     )
 
 
+def test_parse_provider_configs_payload_defaults_transient_retry_max_retries_to_three() -> None:
+    parsed = parse_provider_configs_payload(
+        {
+            "opencode-go": {
+                "transient_retry": {
+                    "base_delay_ms": 500,
+                    "max_delay_ms": 4000,
+                    "jitter": False,
+                }
+            }
+        },
+        source="runtime config field 'providers'",
+    )
+
+    assert parsed is not None
+    assert parsed.opencode_go is not None
+    assert parsed.opencode_go.transient_retry == ProviderTransientRetryConfig(
+        max_retries=3,
+        base_delay_ms=500.0,
+        max_delay_ms=4000.0,
+        jitter=False,
+    )
+
+
 def test_parse_provider_configs_payload_parses_ssl_verify_for_simplified_provider() -> None:
     parsed = parse_provider_configs_payload(
         {

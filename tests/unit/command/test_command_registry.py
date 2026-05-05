@@ -103,6 +103,7 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
 
 class TestBuiltinCommandDiscovery:
     _EXPECTED_NAMES = (
+        "compact",
         "commit",
         "explain",
         "fix",
@@ -228,6 +229,19 @@ class TestBuiltinCommandRendering:
         assert "do not create commits" in rendered
         assert "no staged or unstaged changes" in rendered
 
+    def test_compact_renders_continuity_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "compact"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="preserve verification state",
+            arguments=split_command_arguments("preserve verification state"),
+        )
+
+        assert "preserve verification state" in rendered
+        assert "runtime-owned continuity summary" in rendered
+        assert "future turns can use after context compaction" in rendered
+        assert "Do not modify workspace files" in rendered
+
     def test_test_renders_verification_guidance(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "test"][0]
         rendered = render_command_template(
@@ -299,7 +313,15 @@ class TestBuiltinCommandProjectOverride:
         fix_cmd = registry.get("fix")
         assert fix_cmd is not None
         assert fix_cmd.source == "project"
-        for name in ("review", "explain", "plan", "start-work", "test", "commit"):
+        for name in (
+            "compact",
+            "review",
+            "explain",
+            "plan",
+            "start-work",
+            "test",
+            "commit",
+        ):
             cmd = registry.get(name)
             assert cmd is not None, f"{name} should still be registered"
             assert cmd.source == "builtin", (

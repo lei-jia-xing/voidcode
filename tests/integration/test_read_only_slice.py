@@ -1297,9 +1297,9 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
         for segment in _assembled_context(requests[1]).segments
         if segment.role == "system"
     ]
-    third_request_system_segments = [
+    final_request_system_segments = [
         segment.content
-        for segment in _assembled_context(requests[2]).segments
+        for segment in _assembled_context(requests[-1]).segments
         if segment.role == "system"
     ]
 
@@ -1321,7 +1321,7 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
     )
     latest_todo_segments = [
         content
-        for content in third_request_system_segments
+        for content in final_request_system_segments
         if isinstance(content, str) and content.startswith("Runtime-managed todo state is active")
     ]
     assert len(latest_todo_segments) == 1
@@ -1502,9 +1502,9 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     snapshot = runtime.session_debug_snapshot(session_id="provider-context-compacted")
 
     assert response.session.status == "completed"
-    assert len(requests) == 3
-    third_context = _assembled_context(requests[2])
-    assert [result.tool_name for result in third_context.tool_results] == ["read_file"]
+    assert len(requests) == 4
+    final_context = _assembled_context(requests[-1])
+    assert [result.tool_name for result in final_context.tool_results] == ["read_file"]
 
     provider_context = snapshot.provider_context
     assert provider_context is not None
@@ -1519,7 +1519,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
         segment for segment in provider_context.segments if segment.role == "tool"
     ]
     assert [segment.tool_name for segment in retained_tool_segments] == ["read_file"]
-    assert retained_tool_segments[0].content == third_context.tool_results[0].content
+    assert retained_tool_segments[0].content == final_context.tool_results[0].content
     provider_message_text = "\n".join(
         message.content or "" for message in provider_context.provider_messages
     )
@@ -2539,6 +2539,7 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
                         execution_engine="deterministic",
                         hooks=hooks_config(
                             enabled=True,
+                            failure_mode="fail",
                             pre_tool=((sys.executable, "-c", "import sys; sys.exit(7)"),),
                         ),
                     ),
@@ -2565,6 +2566,7 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
                     execution_engine="deterministic",
                     hooks=hooks_config(
                         enabled=True,
+                        failure_mode="fail",
                         pre_tool=((sys.executable, "-c", "import sys; sys.exit(7)"),),
                     ),
                 ),
@@ -3578,7 +3580,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "approval_mode": "allow",
         "execution_engine": "provider",
         "fallback_models": [],
-        "max_steps": None,
+        "max_steps": 100,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "model": "opencode/gpt-5.4",
@@ -4549,7 +4551,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "approval_mode": "allow",
         "execution_engine": "deterministic",
         "fallback_models": [],
-        "max_steps": None,
+        "max_steps": 100,
         "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},

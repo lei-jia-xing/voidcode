@@ -25,6 +25,7 @@ class GraphEvent:
 
 class GraphLoopState(TypedDict):
     prompt: str
+    metadata: dict[str, object]
     current_turn: Annotated[int, _update_or_replace]
     tool_calls: Annotated[list[ToolCall], operator.add]
     tool_results: Annotated[list[ToolResult], operator.add]

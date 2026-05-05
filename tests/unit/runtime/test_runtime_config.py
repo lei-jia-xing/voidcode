@@ -23,8 +23,10 @@ from voidcode.provider.config import (
 from voidcode.runtime import config as runtime_config
 from voidcode.runtime.config import (
     APPROVAL_MODE_ENV_VAR,
+    DEFAULT_MAX_STEPS,
     EXECUTION_ENGINE_ENV_VAR,
     MAX_STEPS_ENV_VAR,
+    MAX_STEPS_UNLIMITED_SENTINEL,
     MODEL_ENV_VAR,
     REASONING_EFFORT_ENV_VAR,
     RUNTIME_CONFIG_FILE_NAME,
@@ -89,7 +91,7 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.approval_mode == "ask"
     assert config.model is None
     assert config.execution_engine == "provider"
-    assert config.max_steps is None
+    assert config.max_steps == DEFAULT_MAX_STEPS
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
     assert config.permission.read.rules == (("*", "ask"),)
@@ -239,6 +241,7 @@ def test_runtime_config_defaults_to_provider_for_product_runs(
     assert RuntimeContextWindowConfig().max_tool_results == 8
     assert RuntimeContextWindowConfig().recent_tool_result_tokens == 3_000
     assert RuntimeContextWindowConfig().default_tool_result_tokens == 1_500
+    assert RuntimeContextWindowConfig().tokenizer_model == "cl100k_base"
 
 
 def test_runtime_config_supports_provider_first_opt_in_with_stub_model(
@@ -332,6 +335,7 @@ def test_runtime_config_uses_current_context_window_defaults_for_partial_repo_fi
         auto_compaction=True,
         recent_tool_result_tokens=3_000,
         default_tool_result_tokens=1_500,
+        tokenizer_model="cl100k_base",
     )
     assert config.context_window.max_tool_results == 8
 
@@ -556,6 +560,8 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
                     "on_background_task_result_read": [["python", "scripts/task_result_read.py"]],
                     "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
                     "on_context_pressure": [["python", "scripts/context_pressure.py"]],
+                    "on_turn_progress": [["python", "scripts/turn_progress.py"]],
+                    "on_stuck_detected": [["python", "scripts/stuck_detected.py"]],
                 }
             }
         ),
@@ -581,6 +587,8 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
         on_background_task_result_read=(("python", "scripts/task_result_read.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
         on_context_pressure=(("python", "scripts/context_pressure.py"),),
+        on_turn_progress=(("python", "scripts/turn_progress.py"),),
+        on_stuck_detected=(("python", "scripts/stuck_detected.py"),),
     )
 
 
@@ -2015,12 +2023,17 @@ def test_runtime_config_rejects_invalid_environment_execution_engine(tmp_path: P
         _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "agent"})
 
 
-@pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
+@pytest.mark.parametrize("raw_value", ["-1", "four"])
 def test_runtime_config_rejects_invalid_environment_max_steps(
     tmp_path: Path, raw_value: str
 ) -> None:
     with pytest.raises(ValueError, match=MAX_STEPS_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: raw_value})
+
+
+def test_runtime_config_environment_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
+    config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "0"})
+    assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
 
 
 @pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
@@ -2074,7 +2087,6 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
 @pytest.mark.parametrize(
     ("payload", "match"),
     [
-        pytest.param({"max_steps": 0}, "runtime config field 'max_steps'", id="max-steps-zero"),
         pytest.param(
             {"max_steps": -1}, "runtime config field 'max_steps'", id="max-steps-negative"
         ),
@@ -2161,6 +2173,20 @@ def test_runtime_config_rejects_invalid_max_steps(
 
     with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_repo_local_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"max_steps": 0}),
+        encoding="utf-8",
+    )
+    config = load_runtime_config(tmp_path, env={})
+    assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
+
+
+def test_runtime_config_explicit_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
+    config = load_runtime_config(tmp_path, max_steps=0, env={})
+    assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
 
 
 @pytest.mark.parametrize(
