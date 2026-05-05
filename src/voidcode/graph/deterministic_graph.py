@@ -79,7 +79,7 @@ class DeterministicGraph:
         workflow.add_conditional_edges(
             "plan_turn",
             self._route_after_plan,
-            {"tool": END, "finalize": "finalize_turn", "error": END},
+            {"tool": END, "finalize": "finalize_turn", "done": END, "error": END},
         )
         workflow.add_edge("finalize_turn", END)
         self._app: _CompiledGraphApp = workflow.compile()
@@ -130,8 +130,10 @@ class DeterministicGraph:
         tool_results: tuple[ToolResult, ...],
         session: SessionState,
     ) -> GraphLoopState:
+        _ = session
         state: GraphLoopState = {
             "prompt": request.prompt,
+            "metadata": request.metadata,
             "current_turn": len(tool_results) + 1,
             "tool_calls": [],
             "tool_results": list(tool_results),
@@ -167,6 +169,19 @@ class DeterministicGraph:
             ),
         ]
 
+        if current_turn == 1 and isinstance(state["metadata"].get("command"), dict):
+            return {
+                "events": [
+                    *planning_events,
+                    self._graph_event(
+                        GRAPH_RESPONSE_READY,
+                        {"output_preview": state["prompt"][:200]},
+                    ),
+                ],
+                "output": state["prompt"],
+                "current_turn": current_turn + 1,
+            }
+
         try:
             tool_call = self._select_tool_call(
                 state["prompt"], state["available_tools"], state["tool_results"]
@@ -190,6 +205,8 @@ class DeterministicGraph:
     def _route_after_plan(self, state: GraphLoopState) -> str:
         if state["error"] is not None:
             return "error"
+        if state["output"] is not None:
+            return "done"
         if state["tool_calls"]:
             return "tool"
         return "finalize"

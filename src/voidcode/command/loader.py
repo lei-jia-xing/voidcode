@@ -8,6 +8,20 @@ from .registry import CommandRegistry
 
 _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
     CommandDefinition(
+        name="compact",
+        description="Compact the current session into durable continuity guidance.",
+        template=(
+            "Workflow: refresh the runtime-owned continuity summary for this session. "
+            "Arguments are optional focus notes for what must be preserved: $ARGUMENTS. "
+            "Review the active objective, user constraints, completed progress, blockers, "
+            "key decisions, relevant files/commands/errors, verification state, and next "
+            "steps. Produce a concise handoff that future turns can use after context "
+            "compaction. Do not modify workspace files unless the user separately asks for "
+            "implementation."
+        ),
+        source="builtin",
+    ),
+    CommandDefinition(
         name="commit",
         description="Analyze staged changes and generate a Conventional Commits message.",
         template=(

@@ -889,6 +889,26 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
     runtime_class.return_value.resume.assert_not_called()
 
 
+def test_run_command_executes_compact_slash_command_through_runtime_surface() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        env = with_src_pythonpath(os.environ.copy())
+        result = _run_module_cli(
+            "run",
+            "/compact preserve todo state",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["output"] is not None
+    assert "runtime-owned continuity summary" in payload["output"]
+    assert "preserve todo state" in payload["output"]
+
+
 def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
@@ -2322,7 +2342,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "approval_mode": "deny",
         "model": "repo/model",
         "fallback_models": [],
-        "max_steps": None,
+        "max_steps": 100,
         "reasoning_effort": "medium",
         "agent": None,
         "agents": _expected_agent_models("repo/model"),
@@ -2529,7 +2549,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "approval_mode": "allow",
         "model": "repo/model",
         "fallback_models": ["repo/session-fallback"],
-        "max_steps": None,
+        "max_steps": 100,
         "reasoning_effort": "high",
         "agent": None,
         "agents": {
@@ -3094,12 +3114,12 @@ def test_config_init_invalid_max_steps_returns_error_without_traceback() -> None
             "--workspace",
             str(workspace),
             "--max-steps",
-            "0",
+            "-1",
         )
 
     assert result.returncode != 0
     assert result.stdout == ""
-    assert "error: max_steps must be an integer greater than or equal to 1" in result.stderr
+    assert "error: max_steps must be a non-negative integer" in result.stderr
     assert "Traceback" not in result.stderr
 
 
