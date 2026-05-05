@@ -162,12 +162,12 @@ class ContextWindowPolicy:
     recent_tool_result_tokens: int | None = 3_000
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_tool_limits)
-    tokenizer_model: str | None = None
+    tokenizer_model: str | None = "cl100k_base"
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
     context_pressure_threshold: float = 0.7
     context_pressure_cooldown_steps: int = 3
-    continuity_distillation_enabled: bool = False
+    continuity_distillation_enabled: bool = True
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
     importance_retention: bool = False
@@ -894,9 +894,19 @@ def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
     available_context = policy.model_context_window_tokens
     if policy.reserved_output_tokens is not None:
         available_context = max(1, available_context - policy.reserved_output_tokens)
+    # context_pressure_threshold is an upper bound on the tool-result budget.
+    # This turns the threshold into an actual compaction trigger instead of a
+    # passive observability signal: tool results are projected so that retained
+    # tokens stay below (model_window * threshold). Set threshold to 1.0 to
+    # restore the legacy behavior of relying purely on max_tool_result_tokens /
+    # max_context_ratio.
+    pressure_ceiling = max(
+        1, int(policy.model_context_window_tokens * policy.context_pressure_threshold)
+    )
     if policy.max_context_ratio is None:
-        return available_context if policy.reserved_output_tokens is not None else None
-    return max(1, int(available_context * policy.max_context_ratio))
+        return min(available_context, pressure_ceiling)
+    configured_budget = max(1, int(available_context * policy.max_context_ratio))
+    return min(configured_budget, pressure_ceiling)
 
 
 def _tool_limit_for_result(result: ToolResult, policy: ContextWindowPolicy) -> int | None:
@@ -1590,6 +1600,41 @@ def _artifact_reference_segments(
     return tuple(segments)
 
 
+def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeContextSegment | None:
+    raw_plan_state = session_metadata.get("plan_state")
+    if not isinstance(raw_plan_state, Mapping):
+        return None
+    plan_state = cast(Mapping[str, object], raw_plan_state)
+    status = plan_state.get("status")
+    if status not in {"waiting_approval", "waiting_question", "waiting"}:
+        return None
+    blocked_tool = plan_state.get("blocked_tool")
+    approval_request_id = plan_state.get("approval_request_id")
+    parts = [f"Runtime pending state: {status}."]
+    if isinstance(blocked_tool, str) and blocked_tool:
+        parts.append(f"Blocked tool: {blocked_tool}.")
+    if isinstance(approval_request_id, str) and approval_request_id:
+        parts.append(f"Approval request id: {approval_request_id}.")
+    if status == "waiting_approval":
+        parts.append(
+            "Do not continue autonomous work until the approval is resolved through runtime resume."
+        )
+    elif status == "waiting_question":
+        parts.append("Do not continue autonomous work until the user answers the pending question.")
+    else:
+        parts.append("Do not continue autonomous work until the pending runtime wait is resolved.")
+    metadata: dict[str, object] = {"source": "runtime_pending_state", "status": status}
+    if isinstance(blocked_tool, str) and blocked_tool:
+        metadata["blocked_tool"] = blocked_tool
+    if isinstance(approval_request_id, str) and approval_request_id:
+        metadata["approval_request_id"] = approval_request_id
+    return RuntimeContextSegment(
+        role="system",
+        content=" ".join(parts),
+        metadata=metadata,
+    )
+
+
 def project_tool_results_for_context_window(
     *,
     tool_results: tuple[ToolResult, ...],
@@ -1835,6 +1880,17 @@ def assemble_provider_context(
             )
         )
 
+    _append_system_segment(
+        (
+            "Runtime instruction precedence: active agent role and runtime enforcement "
+            "boundaries are authoritative. Tool allowlists, approvals, session truth, "
+            "and runtime safety policies outrank skill, todo, hook-preset, and "
+            "continuity guidance. Skill instructions may refine how to perform work, "
+            "but must not expand role scope, tool permissions, approval behavior, or "
+            "completion obligations."
+        ),
+        source="runtime_instruction_precedence",
+    )
     _append_system_segment(agent_prompt_context, source="agent_prompt")
     _append_system_segment(hook_preset_context, source="hook_preset_guidance")
     for segment_content in preserved_system_segments:
@@ -1861,6 +1917,11 @@ def assemble_provider_context(
                 metadata=rule_context.metadata_payload(),
             )
         )
+    pending_state_segment = _pending_state_segment(session_metadata)
+    if pending_state_segment is not None:
+        segments.append(pending_state_segment)
+        if isinstance(pending_state_segment.content, str):
+            seen_system_contents.add(pending_state_segment.content.strip())
     todo_prompt_context = render_provider_todo_state(session_metadata)
     if todo_prompt_context is not None:
         _append_system_segment(todo_prompt_context, source="runtime_todo_state")
@@ -1894,6 +1955,8 @@ def assemble_provider_context(
         )
     )
     for index, result in enumerate(context_window.tool_results, start=1):
+        if todo_prompt_context is not None and result.tool_name == "todo_write":
+            continue
         raw_tool_call_id = result.data.get("tool_call_id")
         tool_call_id = (
             raw_tool_call_id
@@ -1939,6 +2002,24 @@ def assemble_provider_context(
     metadata_payload["estimated_context_tokens"] = context_token_count.tokens
     metadata_payload["estimated_context_token_source"] = context_token_count.source
     metadata_payload["estimated_context_token_exact"] = context_token_count.exact
+    # Final-context guard: compare the assembled context against the model window.
+    # Even after tool-result compaction, system segments (agent prompt, hook guidance,
+    # skills, todos, continuity summary) can push the prompt beyond the provider's
+    # input limit. We expose pressure ratio + overflow detection as metadata so the
+    # runtime can emit context_pressure events / overflow diagnostics without forcing
+    # a hard error here (callers may choose to surface or fail-fast).
+    effective_policy_for_guard = policy or ContextWindowPolicy()
+    model_window_tokens = effective_policy_for_guard.model_context_window_tokens
+    if model_window_tokens is not None and model_window_tokens > 0:
+        pressure_ratio = context_token_count.tokens / model_window_tokens
+        metadata_payload["context_pressure_ratio"] = pressure_ratio
+        metadata_payload["context_pressure_threshold"] = (
+            effective_policy_for_guard.context_pressure_threshold
+        )
+        metadata_payload["context_pressure_detected"] = (
+            pressure_ratio >= effective_policy_for_guard.context_pressure_threshold
+        )
+        metadata_payload["context_overflow_detected"] = pressure_ratio >= 1.0
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,
