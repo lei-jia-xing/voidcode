@@ -49,7 +49,6 @@ class HookExecutionOutcome:
     failed_error: str | None = None
     action: Literal["continue", "cancel"] = "continue"
     diagnostics: tuple[str, ...] = ()
-    guidance: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +86,6 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
     last_sequence = request.sequence_start
     events: list[HookExecutionEvent] = []
     diagnostics: list[str] = []
-    guidance: str | None = None
     for command in commands:
         last_sequence += 1
         try:
@@ -121,7 +119,7 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
         action_payload = _hook_action_payload_from_stdout(command_result.stdout)
         action = action_payload.action
         diagnostic = action_payload.diagnostic
-        guidance = action_payload.guidance or guidance
+        guidance = action_payload.guidance
         if diagnostic is not None:
             diagnostics.append(diagnostic)
         events.append(
@@ -145,14 +143,12 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
                 last_sequence=last_sequence,
                 action=action,
                 diagnostics=tuple(diagnostics),
-                guidance=guidance,
             )
 
     return HookExecutionOutcome(
         events=tuple(events),
         last_sequence=last_sequence,
         diagnostics=tuple(diagnostics),
-        guidance=guidance,
     )
 
 
@@ -170,7 +166,6 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
     last_sequence = request.sequence_start
     events: list[HookExecutionEvent] = []
     diagnostics: list[str] = []
-    guidance: str | None = None
     base_payload = {
         "surface": request.surface,
         "session_id": request.session_id,
@@ -212,7 +207,7 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         action_payload = _hook_action_payload_from_stdout(command_result.stdout)
         action = action_payload.action
         diagnostic = action_payload.diagnostic
-        guidance = action_payload.guidance or guidance
+        guidance = action_payload.guidance
         if diagnostic is not None:
             diagnostics.append(diagnostic)
         events.append(
@@ -234,14 +229,12 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
                 last_sequence=last_sequence,
                 action=action,
                 diagnostics=tuple(diagnostics),
-                guidance=guidance,
             )
 
     return HookExecutionOutcome(
         events=tuple(events),
         last_sequence=last_sequence,
         diagnostics=tuple(diagnostics),
-        guidance=guidance,
     )
 
 
