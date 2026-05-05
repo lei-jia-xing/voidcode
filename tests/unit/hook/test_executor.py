@@ -74,6 +74,64 @@ def test_run_tool_hooks_reads_cancel_action_from_stdout(tmp_path: Path) -> None:
     assert outcome.events[0].payload["action"] == "cancel"
 
 
+def test_run_tool_hooks_emits_structured_diagnostic_from_stdout(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=(
+            (
+                sys.executable,
+                "-c",
+                'print(\'{"diagnostic": "policy observed", "guidance": "continue safely"}\')',
+            ),
+        ),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="read_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.diagnostics == ("policy observed",)
+    assert outcome.guidance == "continue safely"
+    assert outcome.events[0].payload["diagnostic"] == "policy observed"
+    assert outcome.events[0].payload["guidance"] == "continue safely"
+
+
+def test_run_tool_hooks_ignores_malformed_structured_stdout(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=((sys.executable, "-c", "print('not json')"),),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="read_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.action == "continue"
+    assert outcome.diagnostics == ()
+    assert outcome.guidance is None
+    assert "diagnostic" not in outcome.events[0].payload
+
+
 def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     hooks = RuntimeHooksConfig(
         on_session_start=(("python", "scripts/session_start.py"),),
