@@ -72,6 +72,8 @@ logger = logging.getLogger(__name__)
 _TOOL_PROGRESS_QUEUE_MAX_ITEMS = 128
 _TOOL_PROGRESS_POLL_SECONDS = 0.05
 _PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
+_STUCK_DETECTED_MIN_TURN = 25
+_STUCK_DETECTED_MIN_TOOL_RESULTS = 10
 
 
 def _provider_transient_retry_delay_ms(
@@ -89,6 +91,27 @@ def _provider_transient_retry_delay_ms(
 
 def _tool_error_content(tool_name: str, error: str) -> str:
     return f"{tool_name} failed: {error}. Please correct the tool arguments and retry."
+
+
+def _hook_failures_are_fatal(runtime: VoidCodeRuntime) -> bool:
+    hooks = runtime._config.hooks
+    return hooks is not None and hooks.failure_mode == "fail"
+
+
+def _hook_failure_chunk(
+    *,
+    runtime: VoidCodeRuntime,
+    session: SessionState,
+    sequence: int,
+    surface: str,
+    error: str | None,
+) -> RuntimeStreamChunk | None:
+    if error is None:
+        return None
+    if not _hook_failures_are_fatal(runtime):
+        logger.warning("%s hook failed for %s: %s", surface, session.session.id, error)
+        return None
+    return runtime._failed_chunk(session=session, sequence=sequence + 1, error=error)
 
 
 def _tool_error_summary(error: str) -> str:
@@ -423,6 +446,11 @@ class RuntimeRunLoopCoordinator:
             try:
                 item = progress_queue.get(timeout=_TOOL_PROGRESS_POLL_SECONDS)
             except queue.Empty:
+                if _is_abort_signal_requested(abort_signal):
+                    terminal_item = _ToolExceptionItem(
+                        RuntimeError(_abort_signal_reason(abort_signal) or "run interrupted")
+                    )
+                    break
                 continue
             if isinstance(item, _ToolProgressItem):
                 sequence += 1
@@ -527,12 +555,24 @@ class RuntimeRunLoopCoordinator:
         yield from pre_hook_outcome.chunks
         sequence = pre_hook_outcome.last_sequence
         if pre_hook_outcome.failed_error is not None:
+            failed_chunk = _hook_failure_chunk(
+                runtime=runtime,
+                session=session,
+                sequence=sequence,
+                surface="pre_tool",
+                error=pre_hook_outcome.failed_error,
+            )
+            if failed_chunk is not None:
+                yield failed_chunk
+                raise RuntimeError(pre_hook_outcome.failed_error)
+        if pre_hook_outcome.action == "cancel":
             yield runtime._failed_chunk(
                 session=session,
                 sequence=sequence + 1,
-                error=pre_hook_outcome.failed_error,
+                error="run cancelled by pre-tool hook",
+                payload={"kind": "hook_cancelled", "surface": "pre_tool"},
             )
-            raise RuntimeError(pre_hook_outcome.failed_error)
+            return
 
         tool_timeout = runtime._effective_runtime_config_from_metadata(
             session.metadata
@@ -854,12 +894,24 @@ class RuntimeRunLoopCoordinator:
             yield from post_hook_outcome.chunks
             sequence = post_hook_outcome.last_sequence
             if post_hook_outcome.failed_error is not None:
+                failed_chunk = _hook_failure_chunk(
+                    runtime=runtime,
+                    session=session,
+                    sequence=sequence,
+                    surface="post_tool",
+                    error=post_hook_outcome.failed_error,
+                )
+                if failed_chunk is not None:
+                    yield failed_chunk
+                    raise RuntimeError(post_hook_outcome.failed_error)
+            if post_hook_outcome.action == "cancel":
                 yield runtime._failed_chunk(
                     session=session,
                     sequence=sequence + 1,
-                    error=post_hook_outcome.failed_error,
+                    error="run cancelled by post-tool hook",
+                    payload={"kind": "hook_cancelled", "surface": "post_tool"},
                 )
-                raise RuntimeError(post_hook_outcome.failed_error)
+                return
 
         tool_results.append(
             replace(
@@ -896,6 +948,7 @@ class RuntimeRunLoopCoordinator:
         active_graph_request: GraphRunRequest = graph_request
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
         first_iteration = True
+        stuck_detected_emitted = False
         while True:
             if pending_provider_attempt_reset is not None:
                 provider_attempt = pending_provider_attempt_reset.provider_attempt
@@ -919,6 +972,77 @@ class RuntimeRunLoopCoordinator:
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session: SessionState = session
             current_session_metadata: dict[str, object] = current_session.metadata
+            turn_index = len(tool_results) + 1
+            turn_progress_payload: dict[str, object] = {
+                "turn": turn_index,
+                "tool_result_count": len(tool_results),
+                "provider_attempt": provider_attempt,
+                "provider_retry_attempt": provider_retry_attempt,
+            }
+            turn_progress_hook = runtime._run_lifecycle_hooks(
+                session=session,
+                sequence=sequence,
+                surface="turn_progress",
+                payload=turn_progress_payload,
+            )
+            yield from turn_progress_hook.chunks
+            sequence = turn_progress_hook.last_sequence
+            if turn_progress_hook.failed_error is not None:
+                failed_chunk = _hook_failure_chunk(
+                    runtime=runtime,
+                    session=session,
+                    sequence=sequence,
+                    surface="turn_progress",
+                    error=turn_progress_hook.failed_error,
+                )
+                if failed_chunk is not None:
+                    yield failed_chunk
+                    return
+            if turn_progress_hook.action == "cancel":
+                yield runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error="run cancelled by turn-progress hook",
+                    payload={"kind": "hook_cancelled", "surface": "turn_progress"},
+                )
+                return
+            if not stuck_detected_emitted and self._is_stuck_tool_loop(
+                turn=turn_index,
+                tool_results=tool_results,
+            ):
+                stuck_payload: dict[str, object] = {
+                    **turn_progress_payload,
+                    "distinct_tool_count": len({result.tool_name for result in tool_results}),
+                    "reason": "repeated_tool_loop",
+                }
+                stuck_detected_emitted = True
+                stuck_hook = runtime._run_lifecycle_hooks(
+                    session=session,
+                    sequence=sequence,
+                    surface="stuck_detected",
+                    payload=stuck_payload,
+                )
+                yield from stuck_hook.chunks
+                sequence = stuck_hook.last_sequence
+                if stuck_hook.failed_error is not None:
+                    failed_chunk = _hook_failure_chunk(
+                        runtime=runtime,
+                        session=session,
+                        sequence=sequence,
+                        surface="stuck_detected",
+                        error=stuck_hook.failed_error,
+                    )
+                    if failed_chunk is not None:
+                        yield failed_chunk
+                        return
+                if stuck_hook.action == "cancel":
+                    yield runtime._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error="run cancelled by stuck-detected hook",
+                        payload={"kind": "hook_cancelled", "surface": "stuck_detected"},
+                    )
+                    return
             if first_iteration:
                 prebuilt_context = cast(RuntimeContextWindow, current_graph_request.context_window)
                 first_iteration = False
@@ -1120,11 +1244,24 @@ class RuntimeRunLoopCoordinator:
                 yield from hook_outcome.chunks
                 sequence = hook_outcome.last_sequence
                 if hook_outcome.failed_error is not None:
-                    logger.warning(
-                        "context_pressure hook failed for %s: %s",
-                        session.session.id,
-                        hook_outcome.failed_error,
+                    failed_chunk = _hook_failure_chunk(
+                        runtime=runtime,
+                        session=session,
+                        sequence=sequence,
+                        surface="context_pressure",
+                        error=hook_outcome.failed_error,
                     )
+                    if failed_chunk is not None:
+                        yield failed_chunk
+                        return
+                if hook_outcome.action == "cancel":
+                    yield runtime._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error="run cancelled by context-pressure hook",
+                        payload={"kind": "hook_cancelled", "surface": "context_pressure"},
+                    )
+                    return
             if (
                 context_window.compacted
                 and reinjected_continuity is None
@@ -1524,11 +1661,24 @@ class RuntimeRunLoopCoordinator:
                 yield from hook_outcome.chunks
                 sequence = hook_outcome.last_sequence
                 if hook_outcome.failed_error is not None:
-                    logger.warning(
-                        "context_pressure hook failed for %s: %s",
-                        session.session.id,
-                        hook_outcome.failed_error,
+                    failed_chunk = _hook_failure_chunk(
+                        runtime=runtime,
+                        session=session,
+                        sequence=sequence,
+                        surface="context_pressure",
+                        error=hook_outcome.failed_error,
                     )
+                    if failed_chunk is not None:
+                        yield failed_chunk
+                        return
+                if hook_outcome.action == "cancel":
+                    yield runtime._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error="run cancelled by context-pressure hook",
+                        payload={"kind": "hook_cancelled", "surface": "context_pressure"},
+                    )
+                    return
             if is_final_step and provider_attempt != 0:
                 provider_attempt = 0
                 session = _session_without_provider_attempt(session)
@@ -1765,12 +1915,24 @@ class RuntimeRunLoopCoordinator:
             yield from pre_hook_outcome.chunks
             sequence = pre_hook_outcome.last_sequence
             if pre_hook_outcome.failed_error is not None:
+                failed_chunk = _hook_failure_chunk(
+                    runtime=runtime,
+                    session=session,
+                    sequence=sequence,
+                    surface="pre_tool",
+                    error=pre_hook_outcome.failed_error,
+                )
+                if failed_chunk is not None:
+                    yield failed_chunk
+                    raise RuntimeError(pre_hook_outcome.failed_error)
+            if pre_hook_outcome.action == "cancel":
                 yield runtime._failed_chunk(
                     session=session,
                     sequence=sequence + 1,
-                    error=pre_hook_outcome.failed_error,
+                    error="run cancelled by pre-tool hook",
+                    payload={"kind": "hook_cancelled", "surface": "pre_tool"},
                 )
-                raise RuntimeError(pre_hook_outcome.failed_error)
+                return
 
             tool_timeout = runtime._effective_runtime_config_from_metadata(
                 session.metadata
@@ -2199,12 +2361,24 @@ class RuntimeRunLoopCoordinator:
                 yield from post_hook_outcome.chunks
                 sequence = post_hook_outcome.last_sequence
                 if post_hook_outcome.failed_error is not None:
+                    failed_chunk = _hook_failure_chunk(
+                        runtime=runtime,
+                        session=session,
+                        sequence=sequence,
+                        surface="post_tool",
+                        error=post_hook_outcome.failed_error,
+                    )
+                    if failed_chunk is not None:
+                        yield failed_chunk
+                        raise RuntimeError(post_hook_outcome.failed_error)
+                if post_hook_outcome.action == "cancel":
                     yield runtime._failed_chunk(
                         session=session,
                         sequence=sequence + 1,
-                        error=post_hook_outcome.failed_error,
+                        error="run cancelled by post-tool hook",
+                        payload={"kind": "hook_cancelled", "surface": "post_tool"},
                     )
-                    raise RuntimeError(post_hook_outcome.failed_error)
+                    return
 
             tool_results.append(
                 replace(
@@ -2628,6 +2802,14 @@ class RuntimeRunLoopCoordinator:
             turn=session.turn,
             metadata={**session.metadata, "runtime_state": runtime_state},
         )
+
+    @staticmethod
+    def _is_stuck_tool_loop(*, turn: int, tool_results: list[ToolResult]) -> bool:
+        if turn < _STUCK_DETECTED_MIN_TURN:
+            return False
+        if len(tool_results) < _STUCK_DETECTED_MIN_TOOL_RESULTS:
+            return False
+        return len({result.tool_name for result in tool_results}) <= 2
 
     def _drain_runtime_events(
         self,

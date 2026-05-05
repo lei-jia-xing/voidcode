@@ -64,6 +64,8 @@ EXECUTION_ENGINE_ENV_VAR = "VOIDCODE_EXECUTION_ENGINE"
 MAX_STEPS_ENV_VAR = "VOIDCODE_MAX_STEPS"
 TOOL_TIMEOUT_ENV_VAR = "VOIDCODE_TOOL_TIMEOUT_SECONDS"
 REASONING_EFFORT_ENV_VAR = "VOIDCODE_REASONING_EFFORT"
+DEFAULT_MAX_STEPS: int = 100
+MAX_STEPS_UNLIMITED_SENTINEL: int = 0
 _VALID_APPROVAL_MODES = ("allow", "deny", "ask")
 _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "provider"]
@@ -113,6 +115,7 @@ _HOOKS_CONFIG_KEYS = frozenset(
     {
         "enabled",
         "timeout_seconds",
+        "failure_mode",
         "pre_tool",
         "post_tool",
         "on_session_start",
@@ -128,6 +131,8 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "on_background_task_result_read",
         "on_delegated_result_available",
         "on_context_pressure",
+        "on_turn_progress",
+        "on_stuck_detected",
         "formatter_presets",
     }
 )
@@ -327,14 +332,14 @@ class RuntimeContextWindowConfig:
     per_tool_result_tokens: Mapping[str, int] = field(
         default_factory=_empty_context_window_tool_limits
     )
-    tokenizer_model: str | None = None
+    tokenizer_model: str | None = "cl100k_base"
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
     context_pressure_threshold: float = 0.7
     context_pressure_cooldown_steps: int = 3
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
-    continuity_distillation_enabled: bool = False
+    continuity_distillation_enabled: bool = True
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
 
@@ -459,7 +464,7 @@ class RuntimeConfig:
     )
     model: str | None = None
     execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
-    max_steps: int | None = None
+    max_steps: int | None = DEFAULT_MAX_STEPS
     tool_timeout_seconds: int | None = None
     reasoning_effort: str | None = None
     hooks: RuntimeHooksConfig | None = None
@@ -1018,6 +1023,9 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         hooks_payload.get("timeout_seconds"),
         source="runtime config field 'hooks.timeout_seconds'",
     )
+    failure_mode = hooks_payload.get("failure_mode", "warn")
+    if failure_mode not in {"warn", "fail"}:
+        raise ValueError("runtime config field 'hooks.failure_mode' must be warn or fail")
 
     pre_tool = _parse_command_list(hooks_payload.get("pre_tool"), field_path="hooks.pre_tool")
     post_tool = _parse_command_list(hooks_payload.get("post_tool"), field_path="hooks.post_tool")
@@ -1073,6 +1081,14 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         hooks_payload.get("on_context_pressure"),
         field_path="hooks.on_context_pressure",
     )
+    on_turn_progress = _parse_command_list(
+        hooks_payload.get("on_turn_progress"),
+        field_path="hooks.on_turn_progress",
+    )
+    on_stuck_detected = _parse_command_list(
+        hooks_payload.get("on_stuck_detected"),
+        field_path="hooks.on_stuck_detected",
+    )
     formatter_presets: dict[str, RuntimeFormatterPresetConfig] = _parse_formatter_presets_config(
         hooks_payload.get("formatter_presets"),
         field_path="hooks.formatter_presets",
@@ -1081,6 +1097,7 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
     return RuntimeHooksConfig(
         enabled=enabled,
         timeout_seconds=timeout_seconds,
+        failure_mode=cast(Literal["warn", "fail"], failure_mode),
         pre_tool=pre_tool,
         post_tool=post_tool,
         on_session_start=on_session_start,
@@ -1096,6 +1113,8 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         on_background_task_result_read=on_background_task_result_read,
         on_delegated_result_available=on_delegated_result_available,
         on_context_pressure=on_context_pressure,
+        on_turn_progress=on_turn_progress,
+        on_stuck_detected=on_stuck_detected,
         formatter_presets=formatter_presets,
     )
 
@@ -1137,6 +1156,7 @@ def _apply_formatter_config(
     return RuntimeHooksConfig(
         enabled=formatter.enabled if formatter.enabled is not None else base_hooks.enabled,
         timeout_seconds=base_hooks.timeout_seconds,
+        failure_mode=base_hooks.failure_mode,
         pre_tool=base_hooks.pre_tool,
         post_tool=base_hooks.post_tool,
         on_session_start=base_hooks.on_session_start,
@@ -1152,6 +1172,8 @@ def _apply_formatter_config(
         on_background_task_result_read=base_hooks.on_background_task_result_read,
         on_delegated_result_available=base_hooks.on_delegated_result_available,
         on_context_pressure=base_hooks.on_context_pressure,
+        on_turn_progress=base_hooks.on_turn_progress,
+        on_stuck_detected=base_hooks.on_stuck_detected,
         formatter_presets=formatter_presets,
     )
 
@@ -1538,14 +1560,14 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     recent_tool_result_tokens: int | None = 3_000
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: dict[str, int] = Field(default_factory=dict)
-    tokenizer_model: str | None = None
+    tokenizer_model: str | None = "cl100k_base"
     continuity_preview_items: int = 3
     continuity_preview_chars: int = 80
     context_pressure_threshold: float = 0.7
     context_pressure_cooldown_steps: int = 3
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
-    continuity_distillation_enabled: bool = False
+    continuity_distillation_enabled: bool = True
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
 
@@ -1562,7 +1584,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             value,
             field_path="context_window.continuity_distillation_enabled",
         )
-        return False if parsed is None else parsed
+        return True if parsed is None else parsed
 
     @field_validator("version", mode="before")
     @classmethod
@@ -1750,7 +1772,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     @classmethod
     def _validate_tokenizer_model(cls, value: object) -> str | None:
         if value is None:
-            return None
+            return RuntimeContextWindowConfig().tokenizer_model
         if not isinstance(value, str) or not value.strip():
             raise ValueError(
                 "runtime config field 'context_window.tokenizer_model' must be a non-empty string"
@@ -3667,8 +3689,12 @@ def _parse_execution_engine(
 def _parse_max_steps(raw_value: object, *, source: str, allow_none: bool) -> int | None:
     if raw_value is None and allow_none:
         return None
-    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 1:
-        raise ValueError(f"{source} must be an integer greater than or equal to 1")
+    if not isinstance(raw_value, int) or isinstance(raw_value, bool) or raw_value < 0:
+        raise ValueError(
+            f"{source} must be a non-negative integer "
+            f"({MAX_STEPS_UNLIMITED_SENTINEL} = unlimited, relies on context "
+            "overflow / model self-termination)"
+        )
     return raw_value
 
 
@@ -3682,7 +3708,8 @@ def _parse_environment_max_steps(raw_value: object) -> int | None:
         except ValueError as exc:
             raise ValueError(
                 "environment variable "
-                f"{MAX_STEPS_ENV_VAR} must be an integer greater than or equal to 1"
+                f"{MAX_STEPS_ENV_VAR} must be a non-negative integer "
+                f"({MAX_STEPS_UNLIMITED_SENTINEL} = unlimited, relies on context overflow)"
             ) from exc
     return _parse_max_steps(
         parsed_value,

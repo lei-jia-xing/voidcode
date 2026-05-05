@@ -74,10 +74,11 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "max_steps": {
                 "type": "integer",
-                "minimum": 1,
+                "minimum": 0,
                 "description": (
-                    "Maximum graph step budget for a single run. Omit this field for "
-                    "the provider default of no fixed step cap."
+                    "Maximum graph step budget for a single run. Defaults to 100 "
+                    "when omitted. Set to 0 to disable the cap (the run then "
+                    "relies on context overflow and model self-termination)."
                 ),
             },
             "tool_timeout_seconds": {
@@ -104,6 +105,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "properties": {
                     "enabled": {"type": "boolean"},
                     "timeout_seconds": {"type": "number", "minimum": 1},
+                    "failure_mode": {"type": "string", "enum": ["warn", "fail"]},
                     "pre_tool": {"$ref": "#/$defs/commandList"},
                     "post_tool": {"$ref": "#/$defs/commandList"},
                     "on_session_start": {"$ref": "#/$defs/commandList"},
@@ -119,6 +121,8 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "on_background_task_result_read": {"$ref": "#/$defs/commandList"},
                     "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
                     "on_context_pressure": {"$ref": "#/$defs/commandList"},
+                    "on_turn_progress": {"$ref": "#/$defs/commandList"},
+                    "on_stuck_detected": {"$ref": "#/$defs/commandList"},
                     "formatter_presets": {
                         "type": "object",
                         "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
@@ -688,8 +692,10 @@ def generate_starter_runtime_config(
         raise ValueError(
             f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}"
         )
-    if max_steps is not None and max_steps < 1:
-        raise ValueError("max_steps must be an integer greater than or equal to 1")
+    if max_steps is not None and max_steps < 0:
+        raise ValueError(
+            "max_steps must be a non-negative integer (0 = unlimited, relies on context overflow)"
+        )
     if model is not None:
         _validate_model_reference(model)
 

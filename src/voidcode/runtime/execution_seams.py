@@ -9,7 +9,12 @@ from ..graph.deterministic_graph import DeterministicGraph
 from ..graph.provider_graph import ProviderGraph
 from ..provider.errors import ProviderExecutionError
 from ..provider.models import ResolvedProviderChain, ResolvedProviderModel
-from .config import ExecutionEngineName, serialize_runtime_agent_config
+from .config import (
+    DEFAULT_MAX_STEPS,
+    MAX_STEPS_UNLIMITED_SENTINEL,
+    ExecutionEngineName,
+    serialize_runtime_agent_config,
+)
 
 if TYPE_CHECKING:
     from .contracts import RuntimeRequest
@@ -37,6 +42,24 @@ def provider_model_required_message() -> str:
         "Run 'voidcode config init --model provider/model' or set VOIDCODE_MODEL. "
         "For test/dev workflows without a provider, use the deterministic test harness env var."
     )
+
+
+def resolve_provider_graph_max_steps(max_steps: int | None) -> int | None:
+    """Translate effective config max_steps into the value passed to ProviderGraph.
+
+    Semantics:
+    - ``None``: caller did not configure max_steps; apply the safe default
+      (:data:`DEFAULT_MAX_STEPS`) so a runaway model loop cannot run forever.
+    - ``MAX_STEPS_UNLIMITED_SENTINEL`` (0): caller explicitly opted out of the
+      step cap; return ``None`` so ProviderGraph runs without a hard step
+      limit (relies on context overflow / model self-termination).
+    - Positive integer: pass through unchanged.
+    """
+    if max_steps is None:
+        return DEFAULT_MAX_STEPS
+    if max_steps == MAX_STEPS_UNLIMITED_SENTINEL:
+        return None
+    return max_steps
 
 
 def resolve_runtime_session_routing(request: RuntimeRequest) -> RuntimeSessionRouting:
@@ -76,7 +99,7 @@ def build_runtime_graph(
     return ProviderGraph(
         provider=provider_model.provider.turn_provider(),
         provider_model=provider_model,
-        max_steps=max_steps,
+        max_steps=resolve_provider_graph_max_steps(max_steps),
     )
 
 

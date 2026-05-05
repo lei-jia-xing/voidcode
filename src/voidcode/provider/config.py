@@ -232,7 +232,7 @@ class _ProviderFallbackPayload(_ProviderPayloadModel):
 
 @dataclass(frozen=True, slots=True)
 class ProviderTransientRetryConfig:
-    max_retries: int = 2
+    max_retries: int = 3
     base_delay_ms: float = 1000.0
     max_delay_ms: float = 10_000.0
     jitter: bool = True

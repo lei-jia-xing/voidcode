@@ -33,6 +33,10 @@ class _AbortSignal:
     def cancelled(self) -> bool:
         return self._cancelled
 
+    def cancel(self, reason: str | None = None) -> None:
+        self._cancelled = True
+        self.reason = reason
+
 
 class _InstantTool:
     definition = ToolDefinition(name="instant_tool", description="Returns instantly.")

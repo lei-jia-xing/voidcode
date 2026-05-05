@@ -289,7 +289,7 @@ def test_generate_starter_runtime_config_validates_inputs() -> None:
     with pytest.raises(ValueError, match="provider/model"):
         generate_starter_runtime_config(model="/gpt-5")
     with pytest.raises(ValueError, match="max_steps"):
-        generate_starter_runtime_config(max_steps=0)
+        generate_starter_runtime_config(max_steps=-1)
 
 
 def test_format_starter_runtime_config_json_preserves_order() -> None:

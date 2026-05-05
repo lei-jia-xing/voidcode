@@ -89,6 +89,8 @@ from voidcode.runtime.events import (
     RUNTIME_SESSION_IDLE,
     RUNTIME_SESSION_STARTED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
+    RUNTIME_STUCK_DETECTED,
+    RUNTIME_TURN_PROGRESS,
     EventEnvelope,
 )
 from voidcode.runtime.lsp import DisabledLspManager
@@ -788,7 +790,10 @@ class _ScriptedTurnProvider:
         self.requests: list[ProviderTurnRequest] = []
 
     def propose_turn(self, request: object) -> ProviderTurnResult:
-        self.requests.append(cast(ProviderTurnRequest, request))
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if turn_request.prompt.startswith("Return ONLY valid JSON matching these keys:"):
+            return ProviderTurnResult(output=_distillation_json_output(turn_request.prompt))
         if not self._outcomes:
             return ProviderTurnResult(output="done")
         outcome = self._outcomes.pop(0)
@@ -799,6 +804,17 @@ class _ScriptedTurnProvider:
     def stream_turn(self, request: object):
         turn_request = cast(ProviderTurnRequest, request)
         self.requests.append(turn_request)
+        if turn_request.prompt.startswith("Return ONLY valid JSON matching these keys:"):
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="delta",
+                        channel="text",
+                        text=_distillation_json_output(turn_request.prompt),
+                    ),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
         if turn_request.abort_signal is not None and turn_request.abort_signal.cancelled:
             return iter(
                 (
@@ -844,6 +860,53 @@ class _ScriptedTurnProvider:
                 ),
             )
         )
+
+
+def _distillation_json_output(prompt: str) -> str:
+    objective = "continue current task"
+    marker = "INPUT="
+    marker_index = prompt.find(marker)
+    if marker_index != -1:
+        raw_input = prompt[marker_index + len(marker) :].strip()
+        try:
+            parsed = json.loads(raw_input)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            raw_prompt = parsed.get("prompt")
+            if isinstance(raw_prompt, str) and raw_prompt.strip():
+                objective = raw_prompt.strip().replace("\n", " ")
+    return json.dumps(
+        {
+            "objective_current_goal": objective,
+            "verbatim_user_constraints": [],
+            "completed_progress": [],
+            "blockers_open_questions": [],
+            "key_decisions_with_rationale": [],
+            "relevant_files_commands_errors": [],
+            "verification_state": {"status": "unknown", "details": [], "refs": []},
+            "next_steps": [],
+            "source_references": [],
+        }
+    )
+
+
+def _last_main_provider_request(requests: list[ProviderTurnRequest]) -> ProviderTurnRequest:
+    for request in reversed(requests):
+        if not request.prompt.startswith("Return ONLY valid JSON matching these keys:"):
+            return request
+    raise AssertionError("expected at least one non-distillation provider request")
+
+
+def _last_main_provider_request_from_providers(
+    providers: list[_ScriptedTurnProvider],
+) -> ProviderTurnRequest:
+    for provider in reversed(providers):
+        try:
+            return _last_main_provider_request(provider.requests)
+        except AssertionError:
+            continue
+    raise AssertionError("expected at least one non-distillation provider request")
 
 
 @dataclass(frozen=True, slots=True)
@@ -10997,10 +11060,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert initial_continuity["source"] == "tool_result_window"
     assert initial_continuity["version"] == 2
     assert "## Objective" in cast(str, initial_continuity["summary_text"])
-    assert "Compacted 1 earlier tool results:" in cast(
-        str,
-        initial_continuity["summary_text"],
-    )
+    assert "- Dropped tool results: 1" in cast(str, initial_continuity["summary_text"])
     initial_continuity_summary = cast(
         dict[str, object], waiting_runtime_state["continuity_summary"]
     )
@@ -11025,10 +11085,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert expected_resumed_continuity["retained_tool_result_count"] == 1
     assert expected_resumed_continuity["source"] == "tool_result_window"
     assert expected_resumed_continuity["version"] == 2
-    assert "Compacted 2 earlier tool results:" in cast(
-        str,
-        expected_resumed_continuity["summary_text"],
-    )
+    assert "- Dropped tool results: 2" in cast(str, expected_resumed_continuity["summary_text"])
     resumed_continuity_summary = cast(
         dict[str, object], resumed_runtime_state["continuity_summary"]
     )
@@ -11037,7 +11094,9 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         "tool_result_start": 0,
         "tool_result_end": 2,
     }
-    assembled_context = created_providers[-1].requests[-1].assembled_context
+    assembled_context = _last_main_provider_request_from_providers(
+        created_providers
+    ).assembled_context
     assert assembled_context is not None
     continuity_state = cast(RuntimeContinuityState | None, assembled_context.continuity_state)
     context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
@@ -11118,10 +11177,13 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
     resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
     resumed_continuity = cast(dict[str, object], resumed_runtime_state["continuity"])
     persisted_context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
-    context_window = cast(RuntimeContextWindow, created_providers[-1].requests[-1].context_window)
+    context_window = cast(
+        RuntimeContextWindow,
+        _last_main_provider_request_from_providers(created_providers).context_window,
+    )
 
     assert context_window.token_budget == 1
-    assert context_window.token_estimate_source == "unicode_aware_chars"
+    assert context_window.token_estimate_source == "tiktoken:cl100k_base"
     assert context_window.original_tool_result_tokens is not None
     assert context_window.retained_tool_result_tokens is not None
     assert context_window.dropped_tool_result_tokens is not None
@@ -11501,7 +11563,7 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
         assert isinstance(metadata, dict)
         metadata_dict = cast(dict[str, object], metadata)
         runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
-        runtime_config["max_steps"] = 0
+        runtime_config["max_steps"] = -1
         _ = connection.execute(
             "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
             (json.dumps(metadata_dict, sort_keys=True), "invalid-max-steps"),
@@ -11512,7 +11574,10 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
 
     resumed_runtime = VoidCodeRuntime(workspace=tmp_path, config=RuntimeConfig(max_steps=3))
 
-    with pytest.raises(ValueError, match="persisted runtime_config max_steps must be at least 1"):
+    with pytest.raises(
+        ValueError,
+        match="persisted runtime_config max_steps must be a non-negative integer",
+    ):
         _ = resumed_runtime.effective_runtime_config(session_id="invalid-max-steps")
 
 
@@ -12188,15 +12253,17 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert expected_continuity["source"] == "tool_result_window"
     assert expected_continuity["version"] == 2
     assert "## Objective" in cast(str, expected_continuity["summary_text"])
-    assert "Compacted 1 earlier tool results:" in cast(
-        str,
-        expected_continuity["summary_text"],
-    )
+    assert "- Dropped tool results: 1" in cast(str, expected_continuity["summary_text"])
     assert memory_events[0].payload == {
         "reason": "tool_result_window",
         "original_tool_result_count": 2,
         "retained_tool_result_count": 1,
         "compacted": True,
+        "original_tool_result_tokens": memory_events[0].payload["original_tool_result_tokens"],
+        "retained_tool_result_tokens": memory_events[0].payload["retained_tool_result_tokens"],
+        "dropped_tool_result_tokens": memory_events[0].payload["dropped_tool_result_tokens"],
+        "token_budget": memory_events[0].payload["token_budget"],
+        "token_estimate_source": "tiktoken:cl100k_base",
         "summary_anchor": summary_anchor,
         "summary_source": summary_source,
         "continuity_state": expected_continuity,
@@ -12208,13 +12275,22 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "original_tool_result_count": 2,
         "retained_tool_result_count": 1,
         "max_tool_result_count": 1,
+        "original_tool_result_tokens": response_context_window["original_tool_result_tokens"],
+        "retained_tool_result_tokens": response_context_window["retained_tool_result_tokens"],
+        "dropped_tool_result_tokens": response_context_window["dropped_tool_result_tokens"],
+        "token_budget": response_context_window["token_budget"],
+        "token_estimate_source": "tiktoken:cl100k_base",
         "model_context_window_tokens": 1_000_000,
         "continuity_state": expected_continuity,
         "summary_anchor": summary_anchor,
         "summary_source": summary_source,
         "estimated_context_tokens": response_context_window["estimated_context_tokens"],
-        "estimated_context_token_source": "unicode_aware_chars",
-        "estimated_context_token_exact": False,
+        "estimated_context_token_source": "tiktoken:cl100k_base",
+        "estimated_context_token_exact": True,
+        "context_pressure_ratio": response_context_window["context_pressure_ratio"],
+        "context_pressure_threshold": 0.7,
+        "context_pressure_detected": False,
+        "context_overflow_detected": False,
     }
     assert isinstance(response_context_window["estimated_context_tokens"], int)
     assert response_context_window["estimated_context_tokens"] > 0
@@ -12223,7 +12299,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert runtime_state["continuity_summary"] == {
         "anchor": summary_anchor,
         "source": summary_source,
-        "distillation_source": "deterministic",
+        "distillation_source": "model_assisted",
     }
     assert runtime_state["memory_refreshed"] == {
         "last_summary_anchor": summary_anchor,
@@ -12885,6 +12961,114 @@ def test_runtime_context_pressure_hook_failure_is_non_fatal(tmp_path: Path) -> N
     assert not any(event.event_type == "runtime.failed" for event in response.events)
 
 
+def test_runtime_context_pressure_hook_failure_mode_fail_aborts(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("x" * 300, encoding="utf-8")
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                max_tool_result_tokens=1,
+                context_pressure_threshold=0.7,
+                context_pressure_cooldown_steps=1,
+            ),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                failure_mode="fail",
+                on_context_pressure=((sys.executable, "-c", "raise SystemExit(7)"),),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt"))
+
+    assert response.session.status == "failed"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert "lifecycle hook failed for context_pressure" in str(response.events[-1].payload["error"])
+
+
+def test_runtime_turn_progress_hook_fires_with_payload(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_turn_progress=((sys.executable, "-c", ""),),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello"))
+
+    progress_event = next(
+        event for event in response.events if event.event_type == RUNTIME_TURN_PROGRESS
+    )
+    assert progress_event.payload["hook_status"] == "ok"
+    assert progress_event.payload["turn"] == 1
+    assert progress_event.payload["tool_result_count"] == 0
+
+
+def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("repeat\n", encoding="utf-8")
+    monkeypatch.setattr(runtime_run_loop_module, "_STUCK_DETECTED_MIN_TURN", 3)
+    monkeypatch.setattr(runtime_run_loop_module, "_STUCK_DETECTED_MIN_TOOL_RESULTS", 2)
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_stuck_detected=((sys.executable, "-c", ""),),
+            ),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="repeat reads"))
+
+    stuck_events = [
+        event for event in response.events if event.event_type == RUNTIME_STUCK_DETECTED
+    ]
+    assert response.session.status == "completed"
+    assert len(stuck_events) == 1
+    assert stuck_events[0].payload["reason"] == "repeated_tool_loop"
+    assert stuck_events[0].payload["tool_result_count"] == 2
+    assert stuck_events[0].payload["hook_status"] == "ok"
+
+
 def test_runtime_context_pressure_payload_reason_is_consistently_exceeded(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("x" * 300, encoding="utf-8")
@@ -13449,17 +13633,14 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     worker_prompt = render_agent_prompt({"preset": "worker", "prompt_profile": "worker"})
 
     assert leader_prompt is not None
-    assert "Delegate when the task is multi-step" in leader_prompt
+    assert "Delegate only through runtime-provided tools" in leader_prompt
     assert "Use category when you know the kind of work" in leader_prompt
     assert "Use subagent_type when you already know the specialist you need" in leader_prompt
-    assert "Product is a separate top-level planning preset" in leader_prompt
-    assert "Use run_in_background=true" in leader_prompt
-    assert "Use background_output to collect child results" in leader_prompt
-    assert "background_output(full_session=true) is an explicit tool result" in leader_prompt
-    assert "Use background_retry with the failed task id" in leader_prompt
+    assert "Use run_in_background=true only for independent work" in leader_prompt
+    assert "Collect child results with background_output" in leader_prompt
+    assert "Retry failed, cancelled, or interrupted children with background_retry" in leader_prompt
     assert "inspect the returned retry task id with background_output" in leader_prompt
     assert "do not manually reconstruct child requests" in leader_prompt
-    assert "Escalate to the user after repeated child failure" in leader_prompt
 
     assert explore_prompt is not None
     assert "Stay read only" in explore_prompt
@@ -15067,7 +15248,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     runtime_config = cast(dict[str, object], waiting.session.metadata["runtime_config"])
     assert runtime_config["approval_mode"] == "ask"
     assert runtime_config["execution_engine"] == "provider"
-    assert runtime_config["max_steps"] is None
+    assert runtime_config["max_steps"] == 100
     assert runtime_config["tool_timeout_seconds"] is None
     assert runtime_config["model"] == "opencode/gpt-5.4"
     assert runtime_config["agent"] == {
@@ -15522,7 +15703,7 @@ def test_answer_question_resume_waiting_emits_session_idle_hook(tmp_path: Path) 
         responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
     )
 
-    idle = next(event for event in resumed.events if event.event_type == RUNTIME_SESSION_IDLE)
+    idle = [event for event in resumed.events if event.event_type == RUNTIME_SESSION_IDLE][-1]
     assert resumed.session.status == "waiting"
     assert idle.payload["reason"] == "waiting_for_approval"
     assert idle.payload["hook_status"] == "ok"
@@ -18274,6 +18455,30 @@ def test_answer_question_resume_session_end_hook_failure_does_not_override_termi
     assert all(event.event_type != "runtime.failed" for event in resumed.events)
 
 
+def test_runtime_session_idle_hook_failure_warn_does_not_fail_waiting_session(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ApprovalThenCaptureSkillGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", "raise SystemExit(9)"),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="needs approval", session_id="idle-warn-session"))
+
+    assert response.session.status == "waiting"
+    assert response.events[-1].event_type == RUNTIME_SESSION_IDLE
+    assert response.events[-1].payload["hook_status"] == "error"
+    assert all(event.event_type != "runtime.failed" for event in response.events)
+
+
 def test_runtime_disconnects_acp_before_failing_on_session_idle_hook_error(
     tmp_path: Path,
 ) -> None:
@@ -18285,6 +18490,7 @@ def test_runtime_disconnects_acp_before_failing_on_session_idle_hook_error(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
+                failure_mode="fail",
                 on_session_idle=((sys.executable, "-c", "raise SystemExit(9)"),),
             ),
         ),
@@ -18502,7 +18708,7 @@ def test_runtime_persists_assembled_context_token_estimate(
 
     context_window = cast(dict[str, object], enriched.metadata["context_window"])
     assert context_window["model_context_window_tokens"] == 1000
-    assert context_window["estimated_context_token_source"] == "unicode_aware_chars"
+    assert context_window["estimated_context_token_source"] == "tiktoken:cl100k_base"
     assert isinstance(context_window["estimated_context_tokens"], int)
     assert context_window["estimated_context_tokens"] > 0
 

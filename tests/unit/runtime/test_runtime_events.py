@@ -36,9 +36,11 @@ from voidcode.runtime.events import (
     RUNTIME_SKILL_LOADED,
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_BINDING_MISMATCH,
+    RUNTIME_STUCK_DETECTED,
     RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_TOOL_STARTED,
+    RUNTIME_TURN_PROGRESS,
     DelegatedExecutionPayload,
     DelegatedLifecycleEventPayload,
     DelegatedLifecycleMessage,
@@ -90,6 +92,8 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_TODO_UPDATED,
         RUNTIME_REASONING_PART,
         RUNTIME_REASONING_DIAGNOSTIC,
+        RUNTIME_TURN_PROGRESS,
+        RUNTIME_STUCK_DETECTED,
     )
 
 

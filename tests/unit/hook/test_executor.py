@@ -50,6 +50,30 @@ def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
     }
 
 
+def test_run_tool_hooks_reads_cancel_action_from_stdout(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=((sys.executable, "-c", 'print(\'{"action": "cancel"}\')'),),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="write_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.action == "cancel"
+    assert outcome.events[0].payload["action"] == "cancel"
+
+
 def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     hooks = RuntimeHooksConfig(
         on_session_start=(("python", "scripts/session_start.py"),),
@@ -65,6 +89,8 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
         on_background_task_result_read=(("python", "scripts/task_result_read.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
         on_context_pressure=(("python", "scripts/context_pressure.py"),),
+        on_turn_progress=(("python", "scripts/turn_progress.py"),),
+        on_stuck_detected=(("python", "scripts/stuck_detected.py"),),
     )
 
     assert hooks.commands_for_surface("session_start") == (("python", "scripts/session_start.py"),)
@@ -99,6 +125,10 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     )
     assert hooks.commands_for_surface("context_pressure") == (
         ("python", "scripts/context_pressure.py"),
+    )
+    assert hooks.commands_for_surface("turn_progress") == (("python", "scripts/turn_progress.py"),)
+    assert hooks.commands_for_surface("stuck_detected") == (
+        ("python", "scripts/stuck_detected.py"),
     )
 
 
@@ -135,6 +165,30 @@ def test_run_lifecycle_hooks_executes_configured_session_command_and_reports_eve
         "prompt": "hello",
         "hook_status": "ok",
     }
+
+
+def test_run_lifecycle_hooks_reads_cancel_action_from_stdout(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_context_pressure=((sys.executable, "-c", 'print(\'{"action": "cancel"}\')'),),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="context_pressure",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=11,
+            payload={"pressure_ratio": 0.9},
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.action == "cancel"
+    assert outcome.events[0].payload["action"] == "cancel"
 
 
 def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> None:

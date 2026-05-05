@@ -27,13 +27,17 @@ type RuntimeHookSurface = Literal[
     "background_task_result_read",
     "delegated_result_available",
     "context_pressure",
+    "turn_progress",
+    "stuck_detected",
 ]
+type RuntimeHookFailureMode = Literal["warn", "fail"]
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeHooksConfig:
     enabled: bool | None = None
     timeout_seconds: float | None = 30.0
+    failure_mode: RuntimeHookFailureMode = "warn"
     pre_tool: tuple[tuple[str, ...], ...] = ()
     post_tool: tuple[tuple[str, ...], ...] = ()
     on_session_start: tuple[tuple[str, ...], ...] = ()
@@ -49,6 +53,8 @@ class RuntimeHooksConfig:
     on_background_task_result_read: tuple[tuple[str, ...], ...] = ()
     on_delegated_result_available: tuple[tuple[str, ...], ...] = ()
     on_context_pressure: tuple[tuple[str, ...], ...] = ()
+    on_turn_progress: tuple[tuple[str, ...], ...] = ()
+    on_stuck_detected: tuple[tuple[str, ...], ...] = ()
     formatter_presets: Mapping[str, RuntimeFormatterPresetConfig] = field(
         default_factory=default_formatter_presets
     )
@@ -70,6 +76,8 @@ class RuntimeHooksConfig:
             "background_task_result_read": self.on_background_task_result_read,
             "delegated_result_available": self.on_delegated_result_available,
             "context_pressure": self.on_context_pressure,
+            "turn_progress": self.on_turn_progress,
+            "stuck_detected": self.on_stuck_detected,
         }[surface]
 
     def resolve_formatter(self, file_path: Path) -> tuple[str, RuntimeFormatterPresetConfig] | None:

@@ -69,6 +69,8 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.todo_updated",
     "runtime.reasoning_part",
     "runtime.reasoning_diagnostic",
+    "runtime.turn_progress",
+    "runtime.stuck_detected",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_waiting_approval",
@@ -197,6 +199,8 @@ RUNTIME_SKILL_LOADED: Final[PrototypeAdditiveEventType] = "runtime.skill_loaded"
 RUNTIME_TODO_UPDATED: Final[PrototypeAdditiveEventType] = "runtime.todo_updated"
 RUNTIME_REASONING_PART: Final[PrototypeAdditiveEventType] = "runtime.reasoning_part"
 RUNTIME_REASONING_DIAGNOSTIC: Final[PrototypeAdditiveEventType] = "runtime.reasoning_diagnostic"
+RUNTIME_TURN_PROGRESS: Final[PrototypeAdditiveEventType] = "runtime.turn_progress"
+RUNTIME_STUCK_DETECTED: Final[PrototypeAdditiveEventType] = "runtime.stuck_detected"
 
 REASONING_TEXT_LIMIT_CHARS: Final[int] = 4000
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
@@ -266,6 +270,8 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_TODO_UPDATED,
     RUNTIME_REASONING_PART,
     RUNTIME_REASONING_DIAGNOSTIC,
+    RUNTIME_TURN_PROGRESS,
+    RUNTIME_STUCK_DETECTED,
 )
 
 
