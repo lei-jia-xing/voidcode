@@ -152,6 +152,11 @@ from .config import (
     serialize_runtime_context_window_config,
     serialize_runtime_tools_config,
 )
+from .context_transforms import (
+    RuntimeContextTransformRegistry,
+    build_provider_context_transform_result,
+    default_runtime_context_transform_registry,
+)
 from .context_window import (
     ContextWindowPolicy,
     RuntimeAssembledContext,
@@ -515,6 +520,7 @@ class VoidCodeRuntime:
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
+    _context_transform_registry: RuntimeContextTransformRegistry
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
 
@@ -533,6 +539,7 @@ class VoidCodeRuntime:
         mcp_manager: McpManager | None = None,
         acp_adapter: AcpAdapter | None = None,
         context_window_policy: ContextWindowPolicy | None = None,
+        context_transform_registry: RuntimeContextTransformRegistry | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._permission_context_resolver = RuntimePermissionContextResolver(
@@ -623,6 +630,9 @@ class VoidCodeRuntime:
         )
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
+        self._context_transform_registry = (
+            context_transform_registry or default_runtime_context_transform_registry()
+        )
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
             resolved_provider=None,
@@ -6026,6 +6036,12 @@ class VoidCodeRuntime:
             session_metadata,
             agent=effective_config.agent,
         )
+        context_transform_result = build_provider_context_transform_result(
+            workspace=self._workspace,
+            tool_results=tool_results,
+            hook_preset_context=hook_preset_context,
+            registry=self._context_transform_registry,
+        )
         return assemble_provider_context(
             prompt=prompt,
             tool_results=tool_results,
@@ -6033,6 +6049,7 @@ class VoidCodeRuntime:
             policy=policy or self._default_context_window_policy,
             agent_prompt_context=agent_prompt_context,
             hook_preset_context=hook_preset_context,
+            context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,
             preserved_system_segments=preserved_system_segments,
             loaded_skills=loaded_skills,

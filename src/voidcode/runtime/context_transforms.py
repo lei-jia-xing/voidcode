@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from ..tools.contracts import ToolResult
 from .context_rules import runtime_file_rule_contexts
@@ -51,59 +51,131 @@ class RuntimeContextTransformResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeContextTransformRequest:
+    workspace: Path | None
+    tool_results: tuple[ToolResult, ...]
+    hook_preset_context: str
+
+
+class RuntimeContextTransformProvider(Protocol):
+    provider_id: str
+
+    def build_result(
+        self,
+        request: RuntimeContextTransformRequest,
+    ) -> RuntimeContextTransformResult: ...
+
+
+class HookPresetGuidanceTransformProvider:
+    provider_id = "hook_preset_guidance"
+
+    def build_result(
+        self,
+        request: RuntimeContextTransformRequest,
+    ) -> RuntimeContextTransformResult:
+        normalized_hook_preset_context = request.hook_preset_context.strip()
+        if not normalized_hook_preset_context:
+            return RuntimeContextTransformResult()
+        return RuntimeContextTransformResult(
+            injections=(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content=normalized_hook_preset_context,
+                    metadata={"source": self.provider_id},
+                ),
+            ),
+            traces=(
+                RuntimeContextTransformTrace(
+                    provider_id=self.provider_id,
+                    injection_count=1,
+                    sources=(self.provider_id,),
+                ),
+            ),
+        )
+
+
+class RuntimeFileRulesTransformProvider:
+    provider_id = "runtime_file_rules"
+
+    def build_result(
+        self,
+        request: RuntimeContextTransformRequest,
+    ) -> RuntimeContextTransformResult:
+        rule_segments: list[RuntimeContextTransformInjection] = []
+        for rule_context in runtime_file_rule_contexts(
+            workspace=request.workspace,
+            tool_results=request.tool_results,
+        ):
+            rule_segments.append(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content=(
+                        "Runtime file rules are active for touched workspace paths.\n"
+                        f"Rule file: {rule_context.path}\n"
+                        f"{rule_context.content}"
+                    ).strip(),
+                    metadata=rule_context.metadata_payload(),
+                )
+            )
+        if not rule_segments:
+            return RuntimeContextTransformResult()
+        return RuntimeContextTransformResult(
+            injections=tuple(rule_segments),
+            traces=(
+                RuntimeContextTransformTrace(
+                    provider_id=self.provider_id,
+                    injection_count=len(rule_segments),
+                    sources=(self.provider_id,),
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContextTransformRegistry:
+    providers: tuple[RuntimeContextTransformProvider, ...] = ()
+
+    def build_result(
+        self,
+        request: RuntimeContextTransformRequest,
+    ) -> RuntimeContextTransformResult:
+        injections: list[RuntimeContextTransformInjection] = []
+        traces: list[RuntimeContextTransformTrace] = []
+        for provider in self.providers:
+            result = provider.build_result(request)
+            injections.extend(result.injections)
+            traces.extend(result.traces)
+        return RuntimeContextTransformResult(
+            injections=tuple(injections),
+            traces=tuple(traces),
+        )
+
+
+def default_runtime_context_transform_registry() -> RuntimeContextTransformRegistry:
+    return RuntimeContextTransformRegistry(
+        providers=(
+            HookPresetGuidanceTransformProvider(),
+            RuntimeFileRulesTransformProvider(),
+        )
+    )
+
+
 def build_provider_context_transform_result(
     *,
     workspace: Path | None,
     tool_results: tuple[ToolResult, ...],
     hook_preset_context: str,
+    registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeContextTransformResult:
-    injections: list[RuntimeContextTransformInjection] = []
-    traces: list[RuntimeContextTransformTrace] = []
-
-    normalized_hook_preset_context = hook_preset_context.strip()
-    if normalized_hook_preset_context:
-        injections.append(
-            RuntimeContextTransformInjection(
-                role="system",
-                content=normalized_hook_preset_context,
-                metadata={"source": "hook_preset_guidance"},
-            )
+    active_registry = registry or default_runtime_context_transform_registry()
+    return active_registry.build_result(
+        RuntimeContextTransformRequest(
+            workspace=workspace,
+            tool_results=tool_results,
+            hook_preset_context=hook_preset_context,
         )
-        traces.append(
-            RuntimeContextTransformTrace(
-                provider_id="hook_preset_guidance",
-                injection_count=1,
-                sources=("hook_preset_guidance",),
-            )
-        )
-
-    rule_segments: list[RuntimeContextTransformInjection] = []
-    for rule_context in runtime_file_rule_contexts(
-        workspace=workspace,
-        tool_results=tool_results,
-    ):
-        rule_segments.append(
-            RuntimeContextTransformInjection(
-                role="system",
-                content=(
-                    "Runtime file rules are active for touched workspace paths.\n"
-                    f"Rule file: {rule_context.path}\n"
-                    f"{rule_context.content}"
-                ).strip(),
-                metadata=rule_context.metadata_payload(),
-            )
-        )
-    injections.extend(rule_segments)
-    if rule_segments:
-        traces.append(
-            RuntimeContextTransformTrace(
-                provider_id="runtime_file_rules",
-                injection_count=len(rule_segments),
-                sources=("runtime_file_rules",),
-            )
-        )
-
-    return RuntimeContextTransformResult(injections=tuple(injections), traces=tuple(traces))
+    )
 
 
 def context_transform_metadata_from_payload(

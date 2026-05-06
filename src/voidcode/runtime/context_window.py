@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
-from .context_transforms import build_provider_context_transform_result
+from .context_transforms import (
+    RuntimeContextTransformResult,
+    build_provider_context_transform_result,
+)
 from .continuity_distillation import (
     ContinuityDistillationRecord,
     build_distillation_input_envelope,
@@ -1853,6 +1856,7 @@ def assemble_provider_context(
     skill_prompt_context: str = "",
     agent_prompt_context: str = "",
     hook_preset_context: str = "",
+    context_transform_result: RuntimeContextTransformResult | None = None,
     preserved_system_segments: tuple[str, ...] = (),
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: RuntimeContinuityState | None = None,
@@ -1895,7 +1899,7 @@ def assemble_provider_context(
     for segment_content in preserved_system_segments:
         _append_system_segment(segment_content, source="preserved_system_segment")
     _append_system_segment(skill_prompt_context, source="skill_prompt")
-    transform_result = build_provider_context_transform_result(
+    transform_result = context_transform_result or build_provider_context_transform_result(
         workspace=workspace,
         tool_results=tool_results,
         hook_preset_context=hook_preset_context,
