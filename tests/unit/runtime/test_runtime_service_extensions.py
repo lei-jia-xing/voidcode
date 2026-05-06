@@ -2635,6 +2635,7 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
         diagnostic.code not in {"missing_tool_result", "orphan_tool_result"}
         for diagnostic in provider_context.diagnostics
     )
+    assert "context_transforms" not in provider_context.context_window
 
 
 def test_runtime_session_debug_snapshot_uses_model_tool_feedback_mode(
@@ -2957,7 +2958,10 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
             {
                 "provider_id": "hook_preset_guidance",
                 "status": "ok",
+                "priority": 100,
+                "execution_index": 1,
                 "injection_count": 1,
+                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
                 "sources": ["hook_preset_guidance"],
             },
         ],
@@ -3036,7 +3040,10 @@ def test_runtime_agent_context_transform_refs_filter_provider_registry(
             {
                 "provider_id": "runtime_file_rules",
                 "status": "ok",
+                "priority": 200,
+                "execution_index": 1,
                 "injection_count": 1,
+                "provider_order": ["runtime_file_rules"],
                 "sources": ["runtime_file_rules"],
             }
         ],
@@ -10098,7 +10105,10 @@ def test_runtime_workflow_context_transform_refs_filter_runtime_registry(
             {
                 "provider_id": "runtime_file_rules",
                 "status": "ok",
+                "priority": 200,
+                "execution_index": 1,
                 "injection_count": 1,
+                "provider_order": ["runtime_file_rules"],
                 "sources": ["runtime_file_rules"],
             }
         ],
@@ -10153,7 +10163,10 @@ def test_runtime_request_context_transform_refs_narrow_agent_scope(
             {
                 "provider_id": "runtime_file_rules",
                 "status": "ok",
+                "priority": 200,
+                "execution_index": 1,
                 "injection_count": 1,
+                "provider_order": ["runtime_file_rules"],
                 "sources": ["runtime_file_rules"],
             }
         ],
@@ -12483,7 +12496,10 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
                 {
                     "provider_id": "hook_preset_guidance",
                     "status": "ok",
+                    "priority": 100,
+                    "execution_index": 1,
                     "injection_count": 1,
+                    "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
                     "sources": ["hook_preset_guidance"],
                 }
             ],
