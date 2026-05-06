@@ -8,6 +8,8 @@ from typing import Protocol, cast
 from ..tools.contracts import ToolResult
 from .context_rules import runtime_file_rule_contexts
 
+type RuntimeContextTransformProviderId = str
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContextTransformInjection:
@@ -136,6 +138,22 @@ class RuntimeFileRulesTransformProvider:
 class RuntimeContextTransformRegistry:
     providers: tuple[RuntimeContextTransformProvider, ...] = ()
 
+    def filtered(
+        self,
+        provider_ids: tuple[RuntimeContextTransformProviderId, ...],
+    ) -> RuntimeContextTransformRegistry:
+        if not provider_ids:
+            return self
+        allowed = frozenset(provider_ids)
+        return RuntimeContextTransformRegistry(
+            providers=tuple(
+                provider for provider in self.providers if provider.provider_id in allowed
+            )
+        )
+
+    def provider_ids(self) -> tuple[RuntimeContextTransformProviderId, ...]:
+        return tuple(provider.provider_id for provider in self.providers)
+
     def build_result(
         self,
         request: RuntimeContextTransformRequest,
@@ -188,3 +206,25 @@ def context_transform_metadata_from_payload(
     if not isinstance(applied, list):
         return None
     return typed_payload
+
+
+def validate_runtime_context_transform_refs(
+    refs: tuple[str, ...],
+    *,
+    field_path: str,
+    registry: RuntimeContextTransformRegistry | None = None,
+) -> tuple[str, ...]:
+    if not refs:
+        return ()
+    active_registry = registry or default_runtime_context_transform_registry()
+    valid_refs = frozenset(active_registry.provider_ids())
+    for ref in refs:
+        if not ref.strip():
+            raise ValueError(f"{field_path} entries must be non-empty strings")
+        if ref not in valid_refs:
+            allowed = ", ".join(sorted(valid_refs))
+            raise ValueError(
+                f"{field_path} references unknown context transform provider: {ref}; "
+                f"valid providers are: {allowed}"
+            )
+    return refs

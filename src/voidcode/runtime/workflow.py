@@ -23,6 +23,7 @@ _WORKFLOW_PRESET_FIELDS = frozenset(
         "skill_refs",
         "force_load_skills",
         "hook_preset_refs",
+        "context_transform_refs",
         "mcp_binding_intents",
         "tool_policy_ref",
         "permission_policy_ref",
@@ -75,6 +76,7 @@ class WorkflowPreset:
     skill_refs: tuple[str, ...] = ()
     force_load_skills: tuple[str, ...] = ()
     hook_preset_refs: tuple[str, ...] = ()
+    context_transform_refs: tuple[str, ...] = ()
     mcp_binding_intents: tuple[WorkflowMcpBindingIntent, ...] = ()
     tool_policy_ref: str | None = None
     permission_policy_ref: str | None = None
@@ -107,6 +109,11 @@ class WorkflowPreset:
             field_path=f"workflow preset '{self.id}' hook_preset_refs",
             allow_empty=True,
         )
+        _validate_string_tuple(
+            self.context_transform_refs,
+            field_path=f"workflow preset '{self.id}' context_transform_refs",
+            allow_empty=True,
+        )
         validate_hook_preset_refs(
             self.hook_preset_refs,
             field_path=f"workflow preset '{self.id}' hook_preset_refs",
@@ -133,6 +140,8 @@ class WorkflowPreset:
             payload["force_load_skills"] = list(self.force_load_skills)
         if self.hook_preset_refs:
             payload["hook_preset_refs"] = list(self.hook_preset_refs)
+        if self.context_transform_refs:
+            payload["context_transform_refs"] = list(self.context_transform_refs)
         if self.mcp_binding_intents:
             payload["mcp_binding_intents"] = [
                 binding.to_payload() for binding in self.mcp_binding_intents
@@ -241,6 +250,10 @@ def workflow_preset_from_payload(
         hook_preset_refs=_string_list(
             payload.get("hook_preset_refs"),
             field_path=f"{field_path}.hook_preset_refs",
+        ),
+        context_transform_refs=_string_list(
+            payload.get("context_transform_refs"),
+            field_path=f"{field_path}.context_transform_refs",
         ),
         mcp_binding_intents=_mcp_binding_intent_list(
             payload.get("mcp_binding_intents"),

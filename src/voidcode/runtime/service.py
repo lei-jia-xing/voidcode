@@ -1036,6 +1036,8 @@ class VoidCodeRuntime:
             raw_agent["prompt_append"] = preset.prompt_append
         if preset.hook_preset_refs:
             raw_agent["hook_refs"] = list(preset.hook_preset_refs)
+        if preset.context_transform_refs:
+            raw_agent["context_transform_refs"] = list(preset.context_transform_refs)
         return self._config_with_request_agent_override(
             resolved,
             raw_agent,
@@ -1070,6 +1072,7 @@ class VoidCodeRuntime:
             "skill_refs": list(preset.skill_refs),
             "force_load_skills": list(preset.force_load_skills),
             "hook_preset_refs": list(preset.hook_preset_refs),
+            "context_transform_refs": list(preset.context_transform_refs),
             "mcp_binding_intents": self._workflow_mcp_binding_intent_snapshots(preset),
             "materialization": "runtime_policy_enforced",
             "governance": (
@@ -6040,7 +6043,7 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             tool_results=tool_results,
             hook_preset_context=hook_preset_context,
-            registry=self._context_transform_registry,
+            registry=self._context_transform_registry_for_agent(effective_config.agent),
         )
         return assemble_provider_context(
             prompt=prompt,
@@ -6567,6 +6570,13 @@ class VoidCodeRuntime:
         if snapshot is None:
             snapshot = self._build_hook_preset_snapshot(agent)
         return snapshot.guidance_context()
+
+    def _context_transform_registry_for_agent(
+        self,
+        agent: RuntimeAgentConfig | None,
+    ) -> RuntimeContextTransformRegistry:
+        refs = agent.context_transform_refs if agent is not None else ()
+        return self._context_transform_registry.filtered(refs)
 
     @staticmethod
     def _force_loaded_skill_payloads(
