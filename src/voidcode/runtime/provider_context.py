@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from typing import cast
+from typing import Literal, cast
 
 from ..provider.model_catalog import ToolFeedbackMode
 from ..tools.output import (
@@ -84,6 +84,8 @@ def inspect_provider_context(
             oversized_tool_feedback_chars=oversized_tool_feedback_chars,
         )
     )
+    transform_diagnostics = _transform_diagnostics(dict(assembled_context.metadata))
+    diagnostics = (*diagnostics, *transform_diagnostics)
     policy_decision = (
         evaluate_provider_context_policy(diagnostics, mode=diagnostic_policy_mode)
         if diagnostic_policy_mode is not None
@@ -191,6 +193,63 @@ def _diagnostic_with_policy_metadata(
         policy_action=action,
         policy_blocking=blocking,
     )
+
+
+def _transform_diagnostics(
+    context_metadata: dict[str, object],
+) -> tuple[RuntimeProviderContextDiagnostic, ...]:
+    raw_transforms = context_metadata.get("context_transforms")
+    if not isinstance(raw_transforms, dict):
+        return ()
+    transform_payload = cast(dict[str, object], raw_transforms)
+    applied = transform_payload.get("applied")
+    if not isinstance(applied, list):
+        return ()
+    diagnostics: list[RuntimeProviderContextDiagnostic] = []
+    for raw_trace in cast(list[object], applied):
+        if not isinstance(raw_trace, dict):
+            continue
+        trace = cast(dict[str, object], raw_trace)
+        provider_id = trace.get("provider_id")
+        status = trace.get("status")
+        if not isinstance(provider_id, str) or not provider_id:
+            continue
+        if not isinstance(status, str) or not status:
+            continue
+        severity: Literal["info", "warning", "error"] = "info"
+        if status == "error":
+            severity = "error"
+        elif trace.get("diagnostics"):
+            severity = "warning"
+        execution_index = trace.get("execution_index")
+        priority = trace.get("priority")
+        injection_count = trace.get("injection_count")
+        details: dict[str, object] = {
+            "status": status,
+            "sources": trace.get("sources", []),
+        }
+        if isinstance(execution_index, int):
+            details["execution_index"] = execution_index
+        if isinstance(priority, int):
+            details["priority"] = priority
+        if isinstance(injection_count, int):
+            details["injection_count"] = injection_count
+        if isinstance(trace.get("diagnostics"), list):
+            details["diagnostics"] = trace["diagnostics"]
+        if isinstance(trace.get("error"), str):
+            details["error"] = trace["error"]
+        diagnostics.append(
+            RuntimeProviderContextDiagnostic(
+                severity=severity,
+                code="context_transform_trace",
+                message=(
+                    f"Context transform provider '{provider_id}' executed with status '{status}'."
+                ),
+                source=provider_id,
+                details=details,
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _source_from_metadata(segment: RuntimeContextSegment) -> str:

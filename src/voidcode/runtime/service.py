@@ -4687,6 +4687,24 @@ class VoidCodeRuntime:
             session_metadata=result.session.metadata,
             skill_prompt_context=self._debug_skill_prompt_context(result.session.metadata),
         )
+        context_window_metadata = result.session.metadata.get("context_window")
+        if isinstance(context_window_metadata, dict):
+            typed_context_window_metadata = cast(dict[str, object], context_window_metadata)
+            preserved_transform_metadata = typed_context_window_metadata.get("context_transforms")
+            if isinstance(preserved_transform_metadata, dict):
+                assembled_context = RuntimeAssembledContext(
+                    prompt=assembled_context.prompt,
+                    tool_results=assembled_context.tool_results,
+                    continuity_state=assembled_context.continuity_state,
+                    segments=assembled_context.segments,
+                    metadata={
+                        **assembled_context.metadata,
+                        "context_transforms": dict(
+                            cast(dict[str, object], preserved_transform_metadata)
+                        ),
+                    },
+                    loaded_skills=assembled_context.loaded_skills,
+                )
         effective_config = self._effective_runtime_config_from_metadata(result.session.metadata)
         return self._provider_context_snapshot_for_assembled_context(
             assembled_context=assembled_context,
