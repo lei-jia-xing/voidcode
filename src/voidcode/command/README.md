@@ -45,6 +45,7 @@ continuation loops.
 
 | Command              | Arguments                                                              | Execution mode                      | Default behavior                                   | Verification guidance                                                                   |
 | -------------------- | ---------------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `/init [focus]`      | Optional focus notes for the project knowledge base                    | Default runtime prompt              | May write `AGENTS.md`                              | Inspect repo structure, generate/update structured project instructions, then read back |
 | `/review [target]`   | File, directory, PR/diff target, or empty for current changes          | Default runtime prompt              | Read-only                                          | Report missing/unreadable targets instead of generic reviews                            |
 | `/fix [problem]`     | Concrete failing test, lint/type error, review comment, or bug         | Default runtime prompt              | May edit                                           | Locate root cause, minimally edit, and run targeted checks                              |
 | `/explain [target]`  | File, module, stack trace, error, or behavior                          | Default runtime prompt              | Read-only                                          | State clearly when the target cannot be found or read                                   |
@@ -65,5 +66,7 @@ matches what actually ships.
 | `/continuation-loop`     | Start or continue a runtime-owned continuation loop on the session   |
 | `/intensive-loop`        | Start a higher-intensity continuation loop with verification state   |
 | `/cancel-continuation`   | Cancel the active continuation loop on the session                   |
+
+`/init` is intentionally a prompt command, not a separate CLI bootstrap flag: the active agent inspects the actual repository and writes a structured `AGENTS.md` with stable project knowledge. It should preserve useful existing guidance, avoid secrets and transient task state, and verify by reading the final file.
 
 Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before graph or provider execution. Builtins are defined in `loader.py` as `_BUILTIN_COMMANDS` and can be overridden by project-local `commands/**/*.md` files.
