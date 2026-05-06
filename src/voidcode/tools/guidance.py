@@ -15,7 +15,6 @@ _TOOL_GUIDANCE_FILES = {
     "ast_grep_preview": "ast_grep.txt",
     "ast_grep_replace": "ast_grep.txt",
     "ast_grep_search": "ast_grep.txt",
-    "code_search": "code_search.txt",
     "edit": "edit.txt",
     "format_file": "format_file.txt",
     "glob": "glob.txt",

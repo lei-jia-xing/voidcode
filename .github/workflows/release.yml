@@ -1,38 +1,87 @@
 name: Release
 
 on:
-    release:
-        types:
-            - published
+  release:
+    types:
+      - published
 
 jobs:
-    publish:
-        name: Upload release to PyPI & github
-        if: github.event.release.prerelease == false
-        runs-on: ubuntu-latest
+  verify:
+    name: Verify (lint, typecheck, tests)
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
 
-        environment:
-            name: pypi
-            url: https://pypi.org/p/voidcode
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-        permissions:
-            contents: read
-            id-token: write
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
 
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v6
+      - name: Install Python
+        run: uv python install 3.13
 
-            - name: Setup uv
-              uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --extra dev
 
-            - name: Setup Python
-              uses: actions/setup-python@v6
-              with:
-                  python-version: "3.13"
+      - name: Lint with Ruff
+        run: uv run ruff check .
 
-            - name: Build package
-              run: uv build
+      - name: Check formatting with Ruff
+        run: uv run ruff format --check .
 
-            - name: Publish package distributions to PyPI
-              uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Type-check with ty
+        run: uv run ty check src
+
+      - name: Run tests
+        run: uv run pytest -n auto -m 'not slow and not fuzz'
+
+  publish:
+    name: Publish to PyPI and attach artifacts to GitHub Release
+    needs: verify
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+
+    environment:
+      name: pypi
+      url: https://pypi.org/p/voidcode
+
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify package version matches release tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          expected="${tag#v}"
+          actual="$(uv run python -c 'from importlib.metadata import version; print(version("voidcode"))')"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::package version $actual does not match release tag $tag (expected $expected)"
+            exit 1
+          fi
+
+      - name: Upload distributions to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

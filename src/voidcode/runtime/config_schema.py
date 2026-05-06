@@ -29,7 +29,7 @@ __all__ = [
     "write_runtime_config_payload",
 ]
 
-RUNTIME_CONFIG_SCHEMA_ID = "https://voidcode.dev/schemas/runtime-config.schema.json"
+RUNTIME_CONFIG_SCHEMA_ID = "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
 RUNTIME_CONFIG_SCHEMA_URI = RUNTIME_CONFIG_SCHEMA_ID
 RUNTIME_CONFIG_SCHEMA_TITLE = "VoidCode runtime config"
 _JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"

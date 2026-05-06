@@ -574,11 +574,7 @@ function toolIcon(tool: ChatTool) {
   if (tool.name === "glob") {
     return <FolderTree className={className} />;
   }
-  if (
-    tool.name === "grep" ||
-    tool.name === "code_search" ||
-    tool.name === "ast_grep_search"
-  ) {
+  if (tool.name === "grep" || tool.name === "ast_grep_search") {
     return <Search className={className} />;
   }
   if (
@@ -621,7 +617,6 @@ function isReadonlyTool(tool: ChatTool) {
     tool.name === "read" ||
     tool.name === "glob" ||
     tool.name === "grep" ||
-    tool.name === "code_search" ||
     tool.name === "ast_grep_search"
   );
 }

@@ -3,7 +3,6 @@ from .ast_grep import AstGrepPreviewTool, AstGrepReplaceTool, AstGrepSearchTool
 from .background_cancel import BackgroundCancelTool
 from .background_output import BackgroundOutputTool
 from .background_retry import BackgroundRetryTool
-from .code_search import CodeSearchTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
 from .format_file import FormatTool
@@ -62,7 +61,6 @@ __all__ = [
     "AstGrepSearchTool",
     "AstGrepPreviewTool",
     "AstGrepReplaceTool",
-    "CodeSearchTool",
     "TodoWriteTool",
     "ToolCall",
     "ToolDefinition",

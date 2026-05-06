@@ -59,6 +59,20 @@ uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode 
 uv run voidcode sessions list --workspace .
 ```
 
+## Configuration
+
+Workspace-local runtime config lives in `.voidcode.json` at the workspace root. To enable IDE auto-completion and validation, point the `$schema` field at the published JSON Schema:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
+  "approval_mode": "ask",
+  "model": "opencode-go/glm-5"
+}
+```
+
+User-level overrides resolve from `~/.config/voidcode/config.json` (XDG default). Environment variables (`VOIDCODE_MODEL`, `VOIDCODE_APPROVAL_MODE`, `VOIDCODE_EXECUTION_ENGINE`, etc.) override file config; see [`.env.example`](./.env.example) for the full surface.
+
 ## Architecture overview
 
 VoidCode uses a runtime-centric architecture: **runtime** is the system control plane, **graph** is the execution/orchestration layer, and LangGraph currently powers only the deterministic reference/debug slice.
