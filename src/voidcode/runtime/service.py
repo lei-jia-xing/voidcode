@@ -156,6 +156,7 @@ from .context_transforms import (
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
     default_runtime_context_transform_registry,
+    validate_runtime_context_transform_refs,
 )
 from .context_window import (
     ContextWindowPolicy,
@@ -1009,6 +1010,55 @@ class VoidCodeRuntime:
                 providers=resolved.providers,
                 resolved_provider=resolved.resolved_provider,
                 agent=resolved.agent,
+                context_window=resolved.context_window,
+                tools=resolved.tools,
+            )
+        request_context_transform_refs = request.metadata.get("context_transform_refs")
+        if request_context_transform_refs is not None:
+            assert isinstance(request_context_transform_refs, list)
+            refs = tuple(cast(list[str], request_context_transform_refs))
+            validate_runtime_context_transform_refs(
+                refs,
+                field_path="request metadata 'context_transform_refs'",
+                registry=self._context_transform_registry_for_agent(resolved.agent),
+            )
+            resolved = EffectiveRuntimeConfig(
+                approval_mode=resolved.approval_mode,
+                permission=resolved.permission,
+                model=resolved.model,
+                execution_engine=resolved.execution_engine,
+                max_steps=resolved.max_steps,
+                tool_timeout_seconds=resolved.tool_timeout_seconds,
+                reasoning_effort=resolved.reasoning_effort,
+                provider_fallback=resolved.provider_fallback,
+                providers=resolved.providers,
+                resolved_provider=resolved.resolved_provider,
+                agent=(
+                    RuntimeAgentConfig(
+                        preset=resolved.agent.preset,
+                        prompt_profile=resolved.agent.prompt_profile,
+                        prompt=resolved.agent.prompt,
+                        prompt_append=resolved.agent.prompt_append,
+                        prompt_ref=resolved.agent.prompt_ref,
+                        prompt_source=resolved.agent.prompt_source,
+                        prompt_materialization=resolved.agent.prompt_materialization,
+                        manifest_source_scope=resolved.agent.manifest_source_scope,
+                        manifest_source_path=resolved.agent.manifest_source_path,
+                        manifest_tool_allowlist=resolved.agent.manifest_tool_allowlist,
+                        manifest_skill_refs=resolved.agent.manifest_skill_refs,
+                        manifest_hook_refs=resolved.agent.manifest_hook_refs,
+                        hook_refs=resolved.agent.hook_refs,
+                        context_transform_refs=refs,
+                        model=resolved.agent.model,
+                        execution_engine=resolved.agent.execution_engine,
+                        tools=resolved.agent.tools,
+                        skills=resolved.agent.skills,
+                        mcp_binding=resolved.agent.mcp_binding,
+                        provider_fallback=resolved.agent.provider_fallback,
+                    )
+                    if resolved.agent is not None
+                    else None
+                ),
                 context_window=resolved.context_window,
                 tools=resolved.tools,
             )
