@@ -6801,6 +6801,13 @@ class VoidCodeRuntime:
                 if resolved.agent is not None
                 else ()
             ),
+            context_transform_refs=(
+                agent.context_transform_refs
+                if agent.context_transform_refs
+                else resolved.agent.context_transform_refs
+                if resolved.agent is not None
+                else ()
+            ),
             model=model,
             execution_engine=execution_engine,
             tools=(

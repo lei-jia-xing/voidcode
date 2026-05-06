@@ -9,6 +9,7 @@ from typing import Literal, cast
 from ..agent.builtin import get_builtin_agent_manifest
 from ..hook.presets import validate_hook_preset_refs
 from ..skills.builtin import list_builtin_skills
+from .context_transforms import validate_runtime_context_transform_refs
 
 type WorkflowPresetId = Literal["research", "implementation", "frontend", "review", "git"]
 type WorkflowPresetKey = WorkflowPresetId | str
@@ -215,6 +216,10 @@ def validate_workflow_presets(
                     f"workflow preset '{preset.id}' skill_refs references missing skill: "
                     f"{skill_name}"
                 )
+        validate_runtime_context_transform_refs(
+            preset.context_transform_refs,
+            field_path=f"workflow preset '{preset.id}' context_transform_refs",
+        )
         for binding in preset.mcp_binding_intents:
             _validate_mcp_binding_availability(
                 preset,
