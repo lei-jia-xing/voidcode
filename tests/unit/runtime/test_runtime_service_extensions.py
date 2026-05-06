@@ -10191,6 +10191,70 @@ def test_runtime_request_context_transform_refs_narrow_agent_scope(
     }
 
 
+def test_runtime_loads_project_local_context_transform_provider(tmp_path: Path) -> None:
+    transforms_dir = tmp_path / ".voidcode" / "context-transforms"
+    transforms_dir.mkdir(parents=True)
+    manifest_path = transforms_dir / "custom.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "id": "project_custom",
+                "description": "Project custom guidance",
+                "content": "Custom transform guidance.",
+                "priority": 250,
+                "enabled": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                context_transform_refs=("project_custom",),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="project-transform"))
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    custom_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system"
+        and segment.metadata is not None
+        and segment.metadata.get("source") == "project_custom"
+    ]
+    assert len(custom_segments) == 1
+    assert custom_segments[0].content == "Custom transform guidance."
+    custom_metadata = cast(dict[str, object], custom_segments[0].metadata)
+    assert custom_metadata["manifest"] == str(manifest_path)
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    runtime_agent = cast(dict[str, object], runtime_config["agent"])
+    assert runtime_agent["context_transform_refs"] == ["project_custom"]
+    assert request.assembled_context.metadata["context_transforms"] == {
+        "version": 1,
+        "failure_policy": "warn",
+        "applied": [
+            {
+                "provider_id": "project_custom",
+                "status": "ok",
+                "priority": 250,
+                "execution_index": 1,
+                "injection_count": 1,
+                "provider_order": ["project_custom"],
+                "sources": ["project_custom"],
+            }
+        ],
+    }
+
+
 def test_runtime_request_context_transform_refs_reject_unknown_provider(
     tmp_path: Path,
 ) -> None:
