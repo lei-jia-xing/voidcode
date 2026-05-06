@@ -168,18 +168,6 @@ def _sanitize_provider_tool_name(tool_name: str) -> str:
     return _truncate_provider_tool_name(normalized, suffix=suffix)
 
 
-def _reasoning_content_for_tool_message(segment: object) -> str | None:
-    metadata = getattr(segment, "metadata", None)
-    if not isinstance(metadata, dict):
-        return None
-    data = metadata.get("data")
-    if isinstance(data, dict):
-        reasoning_content = data.get("reasoning_content")
-        if isinstance(reasoning_content, str) and reasoning_content:
-            return reasoning_content
-    return None
-
-
 def _reasoning_content_from_tool_data(segment: object) -> str | None:
     metadata = getattr(segment, "metadata", None)
     if not isinstance(metadata, dict):

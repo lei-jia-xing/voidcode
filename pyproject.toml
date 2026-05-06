@@ -72,11 +72,26 @@ line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["B", "E", "F", "I", "UP"]
+select = ["B", "E", "ERA", "F", "I", "UP"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.ty.rules]
+# Promote dead-code adjacent diagnostics to error (default level is warn).
+# Note: ty does not currently detect unused imports / variables / functions /
+# unreachable code. For "defined but never called" private symbols, use vulture.
+unused-awaitable = "error"
+unused-ignore-comment = "error"
+unused-type-ignore-comment = "error"
+redundant-cast = "error"
+redundant-final-classvar = "error"
+
+[tool.ty.terminal]
+# Any future warning-level diagnostic should fail CI; opt out per-rule via
+# [tool.ty.rules] if a specific check turns out to be too noisy.
+error-on-warning = true
 
 [tool.pytest.ini_options]
 addopts = ""
