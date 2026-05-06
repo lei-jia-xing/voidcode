@@ -100,6 +100,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "skill_refs",
         "force_load_skills",
         "hook_preset_refs",
+        "context_transform_refs",
         "mcp_binding_intents",
         "tool_policy_ref",
         "permission_policy_ref",
