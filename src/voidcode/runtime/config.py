@@ -72,6 +72,7 @@ _VALID_TUI_COMMANDS = ("command_palette", "session_new", "session_resume")
 type ExecutionEngineName = Literal["deterministic", "provider"]
 DEFAULT_EXECUTION_ENGINE: ExecutionEngineName = "provider"
 type RuntimeProviderContextDiagnosticMode = Literal["off", "warn", "block"]
+type RuntimeContextTransformFailureMode = Literal["ignore", "warn", "block"]
 type RuntimeAgentPresetId = str
 type RuntimeAgentPromptSource = Literal["builtin", "custom_markdown"]
 
@@ -159,6 +160,7 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
         "context_pressure_cooldown_steps",
         "provider_context_diagnostics",
         "provider_context_oversized_feedback_chars",
+        "context_transform_failure_policy",
         "continuity_distillation_enabled",
         "continuity_distillation_max_input_items",
         "continuity_distillation_max_input_chars",
@@ -341,6 +343,7 @@ class RuntimeContextWindowConfig:
     context_pressure_cooldown_steps: int = 3
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
+    context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
     continuity_distillation_enabled: bool = True
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
@@ -1301,6 +1304,23 @@ def _parse_provider_context_diagnostic_mode(
     )
 
 
+def _parse_context_transform_failure_mode(
+    value: object,
+) -> RuntimeContextTransformFailureMode:
+    if value is None:
+        return "warn"
+    if value == "ignore":
+        return "ignore"
+    if value == "warn":
+        return "warn"
+    if value == "block":
+        return "block"
+    raise ValueError(
+        "runtime config field 'context_window.context_transform_failure_policy' must be one "
+        "of: ignore, warn, block"
+    )
+
+
 def _parse_runtime_mcp_server_scope(value: object, *, field_path: str) -> RuntimeMcpServerScope:
     if value is None:
         return "runtime"
@@ -1570,6 +1590,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     context_pressure_cooldown_steps: int = 3
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
+    context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
     continuity_distillation_enabled: bool = True
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
@@ -1747,6 +1768,13 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             )
         return value
 
+    @field_validator("context_transform_failure_policy", mode="before")
+    @classmethod
+    def _validate_context_transform_failure_policy(
+        cls, value: object
+    ) -> RuntimeContextTransformFailureMode:
+        return _parse_context_transform_failure_mode(value)
+
     @field_validator("per_tool_result_tokens", mode="before")
     @classmethod
     def _validate_per_tool_result_tokens(cls, value: object) -> dict[str, int]:
@@ -1802,6 +1830,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             context_pressure_cooldown_steps=self.context_pressure_cooldown_steps,
             provider_context_diagnostics=self.provider_context_diagnostics,
             provider_context_oversized_feedback_chars=self.provider_context_oversized_feedback_chars,
+            context_transform_failure_policy=self.context_transform_failure_policy,
             continuity_distillation_enabled=self.continuity_distillation_enabled,
             continuity_distillation_max_input_items=self.continuity_distillation_max_input_items,
             continuity_distillation_max_input_chars=self.continuity_distillation_max_input_chars,
@@ -3041,6 +3070,7 @@ def serialize_runtime_context_window_config(
         "provider_context_oversized_feedback_chars": (
             context_window.provider_context_oversized_feedback_chars
         ),
+        "context_transform_failure_policy": context_window.context_transform_failure_policy,
     }
     if context_window.max_tool_result_tokens is not None:
         payload["max_tool_result_tokens"] = context_window.max_tool_result_tokens

@@ -9,6 +9,7 @@ from ..tools.contracts import ToolResult
 from .context_rules import runtime_file_rule_contexts
 
 type RuntimeContextTransformProviderId = str
+type RuntimeContextTransformFailurePolicy = str
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,10 +52,12 @@ class RuntimeContextTransformTrace:
 class RuntimeContextTransformResult:
     injections: tuple[RuntimeContextTransformInjection, ...] = ()
     traces: tuple[RuntimeContextTransformTrace, ...] = ()
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn"
 
     def metadata_payload(self) -> dict[str, object]:
         return {
             "version": 1,
+            "failure_policy": self.failure_policy,
             "applied": [trace.metadata_payload() for trace in self.traces],
         }
 
@@ -64,6 +67,7 @@ class RuntimeContextTransformRequest:
     workspace: Path | None
     tool_results: tuple[ToolResult, ...]
     hook_preset_context: str
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn"
 
 
 class RuntimeContextTransformProvider(Protocol):
@@ -182,7 +186,23 @@ class RuntimeContextTransformRegistry:
         ordered_providers = self.ordered_providers()
         ordered_provider_ids = tuple(provider.provider_id for provider in ordered_providers)
         for execution_index, provider in enumerate(ordered_providers, start=1):
-            result = provider.build_result(request)
+            try:
+                result = provider.build_result(request)
+            except Exception as exc:
+                result = RuntimeContextTransformResult(
+                    failure_policy=request.failure_policy,
+                    traces=(
+                        RuntimeContextTransformTrace(
+                            provider_id=provider.provider_id,
+                            status="error",
+                            priority=provider.priority,
+                            diagnostics=(
+                                f"context transform provider '{provider.provider_id}' failed",
+                            ),
+                            error=str(exc),
+                        ),
+                    ),
+                )
             injections.extend(result.injections)
             traces.extend(
                 RuntimeContextTransformTrace(
@@ -201,6 +221,7 @@ class RuntimeContextTransformRegistry:
         return RuntimeContextTransformResult(
             injections=tuple(injections),
             traces=tuple(traces),
+            failure_policy=request.failure_policy,
         )
 
 
@@ -218,6 +239,7 @@ def build_provider_context_transform_result(
     workspace: Path | None,
     tool_results: tuple[ToolResult, ...],
     hook_preset_context: str,
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn",
     registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeContextTransformResult:
     active_registry = registry or default_runtime_context_transform_registry()
@@ -226,6 +248,7 @@ def build_provider_context_transform_result(
             workspace=workspace,
             tool_results=tool_results,
             hook_preset_context=hook_preset_context,
+            failure_policy=failure_policy,
         )
     )
 

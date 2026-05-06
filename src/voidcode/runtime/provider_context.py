@@ -202,6 +202,7 @@ def _transform_diagnostics(
     if not isinstance(raw_transforms, dict):
         return ()
     transform_payload = cast(dict[str, object], raw_transforms)
+    failure_policy = transform_payload.get("failure_policy")
     applied = transform_payload.get("applied")
     if not isinstance(applied, list):
         return ()
@@ -218,7 +219,9 @@ def _transform_diagnostics(
             continue
         severity: Literal["info", "warning", "error"] = "info"
         if status == "error":
-            severity = "error"
+            severity = "info" if failure_policy == "ignore" else "warning"
+            if failure_policy == "block":
+                severity = "error"
         elif trace.get("diagnostics"):
             severity = "warning"
         execution_index = trace.get("execution_index")
@@ -227,6 +230,7 @@ def _transform_diagnostics(
         details: dict[str, object] = {
             "status": status,
             "sources": trace.get("sources", []),
+            "failure_policy": failure_policy,
         }
         if isinstance(execution_index, int):
             details["execution_index"] = execution_index

@@ -442,6 +442,18 @@ def runtime_config_json_schema() -> dict[str, object]:
                             "Character threshold for oversized retained tool feedback diagnostics."
                         ),
                     },
+                    "context_transform_failure_policy": {
+                        "type": "string",
+                        "enum": ["ignore", "warn", "block"],
+                        "description": (
+                            "Policy for failed context transform providers. "
+                            "'ignore' keeps failures as debug metadata only, "
+                            "'warn' surfaces warning diagnostics without "
+                            "blocking provider execution, "
+                            "and 'block' turns transform failures into "
+                            "blocking provider-context diagnostics."
+                        ),
+                    },
                 },
             },
             "lspServerConfig": {
