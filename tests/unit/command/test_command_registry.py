@@ -103,6 +103,7 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
 
 class TestBuiltinCommandDiscovery:
     _EXPECTED_NAMES = (
+        "init",
         "compact",
         "commit",
         "explain",
@@ -178,6 +179,22 @@ class TestBuiltinCommandRendering:
         assert "smallest safe code change" in rendered
         assert "run targeted tests" in rendered
         assert "$ARGUMENTS" not in rendered
+
+    def test_init_renders_agents_md_generation_guidance(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "init"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="focus on runtime boundaries",
+            arguments=split_command_arguments("focus on runtime boundaries"),
+        )
+
+        assert "focus on runtime boundaries" in rendered
+        assert "AGENTS.md at the workspace root" in rendered
+        assert "PROJECT KNOWLEDGE BASE" in rendered
+        assert "WHERE TO LOOK" in rendered
+        assert "CODE MAP" in rendered
+        assert "do not store secrets" in rendered
+        assert "read the final AGENTS.md" in rendered
 
     def test_explain_renders_read_only_guidance(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "explain"][0]
@@ -314,6 +331,7 @@ class TestBuiltinCommandProjectOverride:
         assert fix_cmd is not None
         assert fix_cmd.source == "project"
         for name in (
+            "init",
             "compact",
             "review",
             "explain",

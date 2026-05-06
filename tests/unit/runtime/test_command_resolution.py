@@ -32,6 +32,7 @@ class _EchoPromptGraph:
         *,
         session: SessionState,
     ) -> _FinishedStep:
+        _ = tool_results, session
         return _FinishedStep(output=request.prompt)
 
 
@@ -122,6 +123,24 @@ def test_compact_command_renders_runtime_continuity_prompt(tmp_path: Path) -> No
     assert response.output is not None
     assert "runtime-owned continuity summary" in response.output
     assert "preserve test results" in response.output
+
+
+def test_init_command_renders_agents_md_generation_prompt(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="/init focus on runtime boundaries"))
+
+    assert response.session.metadata.get("command") == {
+        "name": "init",
+        "source": "builtin",
+        "arguments": ["focus", "on", "runtime", "boundaries"],
+        "raw_arguments": "focus on runtime boundaries",
+        "original_prompt": "/init focus on runtime boundaries",
+    }
+    assert response.output is not None
+    assert "AGENTS.md at the workspace root" in response.output
+    assert "PROJECT KNOWLEDGE BASE" in response.output
+    assert "focus on runtime boundaries" in response.output
 
 
 def test_continuation_loop_command_creates_runtime_owned_loop(tmp_path: Path) -> None:

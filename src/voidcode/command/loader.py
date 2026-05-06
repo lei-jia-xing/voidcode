@@ -8,6 +8,24 @@ from .registry import CommandRegistry
 
 _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
     CommandDefinition(
+        name="init",
+        description="Generate or refresh a structured AGENTS.md project knowledge base.",
+        template=(
+            "Workflow: initialize durable project instructions by generating or refreshing "
+            "AGENTS.md at the workspace root. User focus notes: $ARGUMENTS. First inspect "
+            "the repository structure, existing AGENTS.md files, README/development docs, "
+            "runtime/config files, test/build commands, and notable conventions. Then write "
+            "or update AGENTS.md with stable, structured project knowledge only. Required "
+            "sections: PROJECT KNOWLEDGE BASE, OVERVIEW, STRUCTURE, WHERE TO LOOK, CODE MAP, "
+            "CONVENTIONS, ANTI-PATTERNS, UNIQUE STYLES, COMMANDS, and NOTES. Preserve useful "
+            "existing AGENTS.md content, remove stale or duplicate guidance, and do not store "
+            "secrets, transient task plans, chat history, or unverified guesses. Prefer concise "
+            "tables and bullets over prose. Verification: read the final AGENTS.md and confirm "
+            "it reflects the current repo surface without claiming unsupported capabilities."
+        ),
+        source="builtin",
+    ),
+    CommandDefinition(
         name="compact",
         description="Compact the current session into durable continuity guidance.",
         template=(
