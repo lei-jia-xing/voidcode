@@ -1094,6 +1094,14 @@ class RuntimeRunLoopCoordinator:
             for segment in current_segments:
                 if segment.role != "system" or not isinstance(segment.content, str):
                     continue
+                segment_source = (
+                    segment.metadata.get("source") if isinstance(segment.metadata, dict) else None
+                )
+                if segment_source in {
+                    "hook_preset_guidance",
+                    "runtime_file_rules",
+                }:
+                    continue
                 if segment.content.startswith("Runtime-managed todo state is active"):
                     continue
                 preserved_system_segments.append(segment.content)
