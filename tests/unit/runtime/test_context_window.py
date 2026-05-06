@@ -266,6 +266,46 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
     ]
     assert "Project rules" in (rule_segments[0].content or "")
     assert "Runtime rules" in (rule_segments[1].content or "")
+    assert assembled.metadata["context_transforms"] == {
+        "version": 1,
+        "applied": [
+            {
+                "provider_id": "runtime_file_rules",
+                "status": "ok",
+                "injection_count": 2,
+                "sources": ["runtime_file_rules"],
+            }
+        ],
+    }
+
+
+def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={},
+        hook_preset_context="Resolved agent hook preset guidance.",
+        policy=ContextWindowPolicy(max_tool_results=4),
+    )
+
+    hook_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata is not None and segment.metadata.get("source") == "hook_preset_guidance"
+    ]
+    assert len(hook_segments) == 1
+    assert hook_segments[0].content == "Resolved agent hook preset guidance."
+    assert assembled.metadata["context_transforms"] == {
+        "version": 1,
+        "applied": [
+            {
+                "provider_id": "hook_preset_guidance",
+                "status": "ok",
+                "injection_count": 1,
+                "sources": ["hook_preset_guidance"],
+            }
+        ],
+    }
 
 
 def test_assemble_provider_context_uses_full_tool_history_for_rules_not_compacted_window(

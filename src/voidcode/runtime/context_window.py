@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
-from .context_rules import runtime_file_rule_contexts
+from .context_transforms import build_provider_context_transform_result
 from .continuity_distillation import (
     ContinuityDistillationRecord,
     build_distillation_input_envelope,
@@ -1892,29 +1892,24 @@ def assemble_provider_context(
         source="runtime_instruction_precedence",
     )
     _append_system_segment(agent_prompt_context, source="agent_prompt")
-    _append_system_segment(hook_preset_context, source="hook_preset_guidance")
     for segment_content in preserved_system_segments:
         _append_system_segment(segment_content, source="preserved_system_segment")
     _append_system_segment(skill_prompt_context, source="skill_prompt")
-    rule_contexts = runtime_file_rule_contexts(
+    transform_result = build_provider_context_transform_result(
         workspace=workspace,
         tool_results=tool_results,
+        hook_preset_context=hook_preset_context,
     )
-    for rule_context in rule_contexts:
-        rule_content = (
-            "Runtime file rules are active for touched workspace paths.\n"
-            f"Rule file: {rule_context.path}\n"
-            f"{rule_context.content}"
-        )
-        normalized = rule_content.strip()
+    for transform_injection in transform_result.injections:
+        normalized = transform_injection.content.strip()
         if not normalized or normalized in seen_system_contents:
             continue
         seen_system_contents.add(normalized)
         segments.append(
             RuntimeContextSegment(
-                role="system",
+                role=cast(Literal["system", "user", "assistant", "tool"], transform_injection.role),
                 content=normalized,
-                metadata=rule_context.metadata_payload(),
+                metadata=dict(transform_injection.metadata),
             )
         )
     pending_state_segment = _pending_state_segment(session_metadata)
@@ -1947,6 +1942,8 @@ def assemble_provider_context(
                 source="continuity_summary",
             )
         segments.extend(_artifact_reference_segments(continuity_state))
+    if transform_result.traces:
+        metadata_payload["context_transforms"] = transform_result.metadata_payload()
     segments.append(
         RuntimeContextSegment(
             role="user",
