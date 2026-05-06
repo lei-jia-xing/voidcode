@@ -33,6 +33,7 @@ from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider import config as provider_config
 from ..skills import SkillRegistry, list_builtin_skills
+from .context_transforms import validate_runtime_context_transform_refs
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
@@ -199,6 +200,7 @@ _AGENT_CONFIG_KEYS = frozenset(
         "manifest_skill_refs",
         "manifest_hook_refs",
         "hook_refs",
+        "context_transform_refs",
         "model",
         "tools",
         "skills",
@@ -442,6 +444,7 @@ class RuntimeAgentConfig:
     manifest_skill_refs: tuple[str, ...] = field(default=(), compare=False)
     manifest_hook_refs: tuple[str, ...] = field(default=(), compare=False)
     hook_refs: tuple[str, ...] = ()
+    context_transform_refs: tuple[str, ...] = ()
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     tools: RuntimeToolsConfig | None = None
@@ -2481,6 +2484,9 @@ def _parse_agent_config(
             normalized_prompt_source = "builtin"
 
     hook_refs = _parse_agent_hook_refs(payload.get("hook_refs"), hooks=hooks)
+    context_transform_refs = _parse_agent_context_transform_refs(
+        payload.get("context_transform_refs")
+    )
 
     model = payload.get("model")
     if model is not None and (not isinstance(model, str) or not model.strip()):
@@ -2526,6 +2532,7 @@ def _parse_agent_config(
             field_path="agent.manifest_hook_refs",
         ),
         hook_refs=hook_refs,
+        context_transform_refs=context_transform_refs,
         model=model.strip() if isinstance(model, str) else None,
         execution_engine=execution_engine,
         tools=_parse_tools_config(
@@ -2590,6 +2597,7 @@ def _resolve_agent_config(
             manifest_skill_refs=agent.manifest_skill_refs or manifest.skill_refs,
             manifest_hook_refs=agent.manifest_hook_refs or manifest.preset_hook_refs,
             hook_refs=agent.hook_refs,
+            context_transform_refs=agent.context_transform_refs,
             model=model,
             execution_engine=agent.execution_engine or manifest.execution_engine,
             tools=agent.tools,
@@ -2751,6 +2759,16 @@ def _parse_agent_hook_refs(
         return ()
     _ = hooks
     return validate_hook_preset_refs(hook_refs, field_path="runtime config field 'agent.hook_refs'")
+
+
+def _parse_agent_context_transform_refs(raw_refs: object) -> tuple[str, ...]:
+    refs = _parse_string_list(raw_refs, field_path="agent.context_transform_refs")
+    if not refs:
+        return ()
+    return validate_runtime_context_transform_refs(
+        refs,
+        field_path="runtime config field 'agent.context_transform_refs'",
+    )
 
 
 def _parse_agent_provider_fallback_config(
@@ -3119,6 +3137,8 @@ def serialize_runtime_agent_config(agent: RuntimeAgentConfig | None) -> dict[str
         payload["manifest_hook_refs"] = list(agent.manifest_hook_refs)
     if agent.hook_refs:
         payload["hook_refs"] = list(agent.hook_refs)
+    if agent.context_transform_refs:
+        payload["context_transform_refs"] = list(agent.context_transform_refs)
     if agent.model is not None:
         payload["model"] = agent.model
     if agent.tools is not None:

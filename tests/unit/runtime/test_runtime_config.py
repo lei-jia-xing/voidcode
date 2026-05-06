@@ -1479,6 +1479,26 @@ def test_runtime_agent_payload_parses_prompt_and_hook_references() -> None:
     )
 
 
+def test_runtime_agent_payload_parses_context_transform_references() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "context_transform_refs": [
+                "hook_preset_guidance",
+                "runtime_file_rules",
+            ],
+        },
+        source="test payload",
+    )
+
+    assert agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        context_transform_refs=("hook_preset_guidance", "runtime_file_rules"),
+        execution_engine="provider",
+    )
+
+
 def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
     agent = parse_runtime_agent_payload(
         {
@@ -1531,6 +1551,20 @@ def test_runtime_agent_payload_rejects_unknown_hook_reference() -> None:
     ):
         _ = parse_runtime_agent_payload(
             {"preset": "leader", "hook_refs": ["unknown"]},
+            source="test payload",
+        )
+
+
+def test_runtime_agent_payload_rejects_unknown_context_transform_reference() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"runtime config field 'agent.context_transform_refs' references unknown "
+            r"context transform provider"
+        ),
+    ):
+        _ = parse_runtime_agent_payload(
+            {"preset": "leader", "context_transform_refs": ["unknown"]},
             source="test payload",
         )
 
@@ -1667,6 +1701,29 @@ def test_runtime_config_parses_agent_references_against_hook_preset_catalog(
         prompt_ref="researcher",
         prompt_source="builtin",
         hook_refs=("role_reminder",),
+        execution_engine="provider",
+    )
+
+
+def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "agent": {
+                    "preset": "leader",
+                    "context_transform_refs": ["runtime_file_rules"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        context_transform_refs=("runtime_file_rules",),
         execution_engine="provider",
     )
 

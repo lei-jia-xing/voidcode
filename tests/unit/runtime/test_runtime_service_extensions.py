@@ -3000,6 +3000,50 @@ def test_runtime_materializes_explicit_agent_hook_refs_without_expanding_tools(
     }
 
 
+def test_runtime_agent_context_transform_refs_filter_provider_registry(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                context_transform_refs=("runtime_file_rules",),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="transform-filter"))
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    system_sources = [
+        segment.metadata.get("source")
+        for segment in request.assembled_context.segments
+        if segment.role == "system" and segment.metadata is not None
+    ]
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    runtime_agent = cast(dict[str, object], runtime_config["agent"])
+    assert "runtime_file_rules" in system_sources
+    assert "hook_preset_guidance" not in system_sources
+    assert request.assembled_context.metadata["context_transforms"] == {
+        "version": 1,
+        "applied": [
+            {
+                "provider_id": "runtime_file_rules",
+                "status": "ok",
+                "injection_count": 1,
+                "sources": ["runtime_file_rules"],
+            }
+        ],
+    }
+    assert runtime_agent["context_transform_refs"] == ["runtime_file_rules"]
+
+
 def test_runtime_resume_uses_persisted_hook_preset_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -10001,6 +10045,64 @@ def test_runtime_required_workflow_mcp_intent_passes_when_configured(
     intents = cast(list[dict[str, object]], workflow["mcp_binding_intents"])
     availability = cast(dict[str, object], intents[0]["availability"])
     assert availability["missing_servers"] == []
+
+
+def test_runtime_workflow_context_transform_refs_filter_runtime_registry(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "scoped": WorkflowPreset(
+                        id="scoped",
+                        default_agent="leader",
+                        category="implementation",
+                        context_transform_refs=("runtime_file_rules",),
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="workflow-transform-scope",
+            metadata={"workflow_preset": "scoped"},
+        )
+    )
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    system_sources = [
+        segment.metadata.get("source")
+        for segment in request.assembled_context.segments
+        if segment.role == "system" and segment.metadata is not None
+    ]
+    workflow_snapshot = cast(dict[str, object], response.session.metadata["workflow"])
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    runtime_agent = cast(dict[str, object], runtime_config["agent"])
+    assert workflow_snapshot["context_transform_refs"] == ["runtime_file_rules"]
+    assert runtime_agent["context_transform_refs"] == ["runtime_file_rules"]
+    assert "runtime_file_rules" in system_sources
+    assert "hook_preset_guidance" not in system_sources
+    assert request.assembled_context.metadata["context_transforms"] == {
+        "version": 1,
+        "applied": [
+            {
+                "provider_id": "runtime_file_rules",
+                "status": "ok",
+                "injection_count": 1,
+                "sources": ["runtime_file_rules"],
+            }
+        ],
+    }
 
 
 def test_runtime_workflow_resume_stable_debug_and_bundle_preserve_persisted_snapshot(

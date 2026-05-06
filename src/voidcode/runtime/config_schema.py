@@ -529,6 +529,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "items": {"type": "string", "minLength": 1},
                     },
                     "hook_refs": {"type": "array", "items": {"type": "string"}},
+                    "context_transform_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                    },
                     "model": {"type": "string", "minLength": 1},
                     "tools": {"$ref": "#/$defs/agentToolsConfig"},
                     "skills": {"$ref": "#/$defs/skillsConfig"},
@@ -587,6 +592,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "uniqueItems": True,
                     },
                     "hook_preset_refs": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "uniqueItems": True,
+                    },
+                    "context_transform_refs": {
                         "type": "array",
                         "items": {"type": "string", "minLength": 1},
                         "uniqueItems": True,
