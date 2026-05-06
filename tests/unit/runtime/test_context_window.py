@@ -7,6 +7,12 @@ from types import ModuleType
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
+from voidcode.runtime.context_transforms import (
+    HookPresetGuidanceTransformProvider,
+    RuntimeContextTransformRegistry,
+    RuntimeContextTransformRequest,
+    RuntimeFileRulesTransformProvider,
+)
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     DroppedToolResultDiagnostic,
@@ -304,6 +310,47 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
                 "injection_count": 1,
                 "sources": ["hook_preset_guidance"],
             }
+        ],
+    }
+
+
+def test_context_transform_registry_combines_multiple_providers(tmp_path: Path) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    registry = RuntimeContextTransformRegistry(
+        providers=(
+            HookPresetGuidanceTransformProvider(),
+            RuntimeFileRulesTransformProvider(),
+        )
+    )
+
+    result = registry.build_result(
+        RuntimeContextTransformRequest(
+            workspace=workspace,
+            tool_results=(),
+            hook_preset_context="Resolved agent hook preset guidance.",
+        )
+    )
+
+    assert [injection.metadata["source"] for injection in result.injections] == [
+        "hook_preset_guidance",
+        "runtime_file_rules",
+    ]
+    assert result.metadata_payload() == {
+        "version": 1,
+        "applied": [
+            {
+                "provider_id": "hook_preset_guidance",
+                "status": "ok",
+                "injection_count": 1,
+                "sources": ["hook_preset_guidance"],
+            },
+            {
+                "provider_id": "runtime_file_rules",
+                "status": "ok",
+                "injection_count": 1,
+                "sources": ["runtime_file_rules"],
+            },
         ],
     }
 
