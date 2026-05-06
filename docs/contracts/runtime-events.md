@@ -87,6 +87,7 @@ EventEnvelope(
 当前真正仍保持 additive/prototype 语义的共享事件名称至少包括：
 
 - `runtime.memory_refreshed`
+- `runtime.context_transform_applied`
 
 未来版本可以追加新的事件类型或为现有 payload 增加新字段；客户端必须继续容忍未知事件类型，并将 payload 视为可扩展结构。
 
@@ -136,6 +137,22 @@ EventEnvelope(
 
 此序列是目前实现的、最具体的、客户端可见的 MVP 事件流。
 未来的图模式可能会在这些阶段之间添加有序事件，但此回退顺序仍为规范的确定性序列。
+
+### `runtime.context_transform_applied`
+- source: `runtime`
+- 当前 payload:
+  - `provider_id: str`
+  - `failure_policy: str`
+  - `tool_result_count: int`
+  - `status: str`（可选）
+  - `priority: int`（可选）
+  - `execution_index: int`（可选）
+  - `injection_count: int`（可选）
+  - `provider_order: list[str]`（可选）
+  - `sources: list[str]`（可选）
+  - `diagnostics: list[str]`（可选）
+- 该事件描述 runtime-owned context transform 已经应用或记录的有界 trace。它不执行 hook、不允许客户端改写 provider context，也不携带被注入的完整 system prompt / rule / skill 内容。
+- `hook_preset_guidance` transform 已通过 `runtime.hook_presets_loaded` 表达，不重复发出该事件。
 
 ## 当前 Payload 预期
 

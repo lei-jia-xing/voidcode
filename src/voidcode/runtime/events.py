@@ -50,6 +50,7 @@ type ExistingEventType = Literal[
 type PrototypeAdditiveEventType = Literal[
     "runtime.memory_refreshed",
     "runtime.context_pressure",
+    "runtime.context_transform_applied",
     "runtime.session_started",
     "runtime.session_ended",
     "runtime.session_idle",
@@ -160,6 +161,9 @@ RUNTIME_FAILED: Final[ExistingEventType] = "runtime.failed"
 
 RUNTIME_MEMORY_REFRESHED: Final[PrototypeAdditiveEventType] = "runtime.memory_refreshed"
 RUNTIME_CONTEXT_PRESSURE: Final[PrototypeAdditiveEventType] = "runtime.context_pressure"
+RUNTIME_CONTEXT_TRANSFORM_APPLIED: Final[PrototypeAdditiveEventType] = (
+    "runtime.context_transform_applied"
+)
 RUNTIME_SESSION_STARTED: Final[PrototypeAdditiveEventType] = "runtime.session_started"
 RUNTIME_SESSION_ENDED: Final[PrototypeAdditiveEventType] = "runtime.session_ended"
 RUNTIME_SESSION_IDLE: Final[PrototypeAdditiveEventType] = "runtime.session_idle"
@@ -251,6 +255,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
 PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = (
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_CONTEXT_PRESSURE,
+    RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_SESSION_STARTED,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
