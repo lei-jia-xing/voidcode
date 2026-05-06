@@ -143,7 +143,7 @@ EventEnvelope(
 - 当前 payload:
   - `provider_id: str`
   - `failure_policy: str`
-  - `tool_result_count: int`
+  - `tool_result_count: int`（本次 transform 实际看到的 retained tool result 数量，而不是完整历史数量）
   - `status: str`（可选）
   - `priority: int`（可选）
   - `execution_index: int`（可选）
@@ -152,6 +152,7 @@ EventEnvelope(
   - `sources: list[str]`（可选）
   - `diagnostics: list[str]`（可选）
 - 该事件描述 runtime-owned context transform 已经应用或记录的有界 trace。它不执行 hook、不允许客户端改写 provider context，也不携带被注入的完整 system prompt / rule / skill 内容。
+- 同一 run 内，如果某个 transform trace 未发生变化，runtime 不应重复发出该事件；只有首次观察到或 trace 发生变化时才发出新的 event。
 - `hook_preset_guidance` transform 已通过 `runtime.hook_presets_loaded` 表达，不重复发出该事件。
 
 ## 当前 Payload 预期
