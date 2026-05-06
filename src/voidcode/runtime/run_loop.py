@@ -47,6 +47,7 @@ from .context_window import (
 from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
     RUNTIME_CONTEXT_PRESSURE,
+    RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
@@ -112,6 +113,67 @@ def _hook_failure_chunk(
         logger.warning("%s hook failed for %s: %s", surface, session.session.id, error)
         return None
     return runtime._failed_chunk(session=session, sequence=sequence + 1, error=error)
+
+
+def _context_transform_applied_chunks(
+    *,
+    session: SessionState,
+    sequence_start: int,
+    context_metadata: Mapping[str, object],
+    tool_result_count: int,
+) -> tuple[RuntimeStreamChunk, ...]:
+    raw_transforms = context_metadata.get("context_transforms")
+    if not isinstance(raw_transforms, Mapping):
+        return ()
+    transforms = cast(Mapping[str, object], raw_transforms)
+    raw_applied = transforms.get("applied")
+    if not isinstance(raw_applied, list):
+        return ()
+    raw_failure_policy = transforms.get("failure_policy")
+    failure_policy = raw_failure_policy if isinstance(raw_failure_policy, str) else "warn"
+    chunks: list[RuntimeStreamChunk] = []
+    sequence = sequence_start
+    for raw_trace in raw_applied:
+        if not isinstance(raw_trace, Mapping):
+            continue
+        trace = cast(Mapping[str, object], raw_trace)
+        provider_id = trace.get("provider_id")
+        if provider_id == "hook_preset_guidance":
+            continue
+        if not isinstance(provider_id, str) or not provider_id:
+            continue
+        payload: dict[str, object] = {
+            "provider_id": provider_id,
+            "failure_policy": failure_policy,
+            "tool_result_count": tool_result_count,
+        }
+        for key in (
+            "status",
+            "priority",
+            "execution_index",
+            "injection_count",
+            "provider_order",
+            "sources",
+            "diagnostics",
+        ):
+            value = trace.get(key)
+            if value is not None:
+                payload[key] = value
+        sequence += 1
+        chunks.append(
+            RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_CONTEXT_TRANSFORM_APPLIED,
+                    source="runtime",
+                    payload=payload,
+                ),
+            )
+        )
+    return tuple(chunks)
 
 
 def _tool_error_summary(error: str) -> str:
@@ -1129,6 +1191,14 @@ class RuntimeRunLoopCoordinator:
                 session,
                 context_window_payload,
             )
+            for chunk in _context_transform_applied_chunks(
+                session=session,
+                sequence_start=sequence,
+                context_metadata=assembled_context.metadata,
+                tool_result_count=len(tool_results),
+            ):
+                sequence = cast(EventEnvelope, chunk.event).sequence
+                yield chunk
             active_graph_request = GraphRunRequest(
                 session=session,
                 prompt=current_prompt,

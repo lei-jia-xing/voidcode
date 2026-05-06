@@ -84,6 +84,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_CONTEXT_PRESSURE,
+    RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
@@ -12993,6 +12994,34 @@ def test_runtime_provider_context_diagnostics_off_with_block_transform_policy_no
     # enforcement remains active, but with no failing transforms evaluate_provider_context_policy
     # returns action="ignored" (no warn event, no blocking).
     assert policy_events == []
+
+
+def test_runtime_emits_context_transform_applied_event_for_runtime_file_rules(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    (tmp_path / "sample.txt").write_text("provider debug\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="transform-event"))
+
+    transform_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_TRANSFORM_APPLIED
+    ]
+    assert [event.payload["tool_result_count"] for event in transform_events] == [0, 1]
+    for event in transform_events:
+        assert event.payload == {
+            "provider_id": "runtime_file_rules",
+            "failure_policy": "warn",
+            "tool_result_count": event.payload["tool_result_count"],
+            "status": "ok",
+            "priority": 200,
+            "execution_index": 2,
+            "injection_count": 1,
+            "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+            "sources": ["runtime_file_rules"],
+        }
+        assert "Project rules" not in repr(event.payload)
 
 
 def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
