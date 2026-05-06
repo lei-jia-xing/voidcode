@@ -49,7 +49,20 @@ def test_runtime_file_rule_contexts_ignore_external_paths(tmp_path: Path) -> Non
         ),
     )
 
-    assert contexts == ()
+    assert [(context.path, context.content) for context in contexts] == [
+        ("AGENTS.md", "Root rules")
+    ]
+
+
+def test_runtime_file_rule_contexts_load_root_rules_without_touched_paths(tmp_path: Path) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Root rules", encoding="utf-8")
+
+    contexts = runtime_file_rule_contexts(workspace=workspace, tool_results=())
+
+    assert [(context.path, context.content) for context in contexts] == [
+        ("AGENTS.md", "Root rules")
+    ]
 
 
 def test_runtime_file_rule_contexts_cap_preserves_nearest_rules(tmp_path: Path) -> None:

@@ -33,6 +33,7 @@ def runtime_file_rule_contexts(
     tool_results: tuple[ToolResult, ...],
     max_rule_files: int = MAX_RULE_FILES,
     max_rule_file_chars: int = MAX_RULE_FILE_CHARS,
+    include_workspace_root: bool = True,
 ) -> tuple[RuntimeFileRuleContext, ...]:
     if workspace is None or max_rule_files < 1:
         return ()
@@ -41,6 +42,7 @@ def runtime_file_rule_contexts(
         workspace_root=workspace_root,
         touched_paths=_touched_paths_from_tool_results(tool_results),
         max_rule_files=max_rule_files,
+        include_workspace_root=include_workspace_root,
     )
     contexts: list[RuntimeFileRuleContext] = []
     for rule_path in rule_paths:
@@ -105,10 +107,20 @@ def _touched_paths_from_tool_results(tool_results: tuple[ToolResult, ...]) -> tu
 
 
 def _applicable_rule_paths(
-    *, workspace_root: Path, touched_paths: tuple[str, ...], max_rule_files: int
+    *,
+    workspace_root: Path,
+    touched_paths: tuple[str, ...],
+    max_rule_files: int,
+    include_workspace_root: bool,
 ) -> tuple[Path, ...]:
     ordered: list[Path] = []
     seen: set[Path] = set()
+
+    root_rule_path = workspace_root / RULE_FILE_NAME
+    if include_workspace_root and root_rule_path.is_file():
+        seen.add(root_rule_path)
+        ordered.append(root_rule_path)
+
     for raw_path in touched_paths:
         touched_path = _workspace_path(workspace_root=workspace_root, raw_path=raw_path)
         if touched_path is None:
