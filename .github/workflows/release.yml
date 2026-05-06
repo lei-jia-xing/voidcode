@@ -7,10 +7,17 @@ on:
 
 jobs:
     publish:
+        name: Upload release to PyPI & github
         if: github.event.release.prerelease == false
         runs-on: ubuntu-latest
+
+        environment:
+            name: pypi
+            url: https://pypi.org/p/voidcode
+
         permissions:
             contents: read
+            id-token: write
 
         steps:
             - name: Checkout repository
@@ -24,8 +31,8 @@ jobs:
               with:
                   python-version: "3.13"
 
-            - name: Install dependencies
-              run: uv sync --extra dev
-
             - name: Build package
               run: uv build
+
+            - name: Publish package distributions to PyPI
+              uses: pypa/gh-action-pypi-publish@release/v1
