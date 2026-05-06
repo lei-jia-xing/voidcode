@@ -214,6 +214,10 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         dict[str, object], context_window_properties["provider_context_diagnostics"]
     )
     assert provider_context_diagnostics["enum"] == ["off", "warn", "block"]
+    transform_failure_policy = cast(
+        dict[str, object], context_window_properties["context_transform_failure_policy"]
+    )
+    assert transform_failure_policy["enum"] == ["ignore", "warn", "block"]
     provider_context_threshold = cast(
         dict[str, object], context_window_properties["provider_context_oversized_feedback_chars"]
     )

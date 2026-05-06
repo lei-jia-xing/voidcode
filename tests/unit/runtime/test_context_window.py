@@ -274,6 +274,7 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
     assert "Runtime rules" in (rule_segments[1].content or "")
     assert assembled.metadata["context_transforms"] == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "runtime_file_rules",
@@ -306,6 +307,7 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
     assert hook_segments[0].content == "Resolved agent hook preset guidance."
     assert assembled.metadata["context_transforms"] == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "hook_preset_guidance",
@@ -344,6 +346,7 @@ def test_context_transform_registry_combines_multiple_providers(tmp_path: Path) 
     ]
     assert result.metadata_payload() == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "hook_preset_guidance",
