@@ -1097,10 +1097,10 @@ class RuntimeRunLoopCoordinator:
                 segment_source = (
                     segment.metadata.get("source") if isinstance(segment.metadata, dict) else None
                 )
-                if segment_source in {
-                    "hook_preset_guidance",
-                    "runtime_file_rules",
-                }:
+                if (
+                    isinstance(segment_source, str)
+                    and segment_source in runtime._context_transform_registry.provider_ids()
+                ):
                     continue
                 if segment.content.startswith("Runtime-managed todo state is active"):
                     continue

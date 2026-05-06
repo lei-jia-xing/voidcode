@@ -250,6 +250,10 @@ from .hook_preset_metadata import (
     hook_preset_refs_for_agent,
     resolved_hook_preset_snapshot_from_session_metadata,
 )
+from .local_context_transforms import (
+    discover_local_context_transform_registry,
+    merge_runtime_context_transform_registries,
+)
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager
 from .paths import provider_catalog_cache_path
@@ -547,6 +551,16 @@ class VoidCodeRuntime:
             workspace=self._workspace
         )
         self._agent_registry = self._runtime_agent_registry()
+        base_context_transform_registry = (
+            context_transform_registry or default_runtime_context_transform_registry()
+        )
+        local_context_transform_registry = discover_local_context_transform_registry(
+            self._workspace
+        )
+        merged_context_transform_registry = merge_runtime_context_transform_registries(
+            base_context_transform_registry,
+            local_context_transform_registry,
+        )
         self._config = config or load_runtime_config(self._workspace)
         self._model_provider_registry = (
             model_provider_registry
@@ -562,6 +576,7 @@ class VoidCodeRuntime:
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                context_transform_registry=merged_context_transform_registry,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -631,9 +646,7 @@ class VoidCodeRuntime:
         )
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
-        self._context_transform_registry = (
-            context_transform_registry or default_runtime_context_transform_registry()
-        )
+        self._context_transform_registry = merged_context_transform_registry
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
             resolved_provider=None,
@@ -4556,6 +4569,7 @@ class VoidCodeRuntime:
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                context_transform_registry=self._context_transform_registry,
             )
             assert initial_agent is not None
             self._validate_runtime_agent_for_execution(
@@ -6794,6 +6808,7 @@ class VoidCodeRuntime:
             source="request metadata 'agent'",
             hooks=self._config.hooks,
             agent_registry=self._agent_registry,
+            context_transform_registry=self._context_transform_registry,
         )
         if agent is None:
             raise ValueError("request metadata 'agent' must be an object when provided")
@@ -7432,6 +7447,7 @@ class VoidCodeRuntime:
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                context_transform_registry=self._context_transform_registry,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -7444,6 +7460,7 @@ class VoidCodeRuntime:
                 source="runtime config agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                context_transform_registry=self._context_transform_registry,
             )
             assert agent is not None
             self._validate_runtime_agent_for_execution(
@@ -7612,6 +7629,7 @@ class VoidCodeRuntime:
                 source="persisted runtime_config.agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
+                context_transform_registry=self._context_transform_registry,
             )
             if agent is not None:
                 self._validate_runtime_agent_for_execution(

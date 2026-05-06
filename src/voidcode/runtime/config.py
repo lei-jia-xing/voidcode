@@ -33,7 +33,10 @@ from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider import config as provider_config
 from ..skills import SkillRegistry, list_builtin_skills
-from .context_transforms import validate_runtime_context_transform_refs
+from .context_transforms import (
+    RuntimeContextTransformRegistry,
+    validate_runtime_context_transform_refs,
+)
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
@@ -609,6 +612,7 @@ def load_runtime_config(
     tool_timeout_seconds: int | None = None,
     reasoning_effort: str | None = None,
     env: Mapping[str, str] | None = None,
+    context_transform_registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeConfig:
     resolved_workspace = workspace.resolve()
     environment: Mapping[str, str] = os.environ if env is None else env
@@ -619,6 +623,7 @@ def load_runtime_config(
         resolved_workspace,
         env=environment,
         agent_registry=agent_registry,
+        context_transform_registry=context_transform_registry,
     )
     resolved_tui = _resolve_tui_config(global_config.tui, repo_local.tui)
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
@@ -723,6 +728,7 @@ def _load_repo_local_config(
     *,
     env: Mapping[str, str],
     agent_registry: AgentManifestRegistry | None = None,
+    context_transform_registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeConfigOverrides:
     config_path = runtime_config_path(workspace)
     if not config_path.exists():
@@ -804,9 +810,19 @@ def _load_repo_local_config(
     providers = _parse_providers_config(raw_providers, env=env)
 
     raw_agent = payload.get("agent")
-    agent = _parse_agent_config(raw_agent, hooks=hooks, agent_registry=agent_registry)
+    agent = _parse_agent_config(
+        raw_agent,
+        hooks=hooks,
+        agent_registry=agent_registry,
+        context_transform_registry=context_transform_registry,
+    )
     raw_agents = payload.get("agents")
-    agents = _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
+    agents = _parse_agents_config(
+        raw_agents,
+        hooks=hooks,
+        agent_registry=agent_registry,
+        context_transform_registry=context_transform_registry,
+    )
     raw_categories = payload.get("categories")
     categories = _parse_categories_config(raw_categories)
     raw_workflows = payload.get("workflows")
@@ -2438,6 +2454,7 @@ def _parse_agent_config(
     *,
     hooks: RuntimeHooksConfig | None = None,
     agent_registry: AgentManifestRegistry | None = None,
+    context_transform_registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeAgentConfig | None:
     if raw_agent is None:
         return None
@@ -2514,7 +2531,8 @@ def _parse_agent_config(
 
     hook_refs = _parse_agent_hook_refs(payload.get("hook_refs"), hooks=hooks)
     context_transform_refs = _parse_agent_context_transform_refs(
-        payload.get("context_transform_refs")
+        payload.get("context_transform_refs"),
+        registry=context_transform_registry,
     )
 
     model = payload.get("model")
@@ -2790,13 +2808,18 @@ def _parse_agent_hook_refs(
     return validate_hook_preset_refs(hook_refs, field_path="runtime config field 'agent.hook_refs'")
 
 
-def _parse_agent_context_transform_refs(raw_refs: object) -> tuple[str, ...]:
+def _parse_agent_context_transform_refs(
+    raw_refs: object,
+    *,
+    registry: RuntimeContextTransformRegistry | None = None,
+) -> tuple[str, ...]:
     refs = _parse_string_list(raw_refs, field_path="agent.context_transform_refs")
     if not refs:
         return ()
     return validate_runtime_context_transform_refs(
         refs,
         field_path="runtime config field 'agent.context_transform_refs'",
+        registry=registry,
     )
 
 
@@ -2830,6 +2853,7 @@ def _parse_agents_config(
     *,
     hooks: RuntimeHooksConfig | None = None,
     agent_registry: AgentManifestRegistry | None = None,
+    context_transform_registry: RuntimeContextTransformRegistry | None = None,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     if raw_agents is None:
         return None
@@ -2860,6 +2884,7 @@ def _parse_agents_config(
                 entry_payload,
                 hooks=hooks,
                 agent_registry=agent_registry,
+                context_transform_registry=context_transform_registry,
             )
         except ValueError as exc:
             message = (
@@ -2972,10 +2997,16 @@ def parse_runtime_agent_payload(
     source: str,
     hooks: RuntimeHooksConfig | None = None,
     agent_registry: AgentManifestRegistry | None = None,
+    context_transform_registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeAgentConfig | None:
     try:
         return _resolve_agent_config(
-            _parse_agent_config(raw_agent, hooks=hooks, agent_registry=agent_registry),
+            _parse_agent_config(
+                raw_agent,
+                hooks=hooks,
+                agent_registry=agent_registry,
+                context_transform_registry=context_transform_registry,
+            ),
             agent_registry=agent_registry,
         )
     except ValueError as exc:
@@ -2988,9 +3019,15 @@ def parse_runtime_agents_payload(
     source: str,
     hooks: RuntimeHooksConfig | None = None,
     agent_registry: AgentManifestRegistry | None = None,
+    context_transform_registry: RuntimeContextTransformRegistry | None = None,
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     try:
-        return _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
+        return _parse_agents_config(
+            raw_agents,
+            hooks=hooks,
+            agent_registry=agent_registry,
+            context_transform_registry=context_transform_registry,
+        )
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 
