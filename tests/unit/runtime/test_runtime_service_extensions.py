@@ -2951,6 +2951,17 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     assert len(hook_segments) == 1
     assert "active agent preset" in (hook_segments[0].content or "")
     assert "runtime-owned task routing" in (hook_segments[0].content or "")
+    assert request.assembled_context.metadata["context_transforms"] == {
+        "version": 1,
+        "applied": [
+            {
+                "provider_id": "hook_preset_guidance",
+                "status": "ok",
+                "injection_count": 1,
+                "sources": ["hook_preset_guidance"],
+            },
+        ],
+    }
 
 
 def test_runtime_materializes_explicit_agent_hook_refs_without_expanding_tools(
@@ -12284,6 +12295,17 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "continuity_state": expected_continuity,
         "summary_anchor": summary_anchor,
         "summary_source": summary_source,
+        "context_transforms": {
+            "version": 1,
+            "applied": [
+                {
+                    "provider_id": "hook_preset_guidance",
+                    "status": "ok",
+                    "injection_count": 1,
+                    "sources": ["hook_preset_guidance"],
+                }
+            ],
+        },
         "estimated_context_tokens": response_context_window["estimated_context_tokens"],
         "estimated_context_token_source": "tiktoken:cl100k_base",
         "estimated_context_token_exact": True,
