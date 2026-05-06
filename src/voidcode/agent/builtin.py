@@ -33,7 +33,6 @@ _LEADER_TOOL_ALLOWLIST = (
     "ast_grep_replace",
     "web_search",
     "web_fetch",
-    "code_search",
     "mcp/*",
 )
 
@@ -156,7 +155,7 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
     ),
     prompt_profile="researcher",
     execution_engine="provider",
-    tool_allowlist=("web_search", "web_fetch", "code_search"),
+    tool_allowlist=("web_search", "web_fetch"),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
@@ -173,7 +172,6 @@ _PRODUCT_TOOL_ALLOWLIST = (
     "todo_write",
     "web_search",
     "web_fetch",
-    "code_search",
 )
 
 PRODUCT_AGENT_MANIFEST = AgentManifest(

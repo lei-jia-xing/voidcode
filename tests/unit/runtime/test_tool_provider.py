@@ -46,7 +46,6 @@ from voidcode.tools import (
     AstGrepSearchTool,
     BackgroundCancelTool,
     BackgroundOutputTool,
-    CodeSearchTool,
     EditTool,
     GlobTool,
     GrepTool,
@@ -257,8 +256,6 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         WebFetchTool,
         WebSearchTool,
         WriteFileTool,
-        # Optional tools may be present
-        CodeSearchTool,
         MultiEditTool,
         TodoWriteTool,
     )
@@ -365,7 +362,6 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
         "ast_grep_search",
         "ast_grep_preview",
         "ast_grep_replace",
-        "code_search",
         "multi_edit",
         "todo_write",
     }
@@ -540,7 +536,6 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "ast_grep_search",
         "background_cancel",
         "background_output",
-        "code_search",
         "edit",
         "format_file",
         "glob",
@@ -658,7 +653,6 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "ast_grep_search",
         "ast_grep_preview",
         "ast_grep_replace",
-        "code_search",
         "multi_edit",
         "todo_write",
     ]
@@ -1316,10 +1310,9 @@ def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: 
     assert isinstance(base_registry.resolve("background_cancel"), BackgroundCancelTool)
 
 
-def test_tools_package_exports_code_search_tool() -> None:
+def test_tools_package_exports_optional_tools() -> None:
     tools_module = __import__("voidcode.tools", fromlist=["__all__"])
     assert "AstGrepSearchTool" in tools_module.__all__
     assert "AstGrepPreviewTool" in tools_module.__all__
     assert "AstGrepReplaceTool" in tools_module.__all__
-    assert "CodeSearchTool" in tools_module.__all__
     assert "McpTool" in tools_module.__all__

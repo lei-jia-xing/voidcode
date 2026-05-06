@@ -64,7 +64,6 @@ const LEGACY_TOOL_LABELS: Record<string, string> = {
   shell_exec: "Command",
   grep: "Search",
   glob: "Find files",
-  list: "List",
   todo_write: "Update todos",
   task: "Start subagent",
   skill: "Load skill",

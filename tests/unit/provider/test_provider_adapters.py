@@ -1213,7 +1213,7 @@ def test_provider_adapter_preserves_truncated_safe_argument_previews(
     large_query = query_prefix + (" x" * 2500)
     tool_results = (
         ToolResult(
-            tool_name="code_search",
+            tool_name="web_search",
             status="ok",
             content="Found 3 matches",
             data={

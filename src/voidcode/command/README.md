@@ -33,9 +33,15 @@ Templates currently support `$ARGUMENTS` and `$1` through `$9`. Argument splitti
 
 ## Builtin prompt commands
 
-The minimal builtin set provides exactly six product commands. These commands package common
-workflow intent into prompts; they do not directly call tools or bypass runtime approval/session
+VoidCode ships eleven builtin prompt commands. They package common workflow intent
+into prompts; they do not directly call tools or bypass runtime approval/session
 governance.
+
+The set is split into two groups: **product** commands that reflect everyday
+developer intent, and **runtime/operational** commands that drive runtime-owned
+continuation loops.
+
+### Product commands
 
 | Command              | Arguments                                                              | Execution mode                      | Default behavior                                   | Verification guidance                                                                   |
 | -------------------- | ---------------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -46,5 +52,18 @@ governance.
 | `/start-work [plan]` | Accepted plan, handoff, issue, session summary, or implementation goal | `implementation` workflow           | May edit                                           | Restate target, execute smallest safe change, track progress, and verify                |
 | `/test [target]`     | Code or behavior to test, or failing test output                       | Default runtime prompt              | May edit tests                                     | Prefer targeted tests before broad suites; never delete/weaken tests                    |
 | `/commit [context]`  | Optional commit intent/context                                         | Default runtime prompt              | Read-only                                          | Inspect status/diff; report clean tree instead of inventing a message                   |
+| `/compact [focus]`   | Optional focus notes for what must be preserved                        | Default runtime prompt              | Read-only                                          | Refresh runtime-owned continuity summary; do not edit workspace files                   |
+
+### Runtime / operational commands
+
+These drive runtime-owned continuation loops. They are intentionally
+operational (not editorial) and are surfaced here so the discovery surface
+matches what actually ships.
+
+| Command                  | Purpose                                                              |
+| ------------------------ | -------------------------------------------------------------------- |
+| `/continuation-loop`     | Start or continue a runtime-owned continuation loop on the session   |
+| `/intensive-loop`        | Start a higher-intensity continuation loop with verification state   |
+| `/cancel-continuation`   | Cancel the active continuation loop on the session                   |
 
 Commands render templates into runtime prompts through `CommandRegistry` → `resolve_prompt_command()` → `render_command_template()`. The rendered prompt replaces the slash command line before graph or provider execution. Builtins are defined in `loader.py` as `_BUILTIN_COMMANDS` and can be overridden by project-local `commands/**/*.md` files.

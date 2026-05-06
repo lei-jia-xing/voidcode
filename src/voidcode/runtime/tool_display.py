@@ -31,7 +31,6 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "format_file": ("edit", "Edit"),
     "grep": ("search", "Search"),
     "glob": ("context", "Context"),
-    "code_search": ("search", "Search"),
     "ast_grep_search": ("search", "Search"),
     "ast_grep_preview": ("search", "Search"),
     "web_search": ("search", "Search"),
@@ -233,12 +232,11 @@ def build_tool_display(
     elif tool_name in {
         "grep",
         "glob",
-        "code_search",
         "ast_grep_search",
         "ast_grep_preview",
     }:
         query_keys: tuple[str, ...]
-        if tool_name in {"grep", "code_search", "ast_grep_search", "ast_grep_preview"}:
+        if tool_name in {"grep", "ast_grep_search", "ast_grep_preview"}:
             query_keys = ("pattern", "query")
         else:
             query_keys = ("pattern",)

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import httpx
 
-from voidcode.tools import AstGrepSearchTool, CodeSearchTool, ToolCall, WebFetchTool, WebSearchTool
+from voidcode.tools import AstGrepSearchTool, ToolCall, WebFetchTool, WebSearchTool
 
 
 def test_ast_grep_search_honors_runtime_timeout(tmp_path: Path) -> None:
@@ -52,19 +52,6 @@ def test_websearch_honors_runtime_timeout(tmp_path: Path) -> None:
         urlopen_mock.side_effect = OSError("offline")
         result = tool.invoke_with_runtime_timeout(
             ToolCall(tool_name="web_search", arguments={"query": "test"}),
-            workspace=tmp_path,
-            timeout_seconds=1,
-        )
-
-    assert result.status == "ok"
-
-
-def test_codesearch_honors_runtime_timeout(tmp_path: Path) -> None:
-    tool = CodeSearchTool()
-    with patch("urllib.request.urlopen") as urlopen_mock:
-        urlopen_mock.side_effect = OSError("offline")
-        result = tool.invoke_with_runtime_timeout(
-            ToolCall(tool_name="code_search", arguments={"query": "test"}),
             workspace=tmp_path,
             timeout_seconds=1,
         )

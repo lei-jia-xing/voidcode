@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import urllib.error
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -21,7 +20,6 @@ from voidcode.tools import (
     ToolCall,
     WebFetchTool,
 )
-from voidcode.tools.code_search import CodeSearchTool
 from voidcode.tools.web_search import WebSearchTool
 
 
@@ -228,17 +226,3 @@ def test_web_search_tool_uses_fallback_when_no_exa_key_integration(tmp_path: Pat
     assert result.status == "ok"
     assert result.data.get("source") in {"duckduckgo", "exa"}
     assert isinstance(result.content, str)
-
-
-def test_code_search_tool_fallback_on_network_error_integration(tmp_path: Path) -> None:
-    _ = tmp_path
-    tool = CodeSearchTool()
-
-    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
-        result = tool.invoke(
-            ToolCall(tool_name="code_search", arguments={"query": "python dataclass"}),
-            workspace=Path("."),
-        )
-
-    assert result.status == "ok"
-    assert result.data.get("source") == "duckduckgo_fallback"

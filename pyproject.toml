@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["agents", "cli", "langgraph", "local-first", "runtime"]
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
@@ -59,10 +59,26 @@ voidcode = "voidcode.cli:main"
 [project.urls]
 Homepage = "https://github.com/lei-jia-xing/voidcode"
 Repository = "https://github.com/lei-jia-xing/voidcode"
-Documentation = "https://github.com/lei-jia-xing/voidcode"
+Documentation = "https://github.com/lei-jia-xing/voidcode#readme"
+Issues = "https://github.com/lei-jia-xing/voidcode/issues"
+Changelog = "https://github.com/lei-jia-xing/voidcode/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voidcode"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/voidcode",
+  "tests",
+  "schema",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+  "pyproject.toml",
+]
 
 [tool.uv]
 package = true

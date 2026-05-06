@@ -28,7 +28,6 @@ BUILTIN_TOOL_NAMES = frozenset(
         "background_cancel",
         "background_output",
         "background_retry",
-        "code_search",
         "edit",
         "format_file",
         "glob",
@@ -124,13 +123,6 @@ else:
     _AstGrepPreviewTool: _NoArgToolFactory | None = AstGrepPreviewTool
     _AstGrepReplaceTool: _NoArgToolFactory | None = AstGrepReplaceTool
     _AstGrepSearchTool: _NoArgToolFactory | None = AstGrepSearchTool
-
-try:
-    from ..tools.code_search import CodeSearchTool
-except ImportError:
-    _CodeSearchTool: _NoArgToolFactory | None = None
-else:
-    _CodeSearchTool: _NoArgToolFactory | None = CodeSearchTool
 
 try:
     from ..tools.multi_edit import MultiEditTool
@@ -275,8 +267,6 @@ class BuiltinToolProvider:
             tools.append(_AstGrepPreviewTool())
         if _AstGrepReplaceTool is not None:
             tools.append(_AstGrepReplaceTool())
-        if _CodeSearchTool is not None:
-            tools.append(_CodeSearchTool())
         if _MultiEditTool is not None:
             tools.append(_MultiEditTool(hooks_config=self._hooks_config))
         if _TodoWriteTool is not None:

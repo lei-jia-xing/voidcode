@@ -51,7 +51,7 @@ Voidcode 已经拥有较成熟的文本编辑基础设施，位于 `src/voidcode
 
 它们共同提供了结构化搜索、预览与替换能力，并保持了 tool contract 风格与 workspace-boundary 约束。
 
-**为什么：** 现有 `GrepTool` 只能做文本搜索，`CodeSearchTool` 面向 web 搜索。两者都不理解语法结构。ast-grep 填补了这个空缺，让结构化查找/替换成为可能，而不需要 VoidCode 自己实现 AST parser 层。
+**为什么：** 现有 `GrepTool` 只能做文本搜索，不理解语法结构。ast-grep 填补了这个空缺，让结构化查找/替换成为可能，而不需要 VoidCode 自己实现 AST parser 层。
 
 **已落地位置：**
 

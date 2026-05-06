@@ -1,0 +1,995 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
+  "title": "VoidCode runtime config",
+  "description": "Workspace-local VoidCode runtime configuration. Stored at `.voidcode.json` in the workspace root. Resolves alongside environment variables (VOIDCODE_APPROVAL_MODE, VOIDCODE_MODEL, VOIDCODE_EXECUTION_ENGINE, VOIDCODE_MAX_STEPS, VOIDCODE_TOOL_TIMEOUT_SECONDS, VOIDCODE_REASONING_EFFORT) and the user-level `~/.config/voidcode/config.json`.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for editor support."
+    },
+    "approval_mode": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ],
+      "description": "Default approval policy for tool execution."
+    },
+    "permission": {
+      "$ref": "#/$defs/permissionConfig"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider/model identifier in `provider/model` form."
+    },
+    "fallback_models": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Ordered fallback models tried after the primary model."
+    },
+    "max_steps": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Maximum graph step budget for a single run. Defaults to 100 when omitted. Set to 0 to disable the cap (the run then relies on context overflow and model self-termination)."
+    },
+    "tool_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Timeout applied to each tool execution."
+    },
+    "reasoning_effort": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional runtime-owned reasoning-effort hint forwarded to the active provider when supported (for example, 'low', 'medium', 'high'). Runtime rejects this hint when the resolved model explicitly does not support reasoning effort."
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Runtime-managed lifecycle hooks (pre/post tool, session, background).",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "minimum": 1
+        },
+        "failure_mode": {
+          "type": "string",
+          "enum": [
+            "warn",
+            "fail"
+          ]
+        },
+        "pre_tool": {
+          "$ref": "#/$defs/commandList"
+        },
+        "post_tool": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_session_start": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_session_end": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_session_idle": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_registered": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_started": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_progress": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_completed": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_failed": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_cancelled": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_notification_enqueued": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_background_task_result_read": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_delegated_result_available": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_context_pressure": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_turn_progress": {
+          "$ref": "#/$defs/commandList"
+        },
+        "on_stuck_detected": {
+          "$ref": "#/$defs/commandList"
+        },
+        "formatter_presets": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/formatterPresetConfig"
+          }
+        }
+      }
+    },
+    "formatter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Formatting behavior exposed as a top-level user-facing capability.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "languages": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/formatterPresetConfig"
+          }
+        }
+      }
+    },
+    "tools": {
+      "$ref": "#/$defs/runtimeToolsConfig"
+    },
+    "skills": {
+      "$ref": "#/$defs/skillsConfig"
+    },
+    "context_window": {
+      "$ref": "#/$defs/contextWindowConfig"
+    },
+    "lsp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "servers": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/lspServerConfig"
+          }
+        }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "request_timeout_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "servers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "stdio",
+                  "remote-http"
+                ]
+              },
+              "command": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "minLength": 1,
+                "description": "Remote HTTP MCP endpoint URL. Required when transport is remote-http."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "runtime",
+                  "session"
+                ],
+                "description": "Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "transport": {
+                      "const": "remote-http"
+                    }
+                  },
+                  "required": [
+                    "transport"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "url"
+                  ]
+                },
+                "else": {
+                  "required": [
+                    "command"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "tui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "leader_key": {
+          "type": "string"
+        },
+        "keymap": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "command_palette",
+              "session_new",
+              "session_resume"
+            ]
+          }
+        },
+        "preferences": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "theme": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "light",
+                    "dark"
+                  ]
+                }
+              }
+            },
+            "reading": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "wrap": {
+                  "type": "boolean"
+                },
+                "sidebar_collapsed": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets."
+    },
+    "background_task": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Background task queue and concurrency limits.",
+      "properties": {
+        "default_concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "provider_concurrency": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "model_concurrency": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "agent": {
+      "$ref": "#/$defs/agentConfig"
+    },
+    "agents": {
+      "type": "object",
+      "properties": {
+        "leader": {
+          "$ref": "#/$defs/agentConfig"
+        },
+        "worker": {
+          "$ref": "#/$defs/agentConfig"
+        },
+        "advisor": {
+          "$ref": "#/$defs/agentConfig"
+        },
+        "explore": {
+          "$ref": "#/$defs/agentConfig"
+        },
+        "researcher": {
+          "$ref": "#/$defs/agentConfig"
+        },
+        "product": {
+          "$ref": "#/$defs/agentConfig"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/customAgentConfig"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      }
+    },
+    "workflows": {
+      "type": "object",
+      "description": "Declarative workflow preset declarations. Runtime selection, snapshot resolution, and execution wiring are owned by later runtime phases.",
+      "properties": {
+        "research": {
+          "$ref": "#/$defs/workflowPresetConfig"
+        },
+        "implementation": {
+          "$ref": "#/$defs/workflowPresetConfig"
+        },
+        "frontend": {
+          "$ref": "#/$defs/workflowPresetConfig"
+        },
+        "review": {
+          "$ref": "#/$defs/workflowPresetConfig"
+        },
+        "git": {
+          "$ref": "#/$defs/workflowPresetConfig"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/workflowPresetConfig"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      }
+    },
+    "categories": {
+      "type": "object",
+      "description": "Per task-category runtime model overrides for delegated sessions.",
+      "additionalProperties": {
+        "$ref": "#/$defs/categoryConfig"
+      },
+      "propertyNames": {
+        "enum": [
+          "brain",
+          "deep",
+          "high",
+          "low",
+          "quick",
+          "visual-engineering",
+          "writing"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "commandList": {
+      "type": "array",
+      "description": "Array of commands; each command is a non-empty argv array of strings. Commands are executed directly without an implicit shell.",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1
+      }
+    },
+    "formatterPresetConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "root_markers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fallback_commands": {
+          "$ref": "#/$defs/commandList"
+        },
+        "cwd_policy": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "nearest_root",
+            "file_directory"
+          ]
+        }
+      }
+    },
+    "runtimeToolsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "builtin": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "local": {
+          "$ref": "#/$defs/localToolsConfig"
+        },
+        "allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "agentToolsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "builtin": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "contextWindowConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "auto_compaction": {
+          "type": "boolean"
+        },
+        "max_tool_results": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_tool_result_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_context_ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "model_context_window_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reserved_output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_retained_tool_results": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recent_tool_result_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recent_tool_result_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_tool_result_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "per_tool_result_tokens": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "tokenizer_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "continuity_preview_items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "continuity_preview_chars": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "continuity_distillation_enabled": {
+          "type": "boolean"
+        },
+        "continuity_distillation_max_input_items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "continuity_distillation_max_input_chars": {
+          "type": "integer",
+          "minimum": 64
+        },
+        "context_pressure_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "context_pressure_cooldown_steps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "provider_context_diagnostics": {
+          "type": "string",
+          "enum": [
+            "off",
+            "warn",
+            "block"
+          ],
+          "description": "Runtime policy for provider-context diagnostics before provider execution. 'warn' emits bounded metadata, 'block' fails selected high-severity diagnostics before the provider call, and 'off' keeps diagnostics debug-only."
+        },
+        "provider_context_oversized_feedback_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Character threshold for oversized retained tool feedback diagnostics."
+        }
+      }
+    },
+    "lspServerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "root_markers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "settings": {
+          "type": "object"
+        },
+        "init_options": {
+          "type": "object"
+        }
+      }
+    },
+    "skillsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "localToolsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Opt-in workspace-local custom tool manifest discovery. Runtime executes discovered command tools through the normal registry, allowlist, and permission path.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workspace-relative directory containing *.json tool manifests."
+        }
+      }
+    },
+    "agentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "prompt_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explicit prompt/profile text for this agent config entry."
+        },
+        "prompt_append": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Additional local guidance appended to the resolved base prompt."
+        },
+        "prompt_materialization": {
+          "type": "object"
+        },
+        "prompt_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_source": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "custom_markdown"
+          ]
+        },
+        "manifest_source_scope": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "project",
+            "user"
+          ]
+        },
+        "manifest_source_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_tool_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "manifest_skill_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "manifest_hook_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hook_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tools": {
+          "$ref": "#/$defs/agentToolsConfig"
+        },
+        "skills": {
+          "$ref": "#/$defs/skillsConfig"
+        },
+        "mcp_binding": {
+          "$ref": "#/$defs/agentMcpBindingConfig"
+        },
+        "fallback_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Agent-scoped fallback model chain; requires agent.model."
+        }
+      }
+    },
+    "agentMcpBindingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Declarative MCP profile/server binding intent for this agent. Runtime MCP config, lifecycle, approval, and tool allowlists remain authoritative.",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "categoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback_models": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "workflowPresetConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "default_agent",
+        "category"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "default_agent": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_append": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "force_load_skills": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "hook_preset_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "mcp_binding_intents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflowMcpBindingIntentConfig"
+          }
+        },
+        "tool_policy_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "permission_policy_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "read_only_default": {
+          "type": "boolean"
+        },
+        "verification_guidance": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "workflowMcpBindingIntentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Workflow-level MCP binding intent. Required missing bindings fail validation; optional missing bindings can be represented for later degraded snapshot handling.",
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "permissionConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "external_directory_read": {
+          "$ref": "#/$defs/permissionRules"
+        },
+        "external_directory_write": {
+          "$ref": "#/$defs/permissionRules"
+        },
+        "rules": {
+          "type": "array",
+          "description": "Ordered runtime permission rules for tool/path/command matches. First matching rule applies after hard tool allowlist and external-directory gates.",
+          "items": {
+            "$ref": "#/$defs/patternPermissionRule"
+          }
+        }
+      }
+    },
+    "patternPermissionRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision"
+      ],
+      "properties": {
+        "tool": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tool name glob, for example read_file, grep, or shell_exec."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workspace-relative or canonical path glob for filesystem-related tool calls."
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shell command glob used by shell_exec rules."
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny",
+            "ask"
+          ]
+        }
+      }
+    },
+    "permissionRules": {
+      "type": "object",
+      "description": "Ordered path-glob permission map. First matching pattern applies.",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny",
+          "ask"
+        ]
+      }
+    },
+    "customAgentConfig": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/agentConfig"
+        }
+      ],
+      "required": [
+        "preset"
+      ]
+    }
+  }
+}
