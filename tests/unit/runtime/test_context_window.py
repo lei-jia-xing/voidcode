@@ -278,7 +278,10 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
             {
                 "provider_id": "runtime_file_rules",
                 "status": "ok",
+                "priority": 200,
+                "execution_index": 2,
                 "injection_count": 2,
+                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
                 "sources": ["runtime_file_rules"],
             }
         ],
@@ -307,7 +310,10 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
             {
                 "provider_id": "hook_preset_guidance",
                 "status": "ok",
+                "priority": 100,
+                "execution_index": 1,
                 "injection_count": 1,
+                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
                 "sources": ["hook_preset_guidance"],
             }
         ],
@@ -342,17 +348,52 @@ def test_context_transform_registry_combines_multiple_providers(tmp_path: Path) 
             {
                 "provider_id": "hook_preset_guidance",
                 "status": "ok",
+                "priority": 100,
+                "execution_index": 1,
                 "injection_count": 1,
+                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
                 "sources": ["hook_preset_guidance"],
             },
             {
                 "provider_id": "runtime_file_rules",
                 "status": "ok",
+                "priority": 200,
+                "execution_index": 2,
                 "injection_count": 1,
+                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
                 "sources": ["runtime_file_rules"],
             },
         ],
     }
+
+
+def test_context_transform_registry_orders_providers_by_priority(tmp_path: Path) -> None:
+    class HighPriorityRulesProvider(RuntimeFileRulesTransformProvider):
+        priority = 50
+
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    registry = RuntimeContextTransformRegistry(
+        providers=(
+            HookPresetGuidanceTransformProvider(),
+            HighPriorityRulesProvider(),
+        )
+    )
+
+    result = registry.build_result(
+        RuntimeContextTransformRequest(
+            workspace=workspace,
+            tool_results=(),
+            hook_preset_context="Resolved agent hook preset guidance.",
+        )
+    )
+
+    assert [trace.provider_id for trace in result.traces] == [
+        "runtime_file_rules",
+        "hook_preset_guidance",
+    ]
+    assert [trace.execution_index for trace in result.traces] == [1, 2]
+    assert [trace.priority for trace in result.traces] == [50, 100]
 
 
 def test_assemble_provider_context_uses_full_tool_history_for_rules_not_compacted_window(

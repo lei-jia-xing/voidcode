@@ -22,7 +22,10 @@ class RuntimeContextTransformInjection:
 class RuntimeContextTransformTrace:
     provider_id: str
     status: str = "ok"
+    priority: int = 100
+    execution_index: int = 0
     injection_count: int = 0
+    provider_order: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
     error: str | None = None
@@ -31,7 +34,10 @@ class RuntimeContextTransformTrace:
         payload: dict[str, object] = {
             "provider_id": self.provider_id,
             "status": self.status,
+            "priority": self.priority,
+            "execution_index": self.execution_index,
             "injection_count": self.injection_count,
+            "provider_order": list(self.provider_order),
             "sources": list(self.sources),
         }
         if self.diagnostics:
@@ -62,6 +68,7 @@ class RuntimeContextTransformRequest:
 
 class RuntimeContextTransformProvider(Protocol):
     provider_id: str
+    priority: int
 
     def build_result(
         self,
@@ -71,6 +78,7 @@ class RuntimeContextTransformProvider(Protocol):
 
 class HookPresetGuidanceTransformProvider:
     provider_id = "hook_preset_guidance"
+    priority = 100
 
     def build_result(
         self,
@@ -90,6 +98,7 @@ class HookPresetGuidanceTransformProvider:
             traces=(
                 RuntimeContextTransformTrace(
                     provider_id=self.provider_id,
+                    priority=self.priority,
                     injection_count=1,
                     sources=(self.provider_id,),
                 ),
@@ -99,6 +108,7 @@ class HookPresetGuidanceTransformProvider:
 
 class RuntimeFileRulesTransformProvider:
     provider_id = "runtime_file_rules"
+    priority = 200
 
     def build_result(
         self,
@@ -127,6 +137,7 @@ class RuntimeFileRulesTransformProvider:
             traces=(
                 RuntimeContextTransformTrace(
                     provider_id=self.provider_id,
+                    priority=self.priority,
                     injection_count=len(rule_segments),
                     sources=(self.provider_id,),
                 ),
@@ -137,6 +148,14 @@ class RuntimeFileRulesTransformProvider:
 @dataclass(frozen=True, slots=True)
 class RuntimeContextTransformRegistry:
     providers: tuple[RuntimeContextTransformProvider, ...] = ()
+
+    def ordered_providers(self) -> tuple[RuntimeContextTransformProvider, ...]:
+        return tuple(
+            sorted(
+                self.providers,
+                key=lambda provider: (provider.priority, provider.provider_id),
+            )
+        )
 
     def filtered(
         self,
@@ -152,7 +171,7 @@ class RuntimeContextTransformRegistry:
         )
 
     def provider_ids(self) -> tuple[RuntimeContextTransformProviderId, ...]:
-        return tuple(provider.provider_id for provider in self.providers)
+        return tuple(provider.provider_id for provider in self.ordered_providers())
 
     def build_result(
         self,
@@ -160,10 +179,25 @@ class RuntimeContextTransformRegistry:
     ) -> RuntimeContextTransformResult:
         injections: list[RuntimeContextTransformInjection] = []
         traces: list[RuntimeContextTransformTrace] = []
-        for provider in self.providers:
+        ordered_providers = self.ordered_providers()
+        ordered_provider_ids = tuple(provider.provider_id for provider in ordered_providers)
+        for execution_index, provider in enumerate(ordered_providers, start=1):
             result = provider.build_result(request)
             injections.extend(result.injections)
-            traces.extend(result.traces)
+            traces.extend(
+                RuntimeContextTransformTrace(
+                    provider_id=trace.provider_id,
+                    status=trace.status,
+                    priority=trace.priority,
+                    execution_index=execution_index,
+                    injection_count=trace.injection_count,
+                    provider_order=ordered_provider_ids,
+                    sources=trace.sources,
+                    diagnostics=trace.diagnostics,
+                    error=trace.error,
+                )
+                for trace in result.traces
+            )
         return RuntimeContextTransformResult(
             injections=tuple(injections),
             traces=tuple(traces),
