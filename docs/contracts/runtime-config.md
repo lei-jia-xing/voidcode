@@ -531,7 +531,7 @@ voidcode config init --workspace <path> [--force] [--print] [--with-examples]
 `config schema` 成功输出必须是 JSON Schema 文档，用于描述仓库本地 `.voidcode.json` 的当前公共形状。schema 的稳定 `$id` 为：
 
 ```text
-https://voidcode.dev/schemas/runtime-config.schema.json
+https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json
 ```
 
 `config init` 生成不含 secrets 的 starter workspace 配置。默认写入 `<workspace>/.voidcode.json`，并在文件已存在时失败；`--force` 显式覆盖，`--print` 只输出 JSON 而不写入文件，`--with-examples` 会加入最小 `tools` / `skills` 示例块。生成配置默认包含 `$schema` 与 `approval_mode: "ask"`，不会生成 `providers` 或任何 `api_key` / token 字段。

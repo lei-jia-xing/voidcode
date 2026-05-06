@@ -2933,7 +2933,10 @@ def test_config_schema_outputs_json_schema() -> None:
 
     payload = json.loads(result.stdout)
     assert result.returncode == 0
-    assert payload["$id"] == "https://voidcode.dev/schemas/runtime-config.schema.json"
+    assert (
+        payload["$id"]
+        == "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
+    )
     assert payload["properties"]["approval_mode"]["enum"] == ["allow", "deny", "ask"]
 
 
@@ -2960,7 +2963,7 @@ def test_config_init_prints_starter_config_without_writing() -> None:
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload == {
-        "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
         "approval_mode": "deny",
         "model": "opencode-go/glm-5",
         "max_steps": 8,
@@ -2989,7 +2992,7 @@ def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
         f'voidcode run "read README.md" --workspace {workspace}'
     )
     assert written_payload == {
-        "$schema": "https://voidcode.dev/schemas/runtime-config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
         "approval_mode": "ask",
     }
     assert second.returncode != 0
