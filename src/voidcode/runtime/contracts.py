@@ -117,6 +117,7 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "abort_requested",
         "agent",
         "command",
+        "context_transform_refs",
         "continuation_loop",
         "delegation",
         "max_steps",
@@ -562,6 +563,22 @@ def validate_runtime_request_metadata(
                 )
             parsed_skills.append(raw_name)
         normalized["skills"] = parsed_skills
+
+    if "context_transform_refs" in metadata:
+        raw_transform_refs = metadata["context_transform_refs"]
+        if not isinstance(raw_transform_refs, list):
+            raise RuntimeRequestError(
+                "request metadata 'context_transform_refs' must be a list of "
+                "transform provider names"
+            )
+        parsed_transform_refs: list[str] = []
+        for index, raw_name in enumerate(cast(list[object], raw_transform_refs)):
+            if not isinstance(raw_name, str) or not raw_name:
+                raise RuntimeRequestError(
+                    f"request metadata 'context_transform_refs[{index}]' must be a non-empty string"
+                )
+            parsed_transform_refs.append(raw_name)
+        normalized["context_transform_refs"] = parsed_transform_refs
 
     if "force_load_skills" in metadata:
         raw_force_load = metadata["force_load_skills"]
