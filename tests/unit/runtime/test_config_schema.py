@@ -467,3 +467,28 @@ def test_runtime_config_rejects_workflow_missing_skill_ref(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="skill_refs references missing skill: missing"):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_workflow_unknown_context_transform_ref(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "workflows": {
+                    "custom": {
+                        "id": "custom",
+                        "default_agent": "leader",
+                        "category": "implementation",
+                        "context_transform_refs": ["missing"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=("context_transform_refs references unknown context transform provider"),
+    ):
+        _ = load_runtime_config(tmp_path, env={})
