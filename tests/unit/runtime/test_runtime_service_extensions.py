@@ -12829,6 +12829,60 @@ def test_runtime_transform_failure_policy_block_stops_provider_call(tmp_path: Pa
     assert "context_transform_trace" in cast(tuple[str, ...], policy["blocking_diagnostic_codes"])
 
 
+def test_runtime_transform_failure_policy_block_overrides_warn_diagnostics_mode(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("provider debug\n", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="warn",
+                context_transform_failure_policy="block",
+            ),
+        ),
+        model_provider_registry=registry,
+        context_transform_registry=RuntimeContextTransformRegistry(
+            providers=(
+                HookPresetGuidanceTransformProvider(),
+                _FailingTransformProvider(),
+                RuntimeFileRulesTransformProvider(),
+            )
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="transform-block-warn-mode")
+    )
+    assert response.session.status == "failed"
+    assert len(created_providers) == 0
+    failure = response.events[-1]
+    assert failure.event_type == "runtime.failed"
+    assert failure.payload["kind"] == "provider_context_policy_blocked"
+    policy = cast(dict[str, object], failure.payload["provider_context_policy"])
+    assert policy["mode"] == "warn"
+    assert policy["action"] == "block"
+    assert policy["blocked"] is True
+    assert "context_transform_trace" in cast(tuple[str, ...], policy["blocking_diagnostic_codes"])
+
+
 def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     coordinator = runtime._run_loop_coordinator
