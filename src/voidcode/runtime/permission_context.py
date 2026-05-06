@@ -12,7 +12,6 @@ EXTERNAL_PATH_PRECHECK_KEYS: Mapping[str, tuple[str, ...]] = {
     "edit": ("path",),
     "glob": ("path",),
     "grep": ("path",),
-    "list": ("path",),
     "multi_edit": ("path", "filePath"),
     "read_file": ("filePath", "path"),
     "write_file": ("path",),

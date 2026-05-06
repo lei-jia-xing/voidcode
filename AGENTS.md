@@ -33,7 +33,7 @@ voidcode/
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
 | Portable session bundles | `src/voidcode/runtime/bundle.py` | schema-versioned import/export artifact with redaction defaults |
 | Graph planning/finalization | `src/voidcode/graph/read_only_slice.py` | current deterministic slice |
-| Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/list/web_fetch/web_search/apply_patch/code_search/multi_edit/todo_write/lsp |
+| Tool behavior | `src/voidcode/tools/` | builtin tools include read/write/edit/glob/grep/web_fetch/web_search/apply_patch/code_search/multi_edit/todo_write/lsp |
 | Unit tests | `tests/unit/` | contracts, metadata, import, CLI smoke |
 | Integration tests | `tests/integration/test_read_only_slice.py` | full deterministic slice + session persistence |
 | Dev workflow | `mise.toml` | canonical task runner |

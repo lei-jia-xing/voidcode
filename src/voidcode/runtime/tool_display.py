@@ -31,7 +31,6 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "format_file": ("edit", "Edit"),
     "grep": ("search", "Search"),
     "glob": ("context", "Context"),
-    "list": ("context", "Context"),
     "code_search": ("search", "Search"),
     "ast_grep_search": ("search", "Search"),
     "ast_grep_preview": ("search", "Search"),

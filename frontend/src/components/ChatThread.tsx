@@ -571,7 +571,7 @@ function toolIcon(tool: ChatTool) {
   if (tool.name === "read_file" || tool.name === "read") {
     return <FileText className={className} />;
   }
-  if (tool.name === "list" || tool.name === "glob") {
+  if (tool.name === "glob") {
     return <FolderTree className={className} />;
   }
   if (
@@ -619,7 +619,6 @@ function isReadonlyTool(tool: ChatTool) {
     tool.display?.kind === "context" ||
     tool.name === "read_file" ||
     tool.name === "read" ||
-    tool.name === "list" ||
     tool.name === "glob" ||
     tool.name === "grep" ||
     tool.name === "code_search" ||
