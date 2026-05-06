@@ -4761,7 +4761,10 @@ class VoidCodeRuntime:
         if effective_config.execution_engine != "provider":
             return None
         context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
-        if context_window_config.provider_context_diagnostics == "off":
+        if (
+            context_window_config.provider_context_diagnostics == "off"
+            and context_window_config.context_transform_failure_policy != "block"
+        ):
             return None
         snapshot = self._provider_context_snapshot_for_assembled_context(
             assembled_context=cast(RuntimeAssembledContext, graph_request.assembled_context),
