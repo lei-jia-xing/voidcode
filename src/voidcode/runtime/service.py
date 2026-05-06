@@ -6111,6 +6111,9 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             tool_results=tool_results,
             hook_preset_context=hook_preset_context,
+            failure_policy=effective_config.context_window.context_transform_failure_policy
+            if effective_config.context_window is not None
+            else "warn",
             registry=self._context_transform_registry_for_agent(effective_config.agent),
         )
         return assemble_provider_context(

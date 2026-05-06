@@ -115,6 +115,13 @@ def evaluate_provider_context_policy(
     *,
     mode: RuntimeProviderContextDiagnosticPolicyMode,
 ) -> RuntimeProviderContextPolicyDecision:
+    transform_failures = tuple(
+        diagnostic
+        for diagnostic in diagnostics
+        if diagnostic.code == "context_transform_trace"
+        and diagnostic.details.get("failure_policy") == "block"
+        and diagnostic.severity == "error"
+    )
     actionable = tuple(
         diagnostic for diagnostic in diagnostics if diagnostic.severity in {"warning", "error"}
     )
@@ -125,7 +132,19 @@ def evaluate_provider_context_policy(
         or diagnostic.code in _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES
     )
     diagnostic_codes = tuple(diagnostic.code for diagnostic in actionable)
-    blocking_codes = tuple(diagnostic.code for diagnostic in blocking)
+    blocking_codes_base = tuple(diagnostic.code for diagnostic in blocking)
+    transform_blocking_codes = tuple(diagnostic.code for diagnostic in transform_failures)
+    blocking_codes = tuple(dict.fromkeys((*blocking_codes_base, *transform_blocking_codes)))
+    if transform_failures:
+        return RuntimeProviderContextPolicyDecision(
+            mode=mode,
+            action="block",
+            blocked=True,
+            diagnostic_count=len(actionable),
+            diagnostic_codes=diagnostic_codes,
+            blocking_diagnostic_codes=blocking_codes,
+            message="Provider execution blocked by context transform failure policy.",
+        )
     if mode == "off":
         return RuntimeProviderContextPolicyDecision(
             mode=mode,
@@ -202,6 +221,7 @@ def _transform_diagnostics(
     if not isinstance(raw_transforms, dict):
         return ()
     transform_payload = cast(dict[str, object], raw_transforms)
+    failure_policy = transform_payload.get("failure_policy")
     applied = transform_payload.get("applied")
     if not isinstance(applied, list):
         return ()
@@ -218,7 +238,9 @@ def _transform_diagnostics(
             continue
         severity: Literal["info", "warning", "error"] = "info"
         if status == "error":
-            severity = "error"
+            severity = "info" if failure_policy == "ignore" else "warning"
+            if failure_policy == "block":
+                severity = "error"
         elif trace.get("diagnostics"):
             severity = "warning"
         execution_index = trace.get("execution_index")
@@ -227,6 +249,7 @@ def _transform_diagnostics(
         details: dict[str, object] = {
             "status": status,
             "sources": trace.get("sources", []),
+            "failure_policy": failure_policy,
         }
         if isinstance(execution_index, int):
             details["execution_index"] = execution_index

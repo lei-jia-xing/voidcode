@@ -286,6 +286,7 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
                     "context_pressure_cooldown_steps": 5,
                     "provider_context_diagnostics": "block",
                     "provider_context_oversized_feedback_chars": 16_000,
+                    "context_transform_failure_policy": "block",
                 }
             }
         ),
@@ -316,6 +317,7 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
         context_pressure_cooldown_steps=5,
         provider_context_diagnostics="block",
         provider_context_oversized_feedback_chars=16_000,
+        context_transform_failure_policy="block",
     )
 
 
@@ -349,6 +351,7 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
         context_pressure_cooldown_steps=4,
         provider_context_diagnostics="block",
         provider_context_oversized_feedback_chars=12_000,
+        context_transform_failure_policy="ignore",
     )
 
     payload = serialize_runtime_context_window_config(config)

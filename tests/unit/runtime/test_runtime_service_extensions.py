@@ -67,6 +67,11 @@ from voidcode.runtime.config import (
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
 )
+from voidcode.runtime.context_transforms import (
+    HookPresetGuidanceTransformProvider,
+    RuntimeContextTransformRegistry,
+    RuntimeFileRulesTransformProvider,
+)
 from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     RuntimeContextWindow,
@@ -781,6 +786,15 @@ class _FailingProviderGraph:
     ) -> _StubStep:
         _ = request, tool_results, session
         raise ValueError("provider context window exceeded")
+
+
+class _FailingTransformProvider:
+    provider_id = "failing_transform"
+    priority = 150
+
+    def build_result(self, request: object):
+        _ = request
+        raise RuntimeError("transform provider failed")
 
 
 class _ScriptedTurnProvider:
@@ -2954,6 +2968,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     assert "runtime-owned task routing" in (hook_segments[0].content or "")
     assert request.assembled_context.metadata["context_transforms"] == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "hook_preset_guidance",
@@ -3036,6 +3051,7 @@ def test_runtime_agent_context_transform_refs_filter_provider_registry(
     assert "hook_preset_guidance" not in system_sources
     assert request.assembled_context.metadata["context_transforms"] == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "runtime_file_rules",
@@ -10101,6 +10117,7 @@ def test_runtime_workflow_context_transform_refs_filter_runtime_registry(
     assert "hook_preset_guidance" not in system_sources
     assert request.assembled_context.metadata["context_transforms"] == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "runtime_file_rules",
@@ -10159,6 +10176,7 @@ def test_runtime_request_context_transform_refs_narrow_agent_scope(
     assert "hook_preset_guidance" not in system_sources
     assert request.assembled_context.metadata["context_transforms"] == {
         "version": 1,
+        "failure_policy": "warn",
         "applied": [
             {
                 "provider_id": "runtime_file_rules",
@@ -12492,6 +12510,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "summary_source": summary_source,
         "context_transforms": {
             "version": 1,
+            "failure_policy": "warn",
             "applied": [
                 {
                     "provider_id": "hook_preset_guidance",
@@ -12664,6 +12683,204 @@ def test_runtime_provider_context_policy_off_preserves_provider_execution(
     assert len(created_providers) == 1
     assert len(created_providers[0].requests) == 2
     assert policy_events == []
+
+
+def test_runtime_transform_failure_policy_ignore_keeps_debug_only_trace(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("provider debug\n", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="off",
+                context_transform_failure_policy="ignore",
+            ),
+        ),
+        model_provider_registry=registry,
+        context_transform_registry=RuntimeContextTransformRegistry(
+            providers=(
+                HookPresetGuidanceTransformProvider(),
+                _FailingTransformProvider(),
+                RuntimeFileRulesTransformProvider(),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="transform-ignore"))
+    assert response.session.status == "completed"
+    context_window = cast(dict[str, object], response.session.metadata["context_window"])
+    transforms = cast(dict[str, object], context_window["context_transforms"])
+    applied = cast(list[dict[str, object]], transforms["applied"])
+    failing = next(item for item in applied if item["provider_id"] == "failing_transform")
+    assert failing["status"] == "error"
+    assert failing["error"] == "transform provider failed"
+    assert transforms["failure_policy"] == "ignore"
+
+
+def test_runtime_transform_failure_policy_warn_emits_policy_warning(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("provider debug\n", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="warn",
+                context_transform_failure_policy="warn",
+            ),
+        ),
+        model_provider_registry=registry,
+        context_transform_registry=RuntimeContextTransformRegistry(
+            providers=(
+                HookPresetGuidanceTransformProvider(),
+                _FailingTransformProvider(),
+                RuntimeFileRulesTransformProvider(),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="transform-warn"))
+    policy_events = [
+        event for event in response.events if event.event_type == "runtime.provider_context_policy"
+    ]
+    assert response.session.status == "completed"
+    assert policy_events
+    assert policy_events[0].payload["action"] == "warn"
+    diagnostic_codes = cast(tuple[str, ...], policy_events[0].payload["diagnostic_codes"])
+    assert "context_transform_trace" in diagnostic_codes
+
+
+def test_runtime_transform_failure_policy_block_stops_provider_call(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("provider debug\n", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="block",
+                context_transform_failure_policy="block",
+            ),
+        ),
+        model_provider_registry=registry,
+        context_transform_registry=RuntimeContextTransformRegistry(
+            providers=(
+                HookPresetGuidanceTransformProvider(),
+                _FailingTransformProvider(),
+                RuntimeFileRulesTransformProvider(),
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="transform-block"))
+    assert response.session.status == "failed"
+    assert len(created_providers) == 0
+    failure = response.events[-1]
+    assert failure.event_type == "runtime.failed"
+    assert failure.payload["kind"] == "provider_context_policy_blocked"
+    policy = cast(dict[str, object], failure.payload["provider_context_policy"])
+    assert policy["action"] == "block"
+    assert "context_transform_trace" in cast(tuple[str, ...], policy["blocking_diagnostic_codes"])
+
+
+def test_runtime_transform_failure_policy_block_overrides_warn_diagnostics_mode(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("provider debug\n", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(output="done"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            context_window=RuntimeContextWindowConfig(
+                provider_context_diagnostics="warn",
+                context_transform_failure_policy="block",
+            ),
+        ),
+        model_provider_registry=registry,
+        context_transform_registry=RuntimeContextTransformRegistry(
+            providers=(
+                HookPresetGuidanceTransformProvider(),
+                _FailingTransformProvider(),
+                RuntimeFileRulesTransformProvider(),
+            )
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="read sample.txt", session_id="transform-block-warn-mode")
+    )
+    assert response.session.status == "failed"
+    assert len(created_providers) == 0
+    failure = response.events[-1]
+    assert failure.event_type == "runtime.failed"
+    assert failure.payload["kind"] == "provider_context_policy_blocked"
+    policy = cast(dict[str, object], failure.payload["provider_context_policy"])
+    assert policy["mode"] == "warn"
+    assert policy["action"] == "block"
+    assert policy["blocked"] is True
+    assert "context_transform_trace" in cast(tuple[str, ...], policy["blocking_diagnostic_codes"])
 
 
 def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
