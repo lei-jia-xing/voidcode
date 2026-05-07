@@ -643,6 +643,30 @@ def _with_formatter_feedback(
     )
 
 
+def _guard_changes_before_write(
+    changes: list[dict[str, object]],
+    *,
+    workspace: Path,
+    tool_name: str,
+) -> None:
+    for change in changes:
+        status = change.get("status")
+        if status == "A":
+            continue
+        guard_path = change.get("old_path") if status == "R" else change.get("path")
+        if not isinstance(guard_path, str):
+            continue
+        _assert_within_workspace(workspace, Path(guard_path))
+        enforce_read_before_write(
+            tool_name=tool_name,
+            workspace=workspace.resolve(),
+            raw_path=guard_path,
+            candidate=(workspace / guard_path).resolve(),
+            display_path=guard_path,
+            is_external=False,
+        )
+
+
 def _looks_like_mode_only_patch(patch_text: str) -> bool:
     inside_diff = False
     current_block_is_mode_only = False
@@ -818,6 +842,12 @@ class ApplyPatchTool:
             )
 
         normalized_patch = _normalize_patch_text(patch_text)
+        changes = _changes_from_patch(patch_text)
+        _guard_changes_before_write(
+            changes,
+            workspace=workspace,
+            tool_name=self.definition.name,
+        )
         patch_path = workspace / ".voidcode_apply_patch.patch"
         patch_path.write_text(normalized_patch, encoding="utf-8", newline="\n")
         try:
@@ -825,7 +855,6 @@ class ApplyPatchTool:
             if check.returncode != 0:
                 error = check.stdout or "Patch check failed"
                 if _looks_like_mode_only_patch(patch_text):
-                    changes = _changes_from_patch(patch_text)
                     content = "\n".join(
                         f"M {c['path']}"
                         if c.get("status") != "R"
@@ -845,7 +874,6 @@ class ApplyPatchTool:
             if apply.returncode != 0:
                 error = apply.stdout or "Patch apply failed"
                 if _looks_like_mode_only_patch(patch_text):
-                    changes = _changes_from_patch(patch_text)
                     content = "\n".join(
                         f"M {c['path']}"
                         if c.get("status") != "R"
@@ -859,25 +887,6 @@ class ApplyPatchTool:
                         data={"changes": changes, "count": len(changes)},
                     )
                 raise ValueError(_format_patch_error(error, normalized_patch))
-
-            changes = _changes_from_patch(patch_text)
-
-            for c in changes:
-                status = c.get("status")
-                if status == "A":
-                    continue
-                guard_path = c.get("old_path") if status == "R" else c.get("path")
-                if not isinstance(guard_path, str):
-                    continue
-                _assert_within_workspace(workspace, Path(guard_path))
-                enforce_read_before_write(
-                    tool_name=self.definition.name,
-                    workspace=workspace.resolve(),
-                    raw_path=guard_path,
-                    candidate=(workspace / guard_path).resolve(),
-                    display_path=guard_path,
-                    is_external=False,
-                )
 
             summary_lines: list[str] = []
             for c in changes:
