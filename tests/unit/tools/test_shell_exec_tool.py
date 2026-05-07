@@ -386,6 +386,26 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
 
 
+def test_shell_exec_rejects_interactive_python_shell(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+
+    with pytest.raises(ValueError, match="looks interactive in a non-interactive runtime"):
+        tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": "python -i"}),
+            workspace=tmp_path,
+        )
+
+
+def test_shell_exec_rejects_shell_without_dash_c(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+
+    with pytest.raises(ValueError, match="looks interactive in a non-interactive runtime"):
+        tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": "bash"}),
+            workspace=tmp_path,
+        )
+
+
 # ── Target contract: ShellExecArgs.description ──────────────────────────
 # These tests encode the expected behaviour BEFORE the field exists.
 # They are expected to fail (RED) until T2 adds `description` support.
