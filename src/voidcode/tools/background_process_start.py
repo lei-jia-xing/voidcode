@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import shutil
+import signal
 import subprocess
 import threading
 import uuid
@@ -63,12 +66,7 @@ class BackgroundProcessManager:
     def stop(self, process_id: str) -> BackgroundProcessState:
         state = self._require(process_id)
         if state.process.poll() is None:
-            state.process.terminate()
-            try:
-                state.process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                state.process.kill()
-                state.process.wait(timeout=1)
+            _terminate_background_process_group(state.process)
         return state
 
     def stop_all(self) -> None:
@@ -104,6 +102,45 @@ class BackgroundProcessManager:
             name=f"background-process-{stream_name}",
             daemon=True,
         ).start()
+
+
+def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        taskkill = shutil.which("taskkill") or "taskkill"
+        completed = subprocess.run(
+            [taskkill, "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode == 0:
+            return
+        process.kill()
+        process.wait(timeout=1)
+        return
+
+    killpg = getattr(os, "killpg", None)
+    if callable(killpg):
+        try:
+            killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=1)
+            return
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            process.wait(timeout=1)
+            return
+
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
 
 
 class _BackgroundProcessStartArgs(BaseModel):

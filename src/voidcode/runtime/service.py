@@ -654,6 +654,7 @@ class VoidCodeRuntime:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = exc_type, exc, tb
         self.shutdown_background_tasks()
+        self._background_process_manager.stop_all()
         _ = self.disconnect_acp()
         _ = self.shutdown_mcp()
         _ = self.shutdown_lsp()
