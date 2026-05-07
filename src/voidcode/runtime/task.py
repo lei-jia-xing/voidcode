@@ -129,7 +129,7 @@ _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[
     "completed": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
-    "interrupted": frozenset(),
+    "interrupted": frozenset({"completed", "failed", "cancelled"}),
 }
 
 

@@ -7128,15 +7128,45 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
         approval_request_id=approval_request_id,
         approval_decision="allow",
     )
-    finalized = resumed_runtime.load_background_task(started.task.id)
     result = resumed_runtime.load_background_task_result(started.task.id)
+    finalized = resumed_runtime.load_background_task(started.task.id)
 
     assert stale.status == "interrupted"
     assert resumed.session.status == "completed"
-    assert finalized.status == "interrupted"
-    assert finalized.error == "background task interrupted before completion"
-    assert result.status == "interrupted"
-    assert result.error == "background task interrupted before completion"
+    assert finalized.status == "completed"
+    assert finalized.error is None
+    assert result.status == "completed"
+    assert result.error is None
+
+
+def test_runtime_load_background_task_reconciles_stale_interrupted_child_completion(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = initial_runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(initial_runtime, started.task.id)
+    assert completed.session_id is not None
+
+    _ = initial_runtime._session_store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id=started.task.id,
+        status="interrupted",
+        error="background task interrupted before completion",
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    reconciled = resumed_runtime.load_background_task(started.task.id)
+    result = resumed_runtime.load_background_task_result(started.task.id)
+
+    assert reconciled.status == "completed"
+    assert reconciled.error is None
+    assert result.status == "completed"
+    assert result.error is None
 
 
 def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path: Path) -> None:

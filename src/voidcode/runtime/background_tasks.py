@@ -201,6 +201,7 @@ class RuntimeBackgroundTaskSupervisor:
         )
 
     def task_with_observability(self, task: BackgroundTaskState) -> BackgroundTaskState:
+        task = self.reconcile_task_with_child_session_truth(task)
         runtime = self._runtime
         queued_summaries = runtime._session_store.list_queued_background_tasks(
             workspace=runtime._workspace
@@ -226,6 +227,7 @@ class RuntimeBackgroundTaskSupervisor:
             workspace=self._runtime._workspace,
             task_id=summary.task.id,
         )
+        task = self.reconcile_task_with_child_session_truth(task)
         return replace(summary, observability=self.task_observability(task))
 
     def summaries_with_observability(
@@ -241,9 +243,11 @@ class RuntimeBackgroundTaskSupervisor:
         task_ids_to_load = {summary.task.id for summary in summaries}
         task_ids_to_load.update(summary.task.id for summary in queued_summaries)
         tasks_by_id = {
-            task_id: runtime._session_store.load_background_task(
-                workspace=runtime._workspace,
-                task_id=task_id,
+            task_id: self.reconcile_task_with_child_session_truth(
+                runtime._session_store.load_background_task(
+                    workspace=runtime._workspace,
+                    task_id=task_id,
+                )
             )
             for task_id in task_ids_to_load
         }
@@ -821,6 +825,7 @@ class RuntimeBackgroundTaskSupervisor:
     ) -> BackgroundTaskResult:
         task = self._runtime.load_background_task(task_id)
         self.backfill_parent_background_task_event(task=task)
+        task = self.reconcile_task_with_child_session_truth(task)
         result = self.background_task_result(task=task)
         if emit_result_read_hook:
             self.run_background_task_lifecycle_surface(
@@ -832,6 +837,35 @@ class RuntimeBackgroundTaskSupervisor:
                 or "runtime",
             )
         return result
+
+    def reconcile_task_with_child_session_truth(
+        self, task: BackgroundTaskState
+    ) -> BackgroundTaskState:
+        if task.session_id is None:
+            return task
+        if task.status not in {"running", "interrupted"}:
+            return task
+        child_result = self.load_background_task_child_result(task=task)
+        if child_result is not None and child_result.status in {"completed", "failed"}:
+            error = child_result.error if child_result.status == "failed" else None
+            terminal_task = self._runtime._session_store.mark_background_task_terminal(
+                workspace=self._runtime._workspace,
+                task_id=task.task.id,
+                status=cast(BackgroundTaskStatus, child_result.status),
+                error=error,
+            )
+            self.run_background_task_lifecycle_hook(terminal_task)
+            return terminal_task
+        child_response = self.load_background_task_child_response(task=task)
+        if child_response is None:
+            return task
+        if child_response.session.status in {"waiting", "completed", "failed"}:
+            self.finalize_background_task_from_session_response(session_response=child_response)
+            return self._runtime._session_store.load_background_task(
+                workspace=self._runtime._workspace,
+                task_id=task.task.id,
+            )
+        return task
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         runtime = self._runtime
@@ -1247,9 +1281,9 @@ class RuntimeBackgroundTaskSupervisor:
             workspace=runtime._workspace,
             task_id=background_task_id,
         )
-        if is_background_task_terminal(current_task.status):
-            return
         if session_response.session.status == "waiting":
+            if is_background_task_terminal(current_task.status):
+                return
             self.emit_background_task_waiting_approval(
                 task=current_task,
                 child_response=session_response,
@@ -1258,7 +1292,13 @@ class RuntimeBackgroundTaskSupervisor:
         terminal_status: BackgroundTaskStatus = (
             "completed" if session_response.session.status == "completed" else "failed"
         )
-        if current_task.status == terminal_status:
+        if current_task.status == terminal_status and current_task.error is None:
+            return
+        if (
+            is_background_task_terminal(current_task.status)
+            and current_task.status != "interrupted"
+            and current_task.status != terminal_status
+        ):
             return
         error: str | None = None
         if terminal_status == "failed":
