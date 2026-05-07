@@ -10,6 +10,7 @@ import pytest
 from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.tools import ApplyPatchTool, ToolCall
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def _init_git_repo(path: Path) -> None:
@@ -56,6 +57,93 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
     assert result.data["count"] == 1
     assert result.data["changes"] == [{"path": "sample.txt", "status": "M"}]
     assert result.content == "M sample.txt"
+
+
+def test_apply_patch_rejects_unified_diff_update_without_prior_read_side_effects(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    old = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    new = ["patched-1\n", "line-2\n"]
+    patch_text = "".join(
+        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
+    )
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
+        with pytest.raises(
+            ValueError, match="requires reading the current file before modifying it"
+        ):
+            ApplyPatchTool().invoke(
+                ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+                workspace=tmp_path,
+            )
+
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\n"
+
+
+def test_apply_patch_rejects_unified_diff_delete_without_prior_read_side_effects(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/sample.txt b/sample.txt",
+            "deleted file mode 100644",
+            "--- a/sample.txt",
+            "+++ /dev/null",
+            "@@ -1 +0,0 @@",
+            "-line-1",
+            "",
+        ]
+    )
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
+        with pytest.raises(
+            ValueError, match="requires reading the current file before modifying it"
+        ):
+            ApplyPatchTool().invoke(
+                ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+                workspace=tmp_path,
+            )
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "line-1\n"
+
+
+def test_apply_patch_rejects_unified_diff_rename_without_prior_read_side_effects(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    source = tmp_path / "old.txt"
+    source.write_text("line-1\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/old.txt b/new.txt",
+            "similarity index 100%",
+            "rename from old.txt",
+            "rename to new.txt",
+            "",
+        ]
+    )
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
+        with pytest.raises(
+            ValueError, match="requires reading the current file before modifying it"
+        ):
+            ApplyPatchTool().invoke(
+                ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+                workspace=tmp_path,
+            )
+
+    assert source.exists()
+    assert not (tmp_path / "new.txt").exists()
 
 
 def test_apply_patch_allows_external_target_file(tmp_path: Path) -> None:

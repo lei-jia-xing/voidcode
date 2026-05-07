@@ -1218,6 +1218,59 @@ class _DeniedWriteThenReadModelProvider:
         return provider
 
 
+class _UnreadWriteThenReadTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        if not turn_request.tool_results:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "safe.txt", "content": "updated"},
+                )
+            )
+        last_result = turn_request.tool_results[-1]
+        error_details = last_result.error_details or {}
+        if error_details.get("reason") == "write_without_read":
+            return ProviderTurnResult(
+                tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "safe.txt"})
+            )
+        if last_result.tool_name == "read_file" and last_result.status == "ok":
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "safe.txt", "content": "updated"},
+                )
+            )
+        return ProviderTurnResult(output="recovered from unread write")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _UnreadWriteThenReadModelProvider:
+    name: str
+    created_providers: list[_UnreadWriteThenReadTurnProvider]
+
+    def turn_provider(self) -> _UnreadWriteThenReadTurnProvider:
+        provider = _UnreadWriteThenReadTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 class _AlwaysFailingModelProvider:
     _error_kind: ProviderErrorKind
 
@@ -3003,7 +3056,11 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "priority": 100,
                 "execution_index": 1,
                 "injection_count": 1,
-                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+                "provider_order": [
+                    "hook_preset_guidance",
+                    "runtime_file_rules",
+                    "directory_readme_context",
+                ],
                 "sources": ["hook_preset_guidance"],
             },
         ],
@@ -3092,6 +3149,53 @@ def test_runtime_agent_context_transform_refs_filter_provider_registry(
         ],
     }
     assert runtime_agent["context_transform_refs"] == ["runtime_file_rules"]
+
+
+def test_runtime_agent_context_transform_refs_filter_directory_readme_provider(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("Workspace readme", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                context_transform_refs=("directory_readme_context",),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="hello", session_id="readme-transform-filter"))
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    system_sources = [
+        segment.metadata.get("source")
+        for segment in request.assembled_context.segments
+        if segment.role == "system" and segment.metadata is not None
+    ]
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    runtime_agent = cast(dict[str, object], runtime_config["agent"])
+    assert "directory_readme_context" in system_sources
+    assert request.assembled_context.metadata["context_transforms"] == {
+        "version": 1,
+        "failure_policy": "warn",
+        "applied": [
+            {
+                "provider_id": "directory_readme_context",
+                "status": "ok",
+                "priority": 250,
+                "execution_index": 1,
+                "injection_count": 1,
+                "provider_order": ["directory_readme_context"],
+                "sources": ["directory_readme_context"],
+            }
+        ],
+    }
+    assert runtime_agent["context_transform_refs"] == ["directory_readme_context"]
 
 
 def test_runtime_resume_uses_persisted_hook_preset_snapshot(
@@ -3504,6 +3608,56 @@ def test_runtime_provider_recovers_after_permission_denial_feedback(tmp_path: Pa
     denied_tool_result = created_providers[-1].requests[1].tool_results[-1]
     assert denied_tool_result.status == "error"
     assert denied_tool_result.data["permission_denied"] is True
+
+
+def test_runtime_provider_recovers_after_read_before_write_feedback(tmp_path: Path) -> None:
+    (tmp_path / "safe.txt").write_text("safe context\n", encoding="utf-8")
+    created_providers: list[_UnreadWriteThenReadTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _UnreadWriteThenReadModelProvider(
+                name="opencode",
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            approval_mode="allow",
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="write then recover",
+            session_id="read-before-write-recover",
+        )
+    )
+
+    assert response.session.status == "completed"
+    assert response.output == "recovered from unread write"
+    assert (tmp_path / "safe.txt").read_text(encoding="utf-8") == "updated"
+    feedback = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("tool") == "write_file"
+        and event.payload.get("status") == "error"
+    )
+    assert feedback.payload["error_kind"] == "tool_input_mismatch"
+    error_details = cast(dict[str, object], feedback.payload["error_details"])
+    assert error_details["reason"] == "write_without_read"
+    read_feedback = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"
+    )
+    assert read_feedback.payload["status"] == "ok"
 
 
 def test_runtime_provider_executes_batched_tool_calls_before_next_model_turn(
@@ -12545,7 +12699,11 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
                     "priority": 100,
                     "execution_index": 1,
                     "injection_count": 1,
-                    "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+                    "provider_order": [
+                        "hook_preset_guidance",
+                        "runtime_file_rules",
+                        "directory_readme_context",
+                    ],
                     "sources": ["hook_preset_guidance"],
                 }
             ],
@@ -13043,7 +13201,11 @@ def test_runtime_emits_context_transform_applied_event_for_runtime_file_rules(
         "priority": 200,
         "execution_index": 2,
         "injection_count": 1,
-        "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+        "provider_order": [
+            "hook_preset_guidance",
+            "runtime_file_rules",
+            "directory_readme_context",
+        ],
         "sources": ["runtime_file_rules"],
     }
     assert "Project rules" not in repr(transform_events[0].payload)

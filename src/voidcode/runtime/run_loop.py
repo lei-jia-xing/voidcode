@@ -33,6 +33,7 @@ from ..tools.contracts import (
     ToolErrorDetails,
     ToolResult,
 )
+from ..tools.guards import read_paths_for_tool_results
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
@@ -511,6 +512,7 @@ class RuntimeRunLoopCoordinator:
         tool: Any,
         tool_call: ToolCall,
         workspace: Any,
+        read_paths: frozenset[str] = frozenset(),
         tool_timeout: int | None,
         session: SessionState,
         start_sequence: int,
@@ -543,6 +545,7 @@ class RuntimeRunLoopCoordinator:
                         parent_session_id=parent_session_id,
                         delegation_depth=delegation_depth,
                         remaining_spawn_budget=remaining_spawn_budget,
+                        read_paths=read_paths,
                         abort_signal=abort_signal,
                         emit_tool_progress=emit_tool_progress,
                     )
@@ -754,6 +757,10 @@ class RuntimeRunLoopCoordinator:
                     tool=tool,
                     tool_call=tool_call,
                     workspace=runtime._workspace,
+                    read_paths=read_paths_for_tool_results(
+                        tool_results=tuple(tool_results),
+                        workspace=runtime._workspace,
+                    ),
                     tool_timeout=tool_timeout,
                     session=session,
                     start_sequence=sequence + 1,
@@ -769,6 +776,10 @@ class RuntimeRunLoopCoordinator:
                     raise tool_outcome
                 tool_result = tool_outcome
             else:
+                read_paths = read_paths_for_tool_results(
+                    tool_results=tuple(tool_results),
+                    workspace=runtime._workspace,
+                )
                 with bind_runtime_tool_context(
                     RuntimeToolInvocationContext(
                         session_id=session.session.id,
@@ -777,6 +788,7 @@ class RuntimeRunLoopCoordinator:
                         remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
                             session.metadata
                         ),
+                        read_paths=read_paths,
                         abort_signal=abort_signal,
                     )
                 ):
@@ -1228,6 +1240,7 @@ class RuntimeRunLoopCoordinator:
                 if segment_source in {
                     "hook_preset_guidance",
                     "runtime_file_rules",
+                    "directory_readme_context",
                 }:
                     continue
                 if segment.content.startswith("Runtime-managed todo state is active"):
@@ -2142,6 +2155,10 @@ class RuntimeRunLoopCoordinator:
                         tool=tool,
                         tool_call=plan_tool_call,
                         workspace=runtime._workspace,
+                        read_paths=read_paths_for_tool_results(
+                            tool_results=tuple(tool_results),
+                            workspace=runtime._workspace,
+                        ),
                         tool_timeout=tool_timeout,
                         session=session,
                         start_sequence=sequence + 1,
@@ -2157,6 +2174,10 @@ class RuntimeRunLoopCoordinator:
                         raise tool_outcome
                     tool_result = tool_outcome
                 else:
+                    read_paths = read_paths_for_tool_results(
+                        tool_results=tuple(tool_results),
+                        workspace=runtime._workspace,
+                    )
                     with bind_runtime_tool_context(
                         RuntimeToolInvocationContext(
                             session_id=session.session.id,
@@ -2167,6 +2188,7 @@ class RuntimeRunLoopCoordinator:
                             remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
                                 session.metadata
                             ),
+                            read_paths=read_paths,
                             abort_signal=active_graph_request.abort_signal,
                         )
                     ):

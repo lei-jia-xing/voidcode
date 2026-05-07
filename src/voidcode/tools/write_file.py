@@ -11,6 +11,7 @@ from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._pydantic_args import WriteFileArgs, format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .guards import enforce_read_before_write
 
 
 @final
@@ -44,6 +45,18 @@ class WriteFileTool:
         )
         workspace_root = resolution.workspace_root
         candidate = resolution.candidate
+        display_path = (
+            str(candidate.resolve()) if resolution.is_external else resolution.relative_path
+        )
+
+        enforce_read_before_write(
+            tool_name=self.definition.name,
+            workspace=workspace_root,
+            raw_path=args.path,
+            candidate=candidate,
+            display_path=display_path,
+            is_external=resolution.is_external,
+        )
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
         old_content = candidate.read_text(encoding="utf-8") if candidate.exists() else ""
@@ -54,9 +67,6 @@ class WriteFileTool:
             formatter_result = FormatterExecutor(self._hooks_config, workspace_root).run(candidate)
 
         diagnostics = formatter_diagnostics(formatter_result)
-        display_path = (
-            str(candidate.resolve()) if resolution.is_external else resolution.relative_path
-        )
         content = f"Wrote file successfully: {display_path}"
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"
