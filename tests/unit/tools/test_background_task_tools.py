@@ -271,6 +271,23 @@ class _TerminalAfterTimeoutBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="",
+            result_available=True,
+        )
+
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         assert session_id == "child-session"
         return RuntimeSessionResult(
@@ -606,6 +623,22 @@ def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> Non
     assert result.status == "ok"
     assert result.content is not None
     assert "completed with empty output" in result.content
+    assert "completed with empty output" in str(result.data["guidance"])
+    assert result.data["empty_child_output"] is True
+
+
+def test_background_output_default_detects_empty_child_output_without_full_session(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_EmptyOutputBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["empty_child_output"] is True
     assert "completed with empty output" in str(result.data["guidance"])
 
 

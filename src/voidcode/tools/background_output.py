@@ -122,6 +122,21 @@ class BackgroundOutputTool:
         )
         empty_child_output = False
 
+        if (
+            not args.full_session
+            and result.child_session_id is not None
+            and result.status == "completed"
+            and not (result.summary_output or "").strip()
+        ):
+            try:
+                session_result = self._runtime.session_result(session_id=result.child_session_id)
+            except UnknownSessionError:
+                session_result = None
+            if session_result is not None:
+                empty_child_output = (
+                    session_result.status == "completed" and session_result.output == ""
+                )
+
         if args.full_session and result.child_session_id is not None:
             try:
                 session_result = self._runtime.session_result(session_id=result.child_session_id)
@@ -188,6 +203,7 @@ class BackgroundOutputTool:
             empty_child_output=empty_child_output,
             block_timed_out=block_timed_out,
         )
+        payload["empty_child_output"] = empty_child_output
         if guidance is not None:
             payload["guidance"] = guidance
             content = f"{content}\n\nGuidance: {guidance}"
