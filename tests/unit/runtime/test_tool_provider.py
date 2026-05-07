@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -49,6 +50,7 @@ from voidcode.tools import (
     EditTool,
     GlobTool,
     GrepTool,
+    InteractiveShellTool,
     LocalCustomTool,
     McpTool,
     MultiEditTool,
@@ -241,8 +243,9 @@ def _write_local_tool_manifest(
 
 def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
     tools = BuiltinToolProvider().provide_tools()
+    tools_by_type = {type(tool) for tool in tools}
 
-    expected_tools = (
+    expected_tools: list[type[Any]] = [
         EditTool,
         GlobTool,
         GrepTool,
@@ -258,11 +261,12 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         WriteFileTool,
         MultiEditTool,
         TodoWriteTool,
-    )
+    ]
+    if os.name != "nt":
+        expected_tools.append(InteractiveShellTool)
 
-    tool_types = tuple(type(tool) for tool in tools)
     for expected in expected_tools:
-        assert expected in tool_types, f"Missing tool: {expected.__name__}"
+        assert expected in tools_by_type, f"Missing tool: {expected.__name__}"
 
 
 def test_builtin_tool_provider_can_include_runtime_managed_mcp_tools() -> None:
@@ -620,6 +624,7 @@ def test_dynamic_mcp_tool_definitions_apply_server_safety_hints() -> None:
 
 def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> None:
     provided_tools = BuiltinToolProvider().provide_tools()
+    provided_by_name = {tool.definition.name: tool for tool in provided_tools}
 
     with patch.object(
         BuiltinToolProvider,
@@ -643,9 +648,11 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "web_search",
         "write_file",
     ]
-    for i, tool_name in enumerate(core_tools):
+    if os.name != "nt":
+        core_tools.insert(3, "interactive_shell")
+    for tool_name in core_tools:
         assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
-        assert registry.resolve(tool_name) is provided_tools[i]
+        assert registry.resolve(tool_name) is provided_by_name[tool_name]
 
     # Verify optional tools if present
     optional_tools = [

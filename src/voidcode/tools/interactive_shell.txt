@@ -1,0 +1,9 @@
+Execute a tmux subcommand for an interactive terminal session.
+
+Usage:
+- Pass tmux subcommands directly, without the `tmux` prefix.
+- Use this tool for interactive/session-oriented terminal control such as `new-session -d`, `split-window`, `send-keys`, `capture-pane`, `list-sessions`, or `list-panes`.
+- Prefer `shell_exec` for one-shot tests, builds, installs, and diagnostics.
+- This tool currently requires tmux and is unsupported on Windows.
+- Risky lifecycle commands such as `attach-session`, `kill-session`, `kill-pane`, `kill-server`, and `wait-for` are blocked.
+- Treat stdout, stderr, and exit_code as the source of truth.

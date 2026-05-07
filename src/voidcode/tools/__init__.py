@@ -8,6 +8,7 @@ from .edit import EditTool
 from .format_file import FormatTool
 from .glob import GlobTool
 from .grep import GrepTool
+from .interactive_shell import InteractiveShellTool
 from .local_custom import LocalCustomTool
 from .lsp import LspTool
 from .mcp import McpTool
@@ -45,6 +46,7 @@ __all__ = [
     "FormatTool",
     "GlobTool",
     "GrepTool",
+    "InteractiveShellTool",
     "LocalCustomTool",
     "ReadFileTool",
     "QuestionTool",

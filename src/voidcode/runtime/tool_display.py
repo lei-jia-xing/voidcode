@@ -144,6 +144,12 @@ def _build_copyable(
     """Build optional copyable payload for the tool."""
     payload: dict[str, object] = {}
 
+    if tool_name == "interactive_shell":
+        tmux_command = _first_primitive(arguments, "tmux_command")
+        if tmux_command:
+            payload["tmux_command"] = _truncate_arg(tmux_command)
+        return payload if payload else None
+
     if tool_name == "shell_exec":
         command = _first_primitive(arguments, "command")
         if command:
