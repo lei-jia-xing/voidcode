@@ -17,7 +17,6 @@ from ..security.shell_policy import (
     resolve_shell_execution_policy,
 )
 from ._pydantic_args import ShellExecArgs, format_validation_error
-from ._repair import raise_tool_diagnostic
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
@@ -193,24 +192,11 @@ class ShellExecTool:
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         policy = resolve_shell_execution_policy(
             workspace=workspace,
-            command_text=command_text,
             timeout_argument=timeout_value,
             runtime_timeout_seconds=runtime_timeout_seconds,
         )
         timeout_seconds = policy.timeout_seconds
         runtime_timeout_selected = policy.runtime_timeout_selected
-        if policy.non_interactive_blocked:
-            raise_tool_diagnostic(
-                message=(
-                    "shell_exec rejected a command that looks interactive in a "
-                    "non-interactive runtime: "
-                    f"{command_text}"
-                ),
-                error_kind="non_interactive_shell_denied",
-                reason=policy.non_interactive_reason or "interactive_command",
-                retry_guidance=policy.retry_guidance,
-                details={"command": command_text, "non_interactive": True},
-            )
 
         try:
             command_text = command_text.encode("utf-8", errors="replace").decode("utf-8")
