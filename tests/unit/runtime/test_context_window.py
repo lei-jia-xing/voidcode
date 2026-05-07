@@ -282,7 +282,11 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
                 "priority": 200,
                 "execution_index": 2,
                 "injection_count": 2,
-                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+                "provider_order": [
+                    "hook_preset_guidance",
+                    "runtime_file_rules",
+                    "directory_readme_context",
+                ],
                 "sources": ["runtime_file_rules"],
             }
         ],
@@ -315,7 +319,11 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
                 "priority": 100,
                 "execution_index": 1,
                 "injection_count": 1,
-                "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+                "provider_order": [
+                    "hook_preset_guidance",
+                    "runtime_file_rules",
+                    "directory_readme_context",
+                ],
                 "sources": ["hook_preset_guidance"],
             }
         ],

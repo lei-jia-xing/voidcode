@@ -16,6 +16,7 @@ from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .guards import enforce_read_before_write
 
 
 @dataclass(frozen=True)
@@ -379,6 +380,20 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
                         old_path=hunk.path,
                     )
                 )
+
+    for change in prepared:
+        if change.status == "A":
+            continue
+        guard_path = change.old_path or change.path
+        target = workspace / guard_path
+        enforce_read_before_write(
+            tool_name="apply_patch",
+            workspace=workspace,
+            raw_path=guard_path,
+            candidate=target,
+            display_path=guard_path,
+            is_external=False,
+        )
 
     for change in prepared:
         target = workspace / change.path
@@ -846,6 +861,23 @@ class ApplyPatchTool:
                 raise ValueError(_format_patch_error(error, normalized_patch))
 
             changes = _changes_from_patch(patch_text)
+
+            for c in changes:
+                status = c.get("status")
+                if status == "A":
+                    continue
+                guard_path = c.get("old_path") if status == "R" else c.get("path")
+                if not isinstance(guard_path, str):
+                    continue
+                _assert_within_workspace(workspace, Path(guard_path))
+                enforce_read_before_write(
+                    tool_name=self.definition.name,
+                    workspace=workspace.resolve(),
+                    raw_path=guard_path,
+                    candidate=(workspace / guard_path).resolve(),
+                    display_path=guard_path,
+                    is_external=False,
+                )
 
             summary_lines: list[str] = []
             for c in changes:

@@ -4,8 +4,12 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from ..provider.protocol import ProviderAbortSignal
+if TYPE_CHECKING:
+    from ..provider.protocol import ProviderAbortSignal
+else:
+    ProviderAbortSignal = object
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,6 +18,7 @@ class RuntimeToolInvocationContext:
     parent_session_id: str | None = None
     delegation_depth: int = 0
     remaining_spawn_budget: int | None = None
+    read_paths: frozenset[str] = frozenset()
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
 

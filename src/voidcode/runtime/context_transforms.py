@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
 
+from ..context import directory_readme_contexts
 from ..tools.contracts import ToolResult
 from .context_rules import runtime_file_rule_contexts
 
@@ -149,6 +150,45 @@ class RuntimeFileRulesTransformProvider:
         )
 
 
+class DirectoryReadmeContextTransformProvider:
+    provider_id = "directory_readme_context"
+    priority = 250
+
+    def build_result(
+        self,
+        request: RuntimeContextTransformRequest,
+    ) -> RuntimeContextTransformResult:
+        readme_segments: list[RuntimeContextTransformInjection] = []
+        for readme_context in directory_readme_contexts(
+            workspace=request.workspace,
+            tool_results=request.tool_results,
+        ):
+            readme_segments.append(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content=(
+                        "Directory README context is active for touched workspace paths.\n"
+                        f"README file: {readme_context.path}\n"
+                        f"{readme_context.content}"
+                    ).strip(),
+                    metadata=readme_context.metadata_payload(),
+                )
+            )
+        if not readme_segments:
+            return RuntimeContextTransformResult()
+        return RuntimeContextTransformResult(
+            injections=tuple(readme_segments),
+            traces=(
+                RuntimeContextTransformTrace(
+                    provider_id=self.provider_id,
+                    priority=self.priority,
+                    injection_count=len(readme_segments),
+                    sources=(self.provider_id,),
+                ),
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeContextTransformRegistry:
     providers: tuple[RuntimeContextTransformProvider, ...] = ()
@@ -230,6 +270,7 @@ def default_runtime_context_transform_registry() -> RuntimeContextTransformRegis
         providers=(
             HookPresetGuidanceTransformProvider(),
             RuntimeFileRulesTransformProvider(),
+            DirectoryReadmeContextTransformProvider(),
         )
     )
 

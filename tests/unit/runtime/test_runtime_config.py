@@ -1502,6 +1502,23 @@ def test_runtime_agent_payload_parses_context_transform_references() -> None:
     )
 
 
+def test_runtime_agent_payload_parses_directory_readme_context_reference() -> None:
+    agent = parse_runtime_agent_payload(
+        {
+            "preset": "leader",
+            "context_transform_refs": ["directory_readme_context"],
+        },
+        source="test payload",
+    )
+
+    assert agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        context_transform_refs=("directory_readme_context",),
+        execution_engine="provider",
+    )
+
+
 def test_runtime_agent_payload_applies_explicit_prompt_override() -> None:
     agent = parse_runtime_agent_payload(
         {

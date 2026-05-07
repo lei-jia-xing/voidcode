@@ -23,6 +23,7 @@ from ._repair import (
     raise_tool_diagnostic,
 )
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .guards import enforce_read_before_write
 
 
 def _normalize_line_endings(text: str) -> str:
@@ -594,6 +595,20 @@ class EditTool:
         if not candidate.is_file():
             raise ValueError(f"edit target is not a file: {path_value}")
 
+        display_path = (
+            str(candidate.resolve())
+            if resolution.is_external
+            else candidate.relative_to(workspace_root).as_posix()
+        )
+        enforce_read_before_write(
+            tool_name=self.definition.name,
+            workspace=workspace_root,
+            raw_path=path_value,
+            candidate=candidate,
+            display_path=display_path,
+            is_external=resolution.is_external,
+        )
+
         content_old = read_utf8_text(candidate)
 
         ending = _detect_line_ending(content_old)
@@ -630,12 +645,6 @@ class EditTool:
             output += f" ({match_count} occurrences replaced)"
         if diagnostics:
             output += f" Formatter warning: {diagnostics[0]['message']}"
-
-        display_path = (
-            str(candidate.resolve())
-            if resolution.is_external
-            else candidate.relative_to(workspace_root).as_posix()
-        )
 
         data: dict[str, object] = {
             "path": display_path,
