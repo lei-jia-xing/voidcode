@@ -234,8 +234,58 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
         for content in system_segments
     )
     assert [segment.metadata for segment in assembled.segments if segment.role == "system"] == [
-        {"source": "runtime_instruction_precedence"},
-        {"source": "runtime_todo_state"},
+        {"source": "runtime_instruction_precedence", "tier": "instruction"},
+        {"source": "runtime_todo_state", "tier": "task"},
+    ]
+
+
+def test_assemble_provider_context_records_explicit_context_tiers() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="alpha",
+                data={"tool_call_id": "call-1", "arguments": {"path": "src/app.py"}},
+            ),
+        ),
+        session_metadata={
+            "runtime_state": {
+                "todos": {
+                    "version": 1,
+                    "revision": 12,
+                    "todos": [
+                        {
+                            "content": "implement tiers",
+                            "status": "in_progress",
+                            "priority": "high",
+                            "position": 1,
+                            "updated_at": 12,
+                        }
+                    ],
+                }
+            }
+        },
+        skill_prompt_context="skill context",
+        policy=_legacy_context_window_policy(max_tool_results=4),
+    )
+
+    assert assembled.metadata["context_tiers"] == {
+        "version": 1,
+        "order": ["instruction", "task", "recent"],
+        "counts": {
+            "instruction": 2,
+            "workspace": 0,
+            "task": 2,
+            "recent": 2,
+        },
+    }
+    assert [(segment.metadata or {}).get("tier") for segment in assembled.segments[:4]] == [
+        "instruction",
+        "instruction",
+        "task",
+        "task",
     ]
 
 
@@ -534,6 +584,7 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
     assert "runtime resume" in pending_segments[0].content
     assert pending_segments[0].metadata == {
         "source": "runtime_pending_state",
+        "tier": "task",
         "status": "waiting_approval",
         "blocked_tool": "write_file",
         "approval_request_id": "approval-123",
@@ -564,6 +615,12 @@ def test_assemble_provider_context_injects_pending_question_state() -> None:
     assert "waiting_question" in pending_segments[0].content
     assert "pending question" in pending_segments[0].content
     assert "question" in pending_segments[0].content
+    assert pending_segments[0].metadata == {
+        "source": "runtime_pending_state",
+        "tier": "task",
+        "status": "waiting_question",
+        "blocked_tool": "question",
+    }
 
 
 def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
@@ -1970,7 +2027,7 @@ def test_assemble_provider_context_reconstructs_projection_metadata_from_prior_c
     continuity_segments = [
         segment
         for segment in assembled.segments
-        if segment.metadata == {"source": "continuity_summary"}
+        if segment.metadata is not None and segment.metadata.get("source") == "continuity_summary"
     ]
     assert len(continuity_segments) == 1
     assert "Prior compact projection only" in (continuity_segments[0].content or "")

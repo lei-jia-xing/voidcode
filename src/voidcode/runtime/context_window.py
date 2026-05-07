@@ -347,6 +347,27 @@ class RuntimeContextSegment:
     metadata: dict[str, object] | None = None
 
 
+def _context_tier_metadata(
+    segments: list[RuntimeContextSegment],
+) -> dict[str, object]:
+    order: list[str] = []
+    counts: dict[str, int] = {"instruction": 0, "workspace": 0, "task": 0, "recent": 0}
+    for segment in segments:
+        metadata = segment.metadata or {}
+        raw_tier = metadata.get("tier")
+        if raw_tier not in counts:
+            continue
+        tier = cast(Literal["instruction", "workspace", "task", "recent"], raw_tier)
+        counts[tier] += 1
+        if tier not in order:
+            order.append(tier)
+    return {
+        "version": 1,
+        "order": order,
+        "counts": counts,
+    }
+
+
 def estimate_provider_context_tokens(
     segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None
 ) -> TokenCount:
@@ -1910,6 +1931,7 @@ def assemble_provider_context(
                         "runtime_context_artifact_reference",
                     ),
                 ),
+                tier="recent",
                 metadata={} if segment.metadata is None else dict(segment.metadata),
             )
             for segment in _artifact_reference_segments(continuity_state)
@@ -1942,6 +1964,7 @@ def assemble_provider_context(
                         "runtime_pending_state",
                     ),
                 ),
+                tier="task",
                 metadata=(
                     {}
                     if pending_state_segment.metadata is None
@@ -1959,7 +1982,11 @@ def assemble_provider_context(
         RuntimeContextSegment(
             role=section.role,
             content=section.content,
-            metadata={"source": section.source, **dict(section.metadata)},
+            metadata={
+                "source": section.source,
+                "tier": section.tier,
+                **dict(section.metadata),
+            },
         )
         for section in assembly_plan.sections
     ]
@@ -1985,7 +2012,7 @@ def assemble_provider_context(
                 tool_call_id=tool_call_id,
                 tool_name=result.tool_name,
                 tool_arguments=tool_arguments,
-                metadata={"source": "retained_tool_result"},
+                metadata={"source": "retained_tool_result", "tier": "recent"},
             )
         )
         segments.append(
@@ -1996,6 +2023,7 @@ def assemble_provider_context(
                 tool_name=result.tool_name,
                 metadata={
                     "source": "retained_tool_result",
+                    "tier": "recent",
                     "status": result.status,
                     "error": result.error,
                     "data": result.data,
@@ -2005,6 +2033,7 @@ def assemble_provider_context(
                 },
             )
         )
+    metadata_payload["context_tiers"] = _context_tier_metadata(segments)
     context_token_count = estimate_provider_context_tokens(
         tuple(segments), tokenizer_model=policy.tokenizer_model if policy is not None else None
     )

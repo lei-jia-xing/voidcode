@@ -21,6 +21,7 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
             role="system",
             content="waiting approval",
             source="runtime_pending_state",
+            tier="task",
             metadata={"status": "waiting_approval"},
         ),
         todo_prompt_context="active todo",
@@ -30,6 +31,7 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
                 role="system",
                 content="artifact ref",
                 source="runtime_context_artifact_reference",
+                tier="recent",
             ),
         ),
     )
@@ -47,6 +49,17 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     ]
     assert plan.sections[-1].role == "user"
     assert plan.sections[-1].content == "fix the failing test"
+    assert [section.tier for section in plan.sections] == [
+        "instruction",
+        "instruction",
+        "instruction",
+        "instruction",
+        "task",
+        "task",
+        "recent",
+        "recent",
+        "task",
+    ]
 
 
 def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
@@ -73,12 +86,12 @@ def test_build_prompt_assembly_plan_keeps_non_system_transform_roles() -> None:
                 RuntimeContextTransformInjection(
                     role="assistant",
                     content="assistant injected note",
-                    metadata={"source": "transform_assistant"},
+                    metadata={"source": "transform_assistant", "tier": "workspace"},
                 ),
                 RuntimeContextTransformInjection(
                     role="system",
                     content="system injected note",
-                    metadata={"source": "transform_system"},
+                    metadata={"source": "transform_system", "tier": "workspace"},
                 ),
             )
         ),
@@ -93,6 +106,7 @@ def test_build_prompt_assembly_plan_keeps_non_system_transform_roles() -> None:
     assistant_section = plan.sections[1]
     assert assistant_section.role == "assistant"
     assert assistant_section.content == "assistant injected note"
+    assert assistant_section.tier == "workspace"
 
 
 def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
@@ -100,6 +114,7 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
         role="system",
         content="Runtime pending state: waiting_question.",
         source="runtime_pending_state",
+        tier="task",
         metadata={"status": "waiting_question", "blocked_tool": "question"},
     )
     plan = build_prompt_assembly_plan(
@@ -114,3 +129,4 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
         "status": "waiting_question",
         "blocked_tool": "question",
     }
+    assert pending_section.tier == "task"
