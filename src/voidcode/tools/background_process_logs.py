@@ -80,7 +80,7 @@ class BackgroundProcessLogsTool:
         if truncated and references:
             hint = (
                 f"[Background process logs truncated: use {', '.join(references)} "
-                "to inspect full logs.]"
+                "to inspect retained log tails. Earlier dropped lines are no longer available.]"
             )
             output = f"{output}\n\n{hint}" if output else hint
         return ToolResult(
