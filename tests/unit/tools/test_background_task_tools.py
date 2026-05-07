@@ -305,6 +305,28 @@ class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
         )
 
 
+class _SummaryPresentEmptyOutputBackgroundRuntime(_EmptyOutputBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output=(
+                "Completed child session child-session; full output is preserved outside "
+                "active context."
+            ),
+            result_available=True,
+        )
+
+
 class _MissingChildSessionBackgroundRuntime(_StubBackgroundRuntime):
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         assert session_id == "child-session"
@@ -630,7 +652,7 @@ def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> Non
 def test_background_output_default_detects_empty_child_output_without_full_session(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_EmptyOutputBackgroundRuntime())
+    tool = BackgroundOutputTool(runtime=_SummaryPresentEmptyOutputBackgroundRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
