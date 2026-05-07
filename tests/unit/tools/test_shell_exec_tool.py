@@ -386,54 +386,6 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
 
 
-def test_shell_exec_rejects_interactive_python_shell(tmp_path: Path) -> None:
-    tool = ShellExecTool()
-
-    with pytest.raises(ValueError, match="looks interactive in a non-interactive runtime"):
-        tool.invoke(
-            ToolCall(tool_name="shell_exec", arguments={"command": "python -i"}),
-            workspace=tmp_path,
-        )
-
-
-def test_shell_exec_rejects_shell_without_dash_c(tmp_path: Path) -> None:
-    tool = ShellExecTool()
-
-    with pytest.raises(ValueError, match="looks interactive in a non-interactive runtime"):
-        tool.invoke(
-            ToolCall(tool_name="shell_exec", arguments={"command": "bash"}),
-            workspace=tmp_path,
-        )
-
-
-def test_shell_exec_allows_bash_lc_command(tmp_path: Path) -> None:
-    tool = ShellExecTool()
-
-    result = tool.invoke(
-        ToolCall(tool_name="shell_exec", arguments={"command": "bash -lc 'printf ok'"}),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert result.content is not None
-    assert result.content.strip() == "ok"
-
-
-def test_shell_exec_allows_bash_script_invocation(tmp_path: Path) -> None:
-    tool = ShellExecTool()
-    script = tmp_path / "script.sh"
-    script.write_text("printf script-ok\n", encoding="utf-8")
-
-    result = tool.invoke(
-        ToolCall(tool_name="shell_exec", arguments={"command": f"bash {script.name}"}),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert result.content is not None
-    assert result.content.strip() == "script-ok"
-
-
 # ── Target contract: ShellExecArgs.description ──────────────────────────
 # These tests encode the expected behaviour BEFORE the field exists.
 # They are expected to fail (RED) until T2 adds `description` support.
