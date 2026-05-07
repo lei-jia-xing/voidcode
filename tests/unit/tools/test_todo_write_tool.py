@@ -66,3 +66,64 @@ def test_todo_write_rejects_invalid_priority(tmp_path: Path) -> None:
             ),
             workspace=tmp_path,
         )
+
+
+def test_todo_write_rejects_more_than_one_in_progress_todo(tmp_path: Path) -> None:
+    tool = TodoWriteTool()
+
+    with pytest.raises(ValueError, match="more than one `in_progress`"):
+        tool.invoke(
+            ToolCall(
+                tool_name="todo_write",
+                arguments={
+                    "todos": [
+                        {
+                            "content": "first concurrent task",
+                            "status": "in_progress",
+                            "priority": "high",
+                        },
+                        {
+                            "content": "second concurrent task",
+                            "status": "in_progress",
+                            "priority": "high",
+                        },
+                    ]
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+
+def test_todo_write_accepts_single_in_progress_todo(tmp_path: Path) -> None:
+    tool = TodoWriteTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="todo_write",
+            arguments={
+                "todos": [
+                    {"content": "queued", "status": "pending", "priority": "high"},
+                    {"content": "active", "status": "in_progress", "priority": "high"},
+                    {"content": "shipped", "status": "completed", "priority": "low"},
+                ]
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    summary_raw = result.data["summary"]
+    assert isinstance(summary_raw, dict)
+    summary = cast(dict[str, object], summary_raw)
+    assert summary["in_progress"] == 1
+
+
+def test_todo_write_description_codifies_harness_discipline() -> None:
+    description = TodoWriteTool.definition.description
+
+    # The description must teach the model the contract; if any of these go
+    # missing the harness signal degrades and todos become decorative.
+    assert "in_progress" in description
+    assert "BEFORE starting" in description or "before starting" in description.lower()
+    assert "IMMEDIATELY" in description or "immediately" in description.lower()
+    assert "Only ONE" in description or "only one" in description.lower()
+    assert "2 or more distinct steps" in description
