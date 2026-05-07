@@ -84,6 +84,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_CONTEXT_PRESSURE,
+    RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
@@ -771,6 +772,32 @@ class _TwoApprovalThenDoneGraph:
                 tool_call=ToolCall(
                     tool_name="write_file",
                     arguments={"path": "second.txt", "content": "2"},
+                )
+            )
+        return _StubStep(output="done", is_finished=True)
+
+
+class _TwoRulePathGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, session
+        if len(tool_results) == 0:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "src/app.py", "content": "1"},
+                )
+            )
+        if len(tool_results) == 1:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "docs/readme.md", "content": "2"},
                 )
             )
         return _StubStep(output="done", is_finished=True)
@@ -12993,6 +13020,65 @@ def test_runtime_provider_context_diagnostics_off_with_block_transform_policy_no
     # enforcement remains active, but with no failing transforms evaluate_provider_context_policy
     # returns action="ignored" (no warn event, no blocking).
     assert policy_events == []
+
+
+def test_runtime_emits_context_transform_applied_event_for_runtime_file_rules(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    (tmp_path / "sample.txt").write_text("provider debug\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="transform-event"))
+
+    transform_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_TRANSFORM_APPLIED
+    ]
+    assert len(transform_events) == 1
+    assert transform_events[0].payload == {
+        "provider_id": "runtime_file_rules",
+        "failure_policy": "warn",
+        "tool_result_count": 0,
+        "status": "ok",
+        "priority": 200,
+        "execution_index": 2,
+        "injection_count": 1,
+        "provider_order": ["hook_preset_guidance", "runtime_file_rules"],
+        "sources": ["runtime_file_rules"],
+    }
+    assert "Project rules" not in repr(transform_events[0].payload)
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    transform_state = cast(dict[str, object], runtime_state["context_transform_applied"])
+    assert len(cast(list[str], transform_state["last_emitted_fingerprints"])) == 1
+
+
+def test_runtime_context_transform_event_reports_retained_tool_result_count(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rules", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "AGENTS.md").write_text("Src rules", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "AGENTS.md").write_text("Docs rules", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_TwoRulePathGraph(),
+        config=RuntimeConfig(
+            approval_mode="allow",
+            context_window=RuntimeContextWindowConfig(max_tool_results=1),
+        ),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(prompt="apply rules", session_id="transform-retained-count")
+    )
+
+    transform_events = [
+        event for event in response.events if event.event_type == RUNTIME_CONTEXT_TRANSFORM_APPLIED
+    ]
+    assert [event.payload["tool_result_count"] for event in transform_events] == [0, 1]
+    assert len(transform_events) == 2
+    assert transform_events[1].payload["injection_count"] == 2
 
 
 def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:

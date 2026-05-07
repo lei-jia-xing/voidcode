@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import random
@@ -47,6 +48,7 @@ from .context_window import (
 from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
     RUNTIME_CONTEXT_PRESSURE,
+    RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
@@ -112,6 +114,132 @@ def _hook_failure_chunk(
         logger.warning("%s hook failed for %s: %s", surface, session.session.id, error)
         return None
     return runtime._failed_chunk(session=session, sequence=sequence + 1, error=error)
+
+
+def _context_transform_applied_payloads(
+    *,
+    context_metadata: Mapping[str, object],
+    tool_result_count: int,
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    raw_transforms = context_metadata.get("context_transforms")
+    if not isinstance(raw_transforms, Mapping):
+        return ()
+    transforms = cast(Mapping[str, object], raw_transforms)
+    raw_applied = transforms.get("applied")
+    if not isinstance(raw_applied, list):
+        return ()
+    raw_failure_policy = transforms.get("failure_policy")
+    failure_policy = raw_failure_policy if isinstance(raw_failure_policy, str) else "warn"
+    payloads: list[tuple[str, dict[str, object]]] = []
+    for raw_trace in raw_applied:
+        if not isinstance(raw_trace, Mapping):
+            continue
+        trace = cast(Mapping[str, object], raw_trace)
+        provider_id = trace.get("provider_id")
+        if provider_id == "hook_preset_guidance":
+            continue
+        if not isinstance(provider_id, str) or not provider_id:
+            continue
+        payload: dict[str, object] = {
+            "provider_id": provider_id,
+            "failure_policy": failure_policy,
+            "tool_result_count": tool_result_count,
+        }
+        for key in (
+            "status",
+            "priority",
+            "execution_index",
+            "injection_count",
+            "provider_order",
+            "sources",
+            "diagnostics",
+        ):
+            value = trace.get(key)
+            if value is not None:
+                payload[key] = value
+        fingerprint_payload = {
+            key: value for key, value in payload.items() if key != "tool_result_count"
+        }
+        payloads.append((json.dumps(fingerprint_payload, sort_keys=True), payload))
+    return tuple(payloads)
+
+
+def _unseen_context_transform_payloads(
+    *,
+    session: SessionState,
+    payloads: tuple[tuple[str, dict[str, object]], ...],
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    raw_runtime_state = session.metadata.get("runtime_state")
+    runtime_state = (
+        cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
+    )
+    current_run_id_raw = runtime_state.get("run_id")
+    current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
+    raw_transform_state = runtime_state.get("context_transform_applied")
+    transform_state = (
+        cast(dict[str, object], raw_transform_state)
+        if isinstance(raw_transform_state, dict)
+        else {}
+    )
+    last_run_id_raw = transform_state.get("last_emitted_run_id")
+    last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
+    emitted_fingerprints: set[str] = set()
+    if current_run_id is None or last_run_id == current_run_id:
+        raw_fingerprints = transform_state.get("last_emitted_fingerprints")
+        if isinstance(raw_fingerprints, list):
+            emitted_fingerprints = {
+                item for item in raw_fingerprints if isinstance(item, str) and item.strip()
+            }
+    return tuple(
+        (fingerprint, payload)
+        for fingerprint, payload in payloads
+        if fingerprint not in emitted_fingerprints
+    )
+
+
+def _session_with_context_transform_applied_state(
+    *,
+    session: SessionState,
+    fingerprints: tuple[str, ...],
+) -> SessionState:
+    raw_runtime_state = session.metadata.get("runtime_state")
+    runtime_state = (
+        dict(cast(dict[str, object], raw_runtime_state))
+        if isinstance(raw_runtime_state, dict)
+        else {}
+    )
+    current_run_id = (
+        runtime_state.get("run_id") if isinstance(runtime_state.get("run_id"), str) else None
+    )
+    raw_transform_state = runtime_state.get("context_transform_applied")
+    transform_state = (
+        dict(cast(dict[str, object], raw_transform_state))
+        if isinstance(raw_transform_state, dict)
+        else {}
+    )
+    last_run_id = (
+        transform_state.get("last_emitted_run_id")
+        if isinstance(transform_state.get("last_emitted_run_id"), str)
+        else None
+    )
+    existing_fingerprints: set[str] = set()
+    if current_run_id is None or last_run_id == current_run_id:
+        raw_existing = transform_state.get("last_emitted_fingerprints")
+        if isinstance(raw_existing, list):
+            existing_fingerprints = {
+                item for item in raw_existing if isinstance(item, str) and item.strip()
+            }
+    existing_fingerprints.update(fingerprints)
+    runtime_state["context_transform_applied"] = {
+        "last_emitted_fingerprints": sorted(existing_fingerprints),
+        "last_emitted_run_id": current_run_id,
+    }
+    return SessionState(
+        session=session.session,
+        status=session.status,
+        turn=session.turn,
+        metadata={**session.metadata, "runtime_state": runtime_state},
+    )
 
 
 def _tool_error_summary(error: str) -> str:
@@ -1129,6 +1257,34 @@ class RuntimeRunLoopCoordinator:
                 session,
                 context_window_payload,
             )
+            context_transform_payloads = _context_transform_applied_payloads(
+                context_metadata=assembled_context.metadata,
+                tool_result_count=len(context_window.tool_results),
+            )
+            unseen_context_transform_payloads = _unseen_context_transform_payloads(
+                session=session,
+                payloads=context_transform_payloads,
+            )
+            if unseen_context_transform_payloads:
+                session = _session_with_context_transform_applied_state(
+                    session=session,
+                    fingerprints=tuple(
+                        fingerprint for fingerprint, _payload in unseen_context_transform_payloads
+                    ),
+                )
+                for _fingerprint, payload in unseen_context_transform_payloads:
+                    sequence += 1
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type=RUNTIME_CONTEXT_TRANSFORM_APPLIED,
+                            source="runtime",
+                            payload=payload,
+                        ),
+                    )
             active_graph_request = GraphRunRequest(
                 session=session,
                 prompt=current_prompt,
