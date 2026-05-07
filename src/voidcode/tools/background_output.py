@@ -128,9 +128,7 @@ class BackgroundOutputTool:
             except UnknownSessionError:
                 session_result = None
             if session_result is not None:
-                empty_child_output = (
-                    session_result.status == "completed" and session_result.output == ""
-                )
+                empty_child_output = _session_result_has_empty_output(session_result)
                 safe_summary = _background_session_safe_summary(
                     result=result,
                     session_result=session_result,
@@ -180,6 +178,7 @@ class BackgroundOutputTool:
                     transcript_truncated=len(session_result.transcript) > len(transcript),
                     output_available=output_available,
                     full_session_reference=full_session_reference,
+                    empty_child_output=empty_child_output,
                 )
 
         guidance = _background_output_guidance(
@@ -188,6 +187,7 @@ class BackgroundOutputTool:
             empty_child_output=empty_child_output,
             block_timed_out=block_timed_out,
         )
+        payload["empty_child_output"] = empty_child_output
         if guidance is not None:
             payload["guidance"] = guidance
             content = f"{content}\n\nGuidance: {guidance}"
@@ -262,7 +262,13 @@ def _background_session_digest(
     transcript_truncated: bool,
     output_available: bool,
     full_session_reference: str,
+    empty_child_output: bool = False,
 ) -> str:
+    if empty_child_output:
+        return (
+            "The delegated child completed with empty output. Treat this as an empty result, "
+            "inspect full_session=true if needed, and continue without hidden retries."
+        )
     lines = [
         "Background task result digest:",
         f"- task_id: {result.task_id}",
@@ -283,6 +289,13 @@ def _background_session_digest(
         "into active provider context."
     )
     return "\n".join(lines)
+
+
+def _session_result_has_empty_output(session_result: RuntimeSessionResult) -> bool:
+    if session_result.status != "completed":
+        return False
+    output = session_result.output
+    return output is None or output == ""
 
 
 def _background_result_safe_summary(result: BackgroundTaskResult) -> str | None:

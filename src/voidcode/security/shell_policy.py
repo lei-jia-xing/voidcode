@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,11 +13,15 @@ class ShellExecutionPolicy:
     workspace_root: Path
     timeout_seconds: int
     runtime_timeout_selected: bool
+    non_interactive_blocked: bool = False
+    non_interactive_reason: str | None = None
+    retry_guidance: str | None = None
 
 
 def resolve_shell_execution_policy(
     *,
     workspace: Path,
+    command_text: str,
     timeout_argument: object,
     runtime_timeout_seconds: int | None,
 ) -> ShellExecutionPolicy:
@@ -35,16 +40,63 @@ def resolve_shell_execution_policy(
         timeout_seconds = runtime_timeout_seconds
         runtime_timeout_selected = True
 
+    blocked, reason, retry_guidance = classify_non_interactive_command(command_text)
     return ShellExecutionPolicy(
         workspace_root=workspace_root,
         timeout_seconds=timeout_seconds,
         runtime_timeout_selected=runtime_timeout_selected,
+        non_interactive_blocked=blocked,
+        non_interactive_reason=reason,
+        retry_guidance=retry_guidance,
     )
+
+
+def classify_non_interactive_command(command_text: str) -> tuple[bool, str | None, str | None]:
+    try:
+        tokens = shlex.split(command_text, posix=True)
+    except ValueError:
+        tokens = command_text.split()
+    if not tokens:
+        return False, None, None
+    executable = tokens[0]
+    if executable in {"vim", "vi", "nano", "less", "more", "man", "top", "htop", "watch"}:
+        return (
+            True,
+            "interactive_command",
+            "Use a non-interactive command or a file-oriented tool instead of "
+            "launching an interactive TUI.",
+        )
+    if executable in {"python", "python3"} and "-i" in tokens[1:]:
+        return (
+            True,
+            "interactive_command",
+            "Avoid interactive Python shells; run a non-interactive script or use a "
+            "file-oriented tool.",
+        )
+    if executable in {"bash", "sh", "zsh"}:
+        shell_args = tokens[1:]
+        if not shell_args:
+            return (
+                True,
+                "interactive_command",
+                "Provide a shell command string with -c/-lc or invoke a script file explicitly.",
+            )
+        if any(token in {"-c", "-lc", "--version", "-n"} for token in shell_args):
+            return False, None, None
+        if any(not token.startswith("-") for token in shell_args):
+            return False, None, None
+        return (
+            True,
+            "interactive_command",
+            "Provide a shell command string with -c/-lc or invoke a script file explicitly.",
+        )
+    return False, None, None
 
 
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
     "ShellExecutionPolicy",
+    "classify_non_interactive_command",
     "resolve_shell_execution_policy",
 ]

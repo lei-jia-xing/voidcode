@@ -179,6 +179,25 @@ def _diagnostics_with(
     return [diagnostic]
 
 
+def _normalization_payload(
+    *,
+    kind: str,
+    artifact_id: str,
+    original_byte_count: int,
+    original_line_count: int,
+    max_bytes: int,
+    max_lines: int,
+) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "artifact_id": artifact_id,
+        "original_byte_count": original_byte_count,
+        "original_line_count": original_line_count,
+        "max_bytes": max_bytes,
+        "max_lines": max_lines,
+    }
+
+
 def _user_cache_root() -> Path:
     if sys.platform == "win32":
         cache_home = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
@@ -489,6 +508,14 @@ def cap_tool_result_output(
             data={
                 **result.data,
                 "truncated": True,
+                "normalization": _normalization_payload(
+                    kind="tool_error_truncated",
+                    artifact_id=cast(str, artifact["artifact_id"]),
+                    original_byte_count=error_size,
+                    original_line_count=error_lines,
+                    max_bytes=max_bytes,
+                    max_lines=max_lines,
+                ),
                 "diagnostics": _diagnostics_with(
                     result.data,
                     {
@@ -554,6 +581,14 @@ def cap_tool_result_output(
         data={
             **result.data,
             "truncated": True,
+            "normalization": _normalization_payload(
+                kind="tool_output_truncated",
+                artifact_id=cast(str, artifact["artifact_id"]),
+                original_byte_count=encoded_size,
+                original_line_count=line_count,
+                max_bytes=max_bytes,
+                max_lines=max_lines,
+            ),
             "diagnostics": _diagnostics_with(
                 result.data,
                 {

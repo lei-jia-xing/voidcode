@@ -271,6 +271,23 @@ class _TerminalAfterTimeoutBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output="",
+            result_available=True,
+        )
+
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         assert session_id == "child-session"
         return RuntimeSessionResult(
@@ -285,6 +302,55 @@ class _EmptyOutputBackgroundRuntime(_StubBackgroundRuntime):
             output="",
             transcript=(),
             last_event_sequence=1,
+        )
+
+
+class _SummaryPresentEmptyOutputBackgroundRuntime(_EmptyOutputBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output=(
+                "Completed child session child-session; full output is preserved outside "
+                "active context."
+            ),
+            result_available=True,
+        )
+
+
+class _SummaryPresentEmptyOutputNoSessionReadRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output=(
+                "Completed child session child-session; full output is preserved outside "
+                "active context."
+            ),
+            result_available=True,
+        )
+
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        raise AssertionError(
+            f"session_result should not be called for default background_output: {session_id}"
         )
 
 
@@ -607,6 +673,22 @@ def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> Non
     assert result.content is not None
     assert "completed with empty output" in result.content
     assert "completed with empty output" in str(result.data["guidance"])
+    assert result.data["empty_child_output"] is True
+
+
+def test_background_output_default_skips_full_session_fetch_when_full_session_false(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_SummaryPresentEmptyOutputNoSessionReadRuntime())
+
+    result = tool.invoke(
+        ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data["empty_child_output"] is False
+    assert "guidance" not in result.data
 
 
 def test_background_output_full_session_falls_back_when_child_session_unavailable(
