@@ -170,6 +170,11 @@ class BackgroundOutputTool:
                     **result.delegated_message.as_payload(),
                     "summary_output": safe_summary,
                 }
+                provider_failure_details = _provider_failure_details_from_session_result(
+                    session_result
+                )
+                if provider_failure_details is not None:
+                    payload["provider_failure"] = provider_failure_details
                 content = _background_session_digest(
                     result=result,
                     session_result=session_result,
@@ -368,3 +373,31 @@ def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[st
         "blocked_reason": blocked_reason,
         "retrieval_instruction": f'background_output(task_id="{result.task_id}")',
     }
+
+
+def _provider_failure_details_from_session_result(
+    session_result: RuntimeSessionResult,
+) -> dict[str, object] | None:
+    for event in reversed(session_result.transcript):
+        if event.event_type != "runtime.failed":
+            continue
+        payload = event.payload
+        provider_error_kind = payload.get("provider_error_kind")
+        provider_error_details = payload.get("provider_error_details")
+        if not isinstance(provider_error_kind, str) and not isinstance(
+            provider_error_details, dict
+        ):
+            return None
+        details: dict[str, object] = {}
+        if isinstance(provider_error_kind, str):
+            details["provider_error_kind"] = provider_error_kind
+        provider = payload.get("provider")
+        if isinstance(provider, str):
+            details["provider"] = provider
+        model = payload.get("model")
+        if isinstance(model, str):
+            details["model"] = model
+        if isinstance(provider_error_details, dict):
+            details["provider_error_details"] = provider_error_details
+        return details or None
+    return None

@@ -172,6 +172,42 @@ class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
             result_available=True,
         )
 
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        assert session_id == "child-session"
+        return RuntimeSessionResult(
+            session=SessionState(
+                session=SessionRef(id="child-session", parent_id="leader-session"),
+                status="failed",
+                turn=1,
+            ),
+            prompt="delegated",
+            status="failed",
+            summary="failed delegated child",
+            error="provider fallback exhausted after deepseek/deepseek-v4-pro failed at attempt 1",
+            transcript=(
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=1,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={
+                        "error": (
+                            "provider fallback exhausted after deepseek/"
+                            "deepseek-v4-pro failed at attempt 1"
+                        ),
+                        "provider_error_kind": "transient_failure",
+                        "provider": "deepseek",
+                        "model": "deepseek-v4-pro",
+                        "provider_error_details": {
+                            "exception_type": "APIConnectionError",
+                            "exception_message": "network interrupted",
+                        },
+                    },
+                ),
+            ),
+            last_event_sequence=1,
+        )
+
 
 class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
     def load_background_task_result(
@@ -640,6 +676,30 @@ def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Pat
     assert handoff["blocked_reason"] == "background task interrupted before completion"
     assert "interrupted before completion" in str(result.data["guidance"])
     assert "background_retry" in str(result.data["guidance"])
+
+
+def test_background_output_full_session_surfaces_provider_failure_details_for_interrupted_child(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntime())
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "full_session": True},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    provider_failure = cast(dict[str, object], result.data["provider_failure"])
+    assert provider_failure["provider_error_kind"] == "transient_failure"
+    assert provider_failure["provider"] == "deepseek"
+    assert provider_failure["model"] == "deepseek-v4-pro"
+    assert (
+        cast(dict[str, object], provider_failure["provider_error_details"])["exception_type"]
+        == "APIConnectionError"
+    )
 
 
 def test_background_output_tool_guides_unavailable_result_without_looping(tmp_path: Path) -> None:
