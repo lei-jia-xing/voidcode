@@ -2924,10 +2924,14 @@ def test_runtime_custom_primary_agent_summary_and_capability_snapshot(tmp_path: 
     agent_segments = [
         segment
         for segment in request.assembled_context.segments
-        if segment.role == "system" and segment.metadata == {"source": "agent_prompt"}
+        if segment.role == "system"
+        and segment.metadata is not None
+        and segment.metadata.get("source") == "agent_prompt"
     ]
     assert len(agent_segments) == 1
     assert agent_segments[0].content == "Custom planner prompt body."
+    assert agent_segments[0].metadata is not None
+    assert agent_segments[0].metadata.get("tier") == "instruction"
     capability_snapshot = cast(
         dict[str, object],
         response.session.metadata["agent_capability_snapshot"],
@@ -12708,6 +12712,21 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
                 }
             ],
         },
+        "context_tiers": {
+            "version": 1,
+            "order": ["instruction", "workspace", "recent", "task"],
+            "counts": {
+                "instruction": 2,
+                "workspace": 1,
+                "task": 1,
+                "recent": 3,
+            },
+        },
+        "context_tier_policy": {
+            "version": 1,
+            "protected_tiers": ["instruction", "workspace", "task"],
+            "compaction_target": "recent",
+        },
         "estimated_context_tokens": response_context_window["estimated_context_tokens"],
         "estimated_context_token_source": "tiktoken:cl100k_base",
         "estimated_context_token_exact": True,
@@ -14691,10 +14710,14 @@ def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
     agent_segments = [
         segment
         for segment in request.assembled_context.segments
-        if segment.role == "system" and segment.metadata == {"source": "agent_prompt"}
+        if segment.role == "system"
+        and segment.metadata is not None
+        and segment.metadata.get("source") == "agent_prompt"
     ]
     assert len(agent_segments) == 1
     assert agent_segments[0].content == "Use only the custom leader prompt."
+    assert agent_segments[0].metadata is not None
+    assert agent_segments[0].metadata.get("tier") == "instruction"
     assert "Delegate when the task is multi-step" not in agent_segments[0].content
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     agent_payload = cast(dict[str, object], runtime_config["agent"])
@@ -19550,7 +19573,8 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
         "raw retained"
     ]
     assert any(
-        segment.metadata == {"source": "continuity_summary"}
+        segment.metadata is not None
+        and segment.metadata.get("source") == "continuity_summary"
         and segment.content is not None
         and "Prior compact summary is projection metadata" in segment.content
         for segment in assembled.segments
