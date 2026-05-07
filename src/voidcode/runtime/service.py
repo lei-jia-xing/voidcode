@@ -6177,6 +6177,9 @@ class VoidCodeRuntime:
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
             agent_prompt_context=agent_prompt_context,
+            prompt_profile_name=effective_config.agent.prompt_profile
+            if effective_config.agent is not None
+            else None,
             hook_preset_context=hook_preset_context,
             context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,

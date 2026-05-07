@@ -12914,8 +12914,8 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "version": 1,
             "order": ["instruction", "workspace", "recent", "task"],
             "counts": {
-                "instruction": 2,
-                "workspace": 1,
+                "instruction": 5,
+                "workspace": 4,
                 "task": 1,
                 "recent": 3,
             },

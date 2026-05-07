@@ -1864,6 +1864,7 @@ def assemble_provider_context(
     policy: ContextWindowPolicy | None = None,
     skill_prompt_context: str = "",
     agent_prompt_context: str = "",
+    prompt_profile_name: str | None = None,
     hook_preset_context: str = "",
     context_transform_result: RuntimeContextTransformResult | None = None,
     preserved_system_segments: tuple[str, ...] = (),
@@ -1962,6 +1963,13 @@ def assemble_provider_context(
         todo_prompt_context=todo_prompt_context or "",
         continuity_summary=continuity_summary,
         artifact_reference_sections=artifact_reference_sections,
+        prompt_profile_name=prompt_profile_name,
+        session_runtime_state={
+            "metadata": session_metadata,
+            "workspace_root": str(workspace) if workspace is not None else None,
+        }
+        if prompt_profile_name is not None
+        else None,
     )
     segments: list[RuntimeContextSegment] = [
         RuntimeContextSegment(

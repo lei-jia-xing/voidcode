@@ -2009,6 +2009,64 @@ def test_continuity_state_from_metadata_payload_defaults_missing_version_to_v1()
     assert state.summary_text == "implicit legacy summary"
 
 
+def test_assemble_provider_context_accepts_legacy_continuity_metadata_shape() -> None:
+    legacy_payload: dict[str, object] = {
+        "summary_text": "Legacy summary stays authoritative.",
+        "objective": "ship compatibility",
+        "current_goal": "prove old sessions still resume",
+        "verbatim_user_constraints": ["Do not change summary semantics"],
+        "progress_completed": ["Existing summary was generated before versioned payloads"],
+        "blockers_open_questions": ["None"],
+        "key_decisions": ["Treat missing version as legacy v1"],
+        "relevant_files_commands_errors": ["tests/unit/runtime/test_context_window.py"],
+        "verification_state": ["pending targeted pytest"],
+        "delegated_task_summaries": ["task_id=task-20 summary=compatibility coverage"],
+        "recent_tail": ["Previous assistant response tail"],
+        "dropped_tool_result_count": 2,
+        "retained_tool_result_count": 1,
+        "source": "tool_result_window",
+        "dropped_tool_results": [
+            {"tool_name": "read_file", "status": "ok", "index": 1},
+            {"tool_name": "grep", "status": "ok", "index": 2},
+        ],
+    }
+
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(_tool_result(3),),
+        session_metadata={"runtime_state": {"continuity": legacy_payload}},
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
+    )
+
+    assert assembled.continuity_state is not None
+    assert assembled.continuity_state.version == 1
+    assert assembled.continuity_state.summary_text == legacy_payload["summary_text"]
+    assert assembled.continuity_state.distillation_source == "deterministic"
+    assert assembled.metadata["continuity_state"] == {
+        **legacy_payload,
+        "distillation_source": "deterministic",
+        "fact_reference_count": 0,
+        "source_references": [],
+        "version": 1,
+    }
+    assert isinstance(assembled.metadata["summary_anchor"], str)
+    assert assembled.metadata["summary_source"] == {
+        "tool_result_start": 0,
+        "tool_result_end": 2,
+    }
+    continuity_segments = [
+        segment
+        for segment in assembled.segments
+        if segment.metadata is not None and segment.metadata.get("source") == "continuity_summary"
+    ]
+    assert len(continuity_segments) == 1
+    assert continuity_segments[0].content == (
+        "Runtime continuity summary:\nLegacy summary stays authoritative."
+    )
+    continuity_metadata = cast(dict[str, object], assembled.metadata["continuity_state"])
+    assert "runtime_dynamic_boundary" not in continuity_metadata
+
+
 def test_continuity_state_from_metadata_payload_rejects_unknown_version_safely() -> None:
     payload: dict[str, object] = {
         "version": 99,
