@@ -205,6 +205,101 @@ def test_assemble_provider_context_reports_full_context_pressure_and_overflow() 
     assert assembled.metadata["context_overflow_detected"] is True
     assert assembled.metadata["context_pressure_threshold"] == 0.5
     assert cast(float, assembled.metadata["context_pressure_ratio"]) >= 1.0
+    assert assembled.metadata["recent_tier_compaction"] == {
+        "version": 1,
+        "applied": False,
+        "dropped_segment_count": 0,
+        "dropped_sources": [],
+        "target_tier": "recent",
+    }
+
+
+def test_recent_tier_compaction_trims_recent_sections_under_pressure() -> None:
+    continuity = RuntimeContinuityState(
+        summary_text="recent summary " * 80,
+        dropped_tool_result_count=1,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+    )
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(
+            ToolResult(
+                tool_name="read_file",
+                status="ok",
+                content="retained tool content " * 60,
+                data={"tool_call_id": "call-1", "arguments": {"path": "src/app.py"}},
+            ),
+        ),
+        session_metadata={},
+        preserved_continuity_state=continuity,
+        skill_prompt_context="task skill",
+        policy=_legacy_context_window_policy(
+            model_context_window_tokens=120,
+            context_pressure_threshold=0.3,
+            max_tool_results=4,
+        ),
+    )
+
+    recent_compaction = cast(dict[str, object], assembled.metadata["recent_tier_compaction"])
+    assert recent_compaction["version"] == 1
+    assert recent_compaction["applied"] is True
+    assert recent_compaction["dropped_segment_count"] == 3
+    assert recent_compaction["dropped_sources"] == [
+        "continuity_summary",
+        "retained_tool_result",
+    ]
+    assert recent_compaction["target_tier"] == "recent"
+    assert all(
+        segment.metadata is None
+        or segment.metadata.get("source") not in {"continuity_summary", "retained_tool_result"}
+        for segment in assembled.segments
+        if (segment.metadata or {}).get("tier") == "recent"
+    )
+    context_tiers = cast(dict[str, object], assembled.metadata["context_tiers"])
+    counts = cast(dict[str, int], context_tiers["counts"])
+    assert counts["recent"] == 0
+    pressure_before = cast(float, recent_compaction["pressure_ratio_before"])
+    pressure_after = cast(float, recent_compaction["pressure_ratio_after"])
+    assert pressure_after <= pressure_before
+
+
+def test_assemble_provider_context_second_stage_preserves_non_recent_tiers() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={
+            "runtime_state": {
+                "todos": {
+                    "version": 1,
+                    "revision": 12,
+                    "todos": [
+                        {
+                            "content": "must survive compaction",
+                            "status": "in_progress",
+                            "priority": "high",
+                            "position": 1,
+                            "updated_at": 12,
+                        }
+                    ],
+                }
+            }
+        },
+        agent_prompt_context="A" * 400,
+        policy=_legacy_context_window_policy(
+            model_context_window_tokens=20,
+            context_pressure_threshold=0.5,
+        ),
+    )
+
+    assert any(
+        (segment.metadata or {}).get("source") == "runtime_todo_state"
+        for segment in assembled.segments
+    )
+    assert any(
+        (segment.metadata or {}).get("source") == "runtime_instruction_precedence"
+        for segment in assembled.segments
+    )
 
 
 def test_assemble_provider_context_injects_active_runtime_todos() -> None:

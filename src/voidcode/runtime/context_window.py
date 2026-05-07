@@ -385,6 +385,52 @@ def _context_tier_metadata(
     }
 
 
+def _compact_recent_tier_segments(
+    segments: list[RuntimeContextSegment],
+) -> tuple[list[RuntimeContextSegment], dict[str, object]]:
+    compacted_segments: list[RuntimeContextSegment] = []
+    dropped_recent_segments = 0
+    dropped_sources: list[str] = []
+    skip_tool_call_ids: set[str] = set()
+
+    for segment in segments:
+        metadata = segment.metadata or {}
+        tier = metadata.get("tier")
+        source = metadata.get("source")
+        tool_call_id = segment.tool_call_id
+
+        drop_recent = False
+        if tier == "recent":
+            if source in {"continuity_summary", "runtime_context_artifact_reference"}:
+                drop_recent = True
+            elif source == "retained_tool_result" and tool_call_id is not None:
+                drop_recent = True
+
+        if drop_recent:
+            dropped_recent_segments += 1
+            if isinstance(source, str) and source not in dropped_sources:
+                dropped_sources.append(source)
+            if tool_call_id is not None:
+                skip_tool_call_ids.add(tool_call_id)
+            continue
+
+        if tool_call_id is not None and tool_call_id in skip_tool_call_ids:
+            dropped_recent_segments += 1
+            if isinstance(source, str) and source not in dropped_sources:
+                dropped_sources.append(source)
+            continue
+
+        compacted_segments.append(segment)
+
+    return compacted_segments, {
+        "version": 1,
+        "applied": dropped_recent_segments > 0,
+        "dropped_segment_count": dropped_recent_segments,
+        "dropped_sources": dropped_sources,
+        "target_tier": "recent",
+    }
+
+
 def estimate_provider_context_tokens(
     segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None
 ) -> TokenCount:
@@ -2056,30 +2102,55 @@ def assemble_provider_context(
         "protected_tiers": list((policy or ContextWindowPolicy()).protected_context_tiers),
         "compaction_target": "recent",
     }
-    context_token_count = estimate_provider_context_tokens(
-        tuple(segments), tokenizer_model=policy.tokenizer_model if policy is not None else None
-    )
-    metadata_payload["estimated_context_tokens"] = context_token_count.tokens
-    metadata_payload["estimated_context_token_source"] = context_token_count.source
-    metadata_payload["estimated_context_token_exact"] = context_token_count.exact
-    # Final-context guard: compare the assembled context against the model window.
-    # Even after tool-result compaction, system segments (agent prompt, hook guidance,
-    # skills, todos, continuity summary) can push the prompt beyond the provider's
-    # input limit. We expose pressure ratio + overflow detection as metadata so the
-    # runtime can emit context_pressure events / overflow diagnostics without forcing
-    # a hard error here (callers may choose to surface or fail-fast).
     effective_policy_for_guard = policy or ContextWindowPolicy()
-    model_window_tokens = effective_policy_for_guard.model_context_window_tokens
-    if model_window_tokens is not None and model_window_tokens > 0:
-        pressure_ratio = context_token_count.tokens / model_window_tokens
-        metadata_payload["context_pressure_ratio"] = pressure_ratio
-        metadata_payload["context_pressure_threshold"] = (
-            effective_policy_for_guard.context_pressure_threshold
+
+    def _record_context_pressure(current_segments: list[RuntimeContextSegment]) -> TokenCount:
+        context_token_count = estimate_provider_context_tokens(
+            tuple(current_segments),
+            tokenizer_model=policy.tokenizer_model if policy is not None else None,
         )
-        metadata_payload["context_pressure_detected"] = (
-            pressure_ratio >= effective_policy_for_guard.context_pressure_threshold
-        )
-        metadata_payload["context_overflow_detected"] = pressure_ratio >= 1.0
+        metadata_payload["estimated_context_tokens"] = context_token_count.tokens
+        metadata_payload["estimated_context_token_source"] = context_token_count.source
+        metadata_payload["estimated_context_token_exact"] = context_token_count.exact
+        model_window_tokens = effective_policy_for_guard.model_context_window_tokens
+        if model_window_tokens is not None and model_window_tokens > 0:
+            pressure_ratio = context_token_count.tokens / model_window_tokens
+            metadata_payload["context_pressure_ratio"] = pressure_ratio
+            metadata_payload["context_pressure_threshold"] = (
+                effective_policy_for_guard.context_pressure_threshold
+            )
+            metadata_payload["context_pressure_detected"] = (
+                pressure_ratio >= effective_policy_for_guard.context_pressure_threshold
+            )
+            metadata_payload["context_overflow_detected"] = pressure_ratio >= 1.0
+        return context_token_count
+
+    _record_context_pressure(segments)
+    recent_tier_compaction = {
+        "version": 1,
+        "applied": False,
+        "dropped_segment_count": 0,
+        "dropped_sources": [],
+        "target_tier": "recent",
+    }
+    if metadata_payload.get("context_pressure_detected") is True:
+        pressure_before = metadata_payload.get("context_pressure_ratio")
+        overflow_before = metadata_payload.get("context_overflow_detected")
+        compacted_segments, compaction_metadata = _compact_recent_tier_segments(segments)
+        if compaction_metadata["applied"]:
+            segments = compacted_segments
+            metadata_payload["context_tiers"] = _context_tier_metadata(segments)
+            recent_tier_compaction = compaction_metadata
+            _record_context_pressure(segments)
+            recent_tier_compaction["pressure_ratio_before"] = pressure_before
+            recent_tier_compaction["pressure_ratio_after"] = metadata_payload.get(
+                "context_pressure_ratio"
+            )
+            recent_tier_compaction["overflow_before"] = overflow_before
+            recent_tier_compaction["overflow_after"] = metadata_payload.get(
+                "context_overflow_detected"
+            )
+    metadata_payload["recent_tier_compaction"] = recent_tier_compaction
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,
