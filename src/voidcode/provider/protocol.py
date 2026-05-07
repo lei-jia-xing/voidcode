@@ -53,6 +53,7 @@ class ProviderTurnRequest:
     model_name: str | None = None
     agent_preset: dict[str, object] | None = None
     model_metadata: ProviderModelMetadata | None = None
+    session_id: str | None = None
     reasoning_effort: str | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None

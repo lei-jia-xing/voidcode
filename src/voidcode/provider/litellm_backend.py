@@ -24,6 +24,7 @@ else:
             pass
 
 
+from ..agent.prompt_sections import dynamic_boundary_marker
 from ..tools.contracts import ToolCall, ToolDefinition
 from ..tools.output import (
     redacted_argument_keys_for_tool,
@@ -31,6 +32,7 @@ from ..tools.output import (
     sanitize_tool_result_data,
     strip_redaction_sentinels,
 )
+from .capability import CacheTTL, detect_capability
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
 from .model_catalog import ToolFeedbackMode, infer_model_metadata
@@ -45,6 +47,9 @@ from .protocol import (
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
 _SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
 _CONTINUITY_SUMMARY_PREFIX = "Runtime continuity summary:"
+_ANTHROPIC_EPHEMERAL_CACHE_CONTROL = {"type": "ephemeral"}
+_CACHE_TTL_LATCH_METADATA_KEY = "anthropic_cache_ttl"
+_SESSION_CACHE_TTL_LATCHES: dict[str, CacheTTL] = {}
 
 logger = logging.getLogger(__name__)
 _PROVIDER_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -106,6 +111,118 @@ def _allow_openai_param(kwargs: dict[str, object], param: str) -> None:
 
 def _message_size_chars(message: dict[str, object]) -> int:
     return len(json.dumps(message, ensure_ascii=False, sort_keys=True, default=str))
+
+
+def _cache_control_payload(cache_ttl: CacheTTL) -> dict[str, object]:
+    return {**_ANTHROPIC_EPHEMERAL_CACHE_CONTROL, "ttl": cache_ttl}
+
+
+def _text_block_with_cache_control(content: str, *, cache_ttl: CacheTTL) -> dict[str, object]:
+    return {
+        "type": "text",
+        "text": content,
+        "cache_control": _cache_control_payload(cache_ttl),
+    }
+
+
+def _configured_anthropic_cache_ttl(request: ProviderTurnRequest) -> CacheTTL:
+    capability = detect_capability(
+        request.raw_model or request.model_name or "",
+        None,
+    )
+    return capability.default_cache_ttl or "5m"
+
+
+def _cache_ttl_latch_key(request: ProviderTurnRequest) -> str | None:
+    if request.session_id is not None and request.session_id.strip():
+        return request.session_id.strip()
+    raw_session_id = request.assembled_context.metadata.get("session_id")
+    if isinstance(raw_session_id, str) and raw_session_id.strip():
+        return raw_session_id.strip()
+    return None
+
+
+def _latched_anthropic_cache_ttl(request: ProviderTurnRequest) -> CacheTTL:
+    configured_ttl = _configured_anthropic_cache_ttl(request)
+    latch_key = _cache_ttl_latch_key(request)
+    if latch_key is not None:
+        return _SESSION_CACHE_TTL_LATCHES.setdefault(latch_key, configured_ttl)
+
+    raw_latched_ttl = request.assembled_context.metadata.get(_CACHE_TTL_LATCH_METADATA_KEY)
+    if raw_latched_ttl in {"5m", "1h"}:
+        return cast(CacheTTL, raw_latched_ttl)
+    request.assembled_context.metadata[_CACHE_TTL_LATCH_METADATA_KEY] = configured_ttl
+    return configured_ttl
+
+
+def _apply_anthropic_cache_control_markers(
+    messages: list[dict[str, object]],
+    *,
+    cache_ttl: CacheTTL,
+) -> list[dict[str, object]]:
+    boundary = dynamic_boundary_marker()
+    marked_messages: list[dict[str, object]] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            marked_messages.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip() == boundary:
+            marked = dict(message)
+            marked["content"] = [_text_block_with_cache_control(content, cache_ttl=cache_ttl)]
+            marked_messages.append(marked)
+            continue
+        marked_messages.append(message)
+    return marked_messages
+
+
+def _strip_cache_control_markers(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _strip_cache_control_markers(child)
+            for key, child in value.items()
+            if key != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_strip_cache_control_markers(child) for child in value]
+    return value
+
+
+def _contains_cache_control_marker(value: object) -> bool:
+    if isinstance(value, dict):
+        return "cache_control" in value or any(
+            _contains_cache_control_marker(child) for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_cache_control_marker(child) for child in value)
+    return False
+
+
+def _assert_tool_messages_without_cache_control(messages: list[dict[str, object]]) -> None:
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        assert not _contains_cache_control_marker(message), (
+            "tool result messages must not include cache_control"
+        )
+
+
+def _messages_for_cache_capability(
+    messages: list[dict[str, object]],
+    *,
+    supports_anthropic_cache_control: bool,
+    cache_ttl: CacheTTL | None = None,
+) -> list[dict[str, object]]:
+    if supports_anthropic_cache_control:
+        marked = _apply_anthropic_cache_control_markers(messages, cache_ttl=cache_ttl or "5m")
+        if __debug__:
+            _assert_tool_messages_without_cache_control(marked)
+        return marked
+    stripped = _strip_cache_control_markers(messages)
+    stripped_messages = cast(list[dict[str, object]], stripped)
+    if __debug__:
+        _assert_tool_messages_without_cache_control(stripped_messages)
+    return stripped_messages
 
 
 def _empty_tool_feedback_model_overrides() -> dict[str, ToolFeedbackMode]:
@@ -416,6 +533,14 @@ class LiteLLMBackendSingleAgentProvider:
                 if reasoning_content:
                     reasoning_content_by_tool_call_id[segment.tool_call_id] = reasoning_content
         messages: list[dict[str, object]] = []
+        provider_capability = detect_capability(
+            request.raw_model or mapped_model_name or request.model_name or "",
+            self.config,
+        )
+        use_anthropic_cache_control = provider_capability.supports_anthropic_cache_control
+        anthropic_cache_ttl = (
+            _latched_anthropic_cache_ttl(request) if use_anthropic_cache_control else None
+        )
         if self._tool_feedback_mode_for_request(request) == "synthetic_user_message":
             tool_feedback_lines: list[str] = []
             for result in assembled_context.tool_results:
@@ -475,7 +600,11 @@ class LiteLLMBackendSingleAgentProvider:
                         ),
                     }
                 )
-            return messages
+            return _messages_for_cache_capability(
+                messages,
+                supports_anthropic_cache_control=use_anthropic_cache_control,
+                cache_ttl=anthropic_cache_ttl,
+            )
 
         for segment in assembled_context.segments:
             if segment.role == "assistant" and segment.tool_name is not None:
@@ -561,7 +690,11 @@ class LiteLLMBackendSingleAgentProvider:
                 )
                 continue
             messages.append({"role": segment.role, "content": segment.content})
-        return messages
+        return _messages_for_cache_capability(
+            messages,
+            supports_anthropic_cache_control=use_anthropic_cache_control,
+            cache_ttl=anthropic_cache_ttl,
+        )
 
     @staticmethod
     def _provider_request_diagnostics(
