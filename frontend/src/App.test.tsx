@@ -33,11 +33,13 @@ describe("App", () => {
     providerValidationStatus: {},
     providerValidationError: {},
     agentPresets: [],
+    skills: [],
     loadWorkspaces: vi.fn(),
     switchWorkspace: vi.fn(),
     loadProviders: vi.fn(),
     validateProviderCredentials: vi.fn(),
     loadAgents: vi.fn(),
+    loadSkills: vi.fn(),
     statusSnapshot: null,
     statusStatus: "idle",
     statusError: null,
@@ -152,13 +154,54 @@ describe("App", () => {
     fireEvent.change(textarea, { target: { value: "read README.md" } });
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
-    expect(mockStore.runTask).toHaveBeenCalledWith("read README.md");
+    expect(mockStore.runTask).toHaveBeenCalledWith("read README.md", {
+      metadata: undefined,
+    });
   });
 
   it("loads runtime-owned settings on startup", () => {
     render(<App />);
 
     expect(mockStore.loadSettings).toHaveBeenCalled();
+  });
+
+  it("opens child session when picker selects a background task with child session id", () => {
+    const selectSession = vi.fn();
+    const loadBackgroundTaskOutput = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      selectSession,
+      loadBackgroundTaskOutput,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      backgroundTasks: [
+        {
+          task: { id: "task-123" },
+          status: "running",
+          prompt: "explore runtime http",
+          session_id: "child-session-123",
+          error: null,
+          created_at: 1,
+          updated_at: 2,
+        },
+      ],
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Runtime Ops" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open subsession" }));
+
+    expect(selectSession).not.toHaveBeenCalled();
+    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-123");
   });
 
   it("renders Server LSP and MCP status details without Git in the runtime status popover", () => {
@@ -195,7 +238,8 @@ describe("App", () => {
     expect(screen.getAllByText("LSP").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("MCP").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("Git")).not.toBeInTheDocument();
-    expect(screen.getByText(/last request: handshake/)).toBeInTheDocument();
+    expect(screen.getByText("last request")).toBeInTheDocument();
+    expect(screen.getByText("handshake")).toBeInTheDocument();
   });
 
   it("uses a working bar instead of the old agent idle header badge", () => {
@@ -588,6 +632,113 @@ describe("App", () => {
 
     fireEvent.click(screen.getByText("Parent session"));
 
+    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
+  });
+
+  it("supports left/right sibling child-session navigation and Alt+Up back to parent", () => {
+    const loadBackgroundTaskOutput = vi.fn();
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      currentSessionId: "parent-session",
+      currentSessionState: {
+        session: { id: "parent-session" },
+        status: "completed",
+        turn: 1,
+        metadata: {},
+      },
+      backgroundTasks: [
+        {
+          task: { id: "task-child-1" },
+          status: "completed",
+          prompt: "delegate child 1",
+          session_id: "child-session-1",
+          error: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+        {
+          task: { id: "task-child-2" },
+          status: "completed",
+          prompt: "delegate child 2",
+          session_id: "child-session-2",
+          error: null,
+          created_at: 2,
+          updated_at: 2,
+        },
+      ],
+      selectedBackgroundTaskOutputId: "task-child-1",
+      backgroundTaskOutputStatus: "success",
+      backgroundTaskOutput: {
+        task: {
+          task_id: "task-child-1",
+          status: "completed",
+          parent_session_id: "parent-session",
+          requested_child_session_id: "requested-child-1",
+          child_session_id: "child-session-1",
+          approval_request_id: null,
+          question_request_id: null,
+          approval_blocked: false,
+          summary_output: "child summary 1",
+          error: null,
+          result_available: true,
+          cancellation_cause: null,
+          routing: { mode: "subagent", subagent_type: "explore" },
+        },
+        session_result: {
+          session: {
+            session: { id: "child-session-1", parent_id: "parent-session" },
+            status: "completed" as const,
+            turn: 1,
+            metadata: {},
+          },
+          prompt: "child prompt 1",
+          status: "completed",
+          summary: "child summary 1",
+          output: "child output 1",
+          error: null,
+          last_event_sequence: 2,
+          transcript: [
+            {
+              session_id: "child-session-1",
+              sequence: 1,
+              event_type: "runtime.request_received",
+              source: "runtime",
+              payload: { prompt: "child prompt 1" },
+            },
+            {
+              session_id: "child-session-1",
+              sequence: 2,
+              event_type: "graph.response_ready",
+              source: "graph",
+              payload: { output: "child output 1" },
+            },
+          ],
+        },
+        output: "child output 1",
+      },
+      loadBackgroundTaskOutput,
+    });
+
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-child-2");
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith("task-child-0");
+
+    fireEvent.keyDown(window, { key: "ArrowUp", altKey: true });
     expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
   });
 
