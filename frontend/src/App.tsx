@@ -4,7 +4,6 @@ import { useAppStore } from "./store";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { ChatThread } from "./components/ChatThread";
 import { Composer, type SessionContextUsage } from "./components/Composer";
-import { ChildSessionSidebar } from "./components/ChildSessionSidebar";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
@@ -15,13 +14,14 @@ import { ControlButton } from "./components/ui";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
-  Loader2,
-  Server,
   CheckCircle2,
-  XCircle,
-  GitCompare,
   FolderTree,
+  GitCompare,
+  Loader2,
+  MoveLeft,
   PanelLeft,
+  Server,
+  XCircle,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
@@ -49,11 +49,13 @@ function App() {
     providerValidationStatus,
     providerValidationError,
     agentPresets,
+    skills,
     loadWorkspaces,
     switchWorkspace,
     loadProviders,
     validateProviderCredentials,
     loadAgents,
+    loadSkills,
     statusSnapshot,
     statusStatus,
     statusError,
@@ -185,6 +187,32 @@ function App() {
       ),
     [currentSessionState?.metadata, providerModel, providerModels],
   );
+  const backgroundTasksById = useMemo(() => {
+    const map: Record<string, (typeof backgroundTasks)[number]> = {};
+    for (const task of backgroundTasks) {
+      map[task.task.id] = task;
+    }
+    return map;
+  }, [backgroundTasks]);
+  const selectedBackgroundTaskOutputForChat = useMemo(() => {
+    if (!selectedBackgroundTaskOutputId || !backgroundTaskOutput) return null;
+    return {
+      taskId: selectedBackgroundTaskOutputId,
+      durationSeconds: backgroundTaskOutput.task.duration_seconds ?? null,
+      toolCallCount: backgroundTaskOutput.task.tool_call_count ?? null,
+    };
+  }, [backgroundTaskOutput, selectedBackgroundTaskOutputId]);
+  const childSessionTaskIds = useMemo(
+    () =>
+      backgroundTasks
+        .filter((task) => task.session_id)
+        .map((task) => task.task.id),
+    [backgroundTasks],
+  );
+  const selectedChildTaskIndex = useMemo(() => {
+    if (!selectedBackgroundTaskOutputId) return -1;
+    return childSessionTaskIds.indexOf(selectedBackgroundTaskOutputId);
+  }, [childSessionTaskIds, selectedBackgroundTaskOutputId]);
 
   useEffect(() => {
     i18n.changeLanguage(language);
@@ -193,6 +221,49 @@ function App() {
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
+
+  // While browsing a delegated child session, allow Alt+Up to jump back.
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!displayedIsChildSession) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest("textarea, input, [contenteditable='true']")
+      ) {
+        return;
+      }
+      if (event.altKey && event.key === "ArrowUp") {
+        event.preventDefault();
+        void loadBackgroundTaskOutput(null);
+        return;
+      }
+      if (event.key === "ArrowLeft" && selectedChildTaskIndex > 0) {
+        event.preventDefault();
+        void loadBackgroundTaskOutput(
+          childSessionTaskIds[selectedChildTaskIndex - 1],
+        );
+        return;
+      }
+      if (
+        event.key === "ArrowRight" &&
+        selectedChildTaskIndex >= 0 &&
+        selectedChildTaskIndex < childSessionTaskIds.length - 1
+      ) {
+        event.preventDefault();
+        void loadBackgroundTaskOutput(
+          childSessionTaskIds[selectedChildTaskIndex + 1],
+        );
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [
+    childSessionTaskIds,
+    displayedIsChildSession,
+    loadBackgroundTaskOutput,
+    selectedChildTaskIndex,
+  ]);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -206,16 +277,40 @@ function App() {
     return () => window.clearInterval(timer);
   }, [backgroundTasks, currentSessionId, isRunning, loadBackgroundTasks]);
 
+  // Refresh selected background-task output every 2s while it's still running.
+  useEffect(() => {
+    if (!selectedBackgroundTaskOutputId) return;
+    const selectedSummary = backgroundTasks.find(
+      (task) => task.task.id === selectedBackgroundTaskOutputId,
+    );
+    if (!selectedSummary) return;
+    if (
+      selectedSummary.status !== "queued" &&
+      selectedSummary.status !== "running"
+    )
+      return;
+    const timer = window.setInterval(() => {
+      void loadBackgroundTaskOutput(selectedBackgroundTaskOutputId);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [
+    backgroundTasks,
+    loadBackgroundTaskOutput,
+    selectedBackgroundTaskOutputId,
+  ]);
+
   useEffect(() => {
     void loadWorkspaces?.();
     void loadProviders?.();
     void loadAgents?.();
+    void loadSkills?.();
     void loadSettings?.();
     void loadStatus?.();
     void loadNotifications?.();
     void loadBackgroundTasks?.();
   }, [
     loadAgents,
+    loadSkills,
     loadProviders,
     loadBackgroundTasks,
     loadSettings,
@@ -252,8 +347,15 @@ function App() {
     }
   }, [displayedMessages.length]);
 
-  const handleSendMessage = async (message: string) => {
-    await runTask(message);
+  const handleSendMessage = async (
+    message: string,
+    options?: { skills?: string[] },
+  ) => {
+    await runTask(message, {
+      metadata: options?.skills?.length
+        ? { skills: options.skills }
+        : undefined,
+    });
   };
 
   const testRuntime = async () => {
@@ -348,6 +450,20 @@ function App() {
                 </ControlButton>
                 {isReplayLoading && (
                   <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] flex-shrink-0" />
+                )}
+                {displayedIsChildSession && (
+                  <ControlButton
+                    compact
+                    variant="ghost"
+                    onClick={() => {
+                      void loadBackgroundTaskOutput(null);
+                    }}
+                    aria-label={t("childSessions.parent")}
+                    title="Alt+Up"
+                  >
+                    <MoveLeft className="w-4 h-4" />
+                    <span>{t("childSessions.parent")}</span>
+                  </ControlButton>
                 )}
                 {currentSessionId ? (
                   <div className="flex flex-col min-w-0">
@@ -476,30 +592,15 @@ function App() {
                   }
                   questionError={displayedIsChildSession ? null : questionError}
                   onAnswerQuestion={answerQuestion}
+                  backgroundTasksById={backgroundTasksById}
+                  selectedBackgroundTaskOutput={
+                    selectedBackgroundTaskOutputForChat
+                  }
                   onSelectSession={(sessionId) => {
                     void selectSession(sessionId);
                   }}
                 />
               </div>
-              <ChildSessionSidebar
-                parentSessionId={currentSessionId}
-                tasks={backgroundTasks}
-                status={backgroundTasksStatus}
-                error={backgroundTasksError}
-                selectedTaskId={selectedBackgroundTaskOutputId}
-                taskOutput={backgroundTaskOutput}
-                taskOutputStatus={backgroundTaskOutputStatus}
-                taskOutputError={backgroundTaskOutputError}
-                onSelectParent={() => {
-                  void loadBackgroundTaskOutput(null);
-                }}
-                onSelectTask={(taskId) => {
-                  void loadBackgroundTaskOutput(taskId);
-                }}
-                onRefresh={() => {
-                  void loadBackgroundTasks();
-                }}
-              />
             </div>
 
             <TodoPanel snapshot={activeTodoSnapshot} />
@@ -518,6 +619,7 @@ function App() {
               providerModels={providerModels}
               sessionContextUsage={composerContextUsage}
               agentPresets={agentPresets}
+              skills={skills}
               onProviderModelChange={setProviderModel}
               onReasoningEffortChange={setReasoningEffort}
             />
@@ -623,6 +725,9 @@ function App() {
         }}
         onRefreshTasks={loadBackgroundTasks}
         onLoadTaskOutput={(taskId) => {
+          void loadBackgroundTaskOutput(taskId);
+        }}
+        onOpenSubsession={(taskId) => {
           void loadBackgroundTaskOutput(taskId);
         }}
         onCancelTask={(taskId) => {

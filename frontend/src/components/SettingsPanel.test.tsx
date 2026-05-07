@@ -3,6 +3,10 @@ import { describe, it, expect, vi } from "vitest";
 import { SettingsPanel } from "./SettingsPanel";
 import "../i18n";
 
+function openProviderSection() {
+  fireEvent.click(screen.getByRole("button", { name: "Provider & Model" }));
+}
+
 const baseProps = {
   isOpen: true,
   settings: null,
@@ -40,6 +44,7 @@ describe("SettingsPanel", () => {
 
   it("renders provider list with configured and unconfigured badges", () => {
     render(<SettingsPanel {...baseProps} />);
+    openProviderSection();
 
     expect(screen.getByText("GLM")).toBeInTheDocument();
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
@@ -74,6 +79,7 @@ describe("SettingsPanel", () => {
         onSave={onSave}
       />,
     );
+    openProviderSection();
 
     expect(screen.getByText("Configured providers")).toBeInTheDocument();
     expect(screen.getByText("Unconfigured providers")).toBeInTheDocument();
@@ -117,6 +123,7 @@ describe("SettingsPanel", () => {
         }}
       />,
     );
+    openProviderSection();
 
     expect(
       screen.getByText("DeepSeek exposes 2 model(s) from the runtime."),
@@ -153,6 +160,7 @@ describe("SettingsPanel", () => {
         onSave={onSave}
       />,
     );
+    openProviderSection();
 
     fireEvent.click(screen.getByRole("button", { name: /OpenAI/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
@@ -193,6 +201,7 @@ describe("SettingsPanel", () => {
         onValidateProvider={onValidateProvider}
       />,
     );
+    openProviderSection();
 
     expect(
       screen.getByText("remote model discovery failed"),
@@ -208,6 +217,7 @@ describe("SettingsPanel", () => {
 
   it("shows empty state when no providers are available", () => {
     render(<SettingsPanel {...baseProps} providers={[]} />);
+    openProviderSection();
 
     expect(screen.getByText("No providers available.")).toBeInTheDocument();
   });
@@ -215,6 +225,7 @@ describe("SettingsPanel", () => {
   it("calls onSave with api key when save is clicked", () => {
     const onSave = vi.fn();
     render(<SettingsPanel {...baseProps} onSave={onSave} />);
+    openProviderSection();
 
     const input = screen.getByPlaceholderText("Enter your API key");
     fireEvent.change(input, { target: { value: "my-secret-key" } });
@@ -231,6 +242,7 @@ describe("SettingsPanel", () => {
 
   it("renders the API key with native password semantics", () => {
     render(<SettingsPanel {...baseProps} />);
+    openProviderSection();
 
     const apiKeyField = screen.getByLabelText("API Key");
     expect(apiKeyField).toHaveAttribute("type", "password");
@@ -251,7 +263,9 @@ describe("SettingsPanel", () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText("Enter your API key");
+    openProviderSection();
+
+    const input = screen.getByPlaceholderText("•••••• (already configured)");
     fireEvent.change(input, { target: { value: "new-key" } });
 
     const saveButton = screen.getByRole("button", { name: "Save Settings" });
@@ -286,12 +300,14 @@ describe("SettingsPanel", () => {
 
   it("shows settings error when present", () => {
     render(<SettingsPanel {...baseProps} settingsError="Load failed" />);
+    openProviderSection();
 
     expect(screen.getByText("Load failed")).toBeInTheDocument();
   });
 
   it("shows providers error when present", () => {
     render(<SettingsPanel {...baseProps} providersError="Provider error" />);
+    openProviderSection();
 
     expect(screen.getByText("Provider error")).toBeInTheDocument();
   });
@@ -305,6 +321,7 @@ describe("SettingsPanel", () => {
 
   it("disables save button while loading", () => {
     render(<SettingsPanel {...baseProps} settingsStatus="loading" />);
+    openProviderSection();
 
     const saveButton = screen.getByRole("button", { name: "Save Settings" });
     expect(saveButton).toBeDisabled();

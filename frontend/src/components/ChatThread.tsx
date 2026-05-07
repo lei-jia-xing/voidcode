@@ -10,24 +10,37 @@ import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  Activity,
+  AlertCircle,
+  Bot,
+  Check,
   ChevronDown,
   ChevronRight,
-  Loader2,
-  PauseCircle,
-  AlertCircle,
+  Code2,
   Copy,
-  Check,
-  Bot,
+  Diff,
+  FileSearch,
   FileText,
   FolderTree,
+  Globe,
+  HelpCircle,
   ListTodo,
+  Loader2,
+  PauseCircle,
   Pencil,
+  Plug,
   Search,
+  Sparkles,
   Terminal,
+  Timer,
+  Wand2,
   Wrench,
 } from "lucide-react";
 import { ChatMessage } from "../lib/runtime/event-parser";
-import type { QuestionAnswer } from "../lib/runtime/types";
+import type {
+  BackgroundTaskSummary,
+  QuestionAnswer,
+} from "../lib/runtime/types";
 import {
   estimateStreamedTextHeight,
   STREAM_TEXT_ESTIMATE_WIDTH,
@@ -48,6 +61,12 @@ interface ChatThreadProps {
   isQuestionSubmitting?: boolean;
   questionError?: string | null;
   onAnswerQuestion?: (answers: QuestionAnswer[]) => void;
+  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+  selectedBackgroundTaskOutput?: {
+    taskId: string;
+    durationSeconds: number | null;
+    toolCallCount: number | null;
+  } | null;
 }
 
 function StreamingMarkdown({
@@ -146,6 +165,31 @@ function toolDisplayTitle(tool: ChatTool, fallback: string) {
     tool.display?.title ??
     fallback
   );
+}
+
+function toolDisplayTitleFallback(tool: ChatTool): string {
+  if (tool.display?.title) return tool.display.title;
+  if (tool.legacy?.label) return tool.legacy.label;
+  // Map known tool names to a friendlier title than raw snake_case
+  const friendly: Record<string, string> = {
+    web_fetch: "Fetch URL",
+    web_search: "Web search",
+    apply_patch: "Apply patch",
+    multi_edit: "Multi-edit",
+    format_file: "Format file",
+    todo_write: "Update todos",
+    interactive_shell: "Interactive shell",
+    background_process_start: "Start process",
+    background_process_stop: "Stop process",
+    background_process_logs: "Process logs",
+    background_output: "Background output",
+    background_cancel: "Cancel task",
+    background_retry: "Retry task",
+    ast_grep_search: "AST search",
+    ast_grep_preview: "AST preview",
+    ast_grep_replace: "AST replace",
+  };
+  return friendly[tool.name] ?? tool.name;
 }
 
 function toolDisplaySubtitle(tool: ChatTool, fallback?: string) {
@@ -566,6 +610,15 @@ function ToolDisclosureRow({
   );
 }
 
+const READ_TOOL_TITLES: Record<string, string> = {
+  read_file: "Read",
+  read: "Read",
+  glob: "Glob",
+  grep: "Grep",
+  ast_grep_search: "AST search",
+  ast_grep_preview: "AST preview",
+};
+
 function toolIcon(tool: ChatTool) {
   const className = "h-3.5 w-3.5";
   if (tool.name === "read_file" || tool.name === "read") {
@@ -574,19 +627,32 @@ function toolIcon(tool: ChatTool) {
   if (tool.name === "glob") {
     return <FolderTree className={className} />;
   }
-  if (tool.name === "grep" || tool.name === "ast_grep_search") {
+  if (tool.name === "grep") {
     return <Search className={className} />;
+  }
+  if (tool.name === "ast_grep_search" || tool.name === "ast_grep_preview") {
+    return <FileSearch className={className} />;
   }
   if (
     tool.name === "write_file" ||
     tool.name === "write" ||
     tool.name === "edit" ||
     tool.name === "multi_edit" ||
-    tool.name === "apply_patch"
+    tool.name === "ast_grep_replace"
   ) {
     return <Pencil className={className} />;
   }
-  if (tool.name === "shell_exec" || tool.name === "bash") {
+  if (tool.name === "apply_patch") {
+    return <Diff className={className} />;
+  }
+  if (tool.name === "format_file") {
+    return <Wand2 className={className} />;
+  }
+  if (
+    tool.name === "shell_exec" ||
+    tool.name === "bash" ||
+    tool.name === "interactive_shell"
+  ) {
     return <Terminal className={className} />;
   }
   if (tool.name === "task") {
@@ -594,6 +660,34 @@ function toolIcon(tool: ChatTool) {
   }
   if (tool.name === "todo_write") {
     return <ListTodo className={className} />;
+  }
+  if (tool.name === "skill") {
+    return <Sparkles className={className} />;
+  }
+  if (tool.name === "web_search") {
+    return <Search className={className} />;
+  }
+  if (tool.name === "web_fetch") {
+    return <Globe className={className} />;
+  }
+  if (tool.name === "lsp") {
+    return <Code2 className={className} />;
+  }
+  if (tool.name === "mcp") {
+    return <Plug className={className} />;
+  }
+  if (tool.name === "question") {
+    return <HelpCircle className={className} />;
+  }
+  if (
+    tool.name === "background_process_start" ||
+    tool.name === "background_process_stop" ||
+    tool.name === "background_process_logs" ||
+    tool.name === "background_output" ||
+    tool.name === "background_cancel" ||
+    tool.name === "background_retry"
+  ) {
+    return <Activity className={className} />;
   }
   return <Wrench className={className} />;
 }
@@ -612,13 +706,17 @@ function toolOutputSummary(tool: ChatTool): string | null {
 
 function isReadonlyTool(tool: ChatTool) {
   return (
-    tool.display?.kind === "context" ||
     tool.name === "read_file" ||
     tool.name === "read" ||
     tool.name === "glob" ||
     tool.name === "grep" ||
-    tool.name === "ast_grep_search"
+    tool.name === "ast_grep_search" ||
+    tool.name === "ast_grep_preview"
   );
+}
+
+function readToolTitle(tool: ChatTool): string {
+  return READ_TOOL_TITLES[tool.name] ?? "Read";
 }
 
 function ReadToolActivity({ tool }: { tool: ChatTool }) {
@@ -630,7 +728,7 @@ function ReadToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, "Read")}
+      title={toolDisplayTitle(tool, readToolTitle(tool))}
       subtitle={subtitle}
       args={curatedArgs(tool, { omit: ["path", "filePath"] })}
       icon={toolIcon(tool)}
@@ -919,15 +1017,49 @@ function SessionLinkRow({
   );
 }
 
+function formatElapsedSeconds(value: number): string {
+  if (value < 1) return `${value.toFixed(1)}s`;
+  if (value < 60) return `${value.toFixed(value < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value - minutes * 60);
+  return `${minutes}m ${seconds}s`;
+}
+
+function useLiveElapsed(
+  startSeconds: number | null,
+  endSeconds: number | null,
+  active: boolean,
+): number | null {
+  const [nowSeconds, setNowSeconds] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNowSeconds(Date.now() / 1000), 1000);
+    return () => window.clearInterval(id);
+  }, [active]);
+  if (startSeconds === null || !Number.isFinite(startSeconds)) return null;
+  const reference = active ? nowSeconds : (endSeconds ?? nowSeconds);
+  const elapsed = reference - startSeconds;
+  return elapsed >= 0 ? elapsed : 0;
+}
+
 function TaskToolActivity({
   tool,
   forceCollapsed = false,
   onSelectSession,
+  backgroundTasksById,
+  selectedBackgroundTaskOutput,
 }: {
   tool: ChatTool;
   forceCollapsed?: boolean;
   onSelectSession?: (sessionId: string) => void;
+  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+  selectedBackgroundTaskOutput?: {
+    taskId: string;
+    durationSeconds: number | null;
+    toolCallCount: number | null;
+  } | null;
 }) {
+  const { t } = useTranslation();
   const data = resultData(tool);
   const route =
     toolValue(tool.arguments?.category) ??
@@ -944,11 +1076,44 @@ function TaskToolActivity({
     formatList(tool.arguments?.load_skills) ?? formatList(data?.load_skills);
   const description = toolValue(tool.arguments?.description);
 
+  const summary = taskId ? backgroundTasksById?.[taskId] : undefined;
+  const summaryStatus = summary?.status ?? null;
+  const isActive = summaryStatus === "queued" || summaryStatus === "running";
+  const elapsed = useLiveElapsed(
+    summary?.created_at ?? null,
+    summary?.updated_at ?? null,
+    isActive,
+  );
+  const isSelectedOutput =
+    taskId !== null && selectedBackgroundTaskOutput?.taskId === taskId;
+  const toolCallCount = isSelectedOutput
+    ? selectedBackgroundTaskOutput?.toolCallCount
+    : null;
+  const finalDuration = isSelectedOutput
+    ? selectedBackgroundTaskOutput?.durationSeconds
+    : null;
+  const stats: string[] = [];
+  if (summaryStatus) stats.push(summaryStatus);
+  if (elapsed !== null && (isActive || finalDuration === null)) {
+    stats.push(t("task.elapsed", { value: formatElapsedSeconds(elapsed) }));
+  }
+  if (typeof finalDuration === "number" && finalDuration >= 0) {
+    stats.push(
+      t("task.duration", {
+        value: formatElapsedSeconds(finalDuration),
+      }),
+    );
+  }
+  if (typeof toolCallCount === "number") {
+    stats.push(t("task.toolCalls", { count: toolCallCount }));
+  }
+  const subtitle = `${route} · ${mode}${stats.length ? ` · ${stats.join(" · ")}` : ""}`;
+
   return (
     <ToolDisclosureRow
       tool={tool}
       title={toolDisplayTitle(tool, "Started subagent")}
-      subtitle={`${route} · ${mode}`}
+      subtitle={subtitle}
       args={curatedArgs(tool, {
         omit: ["category", "subagent_type", "description"],
       })}
@@ -979,6 +1144,25 @@ function TaskToolActivity({
                 sessionId={sessionId}
                 onSelectSession={onSelectSession}
               />
+            )}
+            {(elapsed !== null || typeof finalDuration === "number") && (
+              <div className="flex items-center gap-1">
+                <Timer className="h-3 w-3" />
+                <span>
+                  {typeof finalDuration === "number"
+                    ? t("task.durationLabel", {
+                        value: formatElapsedSeconds(finalDuration),
+                      })
+                    : elapsed !== null
+                      ? t("task.elapsedLabel", {
+                          value: formatElapsedSeconds(elapsed),
+                        })
+                      : null}
+                </span>
+              </div>
+            )}
+            {typeof toolCallCount === "number" && (
+              <div>{t("task.toolCallsLabel", { count: toolCallCount })}</div>
             )}
             {skills && (
               <div>
@@ -1075,12 +1259,217 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
   );
 }
 
+function WebFetchToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
+  const data = resultData(tool);
+  const url =
+    toolValue(tool.arguments?.url) ??
+    toolValue(data?.url) ??
+    toolValue(data?.final_url) ??
+    null;
+  const status =
+    toolValue(data?.status) ??
+    toolValue(data?.status_code) ??
+    toolValue(data?.http_status);
+  const contentType =
+    toolValue(data?.content_type) ?? toolValue(data?.mime_type);
+  const subtitle = url ?? toolDisplayTitle(tool, tool.name);
+  const trailingBits = [status ? `HTTP ${status}` : null, contentType].filter(
+    Boolean,
+  ) as string[];
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, t("tool.web.fetchTitle"))}
+      subtitle={
+        trailingBits.length > 0
+          ? `${subtitle} · ${trailingBits.join(" · ")}`
+          : subtitle
+      }
+      args={curatedArgs(tool, { omit: ["url"] })}
+      icon={toolIcon(tool)}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock
+          label={t("tool.web.body")}
+          value={toolOutputSummary(tool)}
+          copyValue={toolOutputSummary(tool)}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
+function WebSearchToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
+  const data = resultData(tool);
+  const query =
+    toolValue(tool.arguments?.query) ?? toolValue(data?.query) ?? null;
+  const results = Array.isArray(data?.results) ? data.results : null;
+  const subtitle = query ?? toolDisplayTitle(tool, tool.name);
+  const trailing =
+    results !== null
+      ? t("tool.web.resultsCount", { count: results.length })
+      : null;
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, t("tool.web.searchTitle"))}
+      subtitle={trailing ? `${subtitle} · ${trailing}` : subtitle}
+      args={curatedArgs(tool, { omit: ["query"] })}
+      icon={toolIcon(tool)}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock
+          label={t("tool.web.results")}
+          value={toolOutputSummary(tool)}
+          copyValue={toolOutputSummary(tool)}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
+function LspToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
+  const data = resultData(tool);
+  const method =
+    toolValue(tool.arguments?.method) ?? toolValue(data?.method) ?? null;
+  const server =
+    toolValue(tool.arguments?.server) ?? toolValue(data?.server) ?? null;
+  const target =
+    toolValue(tool.arguments?.path) ??
+    toolValue(tool.arguments?.filePath) ??
+    toolValue(tool.arguments?.symbol) ??
+    toolValue(tool.arguments?.query);
+  const subtitleParts = [method, server, target].filter(Boolean) as string[];
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, t("tool.lsp.title"))}
+      subtitle={subtitleParts.join(" · ") || undefined}
+      args={curatedArgs(tool, {
+        omit: ["method", "server", "path", "filePath"],
+      })}
+      icon={toolIcon(tool)}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock
+          label="Output"
+          value={toolOutputSummary(tool)}
+          copyValue={toolOutputSummary(tool)}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
+function McpToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
+  const data = resultData(tool);
+  const server =
+    toolValue(tool.arguments?.server) ?? toolValue(data?.server) ?? null;
+  const innerTool =
+    toolValue(tool.arguments?.tool) ?? toolValue(data?.tool) ?? null;
+  const subtitleParts = [server, innerTool].filter(Boolean) as string[];
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, t("tool.mcp.title"))}
+      subtitle={subtitleParts.join(" / ") || undefined}
+      args={curatedArgs(tool, { omit: ["server", "tool"] })}
+      icon={toolIcon(tool)}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock
+          label="Output"
+          value={toolOutputSummary(tool)}
+          copyValue={toolOutputSummary(tool)}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
+function BackgroundProcessToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
+  const data = resultData(tool);
+  const command =
+    toolValue(tool.arguments?.command) ?? toolValue(data?.command) ?? null;
+  const processId =
+    toolValue(tool.arguments?.process_id) ??
+    toolValue(data?.process_id) ??
+    toolValue(data?.id);
+  const action =
+    tool.name === "background_process_start"
+      ? t("tool.process.start")
+      : tool.name === "background_process_stop"
+        ? t("tool.process.stop")
+        : t("tool.process.logs");
+  const subtitle = command ?? processId ?? action;
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayTitle(tool, action)}
+      subtitle={processId && command ? `${command} · #${processId}` : subtitle}
+      args={curatedArgs(tool, { omit: ["command", "process_id"] })}
+      icon={toolIcon(tool)}
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : (
+        <ToolDetailBlock
+          label={t("tool.process.output")}
+          value={toolOutputSummary(tool)}
+          copyValue={toolOutputSummary(tool)}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
 function GenericToolActivity({ tool }: { tool: ChatTool }) {
   const output = toolOutputSummary(tool);
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, tool.display?.title ?? tool.name)}
+      title={toolDisplayTitle(
+        tool,
+        tool.display?.title ?? toolDisplayTitleFallback(tool),
+      )}
       subtitle={toolDisplaySubtitle(tool, tool.summary)}
       args={curatedArgs(tool)}
       icon={toolIcon(tool)}
@@ -1231,9 +1620,17 @@ function QuestionCard({
 function ToolActivities({
   tools,
   onSelectSession,
+  backgroundTasksById,
+  selectedBackgroundTaskOutput,
 }: {
   tools: ChatTool[];
   onSelectSession?: (sessionId: string) => void;
+  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+  selectedBackgroundTaskOutput?: {
+    taskId: string;
+    durationSeconds: number | null;
+    toolCallCount: number | null;
+  } | null;
 }) {
   if (tools.length === 0) return null;
   return (
@@ -1243,6 +1640,8 @@ function ToolActivities({
           key={tool.id ?? `${tool.name}-${idx}`}
           tool={tool}
           onSelectSession={onSelectSession}
+          backgroundTasksById={backgroundTasksById}
+          selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
         />
       ))}
     </div>
@@ -1253,10 +1652,18 @@ function ToolActivity({
   tool,
   forceCollapsed = false,
   onSelectSession,
+  backgroundTasksById,
+  selectedBackgroundTaskOutput,
 }: {
   tool: ChatTool;
   forceCollapsed?: boolean;
   onSelectSession?: (sessionId: string) => void;
+  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+  selectedBackgroundTaskOutput?: {
+    taskId: string;
+    durationSeconds: number | null;
+    toolCallCount: number | null;
+  } | null;
 }) {
   if (isReadonlyTool(tool)) return <ReadToolActivity tool={tool} />;
   if (
@@ -1264,11 +1671,17 @@ function ToolActivity({
     tool.name === "write" ||
     tool.name === "edit" ||
     tool.name === "multi_edit" ||
-    tool.name === "apply_patch"
+    tool.name === "apply_patch" ||
+    tool.name === "ast_grep_replace" ||
+    tool.name === "format_file"
   ) {
     return <WriteToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   }
-  if (tool.name === "shell_exec" || tool.name === "bash")
+  if (
+    tool.name === "shell_exec" ||
+    tool.name === "bash" ||
+    tool.name === "interactive_shell"
+  )
     return <ShellToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   if (tool.name === "skill")
     return <SkillToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
@@ -1278,9 +1691,21 @@ function ToolActivity({
         tool={tool}
         forceCollapsed={forceCollapsed}
         onSelectSession={onSelectSession}
+        backgroundTasksById={backgroundTasksById}
+        selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
       />
     );
   if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
+  if (tool.name === "web_fetch") return <WebFetchToolActivity tool={tool} />;
+  if (tool.name === "web_search") return <WebSearchToolActivity tool={tool} />;
+  if (tool.name === "lsp") return <LspToolActivity tool={tool} />;
+  if (tool.name === "mcp") return <McpToolActivity tool={tool} />;
+  if (
+    tool.name === "background_process_start" ||
+    tool.name === "background_process_stop" ||
+    tool.name === "background_process_logs"
+  )
+    return <BackgroundProcessToolActivity tool={tool} />;
   return <GenericToolActivity tool={tool} />;
 }
 
@@ -1405,6 +1830,8 @@ export function ChatThread({
   isQuestionSubmitting = false,
   questionError = null,
   onAnswerQuestion = () => undefined,
+  backgroundTasksById,
+  selectedBackgroundTaskOutput,
 }: ChatThreadProps) {
   const { t } = useTranslation();
 
@@ -1456,6 +1883,8 @@ export function ChatThread({
                   <ToolActivities
                     tools={message.tools}
                     onSelectSession={onSelectSession}
+                    backgroundTasksById={backgroundTasksById}
+                    selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
                   />
                   {assistantContent && (
                     <StreamingMarkdown

@@ -29,6 +29,7 @@ interface RuntimeOpsPanelProps {
   onAcknowledgeNotification: (notificationId: string) => void;
   onRefreshTasks: () => void;
   onLoadTaskOutput: (taskId: string) => void;
+  onOpenSubsession?: (taskId: string) => void;
   onCancelTask: (taskId: string) => void;
   onRefreshDebug: () => void;
   onSelectSession?: (sessionId: string) => void;
@@ -119,6 +120,7 @@ export function RuntimeOpsPanel({
   onAcknowledgeNotification,
   onRefreshTasks,
   onLoadTaskOutput,
+  onOpenSubsession,
   onCancelTask,
   onRefreshDebug,
   onSelectSession,
@@ -285,6 +287,15 @@ export function RuntimeOpsPanel({
                 {task.status}
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
+                {task.session_id && onOpenSubsession ? (
+                  <ControlButton
+                    compact
+                    variant="ghost"
+                    onClick={() => onOpenSubsession(task.task.id)}
+                  >
+                    {t("runtimeOps.openSubsession")}
+                  </ControlButton>
+                ) : null}
                 <ControlButton
                   compact
                   variant={
