@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -101,11 +102,87 @@ def test_background_process_logs_retains_bounded_recent_lines(tmp_path: Path) ->
     assert stdout_artifact_id == str(references[0]).removeprefix("artifact:")
     assert logs_result.reference == references[0]
     assert "Background process logs truncated" in (logs_result.content or "")
+    assert "retained log tails" in (logs_result.content or "")
+    assert "full logs" not in (logs_result.content or "")
     stop_tool.invoke(
         ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),
         workspace=tmp_path,
     )
     runtime.__exit__(None, None, None)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="posix-only process group behavior")
+def test_background_process_stop_escalates_when_descendant_ignores_sigterm(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    start_tool = runtime._base_tool_registry.resolve("background_process_start")
+    stop_tool = runtime._base_tool_registry.resolve("background_process_stop")
+    child_file = tmp_path / "child.pid"
+    command = (
+        f'"{sys.executable}" -c '
+        f'"import os, signal, subprocess, sys, time; '
+        f"child=subprocess.Popen([sys.executable,'-c',"
+        f"'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']); "
+        f"open(r'{child_file}', 'w', encoding='utf-8').write(str(child.pid)); "
+        f'time.sleep(30)"'
+    )
+    start_result = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": command}),
+        workspace=tmp_path,
+    )
+    process_id = str(start_result.data["process_id"])
+    deadline = time.time() + 5
+    while time.time() < deadline and not child_file.exists():
+        time.sleep(0.05)
+    assert child_file.exists()
+    child_pid = int(child_file.read_text(encoding="utf-8"))
+    stop_result = stop_tool.invoke(
+        ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),
+        workspace=tmp_path,
+    )
+
+    assert stop_result.status == "ok"
+    assert stop_result.data["running"] is False
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+    runtime.__exit__(None, None, None)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="posix-only process group behavior")
+def test_terminate_background_process_group_sends_sigkill_after_leader_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+    waits: list[float | None] = []
+    group_exists = True
+
+    class _FakeProcess:
+        pid = 4321
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            waits.append(timeout)
+            return 0
+
+    def fake_killpg(process_group_id: int, sig: int) -> None:
+        nonlocal group_exists
+        calls.append((process_group_id, sig))
+        if sig == signal.SIGKILL:
+            group_exists = False
+
+    monkeypatch.setattr("voidcode.tools.background_process_start.os.killpg", fake_killpg)
+    monkeypatch.setattr(
+        "voidcode.tools.background_process_start._process_group_exists",
+        lambda _process_group_id: group_exists,
+    )
+
+    _terminate_background_process_group(cast(subprocess.Popen[str], _FakeProcess()))
+
+    assert calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
+    assert waits == [1]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="posix-only process group behavior")

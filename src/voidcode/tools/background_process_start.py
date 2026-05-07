@@ -5,6 +5,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,35 +120,34 @@ class BackgroundProcessManager:
 
 
 def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
-    if os.name == "nt":
-        taskkill = shutil.which("taskkill") or "taskkill"
-        completed = subprocess.run(
-            [taskkill, "/PID", str(process.pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if completed.returncode == 0:
-            return
-        process.kill()
-        process.wait(timeout=1)
+    if _is_windows():
+        _terminate_windows_process_tree(process)
         return
 
     killpg = getattr(os, "killpg", None)
     if callable(killpg):
+        process_group_id = process.pid
         try:
-            killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=1)
+            killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
             return
-        except (ProcessLookupError, subprocess.TimeoutExpired):
+
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+        if _process_group_exists(process_group_id):
             try:
-                killpg(process.pid, signal.SIGKILL)
+                killpg(process_group_id, signal.SIGKILL)
             except ProcessLookupError:
                 return
-            process.wait(timeout=1)
+            if process.poll() is None:
+                process.wait(timeout=1)
+            _wait_for_process_group_exit(process_group_id, timeout=1)
             return
+
+        return
 
     process.terminate()
     try:
@@ -155,6 +155,44 @@ def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=1)
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _terminate_windows_process_tree(process: subprocess.Popen[str]) -> None:
+    taskkill = shutil.which("taskkill") or "taskkill"
+    completed = subprocess.run(
+        [taskkill, "/PID", str(process.pid), "/T", "/F"],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode == 0:
+        return
+    process.kill()
+    process.wait(timeout=1)
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_process_group_exit(process_group_id: int, *, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_group_exists(process_group_id):
+            return
+        time.sleep(0.02)
 
 
 class _BackgroundProcessStartArgs(BaseModel):
