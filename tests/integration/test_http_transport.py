@@ -3540,7 +3540,19 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
     git_error = git_payload["error"]
     assert isinstance(git_error, str)
     assert "not a git repository" in git_error
-    assert status_payload["lsp"] == {"state": "unconfigured", "error": None, "details": {}}
+    assert status_payload["lsp"] == {
+        "state": "unconfigured",
+        "error": None,
+        "details": {
+            "mode": "disabled",
+            "configured": False,
+            "configured_enabled": False,
+            "configured_server_count": 0,
+            "running_server_count": 0,
+            "failed_server_count": 0,
+            "servers": [],
+        },
+    }
     assert status_payload["mcp"] == {
         "state": "failed",
         "error": _FailingMcpManager.startup_error,
