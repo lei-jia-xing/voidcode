@@ -512,7 +512,7 @@ class RuntimeRunLoopCoordinator:
         tool: Any,
         tool_call: ToolCall,
         workspace: Any,
-        read_paths: frozenset[str],
+        read_paths: frozenset[str] = frozenset(),
         tool_timeout: int | None,
         session: SessionState,
         start_sequence: int,
