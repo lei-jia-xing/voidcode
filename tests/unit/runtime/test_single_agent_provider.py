@@ -219,7 +219,7 @@ def test_stub_provider_protocol_compact_projection_keeps_provider_invariants() -
             ),
         ),
         session_metadata={},
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     snapshot = inspect_provider_context(

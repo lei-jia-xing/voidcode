@@ -420,13 +420,23 @@ def _incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | Non
         return None
     if result.output is not None:
         return None
+    if _pending_blocked_event(result.session, _last_event(result)) is not None:
+        return None
     last_event = _last_event(result)
     if last_event is not None and last_event.event_type == "runtime.failed":
+        return None
+    if _last_event_is_permission_denied_tool_result(last_event):
         return None
     return (
         "runtime stream ended without a terminal outcome; "
         f"last session status was {result.session.status}"
     )
+
+
+def _last_event_is_permission_denied_tool_result(event: EventEnvelope | None) -> bool:
+    if event is None or event.event_type != "runtime.tool_completed":
+        return False
+    return event.payload.get("permission_denied") is True
 
 
 def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:

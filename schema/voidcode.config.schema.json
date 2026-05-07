@@ -528,10 +528,6 @@
         "auto_compaction": {
           "type": "boolean"
         },
-        "max_tool_results": {
-          "type": "integer",
-          "minimum": 1
-        },
         "max_tool_result_tokens": {
           "type": "integer",
           "minimum": 1
@@ -545,18 +541,6 @@
           "minimum": 1
         },
         "reserved_output_tokens": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "minimum_retained_tool_results": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "recent_tool_result_count": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "recent_tool_result_tokens": {
           "type": "integer",
           "minimum": 1
         },

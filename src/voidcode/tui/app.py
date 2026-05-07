@@ -402,13 +402,11 @@ class VoidCodeTUI(App[int]):
         context_window = cast(dict[str, object], cw)
 
         retained = self._context_int_value(context_window, "retained_tool_result_count")
-        max_count = self._context_int_value(context_window, "max_tool_result_count")
+        token_budget = self._context_int_value(context_window, "token_budget")
 
-        if max_count > 0:
-            pct = int((retained / max_count) * 100)
-            text = f"{retained} / {max_count} results ({pct}%)"
-        else:
-            text = f"{retained} results"
+        text = f"{retained} results"
+        if token_budget > 0:
+            text += f"\n[Budget: {token_budget} tokens]"
 
         if (
             self._context_int_value(context_window, "compacted", 0)

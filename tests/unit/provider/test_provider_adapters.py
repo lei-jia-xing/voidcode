@@ -3273,6 +3273,7 @@ def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> 
     import voidcode.provider.litellm_backend as backend_module
 
     calls: list[str] = []
+    redirects: list[str] = []
 
     class _FakeLiteLLM:
         def _turn_on_debug(self) -> None:
@@ -3284,6 +3285,11 @@ def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
     monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.setattr(
+        backend_module.LiteLLMBackendSingleAgentProvider,
+        "_redirect_litellm_debug_logs",
+        lambda: redirects.append("redirect"),
+    )
 
     provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek-v4-pro")
@@ -3294,6 +3300,7 @@ def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> 
     assert first.output == "ok"
     assert second.output == "ok"
     assert calls == ["debug"]
+    assert redirects == ["redirect"]
 
 
 @pytest.mark.parametrize(

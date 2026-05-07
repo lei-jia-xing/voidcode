@@ -159,14 +159,10 @@ class RuntimeContinuityState:
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
     auto_compaction: bool = True
-    max_tool_results: int = 8
     max_tool_result_tokens: int | None = None
     max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
-    minimum_retained_tool_results: int = 1
-    recent_tool_result_count: int = 1
-    recent_tool_result_tokens: int | None = 3_000
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     tokenizer_model: str | None = "cl100k_base"
@@ -186,8 +182,6 @@ class ContextWindowPolicy:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
-        if self.max_tool_results < 0:
-            raise ValueError("max_tool_results must be >= 0")
         if self.max_tool_result_tokens is not None and self.max_tool_result_tokens < 1:
             raise ValueError("max_tool_result_tokens must be >= 1 when provided")
         if self.max_context_ratio is not None and not 0 < self.max_context_ratio <= 1:
@@ -196,12 +190,6 @@ class ContextWindowPolicy:
             raise ValueError("model_context_window_tokens must be >= 1 when provided")
         if self.reserved_output_tokens is not None and self.reserved_output_tokens < 0:
             raise ValueError("reserved_output_tokens must be >= 0 when provided")
-        if self.minimum_retained_tool_results < 0:
-            raise ValueError("minimum_retained_tool_results must be >= 0")
-        if self.recent_tool_result_count < 0:
-            raise ValueError("recent_tool_result_count must be >= 0")
-        if self.recent_tool_result_tokens is not None and self.recent_tool_result_tokens < 1:
-            raise ValueError("recent_tool_result_tokens must be >= 1 when provided")
         if self.default_tool_result_tokens is not None and self.default_tool_result_tokens < 1:
             raise ValueError("default_tool_result_tokens must be >= 1 when provided")
         for tool_name, limit in self.per_tool_result_tokens.items():
@@ -239,9 +227,6 @@ class ContextWindowPolicy:
         payload: dict[str, object] = {
             "version": 1,
             "auto_compaction": self.auto_compaction,
-            "max_tool_results": self.max_tool_results,
-            "minimum_retained_tool_results": self.minimum_retained_tool_results,
-            "recent_tool_result_count": self.recent_tool_result_count,
             "continuity_preview_items": self.continuity_preview_items,
             "continuity_preview_chars": self.continuity_preview_chars,
         }
@@ -253,8 +238,6 @@ class ContextWindowPolicy:
             payload["model_context_window_tokens"] = self.model_context_window_tokens
         if self.reserved_output_tokens is not None:
             payload["reserved_output_tokens"] = self.reserved_output_tokens
-        if self.recent_tool_result_tokens is not None:
-            payload["recent_tool_result_tokens"] = self.recent_tool_result_tokens
         if self.default_tool_result_tokens is not None:
             payload["default_tool_result_tokens"] = self.default_tool_result_tokens
         if self.per_tool_result_tokens:
@@ -283,7 +266,6 @@ class RuntimeContextWindow:
     compaction_reason: str | None = None
     original_tool_result_count: int = 0
     retained_tool_result_count: int = 0
-    max_tool_result_count: int = 0
     original_tool_result_tokens: int | None = None
     retained_tool_result_tokens: int | None = None
     dropped_tool_result_tokens: int | None = None
@@ -302,7 +284,6 @@ class RuntimeContextWindow:
             "compaction_reason": self.compaction_reason,
             "original_tool_result_count": self.original_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
-            "max_tool_result_count": self.max_tool_result_count,
         }
         if self.original_tool_result_tokens is not None:
             payload["original_tool_result_tokens"] = self.original_tool_result_tokens
@@ -402,8 +383,6 @@ def _compact_recent_tier_segments(
         drop_recent = False
         if tier == "recent":
             if source in {"continuity_summary", "runtime_context_artifact_reference"}:
-                drop_recent = True
-            elif source == "retained_tool_result" and tool_call_id is not None:
                 drop_recent = True
 
         if drop_recent:
@@ -712,6 +691,8 @@ def _facts_from_tool_results(
     refs: list[str] = []
     delegated: list[str] = []
     for result in results[:preview_item_limit]:
+        if result.tool_name == "todo_write":
+            continue
         preview = _tool_result_preview(result, max_preview_chars=preview_char_limit)
         if result.status == "ok":
             progress.append(f"Tool result compacted: {preview}")
@@ -932,17 +913,10 @@ def _dropped_tool_diagnostics(
 
 def _select_recent_tool_result_indexes(
     results: tuple[ToolResult, ...],
-    *,
-    max_tool_results: int,
-    protected_recent_count: int,
 ) -> tuple[int, ...]:
     if not results:
         return ()
-    count_limit = max(max_tool_results, min(protected_recent_count, len(results)))
-    if max_tool_results == 0:
-        count_limit = min(protected_recent_count, len(results))
-    start = max(0, len(results) - count_limit)
-    return tuple(range(start, len(results)))
+    return tuple(range(len(results)))
 
 
 def _retain_indexes_within_token_budget(
@@ -950,23 +924,14 @@ def _retain_indexes_within_token_budget(
     candidate_indexes: tuple[int, ...],
     *,
     token_budget: int,
-    protected_recent_count: int,
     tokenizer_model: str | None,
 ) -> tuple[int, ...]:
     if not candidate_indexes:
         return ()
-    protected_recent_count = min(protected_recent_count, len(results))
-    protected_start = len(results) - protected_recent_count
-    protected_indexes = {index for index in candidate_indexes if index >= protected_start}
-    retained = set(protected_indexes)
-    retained_tokens = sum(
-        _tool_result_token_estimate(results[index], tokenizer_model=tokenizer_model).tokens
-        for index in protected_indexes
-    )
-    for index in sorted(
-        (index for index in candidate_indexes if index not in protected_indexes),
-        reverse=True,
-    ):
+    retained: set[int] = set()
+    retained_tokens = 0
+    ordered_indexes = tuple(sorted(candidate_indexes, reverse=True))
+    for index in ordered_indexes:
         estimate = _tool_result_token_estimate(
             results[index], tokenizer_model=tokenizer_model
         ).tokens
@@ -974,7 +939,10 @@ def _retain_indexes_within_token_budget(
             continue
         retained.add(index)
         retained_tokens += estimate
-    return tuple(sorted(retained))
+    if retained:
+        return tuple(sorted(retained))
+    newest_index = ordered_indexes[0]
+    return (newest_index,)
 
 
 def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
@@ -1097,29 +1065,6 @@ def _truncate_tool_result_content(
     )
 
 
-def _retain_results_within_token_budget(
-    tool_results: tuple[ToolResult, ...],
-    *,
-    token_budget: int,
-    minimum_retained_results: int,
-    tokenizer_model: str | None,
-) -> tuple[ToolResult, ...]:
-    if not tool_results:
-        return ()
-
-    retained_reversed: list[ToolResult] = []
-    retained_tokens = 0
-    minimum_count = min(minimum_retained_results, len(tool_results))
-    for result in reversed(tool_results):
-        estimate = _tool_result_token_estimate(result, tokenizer_model=tokenizer_model).tokens
-        must_retain = len(retained_reversed) < minimum_count
-        if not must_retain and retained_tokens + estimate > token_budget:
-            break
-        retained_reversed.append(result)
-        retained_tokens += estimate
-    return tuple(reversed(retained_reversed))
-
-
 def _token_estimate_source(policy: ContextWindowPolicy, sample: str = "sample") -> str:
     return _estimated_token_count(sample, tokenizer_model=policy.tokenizer_model).source
 
@@ -1196,26 +1141,10 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
         )
     return ContextWindowPolicy(
         auto_compaction=auto_compaction,
-        max_tool_results=_coerce_int(
-            payload,
-            "max_tool_results",
-            default=ContextWindowPolicy().max_tool_results,
-        ),
         max_tool_result_tokens=_coerce_optional_int(payload, "max_tool_result_tokens"),
         max_context_ratio=float(max_context_ratio) if max_context_ratio is not None else None,
         model_context_window_tokens=_coerce_optional_int(payload, "model_context_window_tokens"),
         reserved_output_tokens=_coerce_optional_int(payload, "reserved_output_tokens"),
-        minimum_retained_tool_results=_coerce_int(
-            payload,
-            "minimum_retained_tool_results",
-            default=ContextWindowPolicy().minimum_retained_tool_results,
-        ),
-        recent_tool_result_count=_coerce_int(
-            payload,
-            "recent_tool_result_count",
-            default=ContextWindowPolicy().recent_tool_result_count,
-        ),
-        recent_tool_result_tokens=_coerce_optional_int(payload, "recent_tool_result_tokens"),
         default_tool_result_tokens=_coerce_optional_int(payload, "default_tool_result_tokens"),
         per_tool_result_tokens=per_tool,
         tokenizer_model=tokenizer_model,
@@ -1315,13 +1244,16 @@ def _build_continuity_state(
     distillation_candidate: Mapping[str, object] | None = None,
 ) -> RuntimeContinuityState:
     dropped_count = len(dropped_results)
+    previewable_dropped_results = tuple(
+        result for result in dropped_results if result.tool_name != "todo_write"
+    )
     previous = _previous_continuity_state(session_metadata)
     objective = previous.objective if previous is not None else None
     if objective is None:
         objective = _line_preview(prompt, limit=160) if prompt.strip() else None
     current_goal = _line_preview(prompt, limit=160) if prompt.strip() else objective
     progress, blockers, refs, delegated = _facts_from_tool_results(
-        dropped_results,
+        previewable_dropped_results,
         preview_item_limit=preview_item_limit,
         preview_char_limit=preview_char_limit,
     )
@@ -1361,16 +1293,18 @@ def _build_continuity_state(
             source_references=previous.source_references if previous is not None else (),
         )
 
-    preview_count = min(preview_item_limit, dropped_count)
-    lines = [f"Compacted {dropped_count} earlier tool results:"]
-    for index, result in enumerate(dropped_results[:preview_count], start=1):
-        lines.append(
-            f"{index}. {_tool_result_preview(result, max_preview_chars=preview_char_limit)}"
-        )
-    remaining = dropped_count - preview_count
-    if remaining > 0:
-        lines.append(f"... and {remaining} more")
-    legacy_summary = "\n".join(lines)
+    legacy_summary = None
+    if previewable_dropped_results:
+        preview_count = min(preview_item_limit, len(previewable_dropped_results))
+        lines = [f"Compacted {dropped_count} earlier tool results:"]
+        for index, result in enumerate(previewable_dropped_results[:preview_count], start=1):
+            lines.append(
+                f"{index}. {_tool_result_preview(result, max_preview_chars=preview_char_limit)}"
+            )
+        remaining = len(previewable_dropped_results) - preview_count
+        if remaining > 0:
+            lines.append(f"... and {remaining} more")
+        legacy_summary = "\n".join(lines)
     state_without_summary = RuntimeContinuityState(
         objective=objective,
         current_goal=current_goal,
@@ -1451,8 +1385,11 @@ def _build_continuity_state(
             )
 
     canonical_summary = _continuity_summary_text(state_without_summary)
+    summary_text = canonical_summary
+    if legacy_summary is not None:
+        summary_text = f"{canonical_summary}\n\n## Dropped Tool Preview\n{legacy_summary}"
     return RuntimeContinuityState(
-        summary_text=f"{canonical_summary}\n\n## Dropped Tool Preview\n{legacy_summary}",
+        summary_text=summary_text,
         objective=state_without_summary.objective,
         current_goal=state_without_summary.current_goal,
         verbatim_user_constraints=state_without_summary.verbatim_user_constraints,
@@ -1732,20 +1669,11 @@ def project_tool_results_for_context_window(
     policy: ContextWindowPolicy,
 ) -> ToolResultProjection:
     token_budget = _policy_token_budget(policy)
-    original_count = len(tool_results)
-    protected_recent_count = max(
-        policy.minimum_retained_tool_results,
-        policy.recent_tool_result_count,
-    )
-    protected_recent_count = min(protected_recent_count, original_count)
-    protected_start = original_count - protected_recent_count
     truncated_results: list[ToolResult] = []
     truncated_count = 0
     for index, result in enumerate(tool_results):
-        if index >= protected_start:
-            content_limit = policy.recent_tool_result_tokens
-        else:
-            content_limit = _tool_limit_for_result(result, policy)
+        _ = index
+        content_limit = _tool_limit_for_result(result, policy)
         truncated_result, was_truncated = _truncate_tool_result_content(
             result,
             limit=content_limit,
@@ -1756,17 +1684,12 @@ def project_tool_results_for_context_window(
             truncated_count += 1
     prepared_results = tuple(truncated_results)
 
-    count_limited_indexes = _select_recent_tool_result_indexes(
-        prepared_results,
-        max_tool_results=policy.max_tool_results,
-        protected_recent_count=protected_recent_count,
-    )
+    count_limited_indexes = _select_recent_tool_result_indexes(prepared_results)
     retained_indexes = (
         _retain_indexes_within_token_budget(
             prepared_results,
             count_limited_indexes,
             token_budget=token_budget,
-            protected_recent_count=protected_recent_count,
             tokenizer_model=policy.tokenizer_model,
         )
         if token_budget is not None
@@ -1854,7 +1777,6 @@ def prepare_provider_context(
             compaction_reason=None,
             original_tool_result_count=original_count,
             retained_tool_result_count=retained_count,
-            max_tool_result_count=effective_policy.max_tool_results,
             original_tool_result_tokens=original_tokens,
             retained_tool_result_tokens=retained_tokens,
             dropped_tool_result_tokens=0 if token_budget is not None else None,
@@ -1920,7 +1842,6 @@ def prepare_provider_context(
         compaction_reason="tool_result_window" if compacted else None,
         original_tool_result_count=original_count,
         retained_tool_result_count=retained_count,
-        max_tool_result_count=effective_policy.max_tool_results,
         original_tool_result_tokens=original_tokens,
         retained_tool_result_tokens=retained_tokens,
         dropped_tool_result_tokens=dropped_tokens,
@@ -1949,6 +1870,7 @@ def assemble_provider_context(
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: RuntimeContinuityState | None = None,
     workspace: Path | None = None,
+    replay_retained_tool_messages: bool = True,
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
@@ -2053,49 +1975,50 @@ def assemble_provider_context(
         )
         for section in assembly_plan.sections
     ]
-    for index, result in enumerate(context_window.tool_results, start=1):
-        if todo_prompt_context is not None and result.tool_name == "todo_write":
-            continue
-        raw_tool_call_id = result.data.get("tool_call_id")
-        tool_call_id = (
-            raw_tool_call_id
-            if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
-            else f"voidcode_tool_{index}"
-        )
-        raw_arguments = result.data.get("arguments")
-        tool_arguments: dict[str, object]
-        if isinstance(raw_arguments, dict):
-            tool_arguments = dict(cast(dict[str, object], raw_arguments))
-        else:
-            tool_arguments = {}
-        segments.append(
-            RuntimeContextSegment(
-                role="assistant",
-                content=None,
-                tool_call_id=tool_call_id,
-                tool_name=result.tool_name,
-                tool_arguments=tool_arguments,
-                metadata={"source": "retained_tool_result", "tier": "recent"},
+    if replay_retained_tool_messages:
+        for index, result in enumerate(context_window.tool_results, start=1):
+            if todo_prompt_context is not None and result.tool_name == "todo_write":
+                continue
+            raw_tool_call_id = result.data.get("tool_call_id")
+            tool_call_id = (
+                raw_tool_call_id
+                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
+                else f"voidcode_tool_{index}"
             )
-        )
-        segments.append(
-            RuntimeContextSegment(
-                role="tool",
-                content=result.content or "",
-                tool_call_id=tool_call_id,
-                tool_name=result.tool_name,
-                metadata={
-                    "source": "retained_tool_result",
-                    "tier": "recent",
-                    "status": result.status,
-                    "error": result.error,
-                    "data": result.data,
-                    "truncated": result.truncated,
-                    "partial": result.partial,
-                    "reference": result.reference,
-                },
+            raw_arguments = result.data.get("arguments")
+            tool_arguments: dict[str, object]
+            if isinstance(raw_arguments, dict):
+                tool_arguments = dict(cast(dict[str, object], raw_arguments))
+            else:
+                tool_arguments = {}
+            segments.append(
+                RuntimeContextSegment(
+                    role="assistant",
+                    content=None,
+                    tool_call_id=tool_call_id,
+                    tool_name=result.tool_name,
+                    tool_arguments=tool_arguments,
+                    metadata={"source": "retained_tool_result", "tier": "recent"},
+                )
             )
-        )
+            segments.append(
+                RuntimeContextSegment(
+                    role="tool",
+                    content=result.content or "",
+                    tool_call_id=tool_call_id,
+                    tool_name=result.tool_name,
+                    metadata={
+                        "source": "retained_tool_result",
+                        "tier": "recent",
+                        "status": result.status,
+                        "error": result.error,
+                        "data": result.data,
+                        "truncated": result.truncated,
+                        "partial": result.partial,
+                        "reference": result.reference,
+                    },
+                )
+            )
     metadata_payload["context_tiers"] = _context_tier_metadata(segments)
     metadata_payload["context_tier_policy"] = {
         "version": 1,

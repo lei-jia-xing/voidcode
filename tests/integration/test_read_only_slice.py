@@ -1276,7 +1276,7 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
                 approval_mode="allow",
                 execution_engine="provider",
                 model="opencode/gpt-5.4",
-                context_window=config_module.RuntimeContextWindowConfig(max_tool_results=1),
+                context_window=config_module.RuntimeContextWindowConfig(max_tool_result_tokens=30),
             ),
             permission_policy=permission_module.PermissionPolicy(mode="allow"),
             model_provider_registry=model_provider_module.ModelProviderRegistry(
@@ -1316,6 +1316,7 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
         isinstance(content, str)
         and "Runtime-managed todo state is active" in content
         and "make todo runtime-owned" in content
+        and "Do not call todo_write again unless you are actually changing" in content
         and "document completed setup" not in content
         for content in second_request_system_segments
     )
@@ -1426,16 +1427,79 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     assert provider_context is not None
     assert provider_context.provider == "opencode-go"
     tool_segments = [segment for segment in provider_context.segments if segment.role == "tool"]
-    assert len(tool_segments) == 1
-    assert tool_segments[0].tool_name == "read_file"
-    assert tool_segments[0].content == raw_content
-    assert tool_segments[0].metadata["status"] == "ok"
+    assert tool_segments == []
     assert provider_context.provider_messages[-1].source == "provider_synthetic_tool_feedback"
     synthetic_feedback = provider_context.provider_messages[-1].content or ""
     assert synthetic_feedback.count('"tool_name": "read_file"') == 1
     assert "1: alpha" in synthetic_feedback
     assert "tool_status" not in synthetic_feedback
     assert "display" not in synthetic_feedback
+
+
+def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+    _ = (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+
+    class _ContinuationModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    if len(requests) == 1:
+                        return provider_protocol_module.ProviderTurnResult(
+                            tool_call=tool_contracts_module.ToolCall(
+                                tool_name="read_file",
+                                arguments={"filePath": "sample.txt"},
+                                tool_call_id="read-1",
+                            )
+                        )
+                    return provider_protocol_module.ProviderTurnResult(output="done")
+
+            return _Provider()
+
+    runtime = service_module.VoidCodeRuntime(
+        workspace=tmp_path,
+        config=config_module.RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+        ),
+        permission_policy=permission_module.PermissionPolicy(mode="allow"),
+        model_provider_registry=model_provider_module.ModelProviderRegistry(
+            providers={"opencode": _ContinuationModelProvider()}
+        ),
+    )
+
+    first = runtime.run(runtime_request(prompt="read sample.txt", session_id="continue-session"))
+    second = runtime.run(
+        runtime_request(
+            prompt="what did the file say?",
+            session_id="continue-session",
+        )
+    )
+
+    assert first.session.status == "completed"
+    assert second.session.status == "completed"
+    assert len(requests) == 3
+    continued_context = _assembled_context(requests[1])
+    assert [result.tool_name for result in continued_context.tool_results] == ["read_file"]
+    assert continued_context.tool_results[0].content is not None
+    assert "1: alpha" in cast(str, continued_context.tool_results[0].content)
+    assert continued_context.tool_results[0].data["tool_call_id"] == "read-1"
+    assert continued_context.tool_results[0].data["arguments"] == {"filePath": "sample.txt"}
+    assert _assembled_context(requests[2]).tool_results == continued_context.tool_results
 
 
 def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shape(
@@ -1488,7 +1552,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            context_window=config_module.RuntimeContextWindowConfig(max_tool_results=1),
+            context_window=config_module.RuntimeContextWindowConfig(max_tool_result_tokens=30),
         ),
         permission_policy=permission_module.PermissionPolicy(mode="allow"),
         model_provider_registry=model_provider_module.ModelProviderRegistry(

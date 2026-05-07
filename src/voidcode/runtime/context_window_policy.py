@@ -13,14 +13,10 @@ def context_window_config_from_policy(
         return None
     return RuntimeContextWindowConfig(
         auto_compaction=policy.auto_compaction,
-        max_tool_results=policy.max_tool_results,
         max_tool_result_tokens=policy.max_tool_result_tokens,
         max_context_ratio=policy.max_context_ratio,
         model_context_window_tokens=policy.model_context_window_tokens,
         reserved_output_tokens=policy.reserved_output_tokens,
-        minimum_retained_tool_results=policy.minimum_retained_tool_results,
-        recent_tool_result_count=policy.recent_tool_result_count,
-        recent_tool_result_tokens=policy.recent_tool_result_tokens,
         default_tool_result_tokens=policy.default_tool_result_tokens,
         per_tool_result_tokens=dict(policy.per_tool_result_tokens),
         tokenizer_model=policy.tokenizer_model,
@@ -55,14 +51,10 @@ def context_window_policy_from_config(
                 model_context_window_tokens = metadata.context_window
     return ContextWindowPolicy(
         auto_compaction=config.auto_compaction,
-        max_tool_results=config.max_tool_results,
         max_tool_result_tokens=config.max_tool_result_tokens,
         max_context_ratio=config.max_context_ratio,
         model_context_window_tokens=model_context_window_tokens,
         reserved_output_tokens=config.reserved_output_tokens,
-        minimum_retained_tool_results=config.minimum_retained_tool_results,
-        recent_tool_result_count=config.recent_tool_result_count,
-        recent_tool_result_tokens=config.recent_tool_result_tokens,
         default_tool_result_tokens=config.default_tool_result_tokens,
         per_tool_result_tokens=dict(config.per_tool_result_tokens),
         tokenizer_model=config.tokenizer_model,

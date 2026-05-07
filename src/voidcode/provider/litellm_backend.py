@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -50,6 +52,7 @@ _MAX_PROVIDER_TOOL_NAME_LENGTH = 64
 _PROVIDER_TOOL_NAME_HASH_LENGTH = 8
 _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
 _LITELLM_DEBUG_ENABLED = False
+_LITELLM_DEBUG_HANDLER: logging.Handler | None = None
 
 
 def _usage_int(raw: object) -> int:
@@ -415,47 +418,45 @@ class LiteLLMBackendSingleAgentProvider:
         messages: list[dict[str, object]] = []
         if self._tool_feedback_mode_for_request(request) == "synthetic_user_message":
             tool_feedback_lines: list[str] = []
+            for result in assembled_context.tool_results:
+                raw_data = result.data
+                sanitized_data = (
+                    sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
+                )
+                raw_arguments = sanitized_data.get("arguments")
+                sanitized_arguments = (
+                    self._provider_visible_arguments(
+                        result.tool_name,
+                        cast(dict[str, object], raw_arguments),
+                    )
+                    if isinstance(raw_arguments, dict)
+                    else {}
+                )
+                payload = {
+                    "tool_name": self._provider_tool_name(
+                        result.tool_name,
+                        original_to_provider=original_to_provider,
+                    ),
+                    "arguments": sanitized_arguments,
+                    "status": result.status,
+                    "content": result.content or "",
+                    "error": result.error,
+                    "data": {
+                        key: value
+                        for key, value in sanitized_data.items()
+                        if key not in {"tool_call_id", "arguments"}
+                    },
+                    "truncated": result.truncated,
+                    "partial": result.partial,
+                    "reference": result.reference,
+                }
+                tool_feedback_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             for segment in assembled_context.segments:
+                if segment.role == "assistant" and segment.tool_name is not None:
+                    continue
                 if segment.role == "tool":
-                    metadata = segment.metadata or {}
-                    raw_data = metadata.get("data")
-                    sanitized_data = (
-                        sanitize_tool_result_data(cast(dict[str, object], raw_data))
-                        if isinstance(raw_data, dict)
-                        else {}
-                    )
-                    raw_arguments = sanitized_data.get("arguments")
-                    sanitized_arguments = (
-                        self._provider_visible_arguments(
-                            segment.tool_name,
-                            cast(dict[str, object], raw_arguments),
-                        )
-                        if isinstance(raw_arguments, dict)
-                        else {}
-                    )
-                    payload = {
-                        "tool_name": self._provider_tool_name(
-                            segment.tool_name,
-                            original_to_provider=original_to_provider,
-                        ),
-                        "arguments": sanitized_arguments,
-                        "status": metadata.get("status"),
-                        "content": segment.content or "",
-                        "error": metadata.get("error"),
-                        "data": {
-                            key: value
-                            for key, value in sanitized_data.items()
-                            if key not in {"tool_call_id", "arguments"}
-                        },
-                        "truncated": metadata.get("truncated"),
-                        "partial": metadata.get("partial"),
-                        "reference": metadata.get("reference"),
-                    }
-                    tool_feedback_lines.append(
-                        json.dumps(payload, ensure_ascii=False, sort_keys=True)
-                    )
-                elif segment.role != "assistant":
-                    messages.append({"role": segment.role, "content": segment.content})
+                    continue
+                messages.append({"role": segment.role, "content": segment.content})
             if tool_feedback_lines:
                 intro_line_1 = "Completed tool calls for current request:"
                 intro_line_2 = (
@@ -756,13 +757,34 @@ class LiteLLMBackendSingleAgentProvider:
 
     @staticmethod
     def _enable_litellm_debug(module_any: Any) -> None:
-        global _LITELLM_DEBUG_ENABLED
+        global _LITELLM_DEBUG_ENABLED, _LITELLM_DEBUG_HANDLER
         if _LITELLM_DEBUG_ENABLED:
             return
+        _LITELLM_DEBUG_HANDLER = LiteLLMBackendSingleAgentProvider._redirect_litellm_debug_logs()
         turn_on_debug = getattr(module_any, "_turn_on_debug", None)
         if callable(turn_on_debug):
             turn_on_debug()
             _LITELLM_DEBUG_ENABLED = True
+
+    @staticmethod
+    def _redirect_litellm_debug_logs() -> logging.Handler:
+        log_path = Path(
+            os.environ.get("VOIDCODE_LITELLM_DEBUG_LOG", "/tmp/voidcode-litellm-debug.log")
+        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(name)s:%(levelname)s %(filename)s:%(lineno)s - %(message)s"
+            )
+        )
+        for logger_name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
+            litellm_logger = logging.getLogger(logger_name)
+            for existing_handler in tuple(litellm_logger.handlers):
+                litellm_logger.removeHandler(existing_handler)
+            litellm_logger.addHandler(handler)
+            litellm_logger.propagate = False
+        return handler
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         model_identifier = self._model_identifier(request)

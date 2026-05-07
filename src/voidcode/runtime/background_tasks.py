@@ -201,7 +201,6 @@ class RuntimeBackgroundTaskSupervisor:
         )
 
     def task_with_observability(self, task: BackgroundTaskState) -> BackgroundTaskState:
-        task = self.reconcile_task_with_child_session_truth(task)
         runtime = self._runtime
         queued_summaries = runtime._session_store.list_queued_background_tasks(
             workspace=runtime._workspace
@@ -227,7 +226,6 @@ class RuntimeBackgroundTaskSupervisor:
             workspace=self._runtime._workspace,
             task_id=summary.task.id,
         )
-        task = self.reconcile_task_with_child_session_truth(task)
         return replace(summary, observability=self.task_observability(task))
 
     def summaries_with_observability(
@@ -243,11 +241,9 @@ class RuntimeBackgroundTaskSupervisor:
         task_ids_to_load = {summary.task.id for summary in summaries}
         task_ids_to_load.update(summary.task.id for summary in queued_summaries)
         tasks_by_id = {
-            task_id: self.reconcile_task_with_child_session_truth(
-                runtime._session_store.load_background_task(
-                    workspace=runtime._workspace,
-                    task_id=task_id,
-                )
+            task_id: runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=task_id,
             )
             for task_id in task_ids_to_load
         }
@@ -823,8 +819,13 @@ class RuntimeBackgroundTaskSupervisor:
         *,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
-        task = self._runtime.load_background_task(task_id)
-        task = self.reconcile_task_with_child_session_truth(task)
+        validate_background_task_id(task_id)
+        task = self._runtime._session_store.load_background_task(
+            workspace=self._runtime._workspace,
+            task_id=task_id,
+        )
+        if task.status == "interrupted":
+            task = self.repair_interrupted_task_from_child_terminal_session(task)
         self.backfill_parent_background_task_event(task=task)
         result = self.background_task_result(task=task)
         if emit_result_read_hook:
@@ -838,28 +839,22 @@ class RuntimeBackgroundTaskSupervisor:
             )
         return result
 
-    def reconcile_task_with_child_session_truth(
+    def repair_interrupted_task_from_child_terminal_session(
         self, task: BackgroundTaskState
     ) -> BackgroundTaskState:
+        """Recover a stale interrupted task when its child session already finished.
+
+        This is intentionally not a general reconciliation path: active running tasks
+        keep their task row as the runtime truth while their worker owns finalization.
+        """
         if task.session_id is None:
             return task
-        if task.status not in {"running", "interrupted"}:
+        if task.status != "interrupted":
             return task
-        child_result = self.load_background_task_child_result(task=task)
-        if child_result is not None and child_result.status in {"completed", "failed"}:
-            error = child_result.error if child_result.status == "failed" else None
-            terminal_task = self._runtime._session_store.mark_background_task_terminal(
-                workspace=self._runtime._workspace,
-                task_id=task.task.id,
-                status=cast(BackgroundTaskStatus, child_result.status),
-                error=error,
-            )
-            self.run_background_task_lifecycle_hook(terminal_task)
-            return terminal_task
         child_response = self.load_background_task_child_response(task=task)
         if child_response is None:
             return task
-        if child_response.session.status in {"waiting", "completed", "failed"}:
+        if child_response.session.status in {"completed", "failed"}:
             self.finalize_background_task_from_session_response(session_response=child_response)
             return self._runtime._session_store.load_background_task(
                 workspace=self._runtime._workspace,

@@ -722,7 +722,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
                     metadata={
                         "context_window": {
                             "retained_tool_result_count": 5,
-                            "max_tool_result_count": 10,
+                            "token_budget": 120,
                         }
                     },
                 )
@@ -730,7 +730,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
                 app.on_stream_chunk_received(StreamChunkReceived(chunk))
                 await pilot.pause()
 
-                assert app.query_one("#context-panel").content == "5 / 10 results (50%)"
+                assert app.query_one("#context-panel").content == "5 results\n[Budget: 120 tokens]"
 
                 mock_session_compacted = _StubSession(
                     session=_StubSessionRef(id="test-session"),
@@ -738,7 +738,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
                     metadata={
                         "context_window": {
                             "retained_tool_result_count": 10,
-                            "max_tool_result_count": 10,
+                            "token_budget": 240,
                             "compacted": True,
                             "compaction_reason": "token limit",
                         }
@@ -752,5 +752,5 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
 
                 assert (
                     app.query_one("#context-panel").content
-                    == "10 / 10 results (100%)\n[Compacted: token limit]"
+                    == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
                 )

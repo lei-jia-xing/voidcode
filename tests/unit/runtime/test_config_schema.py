@@ -193,12 +193,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     }
     context_window_config = cast(dict[str, object], defs["contextWindowConfig"])
     context_window_properties = cast(dict[str, object], context_window_config["properties"])
-    for key in (
-        "max_tool_results",
-        "minimum_retained_tool_results",
-        "recent_tool_result_count",
-        "reserved_output_tokens",
-    ):
+    for key in ("reserved_output_tokens",):
         numeric_property = cast(dict[str, object], context_window_properties[key])
         assert numeric_property["minimum"] == 1
     pressure_threshold = cast(

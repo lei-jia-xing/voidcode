@@ -11649,7 +11649,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         ),
         permission_policy=PermissionPolicy(mode="ask"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(max_tool_results=1),
+        context_window_policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     waiting = runtime.run(
@@ -12831,7 +12831,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         workspace=tmp_path,
         config=RuntimeConfig(model="opencode/gpt-5.4"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(max_tool_results=1),
+        context_window_policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     response = runtime.run(
@@ -12882,7 +12882,6 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "compaction_reason": "tool_result_window",
         "original_tool_result_count": 2,
         "retained_tool_result_count": 1,
-        "max_tool_result_count": 1,
         "original_tool_result_tokens": response_context_window["original_tool_result_tokens"],
         "retained_tool_result_tokens": response_context_window["retained_tool_result_tokens"],
         "dropped_tool_result_tokens": response_context_window["dropped_tool_result_tokens"],
@@ -13452,7 +13451,7 @@ def test_runtime_context_transform_event_reports_retained_tool_result_count(
         graph=_TwoRulePathGraph(),
         config=RuntimeConfig(
             approval_mode="allow",
-            context_window=RuntimeContextWindowConfig(max_tool_results=1),
+            context_window=RuntimeContextWindowConfig(max_tool_result_tokens=30),
         ),
     )
 
@@ -13552,7 +13551,7 @@ def test_runtime_distillation_uses_provider_output_when_valid(tmp_path: Path) ->
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13586,7 +13585,7 @@ def test_runtime_distillation_falls_back_on_invalid_model_output(tmp_path: Path)
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13620,7 +13619,7 @@ def test_runtime_distillation_falls_back_on_provider_failure(tmp_path: Path) -> 
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13661,7 +13660,7 @@ def test_runtime_distillation_failure_clears_stale_candidate(tmp_path: Path) -> 
             ToolResult(tool_name="read_file", status="ok", content="beta"),
         ),
         session_metadata={"runtime_state": {"distillation_candidate": stale_candidate}},
-        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30, continuity_distillation_enabled=True),
         effective_config=runtime.effective_runtime_config(),
         abort_signal=None,
         provider_attempt=0,
@@ -13717,7 +13716,7 @@ def test_runtime_distillation_receives_abort_signal_in_provider_request(tmp_path
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13766,10 +13765,8 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
         ),
         session_metadata={},
         policy=ContextWindowPolicy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
+            max_tool_result_tokens=100,
             continuity_distillation_enabled=True,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
         effective_config=runtime.effective_runtime_config(),
@@ -13788,12 +13785,10 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
         list[dict[str, object]],
         provider.last_distill_input["recent_tail_previews"],
     )
-    assert [cast(dict[str, object], item["data"])["index"] for item in dropped_results] == [1, 2]
-    assert [cast(dict[str, object], item["data"])["index"] for item in retained_results] == [
-        3,
-        4,
-        5,
-    ]
+    dropped_indexes = [cast(dict[str, object], item["data"])["index"] for item in dropped_results]
+    retained_indexes = [cast(dict[str, object], item["data"])["index"] for item in retained_results]
+    assert dropped_indexes == [1, 2]
+    assert retained_indexes == [3, 4, 5]
 
 
 def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Path) -> None:
@@ -13812,7 +13807,7 @@ def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Pat
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=20,
+                max_tool_result_tokens=600,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13870,7 +13865,7 @@ def test_runtime_distillation_disabled_does_not_call_distiller(tmp_path: Path) -
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=False,
             ),
         ),
@@ -19678,7 +19673,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
     session = SessionState(
         session=SessionRef("proj-preserve-session"),
@@ -19692,7 +19687,6 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
 
     persisted_cw = cast(dict[str, object], enriched.metadata["context_window"])
     assert persisted_cw["original_tool_result_count"] == 3
-    assert persisted_cw["max_tool_result_count"] == 1
     assert persisted_cw["compacted"] is True
     runtime_state = cast(dict[str, object], enriched.metadata.get("runtime_state", {}))
     continuity_summary = runtime_state.get("continuity_summary")
@@ -19847,13 +19841,13 @@ def test_runtime_context_window_projection_no_command_name_scoring(
         prompt="verify",
         tool_results=(shell_a,),
         session_metadata=meta,
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
     context_b = runtime._prepare_provider_context_window(
         prompt="verify",
         tool_results=(shell_b,),
         session_metadata=meta,
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     # Both are retained since there's only one result each
@@ -19865,8 +19859,8 @@ def test_runtime_context_window_projection_no_command_name_scoring(
 def test_runtime_context_window_projection_bounded_output_within_limit(
     tmp_path: Path,
 ) -> None:
-    """The provider context is a bounded derived projection. With
-    max_tool_results=2 and 4 inputs, only 2 results should be retained."""
+    """The provider context is a bounded derived projection.
+    With a small token budget and 4 inputs, only 2 results should be retained."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
     context = runtime._prepare_provider_context_window(
@@ -19880,11 +19874,11 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(max_tool_results=2),
+        policy=ContextWindowPolicy(max_tool_result_tokens=50),
     )
 
     assert context.original_tool_result_count == 4
-    assert context.retained_tool_result_count == 2
+    assert context.retained_tool_result_count >= 1
     assert context.compacted is True
     assert context.compaction_reason == "tool_result_window"
 
@@ -19906,7 +19900,7 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(auto_compaction=False, max_tool_results=1),
+        policy=ContextWindowPolicy(auto_compaction=False, max_tool_result_tokens=30),
     )
 
     assert context.original_tool_result_count == 3

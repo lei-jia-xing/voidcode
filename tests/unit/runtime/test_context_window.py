@@ -101,8 +101,6 @@ def test_context_window_policy_default_retains_more_tool_results_before_compacti
         policy=policy,
     )
 
-    assert policy.max_tool_results == 8
-    assert policy.recent_tool_result_tokens == 3_000
     assert policy.default_tool_result_tokens == 1_500
     assert policy.protected_context_tiers == ("instruction", "workspace", "task")
     assert context.compacted is False
@@ -153,7 +151,7 @@ def test_prepare_provider_context_keeps_results_within_limit() -> None:
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2)),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=3),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     assert context.prompt == "read sample.txt"
@@ -162,7 +160,7 @@ def test_prepare_provider_context_keeps_results_within_limit() -> None:
     assert context.compaction_reason is None
     assert context.original_tool_result_count == 2
     assert context.retained_tool_result_count == 2
-    assert context.max_tool_result_count == 3
+    assert context.token_budget == 100
     assert context.continuity_state is None
 
 
@@ -172,12 +170,9 @@ def test_prepare_provider_context_uses_pressure_threshold_as_budget_cap() -> Non
         tool_results=tuple(_sized_tool_result(index, content_size=200) for index in range(1, 5)),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=8,
+            max_tool_result_tokens=20,
             model_context_window_tokens=100,
             context_pressure_threshold=0.2,
-            minimum_retained_tool_results=1,
-            recent_tool_result_count=1,
-            recent_tool_result_tokens=1,
             default_tool_result_tokens=1,
         ),
     )
@@ -237,28 +232,24 @@ def test_recent_tier_compaction_trims_recent_sections_under_pressure() -> None:
         policy=_legacy_context_window_policy(
             model_context_window_tokens=120,
             context_pressure_threshold=0.3,
-            max_tool_results=4,
+            max_tool_result_tokens=100,
         ),
     )
 
     recent_compaction = cast(dict[str, object], assembled.metadata["recent_tier_compaction"])
     assert recent_compaction["version"] == 1
     assert recent_compaction["applied"] is True
-    assert recent_compaction["dropped_segment_count"] == 3
-    assert recent_compaction["dropped_sources"] == [
-        "continuity_summary",
-        "retained_tool_result",
-    ]
+    assert recent_compaction["dropped_segment_count"] == 1
+    assert recent_compaction["dropped_sources"] == ["continuity_summary"]
     assert recent_compaction["target_tier"] == "recent"
     assert all(
-        segment.metadata is None
-        or segment.metadata.get("source") not in {"continuity_summary", "retained_tool_result"}
+        segment.metadata is None or segment.metadata.get("source") != "continuity_summary"
         for segment in assembled.segments
         if (segment.metadata or {}).get("tier") == "recent"
     )
     context_tiers = cast(dict[str, object], assembled.metadata["context_tiers"])
     counts = cast(dict[str, int], context_tiers["counts"])
-    assert counts["recent"] == 0
+    assert counts["recent"] == 2
     pressure_before = cast(float, recent_compaction["pressure_ratio_before"])
     pressure_after = cast(float, recent_compaction["pressure_ratio_after"])
     assert pressure_after <= pressure_before
@@ -330,7 +321,7 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
                 }
             }
         },
-        policy=_legacy_context_window_policy(max_tool_results=0),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=1),
     )
 
     system_segments = [
@@ -379,7 +370,7 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
             }
         },
         skill_prompt_context="skill context",
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     assert assembled.metadata["context_tiers"] == {
@@ -424,7 +415,7 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
         ),
         session_metadata={},
         workspace=workspace,
-        policy=ContextWindowPolicy(max_tool_results=4),
+        policy=ContextWindowPolicy(max_tool_result_tokens=100),
     )
 
     rule_segments = [
@@ -465,7 +456,7 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
         tool_results=(),
         session_metadata={},
         hook_preset_context="Resolved agent hook preset guidance.",
-        policy=ContextWindowPolicy(max_tool_results=4),
+        policy=ContextWindowPolicy(max_tool_result_tokens=100),
     )
 
     hook_segments = [
@@ -602,7 +593,7 @@ def test_assemble_provider_context_uses_full_tool_history_for_rules_not_compacte
         tool_results=tuple(results),
         session_metadata={},
         workspace=workspace,
-        policy=ContextWindowPolicy(max_tool_results=4),
+        policy=ContextWindowPolicy(max_tool_result_tokens=100),
     )
 
     rule_segments = [
@@ -659,7 +650,7 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
                 }
             }
         },
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     assert [segment.tool_name for segment in assembled.segments if segment.role == "tool"] == [
@@ -670,6 +661,8 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
     )
     assert "authoritative runtime state" in system_text
     assert "stale tool feedback" not in system_text
+    assert "Do not call todo_write again unless you are actually changing" in system_text
+    assert "If any todo is already in_progress, continue that item" in system_text
 
 
 def test_assemble_provider_context_injects_pending_approval_state() -> None:
@@ -683,7 +676,7 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
                 "blocked_tool": "write_file",
             }
         },
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     pending_segments = [
@@ -717,7 +710,7 @@ def test_assemble_provider_context_injects_pending_question_state() -> None:
                 "blocked_tool": "question",
             }
         },
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     pending_segments = [
@@ -755,7 +748,7 @@ def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
             ),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     snapshot = inspect_provider_context(
@@ -804,7 +797,7 @@ def test_provider_context_inspector_strips_sentinels_from_provider_messages() ->
             ),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     snapshot = inspect_provider_context(
@@ -840,7 +833,7 @@ def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> No
             ),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     snapshot = inspect_provider_context(
@@ -876,7 +869,7 @@ def test_provider_context_inspector_redacts_tool_error_and_data_fields() -> None
             ),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     snapshot = inspect_provider_context(
@@ -1259,20 +1252,19 @@ def test_prepare_provider_context_compacts_old_results_and_reports_metadata() ->
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3), _tool_result(4)),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=2),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=4),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (3, 4)
+    assert tuple(result.data["index"] for result in context.tool_results) == (4,)
     assert context.compacted is True
     assert context.compaction_reason == "tool_result_window"
     assert context.original_tool_result_count == 4
-    assert context.retained_tool_result_count == 2
-    assert context.max_tool_result_count == 2
+    assert context.retained_tool_result_count == 1
     assert context.continuity_state is not None
-    assert context.continuity_state.dropped_tool_result_count == 2
-    assert context.continuity_state.retained_tool_result_count == 2
+    assert context.continuity_state.dropped_tool_result_count == 3
+    assert context.continuity_state.retained_tool_result_count == 1
     assert context.continuity_state.source == "tool_result_window"
-    assert len(context.continuity_state.dropped_tool_results) == 2
+    assert len(context.continuity_state.dropped_tool_results) == 3
     assert context.continuity_state.dropped_tool_results[0].metadata_payload() == {
         "tool_name": "read_file",
         "status": "ok",
@@ -1280,19 +1272,19 @@ def test_prepare_provider_context_compacts_old_results_and_reports_metadata() ->
         "estimated_tokens": context.continuity_state.dropped_tool_results[0].estimated_tokens,
     }
     assert context.continuity_state.summary_text is not None
-    assert "Compacted 2 earlier tool results:" in context.continuity_state.summary_text
+    assert "Compacted 3 earlier tool results:" in context.continuity_state.summary_text
     assert 'content_preview="content-1"' in context.continuity_state.summary_text
     assert 'content_preview="content-2"' in context.continuity_state.summary_text
     assert context.summary_anchor is not None
     assert context.summary_anchor.startswith("continuity:")
-    assert context.summary_source == {"tool_result_start": 0, "tool_result_end": 2}
+    assert context.summary_source == {"tool_result_start": 0, "tool_result_end": 3}
     continuity_payload = cast(dict[str, Any], context.metadata_payload()["continuity_state"])
     assert isinstance(continuity_payload, dict)
     assert continuity_payload["summary_text"] == context.continuity_state.summary_text
     assert continuity_payload["objective"] == "read sample.txt"
     assert continuity_payload["current_goal"] == "read sample.txt"
-    assert continuity_payload["dropped_tool_result_count"] == 2
-    assert continuity_payload["retained_tool_result_count"] == 2
+    assert continuity_payload["dropped_tool_result_count"] == 3
+    assert continuity_payload["retained_tool_result_count"] == 1
     assert continuity_payload["source"] == "tool_result_window"
     assert continuity_payload["version"] == 2
     assert continuity_payload["dropped_tool_results"] == [
@@ -1308,7 +1300,7 @@ def test_prepare_provider_context_uses_explicit_continuity_preview_policy() -> N
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3), _tool_result(4)),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
+            max_tool_result_tokens=2,
             continuity_preview_items=1,
             continuity_preview_chars=5,
         ),
@@ -1369,7 +1361,6 @@ def test_prepare_provider_context_derives_budget_from_context_ratio() -> None:
             max_tool_result_tokens=None,
             max_context_ratio=0.1,
             model_context_window_tokens=500,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
     )
@@ -1383,7 +1374,7 @@ def test_prepare_provider_context_derives_budget_from_context_ratio() -> None:
     assert context.dropped_tool_result_tokens > 0
 
 
-def test_prepare_provider_context_enforces_count_cap_with_token_budget() -> None:
+def test_prepare_provider_context_enforces_token_budget_compaction() -> None:
     context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(
@@ -1394,14 +1385,12 @@ def test_prepare_provider_context_enforces_count_cap_with_token_budget() -> None
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
-            max_tool_result_tokens=1_000,
+            max_tool_result_tokens=12,
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (3, 4)
-    assert context.max_tool_result_count == 2
-    assert context.retained_tool_result_count == 2
+    assert tuple(result.data["index"] for result in context.tool_results) == (4,)
+    assert context.retained_tool_result_count == 1
     assert context.compacted is True
 
 
@@ -1453,20 +1442,18 @@ def test_prepare_provider_context_uses_unicode_aware_token_estimates() -> None:
     assert unicode_context.token_estimate_source == "unicode_aware_chars"
 
 
-def test_prepare_provider_context_keeps_count_policy_when_budget_missing() -> None:
+def test_prepare_provider_context_keeps_all_results_when_budget_missing() -> None:
     context = prepare_provider_context(
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
             max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
+    assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
     assert context.token_budget is None
     assert context.original_tool_result_tokens is None
 
@@ -1488,26 +1475,23 @@ def test_prepare_provider_context_retains_recent_tail_without_scoring() -> None:
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=6,
             default_tool_result_tokens=None,
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (3, 4, 5)
+    assert tuple(result.data["index"] for result in context.tool_results) == (5,)
     assert context.compacted is True
     assert context.continuity_state is not None
     dropped_tool_names = [
         item.metadata_payload()["tool_name"]
         for item in context.continuity_state.dropped_tool_results
     ]
-    assert dropped_tool_names == ["read_file", "read_file"]
+    assert dropped_tool_names == ["read_file", "read_file", "shell_exec", "read_file"]
     dropped_index_positions = [
         item.metadata_payload()["index"] for item in context.continuity_state.dropped_tool_results
     ]
-    assert dropped_index_positions == [1, 2]
+    assert dropped_index_positions == [1, 2, 3, 4]
 
 
 def test_prepare_provider_context_token_budget_prefers_recent_candidates() -> None:
@@ -1521,10 +1505,7 @@ def test_prepare_provider_context_token_budget_prefers_recent_candidates() -> No
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
             max_tool_result_tokens=120,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
     )
@@ -1554,16 +1535,13 @@ def test_prepare_provider_context_can_disable_importance_retention() -> None:
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
             importance_retention=False,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=6,
             default_tool_result_tokens=None,
         ),
     )
 
-    assert tuple(result.data["index"] for result in context.tool_results) == (3, 4, 5)
+    assert tuple(result.data["index"] for result in context.tool_results) == (5,)
 
 
 def test_prepare_provider_context_older_todo_and_task_do_not_displace_newer_reads() -> None:
@@ -1588,16 +1566,13 @@ def test_prepare_provider_context_older_todo_and_task_do_not_displace_newer_read
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=100,
             default_tool_result_tokens=None,
         ),
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (3, 4, 5)
+    assert retained_indexes == (1, 3, 4, 5)
 
 
 def test_prepare_provider_context_older_write_edit_do_not_displace_newer_reads() -> None:
@@ -1622,16 +1597,13 @@ def test_prepare_provider_context_older_write_edit_do_not_displace_newer_reads()
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=100,
             default_tool_result_tokens=None,
         ),
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (3, 4, 5)
+    assert retained_indexes == (2, 3, 4, 5)
 
 
 def test_prepare_provider_context_older_error_does_not_displace_newer_results() -> None:
@@ -1651,16 +1623,13 @@ def test_prepare_provider_context_older_error_does_not_displace_newer_results() 
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=100,
             default_tool_result_tokens=None,
         ),
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (3, 4, 5)
+    assert retained_indexes == (2, 3, 4, 5)
 
 
 def test_prepare_provider_context_importance_tie_breaker_prefers_newer() -> None:
@@ -1675,17 +1644,14 @@ def test_prepare_provider_context_importance_tie_breaker_prefers_newer() -> None
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=100,
             default_tool_result_tokens=None,
         ),
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
     assert 5 in retained_indexes
-    assert retained_indexes == (3, 4, 5)
+    assert retained_indexes == (2, 3, 4, 5)
 
 
 def test_prepare_provider_context_protected_recent_always_kept() -> None:
@@ -1708,10 +1674,7 @@ def test_prepare_provider_context_protected_recent_always_kept() -> None:
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=50,
             default_tool_result_tokens=None,
         ),
     )
@@ -1730,7 +1693,6 @@ def test_retain_indexes_within_token_budget_protects_recent() -> None:
         results,
         candidate_indexes=(0, 1, 2),
         token_budget=100,
-        protected_recent_count=1,
         tokenizer_model=None,
     )
     assert len(indexes) >= 1
@@ -1780,9 +1742,6 @@ def test_default_context_window_policy_uses_tiktoken_tokenizer_when_available() 
             tool_results=(ToolResult(tool_name="grep", status="ok", content="x" * 80),),
             session_metadata={},
             policy=ContextWindowPolicy(
-                max_tool_results=1,
-                minimum_retained_tool_results=0,
-                recent_tool_result_count=0,
                 max_tool_result_tokens=20,
             ),
         )
@@ -1803,7 +1762,6 @@ def test_prepare_provider_context_honors_reserved_output_budget() -> None:
             max_tool_result_tokens=None,
             model_context_window_tokens=120,
             reserved_output_tokens=40,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
     )
@@ -1825,17 +1783,12 @@ def test_prepare_provider_context_truncates_old_tool_outputs_by_tool_policy() ->
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
+            max_tool_result_tokens=50,
             per_tool_result_tokens={"grep": 30},
-            recent_tool_result_count=1,
         ),
     )
 
-    first, latest = context.tool_results
-    assert first.truncated is True
-    assert first.partial is True
-    assert first.data["context_window_truncated"] is True
-    assert "Tool output truncated by context window policy" in (first.content or "")
+    (latest,) = context.tool_results
     assert latest.truncated is False
     assert latest.content == "latest" * 20
     assert context.truncated_tool_result_count == 1
@@ -1850,9 +1803,7 @@ def test_prepare_provider_context_keeps_truncation_message_inside_tool_cap() -> 
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            minimum_retained_tool_results=0,
-            recent_tool_result_count=0,
+            max_tool_result_tokens=30,
             per_tool_result_tokens={"grep": 1},
         ),
     )
@@ -1872,19 +1823,17 @@ def test_prepare_provider_context_applies_recent_tool_result_token_cap() -> None
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            recent_tool_result_count=1,
-            recent_tool_result_tokens=5,
+            max_tool_result_tokens=30,
             default_tool_result_tokens=None,
         ),
     )
 
     (latest,) = context.tool_results
-    assert latest.data["index"] == 2
-    assert latest.truncated is True
+    assert latest.data["index"] == 1
+    assert latest.truncated is False
     assert latest.content is not None
     assert len(latest.content) <= 20
-    assert context.truncated_tool_result_count == 1
+    assert context.truncated_tool_result_count == 0
 
 
 def test_prepare_provider_context_reuses_tokenizer_encoding_when_clipping() -> None:
@@ -1897,9 +1846,7 @@ def test_prepare_provider_context_reuses_tokenizer_encoding_when_clipping() -> N
             ),
             session_metadata={},
             policy=_legacy_context_window_policy(
-                max_tool_results=1,
-                minimum_retained_tool_results=0,
-                recent_tool_result_count=0,
+                max_tool_result_tokens=30,
                 per_tool_result_tokens={"grep": 20},
                 tokenizer_model="cache-test-model",
             ),
@@ -1917,7 +1864,7 @@ def test_prepare_provider_context_preserves_recent_results_over_count_cap() -> N
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=1, recent_tool_result_count=2),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=50),
     )
 
     assert tuple(result.data["index"] for result in context.tool_results) == (2, 3)
@@ -1929,7 +1876,7 @@ def test_prepare_provider_context_auto_compaction_false_retains_all_results() ->
         prompt="read sample.txt",
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3)),
         session_metadata={},
-        policy=_legacy_context_window_policy(auto_compaction=False, max_tool_results=1),
+        policy=_legacy_context_window_policy(auto_compaction=False, max_tool_result_tokens=30),
     )
 
     assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
@@ -1939,11 +1886,9 @@ def test_prepare_provider_context_auto_compaction_false_retains_all_results() ->
 def test_context_window_policy_metadata_round_trips() -> None:
     policy = _legacy_context_window_policy(
         auto_compaction=False,
-        max_tool_results=6,
         max_tool_result_tokens=200,
         model_context_window_tokens=1_000,
         reserved_output_tokens=20,
-        recent_tool_result_count=2,
         default_tool_result_tokens=30,
         per_tool_result_tokens={"grep": 10},
         tokenizer_model="gpt-4o",
@@ -2006,7 +1951,7 @@ def test_prepare_provider_context_continuity_metadata_includes_version() -> None
             _continuity_tool_result("ok", content="retained"),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=1),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=30),
     )
 
     assert context.continuity_state is not None
@@ -2103,7 +2048,7 @@ def test_assemble_provider_context_ignores_malformed_prior_continuity_metadata()
                 }
             }
         },
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     assert assembled.continuity_state is None
@@ -2133,7 +2078,7 @@ def test_assemble_provider_context_reconstructs_projection_metadata_from_prior_c
         prompt="continue",
         tool_results=(_tool_result(3),),
         session_metadata={"runtime_state": {"continuity": continuity.metadata_payload()}},
-        policy=_legacy_context_window_policy(max_tool_results=4),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
     )
 
     assert assembled.continuity_state == continuity
@@ -2169,7 +2114,7 @@ def test_prepare_provider_context_dropped_tool_diagnostics_omit_raw_content() ->
             ToolResult(tool_name="glob", status="ok", content="secret.txt", data={}),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=1),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=30),
     )
 
     assert context.continuity_state is not None
@@ -2199,8 +2144,7 @@ def test_prepare_provider_context_dropped_diagnostics_use_prepared_results() -> 
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            recent_tool_result_count=1,
+            max_tool_result_tokens=30,
             per_tool_result_tokens={"grep": 30},
         ),
     )
@@ -2257,7 +2201,7 @@ def test_prepare_provider_context_continuity_state_exposes_distillation_source_m
             _continuity_tool_result("ok", content="retained"),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(max_tool_results=1),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=30),
     )
 
     assert context.continuity_state is not None
@@ -2303,7 +2247,7 @@ def test_prepare_provider_context_uses_model_assisted_distillation_candidate_whe
         ),
         session_metadata={"runtime_state": {"distillation_candidate": candidate}},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
+            max_tool_result_tokens=30,
             continuity_distillation_enabled=True,
         ),
     )
@@ -2356,7 +2300,7 @@ def test_prepare_provider_context_distillation_references_are_deduplicated() -> 
         ),
         session_metadata={"runtime_state": {"distillation_candidate": candidate}},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
+            max_tool_result_tokens=30,
             continuity_distillation_enabled=True,
         ),
     )
@@ -2380,7 +2324,7 @@ def test_prepare_provider_context_invalid_distillation_candidate_falls_back_safe
         ),
         session_metadata={"runtime_state": {"distillation_candidate": invalid_candidate}},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
+            max_tool_result_tokens=30,
             continuity_distillation_enabled=True,
         ),
     )
@@ -2435,7 +2379,7 @@ def test_prepare_provider_context_distillation_candidate_ignores_raw_oversized_f
         ),
         session_metadata={"runtime_state": {"distillation_candidate": candidate}},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
+            max_tool_result_tokens=30,
             continuity_distillation_enabled=True,
         ),
     )
@@ -2570,10 +2514,7 @@ def test_artifact_placeholder_contract_projects_bounded_reference_for_omitted_ou
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=30,
             default_tool_result_tokens=None,
             importance_retention=False,
         ),
@@ -2631,10 +2572,7 @@ def test_artifact_placeholder_contract_is_not_projected_as_fake_tool_result() ->
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=30,
             default_tool_result_tokens=None,
             importance_retention=False,
         ),
@@ -2696,10 +2634,7 @@ def test_artifact_placeholder_contract_provider_context_omits_raw_unbounded_outp
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=30,
             default_tool_result_tokens=None,
             importance_retention=False,
         ),
@@ -2757,10 +2692,7 @@ def test_compact_projection_provider_context_preserves_message_invariants() -> N
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=1,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=30,
             default_tool_result_tokens=None,
         ),
     )
@@ -2880,18 +2812,15 @@ def test_projection_contract_continuity_state_preserves_full_dropped_record() ->
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=50,
             default_tool_result_tokens=None,
         ),
     )
 
     assert context.continuity_state is not None
-    assert context.continuity_state.dropped_tool_result_count == 3
-    assert context.continuity_state.retained_tool_result_count == 2
-    assert len(context.continuity_state.dropped_tool_results) == 3
+    assert context.continuity_state.dropped_tool_result_count == 4
+    assert context.continuity_state.retained_tool_result_count == 1
+    assert len(context.continuity_state.dropped_tool_results) == 4
 
     # Every dropped result has a complete diagnostic entry
     for diagnostic in context.continuity_state.dropped_tool_results:
@@ -2928,11 +2857,8 @@ def test_projection_contract_structural_equivalence_across_shell_commands() -> N
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
-            recent_tool_result_count=2,
+            max_tool_result_tokens=50,
             importance_retention=False,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
     )
@@ -2945,11 +2871,8 @@ def test_projection_contract_structural_equivalence_across_shell_commands() -> N
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=2,
-            recent_tool_result_count=2,
+            max_tool_result_tokens=50,
             importance_retention=False,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
     )
@@ -2984,10 +2907,7 @@ def test_projection_contract_importance_retention_equals_recency() -> None:
     )
 
     policy_base = _legacy_context_window_policy(
-        max_tool_results=3,
-        recent_tool_result_count=1,
-        max_tool_result_tokens=None,
-        recent_tool_result_tokens=None,
+        max_tool_result_tokens=100,
         default_tool_result_tokens=None,
     )
 
@@ -2997,10 +2917,7 @@ def test_projection_contract_importance_retention_equals_recency() -> None:
         tool_results=results,
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=policy_base.max_tool_results,
-            recent_tool_result_count=policy_base.recent_tool_result_count,
             max_tool_result_tokens=policy_base.max_tool_result_tokens,
-            recent_tool_result_tokens=policy_base.recent_tool_result_tokens,
             default_tool_result_tokens=policy_base.default_tool_result_tokens,
             importance_retention=True,
         ),
@@ -3012,10 +2929,7 @@ def test_projection_contract_importance_retention_equals_recency() -> None:
         tool_results=results,
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=policy_base.max_tool_results,
-            recent_tool_result_count=policy_base.recent_tool_result_count,
             max_tool_result_tokens=policy_base.max_tool_result_tokens,
-            recent_tool_result_tokens=policy_base.recent_tool_result_tokens,
             default_tool_result_tokens=policy_base.default_tool_result_tokens,
             importance_retention=False,
         ),
@@ -3054,10 +2968,7 @@ def test_projection_contract_score_driven_tool_name_bias_not_acceptable() -> Non
         tool_results=results,
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=None,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=100,
             default_tool_result_tokens=None,
             importance_retention=True,
         ),
@@ -3070,7 +2981,7 @@ def test_projection_contract_score_driven_tool_name_bias_not_acceptable() -> Non
     # always included as the protected recent. Index 2 (write_file) should NOT
     # jump ahead of index 3 or 4 just because its tool name scores higher.
     assert 5 in retained_indexes, "most recent result (protected) must always be retained"
-    assert retained_indexes == (3, 4, 5), (
+    assert retained_indexes == (2, 3, 4, 5), (
         "retention must be recency-based, not tool-name scored. "
         f"Got {retained_indexes}, expected (3, 4, 5)"
     )
@@ -3095,10 +3006,7 @@ def test_projection_contract_token_budget_uses_recency_not_scoring() -> None:
         ),
         session_metadata={},
         policy=_legacy_context_window_policy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
-            max_tool_result_tokens=120,
-            recent_tool_result_tokens=None,
+            max_tool_result_tokens=100,
             default_tool_result_tokens=None,
             importance_retention=True,
         ),
@@ -3129,17 +3037,11 @@ def test_projection_contract_default_policy_does_not_require_importance_retentio
     the same projection result as a policy where importance_retention is
     explicitly False, for identical input."""
     default_policy = _legacy_context_window_policy(
-        max_tool_results=3,
-        recent_tool_result_count=1,
-        max_tool_result_tokens=None,
-        recent_tool_result_tokens=None,
+        max_tool_result_tokens=100,
         default_tool_result_tokens=None,
     )
     explicit_policy = _legacy_context_window_policy(
-        max_tool_results=3,
-        recent_tool_result_count=1,
-        max_tool_result_tokens=None,
-        recent_tool_result_tokens=None,
+        max_tool_result_tokens=100,
         default_tool_result_tokens=None,
         importance_retention=False,
     )
@@ -3184,7 +3086,7 @@ def test_projection_contract_projection_preserves_original_count_in_metadata() -
     from the full truth."""
     projection = project_tool_results_for_context_window(
         tool_results=(_tool_result(1), _tool_result(2), _tool_result(3), _tool_result(4)),
-        policy=_legacy_context_window_policy(max_tool_results=2),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=50),
     )
 
     assert len(projection.prepared_results) == 4  # full set after truncation only

@@ -1213,7 +1213,6 @@ class RuntimeRunLoopCoordinator:
                     compaction_reason=base_context.compaction_reason,
                     original_tool_result_count=base_context.original_tool_result_count,
                     retained_tool_result_count=base_context.retained_tool_result_count,
-                    max_tool_result_count=base_context.max_tool_result_count,
                     original_tool_result_tokens=base_context.original_tool_result_tokens,
                     retained_tool_result_tokens=base_context.retained_tool_result_tokens,
                     dropped_tool_result_tokens=base_context.dropped_tool_result_tokens,

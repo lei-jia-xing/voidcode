@@ -210,6 +210,14 @@ def render_provider_todo_state(session_metadata: dict[str, object]) -> str | Non
     lines = [
         "Runtime-managed todo state is active for this session.",
         "Use this as the current plan truth; do not recreate it from older tool results.",
+        (
+            "Do not call todo_write again unless you are actually changing todo content, "
+            "status, or priority. If the plan is unchanged, execute the next item instead."
+        ),
+        (
+            "If any todo is already in_progress, continue that item with implementation tools. "
+            "If none is in_progress, start the first pending item instead of replanning."
+        ),
         "Current active todos:",
     ]
     for todo in active_todos:

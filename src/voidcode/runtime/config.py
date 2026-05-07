@@ -143,14 +143,10 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
     {
         "version",
         "auto_compaction",
-        "max_tool_results",
         "max_tool_result_tokens",
         "max_context_ratio",
         "model_context_window_tokens",
         "reserved_output_tokens",
-        "minimum_retained_tool_results",
-        "recent_tool_result_count",
-        "recent_tool_result_tokens",
         "default_tool_result_tokens",
         "per_tool_result_tokens",
         "tokenizer_model",
@@ -324,14 +320,10 @@ def _empty_context_window_tool_limits() -> dict[str, int]:
 @dataclass(frozen=True, slots=True)
 class RuntimeContextWindowConfig:
     auto_compaction: bool = True
-    max_tool_results: int = 8
     max_tool_result_tokens: int | None = None
     max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
-    minimum_retained_tool_results: int = 1
-    recent_tool_result_count: int = 1
-    recent_tool_result_tokens: int | None = 3_000
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: Mapping[str, int] = field(
         default_factory=_empty_context_window_tool_limits
@@ -1573,14 +1565,10 @@ class _RuntimeContextWindowValidationModel(BaseModel):
 
     version: int = 1
     auto_compaction: bool = True
-    max_tool_results: int = 8
     max_tool_result_tokens: int | None = None
     max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
-    minimum_retained_tool_results: int = 1
-    recent_tool_result_count: int = 1
-    recent_tool_result_tokens: int | None = 3_000
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: dict[str, int] = Field(default_factory=dict)
     tokenizer_model: str | None = "cl100k_base"
@@ -1620,30 +1608,8 @@ class _RuntimeContextWindowValidationModel(BaseModel):
         return 1
 
     @field_validator(
-        "max_tool_results",
-        "minimum_retained_tool_results",
-        "recent_tool_result_count",
-        mode="before",
-    )
-    @classmethod
-    def _validate_positive_int(cls, value: object, info: ValidationInfo) -> int:
-        field_name = info.field_name or "unknown"
-        field_path = f"context_window.{field_name}"
-        if value is None:
-            defaults = RuntimeContextWindowConfig()
-            return cast(int, getattr(defaults, field_name))
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise ValueError(f"runtime config field '{field_path}' must be an integer")
-        if value < 1:
-            raise ValueError(
-                f"runtime config field '{field_path}' must be greater than or equal to 1"
-            )
-        return value
-
-    @field_validator(
         "max_tool_result_tokens",
         "model_context_window_tokens",
-        "recent_tool_result_tokens",
         "default_tool_result_tokens",
         "continuity_preview_items",
         "continuity_preview_chars",
@@ -1813,14 +1779,10 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     def to_runtime_config(self) -> RuntimeContextWindowConfig:
         return RuntimeContextWindowConfig(
             auto_compaction=self.auto_compaction,
-            max_tool_results=self.max_tool_results,
             max_tool_result_tokens=self.max_tool_result_tokens,
             max_context_ratio=self.max_context_ratio,
             model_context_window_tokens=self.model_context_window_tokens,
             reserved_output_tokens=self.reserved_output_tokens,
-            minimum_retained_tool_results=self.minimum_retained_tool_results,
-            recent_tool_result_count=self.recent_tool_result_count,
-            recent_tool_result_tokens=self.recent_tool_result_tokens,
             default_tool_result_tokens=self.default_tool_result_tokens,
             per_tool_result_tokens=dict(self.per_tool_result_tokens),
             tokenizer_model=self.tokenizer_model,
@@ -3052,9 +3014,6 @@ def serialize_runtime_context_window_config(
     payload: dict[str, object] = {
         "version": 1,
         "auto_compaction": context_window.auto_compaction,
-        "max_tool_results": context_window.max_tool_results,
-        "minimum_retained_tool_results": context_window.minimum_retained_tool_results,
-        "recent_tool_result_count": context_window.recent_tool_result_count,
         "continuity_preview_items": context_window.continuity_preview_items,
         "continuity_preview_chars": context_window.continuity_preview_chars,
         "continuity_distillation_enabled": context_window.continuity_distillation_enabled,
@@ -3080,8 +3039,6 @@ def serialize_runtime_context_window_config(
         payload["model_context_window_tokens"] = context_window.model_context_window_tokens
     if context_window.reserved_output_tokens is not None:
         payload["reserved_output_tokens"] = context_window.reserved_output_tokens
-    if context_window.recent_tool_result_tokens is not None:
-        payload["recent_tool_result_tokens"] = context_window.recent_tool_result_tokens
     if context_window.default_tool_result_tokens is not None:
         payload["default_tool_result_tokens"] = context_window.default_tool_result_tokens
     if context_window.per_tool_result_tokens:

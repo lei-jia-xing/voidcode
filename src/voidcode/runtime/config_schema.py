@@ -394,14 +394,10 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "properties": {
                     "version": {"type": "integer", "const": 1},
                     "auto_compaction": {"type": "boolean"},
-                    "max_tool_results": {"type": "integer", "minimum": 1},
                     "max_tool_result_tokens": {"type": "integer", "minimum": 1},
                     "max_context_ratio": {"type": "number", "exclusiveMinimum": 0},
                     "model_context_window_tokens": {"type": "integer", "minimum": 1},
                     "reserved_output_tokens": {"type": "integer", "minimum": 1},
-                    "minimum_retained_tool_results": {"type": "integer", "minimum": 1},
-                    "recent_tool_result_count": {"type": "integer", "minimum": 1},
-                    "recent_tool_result_tokens": {"type": "integer", "minimum": 1},
                     "default_tool_result_tokens": {"type": "integer", "minimum": 1},
                     "per_tool_result_tokens": {
                         "type": "object",
