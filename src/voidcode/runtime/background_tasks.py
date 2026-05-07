@@ -824,8 +824,8 @@ class RuntimeBackgroundTaskSupervisor:
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
         task = self._runtime.load_background_task(task_id)
-        self.backfill_parent_background_task_event(task=task)
         task = self.reconcile_task_with_child_session_truth(task)
+        self.backfill_parent_background_task_event(task=task)
         result = self.background_task_result(task=task)
         if emit_result_read_hook:
             self.run_background_task_lifecycle_surface(

@@ -117,6 +117,27 @@ def test_todo_write_accepts_single_in_progress_todo(tmp_path: Path) -> None:
     assert summary["in_progress"] == 1
 
 
+def test_todo_write_keeps_identical_payloads_valid(tmp_path: Path) -> None:
+    tool = TodoWriteTool()
+    todos = [
+        {"content": "same", "status": "pending", "priority": "high"},
+        {"content": "still same", "status": "completed", "priority": "low"},
+    ]
+
+    first = tool.invoke(
+        ToolCall(tool_name="todo_write", arguments={"todos": todos}),
+        workspace=tmp_path,
+    )
+    second = tool.invoke(
+        ToolCall(tool_name="todo_write", arguments={"todos": todos}),
+        workspace=tmp_path,
+    )
+
+    assert first.status == "ok"
+    assert second.status == "ok"
+    assert second.data["todos"] == first.data["todos"]
+
+
 def test_todo_write_description_codifies_harness_discipline() -> None:
     description = TodoWriteTool.definition.description
 
