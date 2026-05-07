@@ -3269,6 +3269,33 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
     ]
 
 
+def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    calls: list[str] = []
+
+    class _FakeLiteLLM:
+        def _turn_on_debug(self) -> None:
+            calls.append("debug")
+
+        def completion(self, *args: Any, **kwargs: Any):
+            _ = args, kwargs
+            return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek-v4-pro")
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+
+    assert first.output == "ok"
+    assert second.output == "ok"
+    assert calls == ["debug"]
+
+
 @pytest.mark.parametrize(
     ("provider_name", "provider"),
     [

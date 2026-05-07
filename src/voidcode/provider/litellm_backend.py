@@ -49,6 +49,7 @@ _PROVIDER_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _MAX_PROVIDER_TOOL_NAME_LENGTH = 64
 _PROVIDER_TOOL_NAME_HASH_LENGTH = 8
 _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
+_LITELLM_DEBUG_ENABLED = False
 
 
 def _usage_int(raw: object) -> int:
@@ -750,7 +751,18 @@ class LiteLLMBackendSingleAgentProvider:
                 message="litellm dependency is not installed",
             )
         module_any = cast(Any, litellm_module)
+        LiteLLMBackendSingleAgentProvider._enable_litellm_debug(module_any)
         return module_any.completion(**payload)
+
+    @staticmethod
+    def _enable_litellm_debug(module_any: Any) -> None:
+        global _LITELLM_DEBUG_ENABLED
+        if _LITELLM_DEBUG_ENABLED:
+            return
+        turn_on_debug = getattr(module_any, "_turn_on_debug", None)
+        if callable(turn_on_debug):
+            turn_on_debug()
+            _LITELLM_DEBUG_ENABLED = True
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         model_identifier = self._model_identifier(request)
