@@ -1,0 +1,7 @@
+Start a long-running non-interactive background process in the workspace.
+
+Usage:
+- Use this tool for dev servers or watchers such as `npm run dev`, `vite`, or `uvicorn` when the agent must keep working without blocking.
+- Prefer `shell_exec` for one-shot commands that should finish inside the current turn.
+- Use `background_process_logs` to inspect output and `background_process_stop` to stop the process.
+- Treat process_id, running, and exit_code as the source of truth.

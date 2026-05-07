@@ -75,6 +75,9 @@ from ..provider.snapshot import (
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
+from ..tools.background_process_logs import BackgroundProcessLogsTool
+from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
+from ..tools.background_process_stop import BackgroundProcessStopTool
 from ..tools.background_retry import BackgroundRetryTool
 from ..tools.contracts import (
     Tool,
@@ -522,6 +525,7 @@ class VoidCodeRuntime:
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
+    _background_process_manager: BackgroundProcessManager
     _context_transform_registry: RuntimeContextTransformRegistry
     _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
@@ -642,6 +646,7 @@ class VoidCodeRuntime:
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(self)
         self._resume_coordinator = RuntimeResumeCoordinator(self)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(self)
+        self._background_process_manager = BackgroundProcessManager()
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -697,7 +702,14 @@ class VoidCodeRuntime:
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
             background_retry_tool=BackgroundRetryTool(runtime=self),
+            background_process_start_tool=BackgroundProcessStartTool(runtime=self),
+            background_process_logs_tool=BackgroundProcessLogsTool(runtime=self),
+            background_process_stop_tool=BackgroundProcessStopTool(runtime=self),
         )
+
+    @property
+    def background_process_manager(self) -> BackgroundProcessManager:
+        return self._background_process_manager
 
     def _tool_registry_with_effective_local_tools(
         self,

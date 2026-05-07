@@ -1,0 +1,6 @@
+Stop a long-running background process by id.
+
+Usage:
+- Pass a process_id previously returned by `background_process_start`.
+- Use this tool to shut down a background server or watcher when verification is complete.
+- Treat the returned running flag and exit_code as the source of truth.

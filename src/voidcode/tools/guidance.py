@@ -10,6 +10,9 @@ _GUIDANCE_SEPARATOR = "\n\nAgent usage guidance:\n"
 
 _TOOL_GUIDANCE_FILES = {
     "background_cancel": "background_cancel.txt",
+    "background_process_logs": "background_process_logs.txt",
+    "background_process_start": "background_process_start.txt",
+    "background_process_stop": "background_process_stop.txt",
     "background_output": "background_output.txt",
     "apply_patch": "apply_patch.txt",
     "ast_grep_preview": "ast_grep.txt",
