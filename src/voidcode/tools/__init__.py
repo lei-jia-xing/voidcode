@@ -2,6 +2,9 @@ from .apply_patch import ApplyPatchTool
 from .ast_grep import AstGrepPreviewTool, AstGrepReplaceTool, AstGrepSearchTool
 from .background_cancel import BackgroundCancelTool
 from .background_output import BackgroundOutputTool
+from .background_process_logs import BackgroundProcessLogsTool
+from .background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
+from .background_process_stop import BackgroundProcessStopTool
 from .background_retry import BackgroundRetryTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
@@ -40,6 +43,10 @@ from .write_file import WriteFileTool
 
 __all__ = [
     "BackgroundCancelTool",
+    "BackgroundProcessLogsTool",
+    "BackgroundProcessManager",
+    "BackgroundProcessStartTool",
+    "BackgroundProcessStopTool",
     "BackgroundOutputTool",
     "BackgroundRetryTool",
     "EditTool",

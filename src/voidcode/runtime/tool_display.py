@@ -21,6 +21,9 @@ from typing import cast
 # ── Tool-kind table ────────────────────────────────────────────────────────
 
 _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
+    "background_process_start": ("background", "Background"),
+    "background_process_logs": ("background", "Background"),
+    "background_process_stop": ("background", "Background"),
     "shell_exec": ("shell", "Shell"),
     "read_file": ("read", "Read"),
     "write_file": ("write", "Write"),
@@ -150,6 +153,18 @@ def _build_copyable(
             payload["tmux_command"] = _truncate_arg(tmux_command)
         return payload if payload else None
 
+    if tool_name == "background_process_start":
+        command = _first_primitive(arguments, "command")
+        if command:
+            payload["command"] = _truncate_arg(command)
+        return payload if payload else None
+
+    if tool_name in {"background_process_logs", "background_process_stop"}:
+        process_id = _first_primitive(arguments, "process_id")
+        if process_id:
+            payload["process_id"] = process_id
+        return payload if payload else None
+
     if tool_name == "shell_exec":
         command = _first_primitive(arguments, "command")
         if command:
@@ -194,7 +209,23 @@ def build_tool_display(
     copyable: dict[str, object] | None = None
     hidden: bool = False
 
-    if tool_name == "shell_exec":
+    if tool_name == "background_process_start":
+        summary = (
+            _first_primitive(arguments, "description")
+            or _first_primitive(arguments, "command")
+            or "Background process"
+        )
+        summary = _truncate_summary(summary)
+        args = _extract_primitive_args(arguments, "command")
+        copyable = _build_copyable(tool_name, arguments, result_data)
+
+    elif tool_name in {"background_process_logs", "background_process_stop"}:
+        process_id = _first_primitive(arguments, "process_id")
+        summary = process_id if process_id else title
+        args = _extract_primitive_args(arguments, "process_id")
+        copyable = _build_copyable(tool_name, arguments, result_data)
+
+    elif tool_name == "shell_exec":
         summary = _synthesize_shell_summary(arguments)
         args = _extract_primitive_args(arguments, "command")
         copyable = _build_copyable(tool_name, arguments, result_data)
