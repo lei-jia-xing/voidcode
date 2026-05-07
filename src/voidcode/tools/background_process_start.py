@@ -16,6 +16,8 @@ from ._pydantic_args import format_validation_error
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
+_MAX_BACKGROUND_PROCESS_LOG_LINES = 500
+
 
 @dataclass(slots=True)
 class BackgroundProcessState:
@@ -25,6 +27,10 @@ class BackgroundProcessState:
     process: subprocess.Popen[str]
     stdout_chunks: list[str]
     stderr_chunks: list[str]
+    stdout_dropped_lines: int = 0
+    stderr_dropped_lines: int = 0
+    stdout_artifact: dict[str, object] | None = None
+    stderr_artifact: dict[str, object] | None = None
 
 
 class BackgroundProcessManager:
@@ -52,6 +58,8 @@ class BackgroundProcessManager:
             process=process,
             stdout_chunks=[],
             stderr_chunks=[],
+            stdout_dropped_lines=0,
+            stderr_dropped_lines=0,
         )
         with self._lock:
             self._processes[state.process_id] = state
@@ -94,8 +102,14 @@ class BackgroundProcessManager:
             for line in stream:
                 if stream_name == "stdout":
                     state.stdout_chunks.append(line)
+                    if len(state.stdout_chunks) > _MAX_BACKGROUND_PROCESS_LOG_LINES:
+                        state.stdout_chunks.pop(0)
+                        state.stdout_dropped_lines += 1
                 else:
                     state.stderr_chunks.append(line)
+                    if len(state.stderr_chunks) > _MAX_BACKGROUND_PROCESS_LOG_LINES:
+                        state.stderr_chunks.pop(0)
+                        state.stderr_dropped_lines += 1
 
         threading.Thread(
             target=_read,
