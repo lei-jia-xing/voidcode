@@ -31,6 +31,13 @@ const baseProps = {
   onAgentPresetChange: vi.fn(),
   onProviderModelChange: vi.fn(),
   onSubmit: vi.fn(),
+  skills: [
+    {
+      name: "researcher",
+      description: "Research skill",
+      origin: "builtin",
+    },
+  ],
 };
 
 describe("Composer", () => {
@@ -421,6 +428,23 @@ describe("Composer", () => {
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
     expect(onSubmit).toHaveBeenCalledWith("hello");
+  });
+
+  it("submits completed slash prompts on Enter instead of re-applying suggestions", () => {
+    const onSubmit = vi.fn();
+    render(<Composer {...baseProps} onSubmit={onSubmit} />);
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    fireEvent.change(textarea, {
+      target: { value: "/researcher summarize this" },
+    });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+
+    expect(onSubmit).toHaveBeenCalledWith("summarize this", {
+      skills: ["researcher"],
+    });
   });
 
   it("keeps the send action enabled while treating empty input as a no-op", () => {

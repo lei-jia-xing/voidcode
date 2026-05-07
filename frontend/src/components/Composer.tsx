@@ -121,7 +121,13 @@ export function Composer({
   const trimmedInput = input.trimStart();
   const slashMatch = trimmedInput.match(/^\/(\S*)/);
   const slashQuery = slashMatch?.[1] ?? "";
-  const slashMenuOpen = Boolean(slashMatch);
+  const exactSlashSkill = (skills ?? []).find(
+    (skill) => skill.name === slashQuery,
+  );
+  const slashCommandComplete = Boolean(
+    exactSlashSkill && trimmedInput.match(/^\/\S+\s+/),
+  );
+  const slashMenuOpen = Boolean(slashMatch) && !slashCommandComplete;
   const slashSuggestions = !slashMenuOpen
     ? []
     : (skills ?? [])
@@ -238,7 +244,7 @@ export function Composer({
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (slashQuery.length > 0) {
+        if (slashQuery.length > 0 && !slashCommandComplete) {
           applySlashSuggestion(slashSuggestions[activeSlashIndex]?.name ?? "");
           return;
         }
