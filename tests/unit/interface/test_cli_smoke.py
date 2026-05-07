@@ -1232,6 +1232,47 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
     assert captured.err == ""
 
 
+def test_run_trace_reports_incomplete_runtime_stream_as_failure(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "graph.model_turn",
+                source="graph",
+                turn=1,
+                provider="deepseek",
+                model="deepseek-v4-pro",
+            ),
+        ),
+        _make_chunk(
+            session_id="trace-session",
+            status="running",
+            event=_runtime_event(
+                "runtime.tool_completed",
+                source="tool",
+                tool="read_file",
+                status="ok",
+            ),
+        ),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "go", "--workspace", str(workspace), "--trace"])
+
+    captured = capsys.readouterr()
+
+    assert result == 12
+    assert "✖ Failed: runtime stream ended without a terminal outcome" in captured.out
+    assert "Result\n" not in captured.out
+    assert captured.err == ""
+
+
 def test_run_trace_hides_reasoning_without_show_thinking(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")

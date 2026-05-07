@@ -259,6 +259,14 @@ def _handle_run_command(args: argparse.Namespace) -> int:
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
 
+        incomplete_stream_message = _incomplete_runtime_stream_message(result)
+        if incomplete_stream_message is not None:
+            if trace_output:
+                print(f"\n✖ Failed: {incomplete_stream_message}", flush=True)
+            else:
+                print(incomplete_stream_message, file=sys.stderr, flush=True)
+            return EXIT_RUNTIME_ERROR
+
         blocked_event = _pending_blocked_event(result.session, _last_event(result))
         if json_output:
             print_json(
@@ -405,6 +413,20 @@ def _consume_runtime_stream(
         raise ValueError("runtime stream emitted no chunks")
 
     return RuntimeStreamResult(output=output, session=final_session, events=tuple(events))
+
+
+def _incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | None:
+    if result.session.status in {"completed", "failed", "waiting"}:
+        return None
+    if result.output is not None:
+        return None
+    last_event = _last_event(result)
+    if last_event is not None and last_event.event_type == "runtime.failed":
+        return None
+    return (
+        "runtime stream ended without a terminal outcome; "
+        f"last session status was {result.session.status}"
+    )
 
 
 def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
