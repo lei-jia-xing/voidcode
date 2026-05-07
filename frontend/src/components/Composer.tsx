@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Send, Square } from "lucide-react";
+import { Search, Send, Sparkles, Square } from "lucide-react";
 import type {
   AgentSummary,
   ProviderModelsResult,
   ProviderSummary,
+  SkillSummary,
 } from "../lib/runtime/types";
 
 interface ComposerProps {
@@ -15,6 +16,7 @@ interface ComposerProps {
   reasoningEffort?: string;
   sessionMetadata?: Record<string, unknown>;
   agentPresets?: AgentSummary[];
+  skills?: SkillSummary[];
   providers?: ProviderSummary[];
   providerModels?: Record<string, ProviderModelsResult>;
   sessionContextUsage?: SessionContextUsage;
@@ -22,7 +24,7 @@ interface ComposerProps {
   onProviderModelChange?: (model: string) => void;
   onReasoningEffortChange?: (effort: string) => void;
   placeholder?: string;
-  onSubmit: (message: string) => void;
+  onSubmit: (message: string, options?: { skills?: string[] }) => void;
   onCancel?: () => void;
 }
 
@@ -45,6 +47,7 @@ export function Composer({
   reasoningEffort = "",
   sessionMetadata,
   agentPresets,
+  skills,
   providers,
   providerModels,
   sessionContextUsage,
@@ -57,6 +60,7 @@ export function Composer({
 }: ComposerProps) {
   const { t } = useTranslation();
   const [input, setInput] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -114,6 +118,26 @@ export function Composer({
     [selectedModelMetadata, sessionContextWindow],
   );
   const contextLabel = formatModelContext(displayModelMetadata);
+  const trimmedInput = input.trimStart();
+  const slashMatch = trimmedInput.match(/^\/(\S*)/);
+  const slashQuery = slashMatch?.[1] ?? "";
+  const slashMenuOpen = Boolean(slashMatch);
+  const slashSuggestions = !slashMenuOpen
+    ? []
+    : (skills ?? [])
+        .filter((skill) => {
+          const normalized = slashQuery.toLowerCase();
+          if (!normalized) return true;
+          return (
+            skill.name.toLowerCase().includes(normalized) ||
+            skill.description.toLowerCase().includes(normalized)
+          );
+        })
+        .slice(0, 8);
+  const activeSlashIndex =
+    slashSuggestions.length === 0
+      ? 0
+      : Math.min(slashIndex, slashSuggestions.length - 1);
 
   const selectedAgentLabel = useMemo(() => {
     return (
@@ -162,8 +186,24 @@ export function Composer({
   const handleSubmit = () => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
-    onSubmit(trimmed);
+    const leadingSlash = trimmed.match(/^\/(\S+)\s*(.*)$/s);
+    if (leadingSlash) {
+      const slashName = leadingSlash[1] ?? "";
+      const remainder = leadingSlash[2] ?? "";
+      const matchedSkill = (skills ?? []).find(
+        (skill) => skill.name === slashName,
+      );
+      if (matchedSkill) {
+        const finalPrompt = remainder.trim();
+        onSubmit(finalPrompt || trimmed, { skills: [matchedSkill.name] });
+      } else {
+        onSubmit(trimmed);
+      }
+    } else {
+      onSubmit(trimmed);
+    }
     setInput("");
+    setSlashIndex(0);
     const el = textareaRef.current;
     if (el) el.style.height = "auto";
   };
@@ -177,14 +217,61 @@ export function Composer({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMenuOpen && slashSuggestions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((value) => (value + 1) % slashSuggestions.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex(
+          (value) =>
+            (value - 1 + slashSuggestions.length) % slashSuggestions.length,
+        );
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        applySlashSuggestion(slashSuggestions[activeSlashIndex]?.name ?? "");
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (slashQuery.length > 0) {
+          applySlashSuggestion(slashSuggestions[activeSlashIndex]?.name ?? "");
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInput((value) => value.replace(/^\s*\/\S*/, "").trimStart());
+        setSlashIndex(0);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
   };
 
+  const applySlashSuggestion = (skillName: string) => {
+    if (!skillName) return;
+    const remainder = trimmedInput.replace(/^\/\S*\s*/, "");
+    const nextValue = `/${skillName}${remainder ? ` ${remainder}` : " "}`;
+    setInput(nextValue);
+    setSlashIndex(0);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      const nextLength = nextValue.length;
+      textareaRef.current?.setSelectionRange(nextLength, nextLength);
+    });
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+    setSlashIndex(0);
     resizeTextarea();
   };
 
@@ -206,6 +293,48 @@ export function Composer({
     <div className="border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-3">
       <div className="max-w-3xl mx-auto">
         <div className="relative flex flex-col bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-strong)] rounded-xl focus-within:border-[color:var(--vc-focus-ring)] focus-within:ring-1 focus-within:ring-[color:var(--vc-focus-ring)] transition-colors">
+          {slashMenuOpen && (
+            <div className="absolute bottom-full left-3 right-3 z-[110] mb-2 overflow-hidden rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] shadow-xl">
+              <div className="flex items-center gap-2 border-b border-[color:var(--vc-border-subtle)] px-3 py-2 text-[11px] text-[var(--vc-text-subtle)]">
+                <Search className="h-3.5 w-3.5" />
+                <span>{t("composer.slashTitle")}</span>
+              </div>
+              {slashSuggestions.length === 0 ? (
+                <div className="px-3 py-3 text-xs text-[var(--vc-text-subtle)]">
+                  {t("composer.slashNoResults", { query: slashQuery })}
+                </div>
+              ) : (
+                <div className="max-h-64 overflow-y-auto py-1">
+                  {slashSuggestions.map((skill, index) => {
+                    const active = index === activeSlashIndex;
+                    return (
+                      <button
+                        key={skill.name}
+                        type="button"
+                        onMouseEnter={() => setSlashIndex(index)}
+                        onClick={() => applySlashSuggestion(skill.name)}
+                        className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors ${
+                          active
+                            ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)]"
+                            : "text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)]"
+                        }`}
+                      >
+                        <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--vc-text-subtle)]" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium">
+                            /{skill.name}
+                          </span>
+                          <span className="mt-0.5 block text-[11px] text-[var(--vc-text-subtle)]">
+                            {skill.description}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex items-end gap-2 px-3 py-2 bg-transparent">
             <textarea
               ref={textareaRef}

@@ -97,6 +97,13 @@ export interface AgentSummary {
   provider?: string | null;
 }
 
+export interface SkillSummary {
+  name: string;
+  description: string;
+  origin: string;
+  source_path?: string | null;
+}
+
 export interface GitStatusSnapshot {
   state: GitStatusState;
   root?: string | null;
@@ -117,6 +124,16 @@ export interface McpServerStatusDetail {
   error?: string | null;
   command?: string[];
   retry_available?: boolean;
+  scope?: string | null;
+  transport?: string | null;
+}
+
+export interface LspServerStatusDetail {
+  server: string;
+  status: "running" | "stopped" | "starting" | "failed" | "disabled";
+  available?: boolean;
+  command?: string[];
+  error?: string | null;
 }
 
 export interface RuntimeBackgroundTaskStatusSnapshot {

@@ -16,6 +16,7 @@ import {
   QuestionAnswer,
   RuntimeNotification,
   RuntimeSessionDebugSnapshot,
+  SkillSummary,
   RuntimeStatusSnapshot,
   RuntimeSettings,
   RuntimeSettingsUpdate,
@@ -48,6 +49,9 @@ interface AppState {
   agentPresets: AgentSummary[];
   agentsStatus: AsyncStatus;
   agentsError: string | null;
+  skills: SkillSummary[];
+  skillsStatus: AsyncStatus;
+  skillsError: string | null;
   statusSnapshot: RuntimeStatusSnapshot | null;
   statusStatus: AsyncStatus;
   statusError: string | null;
@@ -107,6 +111,7 @@ interface AppState {
   loadProviders: () => Promise<void>;
   validateProviderCredentials: (providerName: string) => Promise<void>;
   loadAgents: () => Promise<void>;
+  loadSkills: () => Promise<void>;
   loadStatus: () => Promise<void>;
   retryMcpConnections: () => Promise<void>;
   loadReview: () => Promise<void>;
@@ -370,6 +375,9 @@ export const useAppStore = create<AppState>()(
       agentPresets: [],
       agentsStatus: "idle",
       agentsError: null,
+      skills: [],
+      skillsStatus: "idle",
+      skillsError: null,
       statusSnapshot: null,
       statusStatus: "idle",
       statusError: null,
@@ -477,6 +485,9 @@ export const useAppStore = create<AppState>()(
             agentPresets: [],
             agentsStatus: "idle",
             agentsError: null,
+            skills: [],
+            skillsStatus: "idle",
+            skillsError: null,
             currentSessionId: null,
             currentSessionState: null,
             currentSessionEvents: [],
@@ -522,6 +533,7 @@ export const useAppStore = create<AppState>()(
             get().loadSessions(),
             get().loadProviders(),
             get().loadAgents(),
+            get().loadSkills(),
             get().loadStatus(),
             get().loadReview(),
             get().loadNotifications(),
@@ -592,6 +604,23 @@ export const useAppStore = create<AppState>()(
           set({
             agentsStatus: "error",
             agentsError: (err as Error).message,
+          });
+        }
+      },
+
+      loadSkills: async () => {
+        set({ skillsStatus: "loading", skillsError: null });
+        try {
+          const skills = await RuntimeClient.listSkills();
+          set({
+            skills,
+            skillsStatus: "success",
+            skillsError: null,
+          });
+        } catch (err) {
+          set({
+            skillsStatus: "error",
+            skillsError: (err as Error).message,
           });
         }
       },
