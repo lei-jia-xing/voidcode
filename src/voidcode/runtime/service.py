@@ -265,6 +265,7 @@ from .permission import (
     PermissionResolution,
     evaluate_external_directory_policy,
     evaluate_pattern_permission_rules,
+    execution_mode_from_metadata,
     resolve_permission,
 )
 from .permission_context import RuntimePermissionContextResolver
@@ -2669,6 +2670,7 @@ class VoidCodeRuntime:
                 if isinstance(session.metadata.get("background_task_id"), str)
                 else None
             ),
+            execution_mode=execution_mode_from_metadata(session.metadata),
         )
 
         if path_scope == "workspace" and tool.read_only and operation_class == "read":
