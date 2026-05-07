@@ -52,6 +52,20 @@ def test_parse_todo_item_trims_content_and_preserves_enums(item: dict[str, str],
 @CI_SETTINGS
 @given(todos=st.lists(_todo_item, min_size=0, max_size=12))
 def test_todo_write_summary_matches_normalized_status_counts(todos: list[dict[str, str]]) -> None:
+    # The tool now enforces at-most-one in_progress todo to mirror the harness
+    # discipline; relax that constraint here so fuzz inputs stay legal.
+    in_progress_count = sum(1 for todo in todos if todo["status"] == "in_progress")
+    if in_progress_count > 1:
+        seen_in_progress = False
+        normalized_input: list[dict[str, str]] = []
+        for todo in todos:
+            if todo["status"] == "in_progress":
+                if seen_in_progress:
+                    normalized_input.append({**todo, "status": "pending"})
+                    continue
+                seen_in_progress = True
+            normalized_input.append(todo)
+        todos = normalized_input
     tool = TodoWriteTool()
 
     with TemporaryDirectory() as temp_dir:

@@ -200,7 +200,11 @@ def catalog_skill_context(
         return ""
     lines = [
         "Runtime skills catalog (recommended/visible).",
-        "Load full instructions with tool: skill(name=...).",
+        "Each entry is metadata only; the full SKILL.md body is NOT in your",
+        "current context.",
+        "Load a skill body ONLY when its description matches the active task.",
+        'Use the skill tool: skill(name="..."). Do NOT speculatively load every',
+        "skill; lazy loading keeps the harness lightweight and the model focused.",
         "",
         "<available_skills>",
     ]

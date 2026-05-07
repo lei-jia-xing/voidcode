@@ -70,6 +70,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     command: RuntimeCommandMetadata
     continuation_loop: RuntimeContinuationLoopMetadata
     delegation: RuntimeSubagentRoutingMetadata
+    execution_mode: str
     max_steps: int
     provider_stream: bool
     reasoning_effort: str
@@ -120,6 +121,7 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "context_transform_refs",
         "continuation_loop",
         "delegation",
+        "execution_mode",
         "max_steps",
         "provider_stream",
         "reasoning_effort",
@@ -522,6 +524,12 @@ def validate_runtime_request_metadata(
         normalized["delegation"] = validate_runtime_subagent_routing_metadata(
             metadata["delegation"]
         )
+
+    if "execution_mode" in metadata:
+        execution_mode = metadata["execution_mode"]
+        if execution_mode not in ("plan", "act"):
+            raise RuntimeRequestError("request metadata 'execution_mode' must be 'plan' or 'act'")
+        normalized["execution_mode"] = execution_mode
 
     if "max_steps" in metadata:
         max_steps = metadata["max_steps"]

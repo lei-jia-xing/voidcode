@@ -226,6 +226,9 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata["agent"] = {"preset": cast(str, args.agent)}
         if getattr(args, "skills", None):
             metadata["skills"] = cast(list[str], args.skills)
+        execution_mode = cast(str | None, getattr(args, "execution_mode", None))
+        if execution_mode is not None:
+            metadata["execution_mode"] = execution_mode
         if getattr(args, "max_steps", None) is not None:
             metadata["max_steps"] = cast(int, args.max_steps)
         if cli_reasoning_effort is not None:
@@ -2550,6 +2553,12 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
     "--agent",
     help="Select a top-level or local custom agent preset for this run.",
 )
+@click.option(
+    "--mode",
+    "execution_mode",
+    type=click.Choice(["plan", "act"]),
+    help="Plan mode denies all mutating tool calls; act mode is the default.",
+)
 @click.option("--model", help="Override the provider/model for this run.")
 @click.option("--skills", multiple=True, help="Optional skill names applied for this run.")
 @click.option("--max-steps", type=int, help="Optional max graph steps override for this run.")
@@ -2583,6 +2592,7 @@ def run(
     json_output: bool,
     trace: bool,
     provider_stream: bool | None,
+    execution_mode: str | None,
 ) -> int:
     return _invoke_handler_from_click(
         _handle_run_command,
@@ -2601,6 +2611,7 @@ def run(
             json=json_output,
             trace=trace,
             provider_stream=provider_stream,
+            execution_mode=execution_mode,
         ),
     )
 
