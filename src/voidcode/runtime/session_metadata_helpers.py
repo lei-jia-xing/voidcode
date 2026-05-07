@@ -4,6 +4,8 @@ from typing import cast
 
 from .session import SessionState
 from .todos import (
+    runtime_todos_equal,
+    runtime_todos_from_state_payload,
     runtime_todos_from_tool_payload,
     todo_event_payload,
     todo_state_payload,
@@ -127,8 +129,27 @@ def session_with_todo_state(
     return next_session, event_payload
 
 
+def todo_state_matches_payload(
+    session: SessionState,
+    *,
+    raw_todos: object,
+    revision: int,
+) -> bool:
+    raw_runtime_state = session.metadata.get("runtime_state")
+    if not isinstance(raw_runtime_state, dict):
+        return False
+    runtime_state = cast(dict[str, object], raw_runtime_state)
+    raw_todo_state = runtime_state.get("todos")
+    if not isinstance(raw_todo_state, dict):
+        return False
+    typed_todo_state = cast(dict[str, object], raw_todo_state)
+    current = runtime_todos_from_state_payload(typed_todo_state.get("todos"))
+    return runtime_todos_equal(current, raw_todos=raw_todos, updated_at=revision)
+
+
 __all__ = [
     "plan_state_from_metadata",
     "session_with_context_window_payload_metadata",
     "session_with_todo_state",
+    "todo_state_matches_payload",
 ]

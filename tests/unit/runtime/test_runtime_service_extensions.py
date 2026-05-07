@@ -1207,6 +1207,53 @@ class _InvalidRegexGrepThenResultAwareModelProvider:
         return provider
 
 
+class _DuplicateTodoThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        todos = [
+            {
+                "content": "make todo runtime-owned",
+                "status": "in_progress",
+                "priority": "high",
+            }
+        ]
+        if len(turn_request.tool_results) < 2:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="todo_write",
+                    arguments={"todos": todos},
+                )
+            )
+        return ProviderTurnResult(output="duplicate todo handled")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _DuplicateTodoThenResultAwareModelProvider:
+    name: str
+    created_providers: list[_DuplicateTodoThenResultAwareTurnProvider]
+
+    def turn_provider(self) -> _DuplicateTodoThenResultAwareTurnProvider:
+        provider = _DuplicateTodoThenResultAwareTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 @dataclass(frozen=True, slots=True)
 class _DeniedWriteThenReadModelProvider:
     name: str
@@ -3438,6 +3485,41 @@ def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: P
     assert failed_tool_result.error_summary == tool_completed.payload["error_summary"]
     assert failed_tool_result.error_details == error_details
     assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
+
+
+def test_runtime_todo_write_duplicate_snapshot_is_marked_unchanged(tmp_path: Path) -> None:
+    created_providers: list[_DuplicateTodoThenResultAwareTurnProvider] = []
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=ModelProviderRegistry(
+            providers={
+                "opencode": _DuplicateTodoThenResultAwareModelProvider(
+                    name="opencode",
+                    created_providers=created_providers,
+                )
+            }
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="duplicate todo", session_id="duplicate-todo"))
+
+    todo_events = [event for event in response.events if event.event_type == "runtime.todo_updated"]
+    todo_tool_events = [
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("tool") == "todo_write"
+    ]
+
+    assert response.session.status == "completed"
+    assert response.output == "duplicate todo handled"
+    assert len(todo_events) == 1
+    assert len(todo_tool_events) == 2
+    assert todo_tool_events[0].payload.get("unchanged") is None
+    assert todo_tool_events[1].payload.get("unchanged") is True
+    assert todo_tool_events[1].payload.get("content") == "Updated 0 todos (unchanged)"
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
@@ -6426,6 +6508,93 @@ def test_runtime_resume_does_not_fail_unrelated_background_tasks(tmp_path: Path)
     assert response.session.session.id == "leader-session"
     assert unrelated.status == "queued"
     assert unrelated.error is None
+
+
+def test_runtime_load_background_task_result_reconciles_before_parent_terminal_backfill(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(initial_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    task_id = "task-stale-parent-terminal"
+    child_session_id = "child-stale-parent-terminal"
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id=task_id),
+            status="interrupted",
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+                metadata={"background_run": True, "background_task_id": task_id},
+            ),
+            session_id=child_session_id,
+            created_at=1,
+            updated_at=2,
+            finished_at=2,
+            error="background task interrupted before completion",
+            result_available=True,
+        ),
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="background child",
+            session_id=child_session_id,
+            parent_session_id="leader-session",
+            metadata={"background_run": True, "background_task_id": task_id},
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(
+                    id=child_session_id,
+                    parent_id="leader-session",
+                ),
+                status="completed",
+                turn=1,
+                metadata={"background_run": True, "background_task_id": task_id},
+            ),
+            events=(
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "background child"},
+                ),
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=2,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="background child",
+        ),
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    result = resumed_runtime.load_background_task_result(task_id)
+    leader_response = resumed_runtime.resume("leader-session")
+
+    completed_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+        and event.payload.get("task_id") == task_id
+    ]
+    failed_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_FAILED
+        and event.payload.get("task_id") == task_id
+    ]
+
+    assert result.status == "completed"
+    assert failed_events == []
+    assert len(completed_events) == 1
 
 
 def test_runtime_background_task_waiting_approval_emits_parent_session_event_once(

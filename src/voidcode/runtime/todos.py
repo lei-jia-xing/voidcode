@@ -131,6 +131,21 @@ def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem
     return tuple(sorted(todos, key=lambda todo: todo["position"]))
 
 
+def runtime_todos_equal(
+    current: tuple[RuntimeTodoItem, ...], *, raw_todos: object, updated_at: int
+) -> bool:
+    candidate = runtime_todos_from_tool_payload(raw_todos, updated_at=updated_at)
+    if len(candidate) != len(current):
+        return False
+    return all(
+        existing["content"] == proposed["content"]
+        and existing["status"] == proposed["status"]
+        and existing["priority"] == proposed["priority"]
+        and existing["position"] == proposed["position"]
+        for existing, proposed in zip(current, candidate, strict=True)
+    )
+
+
 def todo_state_payload(
     todos: tuple[RuntimeTodoItem, ...],
     *,
