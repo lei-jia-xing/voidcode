@@ -12727,6 +12727,13 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "protected_tiers": ["instruction", "workspace", "task"],
             "compaction_target": "recent",
         },
+        "recent_tier_compaction": {
+            "version": 1,
+            "applied": False,
+            "dropped_segment_count": 0,
+            "dropped_sources": [],
+            "target_tier": "recent",
+        },
         "estimated_context_tokens": response_context_window["estimated_context_tokens"],
         "estimated_context_token_source": "tiktoken:cl100k_base",
         "estimated_context_token_exact": True,
