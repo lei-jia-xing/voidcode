@@ -2115,6 +2115,40 @@ def test_runtime_exit_waits_for_background_task_worker(
     assert runtime._background_task_threads == {}
 
 
+def test_runtime_shutdown_terminalizes_unfinished_background_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-exit-unfinished-worker"),
+        request=BackgroundTaskRequestSnapshot(prompt="background exit unfinished"),
+    )
+    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def blocking_worker(task_id: str) -> None:
+        assert task_id == "task-exit-unfinished-worker"
+        worker_started.set()
+        assert release_worker.wait(timeout=2.0)
+
+    monkeypatch.setattr(runtime, "_run_background_task_worker", blocking_worker)
+
+    supervisor._drain_background_task_queue()
+    assert worker_started.wait(timeout=2.0)
+    runtime.shutdown_background_tasks(timeout_seconds=0.01)
+    failed = runtime.load_background_task("task-exit-unfinished-worker")
+    release_worker.set()
+
+    assert failed.status == "failed"
+    assert failed.error == (
+        "background task stopped because parent runtime exited before completion"
+    )
+    assert failed.result_available is True
+
+
 def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
     tmp_path: Path,
 ) -> None:

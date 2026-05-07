@@ -174,12 +174,45 @@ class RuntimeBackgroundTaskSupervisor:
             for task_id, thread in threads:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self._fail_unfinished_shutdown_threads(threads)
                     return
                 thread.join(timeout=min(remaining, 0.1))
                 if not thread.is_alive():
                     with self._queue_lock:
                         if self._threads.get(task_id) is thread:
                             self._threads.pop(task_id, None)
+
+    def _fail_unfinished_shutdown_threads(
+        self, threads: tuple[tuple[str, threading.Thread], ...]
+    ) -> None:
+        runtime = self._runtime
+        for task_id, thread in threads:
+            if not thread.is_alive():
+                with self._queue_lock:
+                    if self._threads.get(task_id) is thread:
+                        self._threads.pop(task_id, None)
+                continue
+            try:
+                task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=task_id,
+                    status="failed",
+                    error="background task stopped because parent runtime exited before completion",
+                )
+            except Exception as exc:
+                if "unknown background task" in str(exc):
+                    logger.debug(
+                        "background task %s disappeared before shutdown finalization: %s",
+                        task_id,
+                        exc,
+                    )
+                    continue
+                logger.exception(
+                    "background task %s could not persist shutdown failure state",
+                    task_id,
+                )
+                continue
+            self.run_background_task_lifecycle_hook(task)
 
     def task_observability(
         self,
@@ -1201,7 +1234,7 @@ class RuntimeBackgroundTaskSupervisor:
             )
             return
         result = self.background_task_result(task=task)
-        result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
+        _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         try:
             appended = session_event_appender.append_session_event(
                 workspace=runtime._workspace,
@@ -1545,8 +1578,6 @@ class RuntimeBackgroundTaskSupervisor:
                         task_id=task_id,
                     )
                     if current_task_state.cancel_requested_at is not None:
-                        if final_session is None:
-                            raise ValueError("runtime stream emitted no chunks")
                         cancel_metadata = dict(final_session.metadata)
                         cancel_metadata["abort_requested"] = True
                         cancelled_response = RuntimeResponse(
