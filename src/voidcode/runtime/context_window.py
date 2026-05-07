@@ -178,6 +178,11 @@ class ContextWindowPolicy:
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
     importance_retention: bool = False
+    protected_context_tiers: tuple[str, ...] = (
+        "instruction",
+        "workspace",
+        "task",
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
@@ -218,6 +223,17 @@ class ContextWindowPolicy:
             raise ValueError("continuity_distillation_max_input_items must be >= 1")
         if self.continuity_distillation_max_input_chars < 64:
             raise ValueError("continuity_distillation_max_input_chars must be >= 64")
+        valid_tiers = {"instruction", "workspace", "task", "recent"}
+        normalized_tiers: list[str] = []
+        for tier in self.protected_context_tiers:
+            if tier not in valid_tiers:
+                raise ValueError(
+                    "protected_context_tiers must only contain: instruction, "
+                    "workspace, task, recent"
+                )
+            if tier not in normalized_tiers:
+                normalized_tiers.append(tier)
+        object.__setattr__(self, "protected_context_tiers", tuple(normalized_tiers))
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -255,6 +271,7 @@ class ContextWindowPolicy:
             self.continuity_distillation_max_input_chars
         )
         payload["importance_retention"] = self.importance_retention
+        payload["protected_context_tiers"] = list(self.protected_context_tiers)
         return payload
 
 
@@ -2034,6 +2051,11 @@ def assemble_provider_context(
             )
         )
     metadata_payload["context_tiers"] = _context_tier_metadata(segments)
+    metadata_payload["context_tier_policy"] = {
+        "version": 1,
+        "protected_tiers": list((policy or ContextWindowPolicy()).protected_context_tiers),
+        "compaction_target": "recent",
+    }
     context_token_count = estimate_provider_context_tokens(
         tuple(segments), tokenizer_model=policy.tokenizer_model if policy is not None else None
     )

@@ -7,6 +7,8 @@ from types import ModuleType
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
+import pytest
+
 from voidcode.runtime.context_transforms import (
     HookPresetGuidanceTransformProvider,
     RuntimeContextTransformRegistry,
@@ -102,8 +104,22 @@ def test_context_window_policy_default_retains_more_tool_results_before_compacti
     assert policy.max_tool_results == 8
     assert policy.recent_tool_result_tokens == 3_000
     assert policy.default_tool_result_tokens == 1_500
+    assert policy.protected_context_tiers == ("instruction", "workspace", "task")
     assert context.compacted is False
     assert context.retained_tool_result_count == 7
+
+
+def test_context_window_policy_deduplicates_protected_tiers() -> None:
+    policy = _legacy_context_window_policy(
+        protected_context_tiers=("instruction", "task", "instruction", "recent")
+    )
+
+    assert policy.protected_context_tiers == ("instruction", "task", "recent")
+
+
+def test_context_window_policy_rejects_unknown_protected_tier() -> None:
+    with pytest.raises(ValueError, match="protected_context_tiers"):
+        _ = _legacy_context_window_policy(protected_context_tiers=("instruction", "weird"))
 
 
 def test_prepare_provider_context_default_policy_truncates_large_tool_results() -> None:
@@ -280,6 +296,11 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
             "task": 2,
             "recent": 2,
         },
+    }
+    assert assembled.metadata["context_tier_policy"] == {
+        "version": 1,
+        "protected_tiers": ["instruction", "workspace", "task"],
+        "compaction_target": "recent",
     }
     assert [(segment.metadata or {}).get("tier") for segment in assembled.segments[:4]] == [
         "instruction",
