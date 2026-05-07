@@ -833,6 +833,14 @@ class AgentSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillSummary:
+    name: str
+    description: str
+    origin: str
+    source_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class GitStatusSnapshot:
     state: GitStatusState
     root: str | None = None

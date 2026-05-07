@@ -41,6 +41,7 @@ from .contracts import (
     RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SkillSummary,
     WorkspaceRegistrySnapshot,
     WorkspaceReviewSnapshot,
     WorkspaceSummary,
@@ -113,6 +114,8 @@ class RuntimeTransport(Protocol):
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult: ...
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]: ...
+
+    def list_skill_summaries(self) -> tuple[SkillSummary, ...]: ...
 
     def current_status(self) -> RuntimeStatusSnapshot: ...
 
@@ -533,6 +536,17 @@ class RuntimeTransportApp:
                 )
                 return
             await self._handle_list_agents(send)
+            return
+
+        if path == "/api/skills":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_skills(send)
             return
 
         if path == "/api/status":
@@ -1404,6 +1418,20 @@ class RuntimeTransportApp:
                 ]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_list_skills(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()
+                ]
+            finally:
+                self._close_runtime(
+                    runtime,
+                    workspace_coordinator=self._workspace_coordinator,
+                )
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_get_status(self, send: Send) -> None:
@@ -2335,6 +2363,17 @@ class RuntimeTransportApp:
         }
         if summary.source_scope is not None:
             payload["source_scope"] = summary.source_scope
+        if summary.source_path is not None:
+            payload["source_path"] = summary.source_path
+        return payload
+
+    @staticmethod
+    def _serialize_skill_summary(summary: SkillSummary) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "name": summary.name,
+            "description": summary.description,
+            "origin": summary.origin,
+        }
         if summary.source_path is not None:
             payload["source_path"] = summary.source_path
         return payload

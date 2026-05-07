@@ -208,6 +208,7 @@ from .contracts import (
     RuntimeSessionRevertMarker,
     RuntimeStatusSnapshot,
     RuntimeStreamChunk,
+    SkillSummary,
     UnknownSessionError,
     WorkspaceReviewSnapshot,
     runtime_subagent_route_from_metadata,
@@ -4284,6 +4285,19 @@ class VoidCodeRuntime:
             )
         return tuple(summaries)
 
+    def list_skill_summaries(self) -> tuple[SkillSummary, ...]:
+        summaries: list[SkillSummary] = []
+        for skill in sorted(self._skill_registry.all(), key=lambda item: item.name):
+            summaries.append(
+                SkillSummary(
+                    name=skill.name,
+                    description=skill.description,
+                    origin=skill.origin,
+                    source_path=str(skill.entry_path),
+                )
+            )
+        return tuple(summaries)
+
     def current_status(self) -> RuntimeStatusSnapshot:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         git = self._git_status_snapshot()
@@ -4316,6 +4330,26 @@ class VoidCodeRuntime:
             else "stopped"
         )
         mcp_error = next((server.error for server in mcp_servers if server.error), None)
+        lsp_server_details: list[dict[str, object]] = []
+        for server_name in sorted(lsp_state.configuration.servers):
+            server_state = lsp_state.servers.get(server_name)
+            server_config = lsp_state.configuration.servers.get(server_name)
+            lsp_server_details.append(
+                {
+                    "server": server_name,
+                    "status": (
+                        server_state.status
+                        if server_state is not None
+                        else "disabled"
+                        if lsp_state.mode != "managed"
+                        or not lsp_state.configuration.configured_enabled
+                        else "stopped"
+                    ),
+                    "available": bool(server_state and server_state.available),
+                    "command": (list(server_config.command) if server_config is not None else []),
+                    "error": (None if server_state is None else server_state.last_error),
+                }
+            )
         mcp_server_details: list[dict[str, object]] = []
         for server_name, server_config in sorted(mcp_configured_servers.items()):
             runtime_state = mcp_state.servers.get(server_name)
@@ -4355,7 +4389,23 @@ class VoidCodeRuntime:
         background_status_counts = self._background_task_supervisor.status_counts()
         return RuntimeStatusSnapshot(
             git=git,
-            lsp=CapabilityStatusSnapshot(state=lsp_status, error=lsp_error),
+            lsp=CapabilityStatusSnapshot(
+                state=lsp_status,
+                error=lsp_error,
+                details={
+                    "mode": lsp_state.mode,
+                    "configured": bool(lsp_state.configuration.servers),
+                    "configured_enabled": lsp_state.configuration.configured_enabled,
+                    "configured_server_count": len(lsp_state.configuration.servers),
+                    "running_server_count": sum(
+                        1 for server in lsp_servers if server.status == "running"
+                    ),
+                    "failed_server_count": sum(
+                        1 for server in lsp_servers if server.status == "failed"
+                    ),
+                    "servers": lsp_server_details,
+                },
+            ),
             mcp=CapabilityStatusSnapshot(
                 state=mcp_status,
                 error=mcp_error,
