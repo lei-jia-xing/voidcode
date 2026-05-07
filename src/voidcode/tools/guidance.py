@@ -19,6 +19,7 @@ _TOOL_GUIDANCE_FILES = {
     "format_file": "format_file.txt",
     "glob": "glob.txt",
     "grep": "grep.txt",
+    "interactive_shell": "interactive_shell.txt",
     "lsp": "lsp.txt",
     "multi_edit": "multi_edit.txt",
     "question": "question.txt",
