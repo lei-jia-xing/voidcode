@@ -19,6 +19,10 @@ from .continuity_distillation import (
     build_distillation_input_envelope,
     distillation_record_from_payload,
 )
+from .prompt_assembly import (
+    PromptAssemblySection,
+    build_prompt_assembly_plan,
+)
 from .todos import render_provider_todo_state
 
 
@@ -1868,62 +1872,13 @@ def assemble_provider_context(
         session_metadata=session_metadata,
         policy=policy,
     )
-    segments: list[RuntimeContextSegment] = []
-    seen_system_contents: set[str] = set()
-
-    def _append_system_segment(content: str, *, source: str) -> None:
-        normalized = content.strip()
-        if not normalized or normalized in seen_system_contents:
-            return
-        seen_system_contents.add(normalized)
-        segments.append(
-            RuntimeContextSegment(
-                role="system",
-                content=normalized,
-                metadata={"source": source},
-            )
-        )
-
-    _append_system_segment(
-        (
-            "Runtime instruction precedence: active agent role and runtime enforcement "
-            "boundaries are authoritative. Tool allowlists, approvals, session truth, "
-            "and runtime safety policies outrank skill, todo, hook-preset, and "
-            "continuity guidance. Skill instructions may refine how to perform work, "
-            "but must not expand role scope, tool permissions, approval behavior, or "
-            "completion obligations."
-        ),
-        source="runtime_instruction_precedence",
-    )
-    _append_system_segment(agent_prompt_context, source="agent_prompt")
-    for segment_content in preserved_system_segments:
-        _append_system_segment(segment_content, source="preserved_system_segment")
-    _append_system_segment(skill_prompt_context, source="skill_prompt")
     transform_result = context_transform_result or build_provider_context_transform_result(
         workspace=workspace,
         tool_results=tool_results,
         hook_preset_context=hook_preset_context,
     )
-    for transform_injection in transform_result.injections:
-        normalized = transform_injection.content.strip()
-        if not normalized or normalized in seen_system_contents:
-            continue
-        seen_system_contents.add(normalized)
-        segments.append(
-            RuntimeContextSegment(
-                role=cast(Literal["system", "user", "assistant", "tool"], transform_injection.role),
-                content=normalized,
-                metadata=dict(transform_injection.metadata),
-            )
-        )
     pending_state_segment = _pending_state_segment(session_metadata)
-    if pending_state_segment is not None:
-        segments.append(pending_state_segment)
-        if isinstance(pending_state_segment.content, str):
-            seen_system_contents.add(pending_state_segment.content.strip())
     todo_prompt_context = render_provider_todo_state(session_metadata)
-    if todo_prompt_context is not None:
-        _append_system_segment(todo_prompt_context, source="runtime_todo_state")
     continuity_state = (
         preserved_continuity_state
         or context_window.continuity_state
@@ -1938,23 +1893,76 @@ def assemble_provider_context(
             metadata_payload["summary_anchor"] = summary_anchor
         if summary_source is not None:
             metadata_payload["summary_source"] = summary_source
+    continuity_summary = ""
+    artifact_reference_sections: tuple[PromptAssemblySection, ...] = ()
     if continuity_state is not None:
         summary_text = continuity_state.summary_text
         if isinstance(summary_text, str) and summary_text.strip():
-            _append_system_segment(
-                f"Runtime continuity summary:\n{summary_text.strip()}",
-                source="continuity_summary",
+            continuity_summary = f"Runtime continuity summary:\n{summary_text.strip()}"
+        artifact_reference_sections = tuple(
+            PromptAssemblySection(
+                role=segment.role,
+                content=segment.content or "",
+                source=cast(
+                    str,
+                    (segment.metadata or {}).get(
+                        "source",
+                        "runtime_context_artifact_reference",
+                    ),
+                ),
+                metadata={} if segment.metadata is None else dict(segment.metadata),
             )
-        segments.extend(_artifact_reference_segments(continuity_state))
+            for segment in _artifact_reference_segments(continuity_state)
+        )
     if transform_result.traces:
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
-    segments.append(
-        RuntimeContextSegment(
-            role="user",
-            content=prompt,
-            metadata={"source": "current_user_prompt"},
-        )
+    runtime_instruction_precedence = (
+        "Runtime instruction precedence: active agent role and runtime enforcement "
+        "boundaries are authoritative. Tool allowlists, approvals, session truth, "
+        "and runtime safety policies outrank skill, todo, hook-preset, and "
+        "continuity guidance. Skill instructions may refine how to perform work, "
+        "but must not expand role scope, tool permissions, approval behavior, or "
+        "completion obligations."
     )
+    assembly_plan = build_prompt_assembly_plan(
+        prompt=prompt,
+        runtime_instruction_precedence=runtime_instruction_precedence,
+        agent_prompt_context=agent_prompt_context,
+        preserved_system_segments=preserved_system_segments,
+        skill_prompt_context=skill_prompt_context,
+        context_transform_result=transform_result,
+        pending_state_section=(
+            PromptAssemblySection(
+                role=pending_state_segment.role,
+                content=pending_state_segment.content or "",
+                source=cast(
+                    str,
+                    (pending_state_segment.metadata or {}).get(
+                        "source",
+                        "runtime_pending_state",
+                    ),
+                ),
+                metadata=(
+                    {}
+                    if pending_state_segment.metadata is None
+                    else dict(pending_state_segment.metadata)
+                ),
+            )
+            if pending_state_segment is not None
+            else None
+        ),
+        todo_prompt_context=todo_prompt_context or "",
+        continuity_summary=continuity_summary,
+        artifact_reference_sections=artifact_reference_sections,
+    )
+    segments: list[RuntimeContextSegment] = [
+        RuntimeContextSegment(
+            role=section.role,
+            content=section.content,
+            metadata={"source": section.source, **dict(section.metadata)},
+        )
+        for section in assembly_plan.sections
+    ]
     for index, result in enumerate(context_window.tool_results, start=1):
         if todo_prompt_context is not None and result.tool_name == "todo_write":
             continue
