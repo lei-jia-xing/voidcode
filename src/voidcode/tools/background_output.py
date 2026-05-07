@@ -122,18 +122,6 @@ class BackgroundOutputTool:
         )
         empty_child_output = False
 
-        if (
-            not args.full_session
-            and result.child_session_id is not None
-            and result.status == "completed"
-        ):
-            try:
-                session_result = self._runtime.session_result(session_id=result.child_session_id)
-            except UnknownSessionError:
-                session_result = None
-            if session_result is not None:
-                empty_child_output = _session_result_has_empty_output(session_result)
-
         if args.full_session and result.child_session_id is not None:
             try:
                 session_result = self._runtime.session_result(session_id=result.child_session_id)

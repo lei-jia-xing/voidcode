@@ -327,6 +327,33 @@ class _SummaryPresentEmptyOutputBackgroundRuntime(_EmptyOutputBackgroundRuntime)
         )
 
 
+class _SummaryPresentEmptyOutputNoSessionReadRuntime(_StubBackgroundRuntime):
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        _ = emit_result_read_hook
+        assert task_id == "task-1"
+        return BackgroundTaskResult(
+            task_id="task-1",
+            parent_session_id="leader-session",
+            child_session_id="child-session",
+            status="completed",
+            summary_output=(
+                "Completed child session child-session; full output is preserved outside "
+                "active context."
+            ),
+            result_available=True,
+        )
+
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        raise AssertionError(
+            f"session_result should not be called for default background_output: {session_id}"
+        )
+
+
 class _MissingChildSessionBackgroundRuntime(_StubBackgroundRuntime):
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         assert session_id == "child-session"
@@ -649,10 +676,10 @@ def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> Non
     assert result.data["empty_child_output"] is True
 
 
-def test_background_output_default_detects_empty_child_output_without_full_session(
+def test_background_output_default_skips_full_session_fetch_when_full_session_false(
     tmp_path: Path,
 ) -> None:
-    tool = BackgroundOutputTool(runtime=_SummaryPresentEmptyOutputBackgroundRuntime())
+    tool = BackgroundOutputTool(runtime=_SummaryPresentEmptyOutputNoSessionReadRuntime())
 
     result = tool.invoke(
         ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
@@ -660,8 +687,8 @@ def test_background_output_default_detects_empty_child_output_without_full_sessi
     )
 
     assert result.status == "ok"
-    assert result.data["empty_child_output"] is True
-    assert "completed with empty output" in str(result.data["guidance"])
+    assert result.data["empty_child_output"] is False
+    assert "guidance" not in result.data
 
 
 def test_background_output_full_session_falls_back_when_child_session_unavailable(
