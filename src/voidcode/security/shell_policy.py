@@ -73,12 +73,22 @@ def classify_non_interactive_command(command_text: str) -> tuple[bool, str | Non
             "Avoid interactive Python shells; run a non-interactive script or use a "
             "file-oriented tool.",
         )
-    if executable in {"bash", "sh", "zsh"} and all(token != "-c" for token in tokens[1:]):
+    if executable in {"bash", "sh", "zsh"}:
+        shell_args = tokens[1:]
+        if not shell_args:
+            return (
+                True,
+                "interactive_command",
+                "Provide a shell command string with -c/-lc or invoke a script file explicitly.",
+            )
+        if any(token in {"-c", "-lc", "--version", "-n"} for token in shell_args):
+            return False, None, None
+        if any(not token.startswith("-") for token in shell_args):
+            return False, None, None
         return (
             True,
             "interactive_command",
-            "Provide a non-interactive shell command with -c, or use shell_exec for a "
-            "bounded one-shot command.",
+            "Provide a shell command string with -c/-lc or invoke a script file explicitly.",
         )
     return False, None, None
 
