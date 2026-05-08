@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -59,21 +60,32 @@ def test_web_prints_auto_assigned_url_when_port_unspecified(capsys: Any, tmp_pat
     workspace = Path("/tmp/web-banner-auto-port-test")
     config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = write_frontend_dist_fixture(tmp_path)
+    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener_socket.bind(("127.0.0.1", 0))
 
-    with patch.object(server, "_run_runtime_server", autospec=True):
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
-            with patch.object(server, "_select_ephemeral_port", autospec=True, return_value=39111):
-                server.web(
-                    workspace=workspace,
-                    host="127.0.0.1",
-                    port=None,
-                    config=config,
-                    open_browser=False,
-                )
+    try:
+        expected_port = cast(int, listener_socket.getsockname()[1])
+        with patch.object(server, "_run_runtime_server", autospec=True):
+            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+                with patch.object(
+                    server,
+                    "_reserve_listener_socket",
+                    autospec=True,
+                    return_value=listener_socket,
+                ):
+                    server.web(
+                        workspace=workspace,
+                        host="127.0.0.1",
+                        port=None,
+                        config=config,
+                        open_browser=False,
+                    )
 
-    captured = capsys.readouterr()
-    assert "VoidCode" in captured.out
-    assert "http://127.0.0.1:39111" in captured.out
+        captured = capsys.readouterr()
+        assert "VoidCode" in captured.out
+        assert f"http://127.0.0.1:{expected_port}" in captured.out
+    finally:
+        listener_socket.close()
 
 
 def test_web_prints_ipv6_auto_assigned_url_when_host_is_ipv6(capsys: Any, tmp_path: Path) -> None:
@@ -81,21 +93,32 @@ def test_web_prints_ipv6_auto_assigned_url_when_host_is_ipv6(capsys: Any, tmp_pa
     workspace = Path("/tmp/web-banner-ipv6-auto-port-test")
     config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = write_frontend_dist_fixture(tmp_path)
+    listener_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener_socket.bind(("::1", 0, 0, 0))
 
-    with patch.object(server, "_run_runtime_server", autospec=True):
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
-            with patch.object(server, "_select_ephemeral_port", autospec=True, return_value=39112):
-                server.web(
-                    workspace=workspace,
-                    host="::1",
-                    port=None,
-                    config=config,
-                    open_browser=False,
-                )
+    try:
+        expected_port = cast(int, listener_socket.getsockname()[1])
+        with patch.object(server, "_run_runtime_server", autospec=True):
+            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+                with patch.object(
+                    server,
+                    "_reserve_listener_socket",
+                    autospec=True,
+                    return_value=listener_socket,
+                ):
+                    server.web(
+                        workspace=workspace,
+                        host="::1",
+                        port=None,
+                        config=config,
+                        open_browser=False,
+                    )
 
-    captured = capsys.readouterr()
-    assert "VoidCode" in captured.out
-    assert "http://::1:39112" in captured.out
+        captured = capsys.readouterr()
+        assert "VoidCode" in captured.out
+        assert f"http://::1:{expected_port}" in captured.out
+    finally:
+        listener_socket.close()
 
 
 def test_web_browser_open_failure_does_not_crash(capsys: Any, tmp_path: Path) -> None:
