@@ -1326,14 +1326,22 @@ class RuntimeBackgroundTaskSupervisor:
         if task.status != "running" or child_response.session.status != "waiting":
             return
         idle_event = self._latest_session_idle_event(child_response.events)
-        if idle_event is None:
-            return
+        waiting_reason = self._runtime._waiting_reason_from_session(child_response.session)
+        idle_event_sequence = (
+            idle_event.sequence
+            if idle_event is not None
+            else self._latest_waiting_episode_sequence(child_response.events)
+        )
         self.emit_background_task_idle_reminder(
             task=task,
             child_session_id=child_session_id,
             child_session_status=child_response.session.status,
-            idle_event_sequence=idle_event.sequence,
-            idle_reason=idle_event.payload.get("reason", "waiting"),
+            idle_event_sequence=idle_event_sequence,
+            idle_reason=(
+                idle_event.payload.get("reason", waiting_reason)
+                if idle_event is not None
+                else waiting_reason
+            ),
         )
 
     def emit_background_task_idle_reminder(
@@ -1466,6 +1474,12 @@ class RuntimeBackgroundTaskSupervisor:
         return None
 
     @staticmethod
+    def _latest_waiting_episode_sequence(events: tuple[EventEnvelope, ...]) -> int:
+        if events:
+            return events[-1].sequence
+        return 0
+
+    @staticmethod
     def _current_unix_ms() -> int:
         return int(time.time() * 1000)
 
@@ -1487,6 +1501,10 @@ class RuntimeBackgroundTaskSupervisor:
         if session_response.session.status == "waiting":
             if is_background_task_terminal(current_task.status):
                 return
+            self.emit_background_task_idle_reminder_for_waiting_child(
+                task=current_task,
+                child_response=session_response,
+            )
             self.emit_background_task_waiting_approval(
                 task=current_task,
                 child_response=session_response,
