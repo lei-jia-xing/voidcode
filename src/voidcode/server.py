@@ -78,14 +78,14 @@ def _packaged_frontend_dist() -> object | None:
 
 @contextmanager
 def _frontend_dist_context() -> Iterator[Path]:
+    if _REPO_FRONTEND_DIST.is_dir() and (_REPO_FRONTEND_DIST / "index.html").is_file():
+        yield _REPO_FRONTEND_DIST
+        return
     packaged_frontend_dist = _packaged_frontend_dist()
     if packaged_frontend_dist is not None:
         packaged_traversable = cast(Any, packaged_frontend_dist)
         with importlib_resources.as_file(packaged_traversable) as frontend_dist:
             yield frontend_dist
-        return
-    if _REPO_FRONTEND_DIST.is_dir() and (_REPO_FRONTEND_DIST / "index.html").is_file():
-        yield _REPO_FRONTEND_DIST
         return
     raise SystemExit(
         "error: frontend web bundle not found. "

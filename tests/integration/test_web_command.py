@@ -62,6 +62,32 @@ def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
     assert "http://127.0.0.1:8080" in captured.out
 
 
+def test_web_prefers_repo_frontend_dist_when_packaged_assets_exist(
+    capsys: Any, tmp_path: Path
+) -> None:
+    server = importlib.import_module("voidcode.server")
+    workspace = Path("/tmp/web-repo-priority-test")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    repo_frontend_dist = write_frontend_dist_fixture(tmp_path / "repo")
+
+    with patch.object(server, "_REPO_FRONTEND_DIST", repo_frontend_dist):
+        with patch.object(server, "_packaged_frontend_dist", autospec=True, return_value=object()):
+            with patch.object(server.importlib_resources, "as_file", autospec=True) as as_file_mock:
+                with patch.object(server, "_run_runtime_server", autospec=True):
+                    server.web(
+                        workspace=workspace,
+                        host="127.0.0.1",
+                        port=8081,
+                        config=config,
+                        open_browser=False,
+                    )
+
+    captured = capsys.readouterr()
+    assert "VoidCode" in captured.out
+    assert "http://127.0.0.1:8081" in captured.out
+    as_file_mock.assert_not_called()
+
+
 def test_web_prints_auto_assigned_url_when_port_unspecified(capsys: Any, tmp_path: Path) -> None:
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/web-banner-auto-port-test")

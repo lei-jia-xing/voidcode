@@ -31,6 +31,23 @@ def _frontend_dist_override(frontend_dist: Path) -> Any:
     yield frontend_dist
 
 
+class _PackagedFrontendDistStub:
+    def __init__(self, *, is_dir: bool, has_index: bool) -> None:
+        self._is_dir = is_dir
+        self._has_index = has_index
+
+    def is_dir(self) -> bool:
+        return self._is_dir
+
+    def joinpath(self, name: str) -> _PackagedFrontendDistStub:
+        if name == "index.html":
+            return _PackagedFrontendDistStub(is_dir=False, has_index=self._has_index)
+        return _PackagedFrontendDistStub(is_dir=False, has_index=False)
+
+    def is_file(self) -> bool:
+        return self._has_index
+
+
 def test_serve_forwards_runtime_config_to_http_app_factory() -> None:
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/server-workspace")
@@ -230,3 +247,24 @@ def test_web_closes_reserved_listener_when_frontend_setup_fails() -> None:
     finally:
         if listener_socket.fileno() != -1:
             listener_socket.close()
+
+
+def test_frontend_dist_context_prefers_repo_dist_over_packaged_fallback(tmp_path: Path) -> None:
+    server = importlib.import_module("voidcode.server")
+    repo_frontend_dist = _write_frontend_dist_fixture(tmp_path)
+    packaged_frontend_dist = tmp_path / "packaged-dist"
+    packaged_frontend_dist.mkdir()
+    (packaged_frontend_dist / "index.html").write_text("packaged", encoding="utf-8")
+
+    with patch.object(server, "_REPO_FRONTEND_DIST", repo_frontend_dist):
+        with patch.object(
+            server,
+            "_packaged_frontend_dist",
+            autospec=True,
+            return_value=_PackagedFrontendDistStub(is_dir=True, has_index=True),
+        ):
+            with patch.object(server.importlib_resources, "as_file", autospec=True) as as_file_mock:
+                with server._frontend_dist_context() as frontend_dist:
+                    assert frontend_dist == repo_frontend_dist
+
+    as_file_mock.assert_not_called()
