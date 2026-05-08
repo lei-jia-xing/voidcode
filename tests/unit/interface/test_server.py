@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 
@@ -20,7 +21,7 @@ def _write_frontend_dist_fixture(tmp_path: Path) -> Path:
 def test_serve_forwards_runtime_config_to_http_app_factory() -> None:
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/server-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
 
     with patch.object(
         server, "create_runtime_app", autospec=True, return_value=object()
@@ -36,7 +37,7 @@ def test_serve_forwards_runtime_config_to_http_app_factory() -> None:
 def test_serve_delegates_to_shared_runtime_server() -> None:
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/server-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
         server.serve(workspace=workspace, host="127.0.0.1", port=8001, config=config)
@@ -52,7 +53,7 @@ def test_serve_delegates_to_shared_runtime_server() -> None:
 def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/server-workspace")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = _write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
@@ -69,6 +70,32 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
         workspace=workspace,
         host="127.0.0.1",
         port=8001,
+        config=config,
+        frontend_dist=frontend_dist,
+    )
+
+
+def test_web_selects_ephemeral_port_when_unspecified(tmp_path: Path) -> None:
+    server = importlib.import_module("voidcode.server")
+    workspace = Path("/tmp/server-workspace")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    frontend_dist = _write_frontend_dist_fixture(tmp_path)
+
+    with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
+        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+            with patch.object(server, "_select_ephemeral_port", autospec=True, return_value=43123):
+                server.web(
+                    workspace=workspace,
+                    host="127.0.0.1",
+                    port=None,
+                    config=config,
+                    open_browser=False,
+                )
+
+    run_mock.assert_called_once_with(
+        workspace=workspace,
+        host="127.0.0.1",
+        port=43123,
         config=config,
         frontend_dist=frontend_dist,
     )

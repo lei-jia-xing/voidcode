@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import socket
 import webbrowser
 from pathlib import Path
 from typing import Protocol, cast
@@ -60,15 +61,22 @@ def _resolve_frontend_dist() -> Path:
     return _FRONTEND_DIST
 
 
+def _select_ephemeral_port(host: str) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+        probe_socket.bind((host, 0))
+        return cast(int, probe_socket.getsockname()[1])
+
+
 def web(
     *,
     workspace: Path,
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int | None = None,
     config: RuntimeConfig | None = None,
     open_browser: bool = True,
 ) -> None:
-    url = f"http://{host}:{port}"
+    selected_port = _select_ephemeral_port(host) if port is None else port
+    url = f"http://{host}:{selected_port}"
     frontend_dist = _resolve_frontend_dist()
 
     print("VoidCode")
@@ -85,7 +93,7 @@ def web(
     _run_runtime_server(
         workspace=workspace,
         host=host,
-        port=port,
+        port=selected_port,
         config=config,
         frontend_dist=frontend_dist,
     )
