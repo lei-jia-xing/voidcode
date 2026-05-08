@@ -62,9 +62,27 @@ def _resolve_frontend_dist() -> Path:
 
 
 def _select_ephemeral_port(host: str) -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
-        probe_socket.bind((host, 0))
-        return cast(int, probe_socket.getsockname()[1])
+    address_infos = socket.getaddrinfo(
+        host,
+        0,
+        family=socket.AF_UNSPEC,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+        flags=socket.AI_PASSIVE,
+    )
+    last_error: OSError | None = None
+    for family, socket_type, proto, _canonname, sockaddr in address_infos:
+        try:
+            with socket.socket(family, socket_type, proto) as probe_socket:
+                probe_socket.bind(sockaddr)
+                return cast(int, probe_socket.getsockname()[1])
+        except OSError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    msg = f"could not resolve local bind host for auto port selection: {host}"
+    raise OSError(msg)
 
 
 def web(

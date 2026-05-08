@@ -99,3 +99,51 @@ def test_web_selects_ephemeral_port_when_unspecified(tmp_path: Path) -> None:
         config=config,
         frontend_dist=frontend_dist,
     )
+
+
+def test_select_ephemeral_port_uses_ipv6_socket_family(monkeypatch: Any) -> None:
+    server = importlib.import_module("voidcode.server")
+    socket_module = importlib.import_module("socket")
+    socket_calls: list[tuple[int, int, int]] = []
+    bind_calls: list[object] = []
+
+    class _FakeSocket:
+        def __init__(self, family: int, socket_type: int, proto: int) -> None:
+            socket_calls.append((family, socket_type, proto))
+            self._sockname = ("::1", 41234, 0, 0)
+
+        def __enter__(self) -> _FakeSocket:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            _ = (exc_type, exc, tb)
+            return None
+
+        def bind(self, sockaddr: object) -> None:
+            bind_calls.append(sockaddr)
+
+        def getsockname(self) -> tuple[str, int, int, int]:
+            return self._sockname
+
+    monkeypatch.setattr(
+        server.socket,
+        "getaddrinfo",
+        lambda host, port, family, type, proto, flags: [
+            (
+                socket_module.AF_INET6,
+                socket_module.SOCK_STREAM,
+                socket_module.IPPROTO_TCP,
+                "",
+                (host, port, 0, 0),
+            )
+        ],
+    )
+    monkeypatch.setattr(server.socket, "socket", _FakeSocket)
+
+    port = server._select_ephemeral_port("::1")
+
+    assert port == 41234
+    assert socket_calls == [
+        (socket_module.AF_INET6, socket_module.SOCK_STREAM, socket_module.IPPROTO_TCP)
+    ]
+    assert bind_calls == [("::1", 0, 0, 0)]

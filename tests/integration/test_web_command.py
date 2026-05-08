@@ -76,6 +76,28 @@ def test_web_prints_auto_assigned_url_when_port_unspecified(capsys: Any, tmp_pat
     assert "http://127.0.0.1:39111" in captured.out
 
 
+def test_web_prints_ipv6_auto_assigned_url_when_host_is_ipv6(capsys: Any, tmp_path: Path) -> None:
+    server = importlib.import_module("voidcode.server")
+    workspace = Path("/tmp/web-banner-ipv6-auto-port-test")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    frontend_dist = write_frontend_dist_fixture(tmp_path)
+
+    with patch.object(server, "_run_runtime_server", autospec=True):
+        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+            with patch.object(server, "_select_ephemeral_port", autospec=True, return_value=39112):
+                server.web(
+                    workspace=workspace,
+                    host="::1",
+                    port=None,
+                    config=config,
+                    open_browser=False,
+                )
+
+    captured = capsys.readouterr()
+    assert "VoidCode" in captured.out
+    assert "http://::1:39112" in captured.out
+
+
 def test_web_browser_open_failure_does_not_crash(capsys: Any, tmp_path: Path) -> None:
     """Verify graceful degradation when webbrowser.open raises."""
     server = importlib.import_module("voidcode.server")
