@@ -530,12 +530,7 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
         "Do not use this tool to start a long-lived dev server"
         in definitions["shell_exec"].description
     )
-    assert (
-        "Do not use this tool to author file contents that are already known"
-        in definitions["shell_exec"].description
-    )
-    assert "echo > file" in definitions["shell_exec"].description
-    assert "cat <<EOF > file" in definitions["shell_exec"].description
+    assert "When the desired file content is already known" in definitions["shell_exec"].description
     assert (
         "Use shell execution when the work is inherently command-driven"
         in definitions["shell_exec"].description

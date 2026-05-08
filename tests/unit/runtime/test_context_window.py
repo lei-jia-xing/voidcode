@@ -1197,6 +1197,7 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
         assert synthetic_feedback.count(f'"tool_name": "{result.tool_name}"') == 1
     assert "1: alpha" in synthetic_feedback
     assert "child done" in synthetic_feedback
+    assert '"tool_name": "todo_write"' not in synthetic_feedback
     assert any(
         diagnostic.code == "provider_path_uses_synthetic_tool_feedback"
         for diagnostic in synthetic_snapshot.diagnostics

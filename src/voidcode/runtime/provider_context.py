@@ -423,6 +423,10 @@ def _synthetic_tool_feedback_message_snapshots(
 ) -> list[RuntimeProviderMessageSnapshot]:
     messages: list[RuntimeProviderMessageSnapshot] = []
     tool_feedback_lines: list[str] = []
+    has_runtime_todos = any(
+        segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state"
+        for segment in segments
+    )
     for segment in segments:
         if segment.role != "assistant":
             content, content_truncated = _clip_content(segment.content)
@@ -436,6 +440,8 @@ def _synthetic_tool_feedback_message_snapshots(
                 )
             )
     for result in tool_results:
+        if has_runtime_todos and result.tool_name == "todo_write":
+            continue
         tool_feedback_lines.append(_tool_result_payload_json(result))
     if tool_feedback_lines:
         content, content_truncated = _clip_content(

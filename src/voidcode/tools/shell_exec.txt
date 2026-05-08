@@ -8,8 +8,7 @@ Usage:
 - Use this tool for tests, builds, diagnostics, and one-shot local commands that cannot be expressed through narrower tools.
 - Do not use this tool to start a long-lived dev server, watcher, or daemon that must keep running while the agent continues working. Use `background_process_start` instead, then inspect readiness with `background_process_logs` and stop it with `background_process_stop`.
 - Do not use this tool for interactive scaffolds, installers, or generators that prompt for input. Prefer a non-interactive command with explicit target paths, or create the needed project structure directly with other tools.
-- Do not use this tool to author file contents that are already known. Use `write_file` for new files or full rewrites, and `edit` / `multi_edit` for targeted changes.
-- Do not create or overwrite files with shell redirection or heredocs when the content is authored by the agent. Avoid patterns such as `echo > file`, `cat <<EOF > file`, `printf > file`, or similar shell-based file authoring.
+- When the desired file content is already known, prefer `write_file` for new files or full rewrites, and prefer `edit` / `multi_edit` for targeted changes.
 - Prefer dedicated file/edit tools when the target content is already known. Use shell execution when the work is inherently command-driven, such as builds, tests, package managers, non-interactive generators, or environment-specific tooling.
 - Do not rerun a scaffold command over an existing project root unless that command is explicitly intended to update the existing project in place.
 - Prefer dedicated file/search tools for file reads, file writes, and text/path search when they fit the task.
