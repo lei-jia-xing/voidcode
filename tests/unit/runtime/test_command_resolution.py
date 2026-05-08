@@ -309,6 +309,38 @@ def test_runtime_rejects_invalid_command_workflow_mode_during_request_normalizat
         )
 
 
+def test_runtime_preserves_command_only_workflow_mode_for_structured_unregistered_command(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="plain prompt",
+            metadata=cast(
+                RuntimeRequestMetadataPayload,
+                {
+                    "command": {
+                        "name": "custom",
+                        "source": "project",
+                        "arguments": [],
+                        "raw_arguments": "",
+                        "original_prompt": "/custom",
+                        "workflow_mode": "review",
+                    }
+                },
+            ),
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+
+    assert response.session.metadata["workflow_mode"] == "review"
+    assert cast(dict[str, object], workflow["effective"])["mode"] == "review"
+    assert response.output == "plain prompt"
+
+
 def test_compact_command_renders_runtime_continuity_prompt(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
 

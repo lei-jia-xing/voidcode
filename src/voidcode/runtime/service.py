@@ -1303,6 +1303,32 @@ class VoidCodeRuntime:
         _ = validate_runtime_command_metadata(raw_command)
 
     @staticmethod
+    def _restore_explicit_workflow_mode(
+        metadata: RuntimeRequestMetadataPayload,
+        raw_metadata: Mapping[str, object],
+    ) -> RuntimeRequestMetadataPayload:
+        raw_workflow_mode = raw_metadata.get("workflow_mode")
+        if isinstance(raw_workflow_mode, str):
+            return cast(
+                RuntimeRequestMetadataPayload,
+                {**cast(dict[str, object], metadata), "workflow_mode": raw_workflow_mode},
+            )
+        raw_command = raw_metadata.get("command")
+        if not isinstance(raw_command, dict):
+            return metadata
+        raw_command_payload = cast(dict[str, object], raw_command)
+        raw_command_workflow_mode = raw_command_payload.get("workflow_mode")
+        if not isinstance(raw_command_workflow_mode, str):
+            return metadata
+        return cast(
+            RuntimeRequestMetadataPayload,
+            {
+                **cast(dict[str, object], metadata),
+                "workflow_mode": raw_command_workflow_mode,
+            },
+        )
+
+    @staticmethod
     def _workflow_snapshot_with_effective_mode(
         workflow_snapshot: Mapping[str, object],
         workflow_mode: str,
@@ -2274,14 +2300,10 @@ class VoidCodeRuntime:
         validated_stream_metadata = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(stream_metadata)
         )
-        if "workflow_mode" in stream_metadata:
-            validated_stream_metadata = cast(
-                RuntimeRequestMetadataPayload,
-                {
-                    **cast(dict[str, object], validated_stream_metadata),
-                    "workflow_mode": stream_metadata["workflow_mode"],
-                },
-            )
+        validated_stream_metadata = self._restore_explicit_workflow_mode(
+            validated_stream_metadata,
+            stream_metadata,
+        )
         request_with_stream = RuntimeRequest(
             prompt=request.prompt,
             session_id=request.session_id,
@@ -6053,11 +6075,7 @@ class VoidCodeRuntime:
             self._metadata_without_workflow_mode(raw_metadata),
             allow_internal_fields=allow_internal_metadata,
         )
-        if isinstance(raw_workflow_mode, str):
-            metadata = cast(
-                RuntimeRequestMetadataPayload,
-                {**cast(dict[str, object], metadata), "workflow_mode": raw_workflow_mode},
-            )
+        metadata = self._restore_explicit_workflow_mode(metadata, raw_metadata)
         existing_session = (
             self._load_existing_session_if_present(session_id=session_id)
             if session_id is not None
