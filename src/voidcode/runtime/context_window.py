@@ -941,17 +941,23 @@ def _retain_indexes_within_token_budget(
     retained: set[int] = set()
     retained_tokens = 0
     ordered_indexes = tuple(sorted(candidate_indexes, reverse=True))
+    newest_index = ordered_indexes[0]
+    newest_retained = False
     for index in ordered_indexes:
         estimate = _tool_result_token_estimate(
             results[index], tokenizer_model=tokenizer_model
         ).tokens
+        if index == newest_index:
+            retained.add(index)
+            retained_tokens = estimate
+            newest_retained = True
+            continue
         if retained_tokens + estimate > token_budget:
             continue
         retained.add(index)
         retained_tokens += estimate
-    if retained:
+    if retained and newest_retained:
         return tuple(sorted(retained))
-    newest_index = ordered_indexes[0]
     return (newest_index,)
 
 

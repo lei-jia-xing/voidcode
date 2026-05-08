@@ -1560,6 +1560,23 @@ def test_prepare_provider_context_token_budget_prefers_recent_candidates() -> No
     assert context.token_budget == 120
 
 
+def test_retain_indexes_within_token_budget_always_keeps_newest_candidate() -> None:
+    results = (
+        _sized_tool_result(1, content_size=40),
+        _sized_tool_result(2, content_size=40),
+        _sized_tool_result(3, content_size=400),
+    )
+
+    retained = _retain_indexes_within_token_budget(
+        results,
+        (0, 1, 2),
+        token_budget=20,
+        tokenizer_model=None,
+    )
+
+    assert retained == (2,)
+
+
 def test_prepare_provider_context_can_disable_importance_retention() -> None:
     context = prepare_provider_context(
         prompt="debug",
@@ -1871,10 +1888,10 @@ def test_prepare_provider_context_applies_recent_tool_result_token_cap() -> None
     )
 
     (latest,) = context.tool_results
-    assert latest.data["index"] == 1
+    assert latest.data["index"] == 2
     assert latest.truncated is False
     assert latest.content is not None
-    assert len(latest.content) <= 20
+    assert len(latest.content) == 80
     assert context.truncated_tool_result_count == 0
 
 
