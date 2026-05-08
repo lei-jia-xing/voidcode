@@ -20,6 +20,7 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+from voidcode.runtime.workflow_snapshot import workflow_snapshot_from_metadata
 
 
 def _private_attr(instance: object, name: str) -> Any:
@@ -80,6 +81,157 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert listed[0].session.parent_id == "leader-session"
     assert result.session.session.parent_id == "leader-session"
     assert notifications[0].session.parent_id == "leader-session"
+
+
+def test_session_storage_roundtrips_snapshot_first_workflow_metadata(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "workflow_preset": "research",
+        "workflow": {
+            "snapshot_version": 2,
+            "requested": {"workflow_mode": "deep_work", "workflow_preset": "research"},
+            "effective": {
+                "mode": "deep_work",
+                "legacy_preset": "research",
+                "source": "workflow_mode",
+                "category": "research",
+                "default_agent": "researcher",
+                "effective_agent": "researcher",
+                "read_only_default": True,
+                "prompt_append": "Stored prompt guidance.",
+                "hook_preset_refs": ["role_reminder"],
+                "skill_refs": ["review-work"],
+                "force_load_skills": ["git-master"],
+                "mcp_binding_intents": [{"servers": ["context7"], "required": False}],
+                "verification_guidance": "Stored verification guidance.",
+            },
+        },
+    }
+    request = RuntimeRequest(prompt="persist workflow", session_id="workflow-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="workflow-session"),
+            status="completed",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id="workflow-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="workflow-session")
+    loaded_snapshot = workflow_snapshot_from_metadata(loaded.session.metadata)
+
+    assert loaded_snapshot == workflow_snapshot_from_metadata(metadata)
+    assert loaded_snapshot is not None
+    assert loaded_snapshot["effective"] == cast(
+        dict[str, object], cast(dict[str, object], metadata["workflow"])["effective"]
+    )
+
+
+def test_session_storage_loads_legacy_workflow_preset_only_metadata(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {"workflow_preset": "implementation"}
+    request = RuntimeRequest(prompt="persist legacy workflow", session_id="legacy-workflow-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="legacy-workflow-session"),
+            status="completed",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id="legacy-workflow-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="legacy-workflow-session")
+    loaded_snapshot = workflow_snapshot_from_metadata(loaded.session.metadata)
+
+    assert loaded.session.metadata == metadata
+    assert loaded_snapshot is not None
+    assert loaded_snapshot["requested"] == {
+        "workflow_mode": None,
+        "workflow_preset": "implementation",
+    }
+    assert loaded_snapshot["effective"] == {
+        "mode": None,
+        "legacy_preset": "implementation",
+        "source": None,
+    }
+    assert loaded_snapshot["selected_preset"] == "implementation"
+
+
+def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "workflow_mode": "sustain",
+        "workflow": {
+            "snapshot_version": 2,
+            "requested": {"workflow_mode": "sustain", "workflow_preset": "implementation"},
+            "effective": {
+                "mode": "sustain",
+                "legacy_preset": "implementation",
+                "source": "workflow_mode",
+                "category": "implementation",
+                "default_agent": "leader",
+                "effective_agent": "leader",
+                "read_only_default": False,
+                "prompt_append": "Stored sustain guidance.",
+                "hook_preset_refs": ["role_reminder"],
+                "skill_refs": [],
+                "force_load_skills": ["git-master"],
+                "mcp_binding_intents": [],
+                "verification_guidance": "Use stored sustain checks.",
+            },
+        },
+    }
+    request = RuntimeRequest(prompt="persist new workflow", session_id="new-workflow-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="new-workflow-session"),
+            status="completed",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id="new-workflow-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="new-workflow-session")
+
+    loaded_workflow = workflow_snapshot_from_metadata(loaded.session.metadata)
+    expected_workflow = workflow_snapshot_from_metadata(metadata)
+
+    assert loaded_workflow == expected_workflow
 
 
 def test_tool_results_from_events_preserves_raw_read_file_content() -> None:

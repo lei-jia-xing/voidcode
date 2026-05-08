@@ -13,6 +13,8 @@ from .context_transforms import validate_runtime_context_transform_refs
 
 type WorkflowPresetId = Literal["research", "implementation", "frontend", "review", "git"]
 type WorkflowPresetKey = WorkflowPresetId | str
+type WorkflowModeId = Literal["default", "deep_work", "review", "product", "sustain"]
+type WorkflowModeKey = WorkflowModeId | str
 
 _WORKFLOW_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 _WORKFLOW_PRESET_FIELDS = frozenset(
@@ -33,6 +35,44 @@ _WORKFLOW_PRESET_FIELDS = frozenset(
     }
 )
 _MCP_BINDING_INTENT_FIELDS = frozenset({"profile", "servers", "required"})
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowMode:
+    id: WorkflowModeKey
+    description: str
+    hook_preset_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not _WORKFLOW_ID_PATTERN.fullmatch(self.id):
+            raise ValueError(
+                f"WorkflowMode.id value {self.id!r} must match {_WORKFLOW_ID_PATTERN.pattern!r}"
+            )
+        if not self.description.strip():
+            raise ValueError(f"workflow mode '{self.id}' must declare a description")
+        _validate_string_tuple(
+            self.hook_preset_refs,
+            field_path=f"workflow mode '{self.id}' hook_preset_refs",
+            allow_empty=True,
+        )
+        validate_hook_preset_refs(
+            self.hook_preset_refs,
+            field_path=f"workflow mode '{self.id}' hook_preset_refs",
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"id": self.id, "description": self.description}
+        if self.hook_preset_refs:
+            payload["hook_preset_refs"] = list(self.hook_preset_refs)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowModeResolution:
+    mode: WorkflowMode
+    source: Literal["command", "workflow_mode", "workflow_preset", "default"]
+    workflow_mode: str
+    workflow_preset: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +219,69 @@ def get_builtin_workflow_preset(preset_id: str) -> WorkflowPreset | None:
 
 def load_builtin_workflow_preset_registry() -> WorkflowPresetRegistry:
     return WorkflowPresetRegistry(presets=MappingProxyType(_BUILTIN_WORKFLOW_PRESETS))
+
+
+def list_builtin_workflow_modes() -> tuple[WorkflowMode, ...]:
+    return tuple(_BUILTIN_WORKFLOW_MODES.values())
+
+
+def get_builtin_workflow_mode(mode_id: str) -> WorkflowMode | None:
+    return _BUILTIN_WORKFLOW_MODES.get(mode_id)
+
+
+def resolve_workflow_mode(
+    *,
+    command_workflow_mode: str | None = None,
+    metadata_workflow_mode: str | None = None,
+    workflow_preset: str | None = None,
+) -> WorkflowModeResolution:
+    command_mode = _normalize_optional_selector(
+        command_workflow_mode,
+        field_name="command workflow_mode",
+    )
+    metadata_mode = _normalize_optional_selector(
+        metadata_workflow_mode,
+        field_name="workflow_mode",
+    )
+    preset_id = _normalize_optional_selector(
+        workflow_preset,
+        field_name="workflow_preset",
+    )
+    preset_mode_id = _mode_id_for_workflow_preset(preset_id) if preset_id is not None else None
+
+    selected_mode_id: str
+    source: Literal["command", "workflow_mode", "workflow_preset", "default"]
+    if command_mode is not None:
+        selected_mode_id = command_mode
+        source = "command"
+    elif metadata_mode is not None:
+        selected_mode_id = metadata_mode
+        source = "workflow_mode"
+    elif preset_mode_id is not None:
+        selected_mode_id = preset_mode_id
+        source = "workflow_preset"
+    else:
+        selected_mode_id = "default"
+        source = "default"
+
+    selected_mode = _require_workflow_mode(selected_mode_id)
+    if (
+        command_mode is None
+        and metadata_mode is not None
+        and preset_mode_id is not None
+        and metadata_mode != preset_mode_id
+    ):
+        raise ValueError(
+            "workflow_mode and workflow_preset resolve to different modes: "
+            f"workflow_mode={metadata_mode!r}, workflow_preset={preset_id!r}"
+        )
+
+    return WorkflowModeResolution(
+        mode=selected_mode,
+        source=source,
+        workflow_mode=selected_mode.id,
+        workflow_preset=preset_id,
+    )
 
 
 def validate_workflow_presets(
@@ -337,6 +440,27 @@ def _validate_mcp_binding_availability(
                 f"workflow preset '{preset.id}' required mcp_binding_intents server is missing: "
                 f"{server_name}"
             )
+
+
+def _normalize_optional_selector(value: str | None, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string when provided")
+    return value.strip()
+
+
+def _require_workflow_mode(mode_id: str) -> WorkflowMode:
+    mode = get_builtin_workflow_mode(mode_id)
+    if mode is None:
+        raise ValueError(f"unknown workflow_mode: {mode_id}")
+    return mode
+
+
+def _mode_id_for_workflow_preset(preset_id: str) -> str:
+    if get_builtin_workflow_preset(preset_id) is None:
+        raise ValueError(f"unknown workflow_preset: {preset_id}")
+    return _WORKFLOW_PRESET_MODE_ALIASES[preset_id]
 
 
 def _validate_string_tuple(values: tuple[str, ...], *, field_path: str, allow_empty: bool) -> None:
@@ -530,16 +654,76 @@ _BUILTIN_WORKFLOW_PRESETS: dict[str, WorkflowPreset] = {
     preset.id: preset for preset in _VALIDATED_BUILTIN_WORKFLOW_PRESETS
 }
 
+_VALIDATED_BUILTIN_WORKFLOW_MODES = (
+    WorkflowMode(
+        id="default",
+        description="Balanced mode for ordinary runtime requests.",
+    ),
+    WorkflowMode(
+        id="deep_work",
+        description="Depth-first mode for research-heavy or complex implementation work.",
+        hook_preset_refs=(
+            "role_reminder",
+            "delegated_task_timing_guidance",
+            "background_output_quality_guidance",
+        ),
+    ),
+    WorkflowMode(
+        id="review",
+        description="Read-oriented mode for reviews and verification-focused analysis.",
+        hook_preset_refs=("role_reminder",),
+    ),
+    WorkflowMode(
+        id="product",
+        description="Product-facing mode for user-visible application work.",
+        hook_preset_refs=("role_reminder",),
+    ),
+    WorkflowMode(
+        id="sustain",
+        description="Maintenance mode for implementation, repository, and upkeep tasks.",
+        hook_preset_refs=(
+            "role_reminder",
+            "todo_continuation_guidance",
+            "delegated_task_timing_guidance",
+            "delegated_retry_guidance",
+        ),
+    ),
+)
+
+_BUILTIN_WORKFLOW_MODES: dict[str, WorkflowMode] = {
+    mode.id: mode for mode in _VALIDATED_BUILTIN_WORKFLOW_MODES
+}
+
+_WORKFLOW_PRESET_MODE_ALIASES: Mapping[str, WorkflowModeId] = MappingProxyType(
+    cast(
+        dict[str, WorkflowModeId],
+        {
+            "research": "deep_work",
+            "implementation": "sustain",
+            "frontend": "product",
+            "review": "review",
+            "git": "sustain",
+        },
+    )
+)
+
 
 __all__ = [
     "WorkflowMcpBindingIntent",
+    "WorkflowMode",
+    "WorkflowModeId",
+    "WorkflowModeKey",
+    "WorkflowModeResolution",
     "WorkflowPreset",
     "WorkflowPresetId",
     "WorkflowPresetKey",
     "WorkflowPresetRegistry",
+    "get_builtin_workflow_mode",
     "get_builtin_workflow_preset",
+    "list_builtin_workflow_modes",
     "list_builtin_workflow_presets",
     "load_builtin_workflow_preset_registry",
+    "resolve_workflow_mode",
     "validate_workflow_presets",
     "workflow_preset_from_payload",
     "workflow_presets_from_payload",

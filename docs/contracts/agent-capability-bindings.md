@@ -10,7 +10,7 @@ runtime materialize agent capability 时按以下顺序收口：
 
 1. resolved `AgentManifest` defaults：builtin preset defaults，或从 project/user 本地 markdown manifest 发现并解析出的 custom defaults（prompt body、tool allowlist、skill refs、hook preset refs、MCP binding intent、model/execution defaults）；
 2. repo/runtime config overrides：`agent`、`agents`、`categories`、provider/model、tool/skill/MCP config；
-3. request metadata overrides：request `agent`、`skills`、`force_load_skills`、delegation route metadata；
+3. request metadata overrides：request `agent`、`skills`、`force_load_skills`、delegation route metadata、`workflow_mode` / legacy `workflow_preset` selector；
 4. delegated child-only bindings：`load_skills` / `force_load_skills` 只进入目标 child session。
 
 这个优先级会写入 `session.metadata.agent_capability_snapshot.precedence`，用于 debug/replay 时解释一个 session 的能力来源。
@@ -43,6 +43,8 @@ MCP lifecycle 仍由 runtime/session-scoped `runtime.mcp` 管理：
 
 因此，agent MCP binding 不能绕过 runtime MCP lifecycle、approval、scope 或 tool allowlist。
 
+hook bundles 也是 guidance-only。它们会进入 snapshot，帮助解释历史 session 的意图和约束，但不会改变 lifecycle hook 的执行路径，也不会扩大 permissions、tool allowlist、delegation budget，或让 hook refs 变成脚本执行入口。
+
 ## Builtin preset、configured alias 与 local manifest
 
 当前有三类容易混淆的 agent 输入：
@@ -54,6 +56,8 @@ MCP lifecycle 仍由 runtime/session-scoped `runtime.mcp` 管理：
 Custom markdown manifest 与 config-defined prompt override 的 prompt materialization 会随 session 持久化到 runtime config metadata / `agent_capability_snapshot`，而不是在 replay 时重新读取文件或重新解析 `.voidcode.json`。`body` 表示 base prompt，`prompt_append` 表示追加 guidance，provider context 渲染时只追加一次。这保证文件变更或删除后，历史 session 仍按当时的 prompt/capability snapshot 解释。
 
 Custom manifest 仍只是 declaration layer：它可以收窄或建议 capability defaults，但不能授予 runtime 未配置、未允许、未审批或未通过现有 delegation/session contract 的执行权。
+
+Workflow mode 本身不是 agent capability binding 的新执行层。它只是 request/runtime 选择用的模式 selector，会进入 snapshot 和 prompt materialization，但不会改变 agent-owned binding 的边界。
 
 ## Hooks 与 skills 边界
 

@@ -37,12 +37,13 @@ class NoPendingQuestionError(ValueError):
     """Raised when a session has no pending question to answer."""
 
 
-class RuntimeCommandMetadata(TypedDict):
+class RuntimeCommandMetadata(TypedDict, total=False):
     name: str
     source: str
     arguments: list[str]
     raw_arguments: str
     original_prompt: str
+    workflow_mode: str
 
 
 class RuntimeContinuationLoopMetadata(TypedDict, total=False):
@@ -77,6 +78,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
+    workflow_mode: str
     workflow_plan: dict[str, object]
     workflow_preset: str
     workflow: dict[str, object]
@@ -128,6 +130,7 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "show_thinking",
         "skills",
         "force_load_skills",
+        "workflow_mode",
         "workflow_plan",
         "workflow_preset",
         "workflow",
@@ -156,7 +159,14 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
     if not isinstance(metadata, dict):
         raise RuntimeRequestError("request metadata 'command' must be an object when provided")
     payload = cast(dict[object, object], metadata)
-    allowed_keys = {"name", "source", "arguments", "raw_arguments", "original_prompt"}
+    allowed_keys = {
+        "name",
+        "source",
+        "arguments",
+        "raw_arguments",
+        "original_prompt",
+        "workflow_mode",
+    }
     non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
@@ -194,13 +204,26 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
                 f"request metadata 'command.arguments[{index}]' must be a string"
             )
         arguments.append(argument)
-    return {
+    normalized: RuntimeCommandMetadata = {
         "name": name,
         "source": source,
         "arguments": arguments,
         "raw_arguments": raw_arguments,
         "original_prompt": original_prompt,
     }
+    if "workflow_mode" in command_payload:
+        workflow_mode = _validate_optional_runtime_metadata_string(
+            command_payload["workflow_mode"],
+            field_name="command.workflow_mode",
+        )
+        try:
+            from .workflow import resolve_workflow_mode
+
+            _ = resolve_workflow_mode(command_workflow_mode=workflow_mode)
+        except ValueError as exc:
+            raise RuntimeRequestError(str(exc)) from exc
+        normalized["workflow_mode"] = workflow_mode
+    return normalized
 
 
 def validate_runtime_continuation_loop_metadata(
@@ -603,11 +626,29 @@ def validate_runtime_request_metadata(
             parsed_force_load.append(raw_name)
         normalized["force_load_skills"] = parsed_force_load
 
+    if "workflow_mode" in metadata:
+        normalized["workflow_mode"] = _validate_optional_runtime_metadata_string(
+            metadata["workflow_mode"],
+            field_name="workflow_mode",
+        )
+
     if "workflow_preset" in metadata:
         normalized["workflow_preset"] = _validate_optional_runtime_metadata_string(
             metadata["workflow_preset"],
             field_name="workflow_preset",
         )
+
+    if "workflow_mode" in normalized:
+        try:
+            from .workflow import resolve_workflow_mode
+
+            _ = resolve_workflow_mode(
+                metadata_workflow_mode=cast(str | None, normalized.get("workflow_mode")),
+                workflow_preset=cast(str | None, normalized.get("workflow_preset")),
+            )
+        except ValueError as exc:
+            if "unknown workflow_preset" not in str(exc):
+                raise RuntimeRequestError(str(exc)) from exc
 
     if "workflow_plan" in metadata:
         if not allow_internal_fields:

@@ -5,6 +5,7 @@ from typing import cast
 from ..hook.presets import ResolvedHookPresetSnapshot, hook_preset_snapshot_from_payload
 from .config import RuntimeAgentConfig
 from .contracts import RuntimeHookPresetSnapshot
+from .workflow import WorkflowMode
 
 
 def hook_preset_refs_for_agent(agent: RuntimeAgentConfig | None) -> tuple[str, ...]:
@@ -13,6 +14,18 @@ def hook_preset_refs_for_agent(agent: RuntimeAgentConfig | None) -> tuple[str, .
     if agent.hook_refs:
         return agent.hook_refs
     return agent.manifest_hook_refs
+
+
+def hook_preset_refs_for_mode_and_agent(
+    mode: WorkflowMode | None,
+    agent: RuntimeAgentConfig | None,
+) -> tuple[str, ...]:
+    refs: list[str] = []
+    mode_refs = () if mode is None else mode.hook_preset_refs
+    for ref in (*mode_refs, *hook_preset_refs_for_agent(agent)):
+        if ref not in refs:
+            refs.append(ref)
+    return tuple(refs)
 
 
 def resolved_hook_preset_snapshot_from_session_metadata(

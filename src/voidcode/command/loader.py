@@ -90,7 +90,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         ),
         source="builtin",
         agent="product",
-        workflow_preset="review",
+        workflow_mode="product",
     ),
     CommandDefinition(
         name="start-work",
@@ -106,6 +106,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "checks that cover the changed behavior and report any unverified risk."
         ),
         source="builtin",
+        workflow_mode="sustain",
         workflow_preset="implementation",
     ),
     CommandDefinition(
@@ -121,6 +122,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "done."
         ),
         source="builtin",
+        workflow_mode="sustain",
         workflow_preset="implementation",
     ),
     CommandDefinition(
@@ -137,7 +139,8 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "verification passes or a runtime terminal loop state is reached."
         ),
         source="builtin",
-        workflow_preset="implementation",
+        workflow_mode="deep_work",
+        workflow_preset="research",
     ),
     CommandDefinition(
         name="cancel-continuation",
@@ -162,6 +165,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "or unreadable, explain that instead of producing a generic review."
         ),
         source="builtin",
+        workflow_mode="review",
     ),
     CommandDefinition(
         name="test",
@@ -243,6 +247,8 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         template=template,
         source=source,
         agent=_optional_string(metadata.get("agent")),
+        workflow_mode=_optional_string(metadata.get("workflow_mode")),
+        workflow_preset=_optional_string(metadata.get("workflow_preset")),
         model=_optional_string(metadata.get("model")),
         subtask=_metadata_bool(metadata.get("subtask"), default=False),
         enabled=_metadata_bool(metadata.get("enabled"), default=True),

@@ -45,6 +45,7 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         prompt="fix the failing test",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="agent prompt",
+        workflow_mode_prompt_context="workflow mode prompt",
         preserved_system_segments=("preserved-a",),
         skill_prompt_context="skill context",
         pending_state_section=PromptAssemblySection(
@@ -69,6 +70,7 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     assert [section.source for section in plan.sections] == [
         "runtime_instruction_precedence",
         "agent_prompt",
+        "workflow_mode_prompt",
         "preserved_system_segment",
         "skill_prompt",
         "runtime_pending_state",
@@ -80,6 +82,7 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     assert plan.sections[-1].role == "user"
     assert plan.sections[-1].content == "fix the failing test"
     assert [section.tier for section in plan.sections] == [
+        "instruction",
         "instruction",
         "instruction",
         "instruction",
@@ -97,6 +100,7 @@ def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
         prompt="continue",
         runtime_instruction_precedence="same text",
         agent_prompt_context="same text",
+        workflow_mode_prompt_context="same text",
         preserved_system_segments=("same text",),
         skill_prompt_context="same text",
     )
@@ -167,6 +171,7 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         prompt="fix the failing test",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
+        workflow_mode_prompt_context="workflow mode prompt",
         prompt_profile_name="leader",
         session_runtime_state={
             "workspace_root": "/tmp/not-a-worktree",
@@ -188,6 +193,7 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
     assert sources[boundary_index + 1 :] == [
         "runtime_environment_dynamic",
         "runtime_instruction_precedence",
+        "workflow_mode_prompt",
         "runtime_todo_state",
         "current_user_prompt",
     ]
@@ -203,6 +209,7 @@ def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profile
         prompt="map the repo",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="explore base body",
+        workflow_mode_prompt_context="workflow mode prompt",
         prompt_profile_name="explore",
         session_runtime_state={"model": "opencode/test-model"},
     )
@@ -210,6 +217,7 @@ def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profile
         prompt="make the edit",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="worker base body",
+        workflow_mode_prompt_context="workflow mode prompt",
         prompt_profile_name="worker",
         session_runtime_state={"model": "opencode/test-model"},
     )

@@ -17,6 +17,7 @@ class CommandDefinition:
     source: CommandSource = "builtin"
     arguments_schema: dict[str, object] | None = None
     agent: str | None = None
+    workflow_mode: str | None = None
     workflow_preset: str | None = None
     model: str | None = None
     subtask: bool = False
@@ -33,6 +34,8 @@ class CommandDefinition:
             raise ValueError("command description must be a non-empty string")
         if not self.template.strip():
             raise ValueError("command template must be a non-empty string")
+        if self.workflow_mode is not None and not self.workflow_mode.strip():
+            raise ValueError("command workflow_mode must be a non-empty string")
         if self.workflow_preset is not None and not self.workflow_preset.strip():
             raise ValueError("command workflow_preset must be a non-empty string")
 
