@@ -1444,8 +1444,60 @@ def test_prepare_provider_context_keeps_all_results_when_budget_missing() -> Non
     )
 
     assert tuple(result.data["index"] for result in context.tool_results) == (1, 2, 3)
+    assert context.compacted is False
+    assert context.retained_tool_result_count == 3
     assert context.token_budget is None
     assert context.original_tool_result_tokens is None
+
+
+def test_project_tool_results_for_context_window_caps_results_without_token_budget() -> None:
+    projection = project_tool_results_for_context_window(
+        tool_results=tuple(_tool_result(index) for index in range(1, 11)),
+        policy=_legacy_context_window_policy(
+            max_tool_result_tokens=None,
+            model_context_window_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    assert projection.token_budget is None
+    assert projection.retained_indexes == (2, 3, 4, 5, 6, 7, 8, 9)
+    assert tuple(result.data["index"] for result in projection.retained_results) == (
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+    )
+
+
+def test_prepare_provider_context_caps_results_without_token_budget_when_history_grows() -> None:
+    context = prepare_provider_context(
+        prompt="read sample.txt",
+        tool_results=tuple(_tool_result(index) for index in range(1, 11)),
+        session_metadata={},
+        policy=_legacy_context_window_policy(
+            max_tool_result_tokens=None,
+            model_context_window_tokens=None,
+            default_tool_result_tokens=None,
+        ),
+    )
+
+    assert tuple(result.data["index"] for result in context.tool_results) == (
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+    )
+    assert context.compacted is True
+    assert context.retained_tool_result_count == 8
 
 
 def test_prepare_provider_context_retains_recent_tail_without_scoring() -> None:

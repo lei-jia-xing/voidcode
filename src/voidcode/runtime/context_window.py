@@ -919,6 +919,16 @@ def _select_recent_tool_result_indexes(
     return tuple(range(len(results)))
 
 
+def _retain_recent_tool_result_indexes_without_token_budget(
+    results: tuple[ToolResult, ...],
+) -> tuple[int, ...]:
+    if not results:
+        return ()
+    recent_count_cap = 8
+    start = max(0, len(results) - recent_count_cap)
+    return tuple(range(start, len(results)))
+
+
 def _retain_indexes_within_token_budget(
     results: tuple[ToolResult, ...],
     candidate_indexes: tuple[int, ...],
@@ -1693,7 +1703,7 @@ def project_tool_results_for_context_window(
             tokenizer_model=policy.tokenizer_model,
         )
         if token_budget is not None
-        else count_limited_indexes
+        else _retain_recent_tool_result_indexes_without_token_budget(prepared_results)
     )
     retained_index_set = set(retained_indexes)
     dropped_indexes = tuple(
