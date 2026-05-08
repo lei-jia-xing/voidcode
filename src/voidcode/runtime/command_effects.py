@@ -145,8 +145,8 @@ def session_with_command_artifacts(
     command = cast(dict[str, object], raw_command)
     if command.get("name") != "plan":
         return session
-    workflow_preset = session.metadata.get("workflow_preset")
-    if workflow_preset != "review":
+    workflow_mode = session.metadata.get("workflow_mode")
+    if workflow_mode != "product":
         return session
     plan_output = output or ""
     raw_arguments = command.get("raw_arguments")

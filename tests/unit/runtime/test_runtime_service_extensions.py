@@ -3582,6 +3582,130 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     }
 
 
+def test_runtime_materializes_workflow_mode_into_provider_context_and_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SkillCapturingStubGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="hello",
+            session_id="workflow-mode-provider-context",
+            metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": "deep_work"}),
+        )
+    )
+    request = _SkillCapturingStubGraph.last_request
+
+    assert request is not None
+    workflow_segments = [
+        segment
+        for segment in request.assembled_context.segments
+        if segment.role == "system" and "Workflow mode: deep_work." in (segment.content or "")
+    ]
+    assert len(workflow_segments) == 1
+    assert "Workflow mode: deep_work." in (workflow_segments[0].content or "")
+    assert "Depth-first mode" in (workflow_segments[0].content or "")
+    system_text = "\n".join(
+        segment.content or ""
+        for segment in request.assembled_context.segments
+        if segment.role == "system"
+    )
+    assert system_text.count("Workflow mode: deep_work.") == 1
+
+    metadata = response.session.metadata
+    runtime_config = cast(dict[str, object], metadata["runtime_config"])
+    workflow = cast(dict[str, object], metadata["workflow"])
+    runtime_workflow = cast(dict[str, object], runtime_config["workflow"])
+    capability_snapshot = cast(dict[str, object], metadata["agent_capability_snapshot"])
+    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
+
+    assert metadata["workflow_mode"] == "deep_work"
+    assert workflow["mode"] == "deep_work"
+    assert cast(dict[str, object], workflow["requested"])["workflow_mode"] == "deep_work"
+    assert cast(dict[str, object], workflow["effective"])["mode"] == "deep_work"
+    assert runtime_workflow == workflow
+    assert capability_workflow == workflow
+    assert (
+        response.session.metadata["resolved_hook_presets"]
+        == runtime_config["resolved_hook_presets"]
+    )
+    assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == [
+        "role_reminder",
+        "delegated_task_timing_guidance",
+        "background_output_quality_guidance",
+        "delegation_guard",
+        "delegated_retry_guidance",
+        "todo_continuation_guidance",
+    ]
+
+
+def test_runtime_rejects_invalid_workflow_mode_before_provider_execution(
+    tmp_path: Path,
+) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        {
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="done"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="unknown workflow_mode: banana"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="hello",
+                metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": "banana"}),
+            )
+        )
+
+    assert all(provider.requests == [] for provider in created_providers)
+
+
+def test_runtime_rejects_conflicting_workflow_selectors_before_provider_execution(
+    tmp_path: Path,
+) -> None:
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        {
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="done"),),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    with pytest.raises(RuntimeRequestError, match="workflow_mode.*workflow_preset"):
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="hello",
+                metadata=cast(
+                    RuntimeRequestMetadataPayload,
+                    {"workflow_mode": "review", "workflow_preset": "implementation"},
+                ),
+            )
+        )
+
+    assert all(provider.requests == [] for provider in created_providers)
+
+
 def test_runtime_materializes_explicit_agent_hook_refs_without_expanding_tools(
     tmp_path: Path,
 ) -> None:
@@ -15472,7 +15596,8 @@ def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Pa
         "original_prompt": "/plan add command presets",
     }
     assert response.session.metadata["agent"] == {"preset": "product"}
-    assert response.session.metadata["workflow_preset"] == "review"
+    assert response.session.metadata["workflow_mode"] == "product"
+    assert "workflow_preset" not in response.session.metadata
     assert created_providers[-1].requests[0].agent_preset == {
         "preset": "product",
         "prompt_profile": "product",
@@ -15482,8 +15607,8 @@ def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Pa
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset
     workflow = cast(dict[str, object], runtime_config["workflow"])
-    assert workflow["selected_preset"] == "review"
-    assert workflow["read_only_default"] is True
+    assert workflow["mode"] == "product"
+    assert workflow["source"] == "command"
     workflow_plan = cast(dict[str, object], response.session.metadata["workflow_plan"])
     assert workflow_plan == {
         "snapshot_version": 1,

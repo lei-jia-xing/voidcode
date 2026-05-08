@@ -252,6 +252,7 @@ from .hook_preset_metadata import (
     debug_hook_preset_snapshot,
     hook_preset_event_payload_from_session_metadata,
     hook_preset_refs_for_agent,
+    hook_preset_refs_for_mode_and_agent,
     resolved_hook_preset_snapshot_from_session_metadata,
 )
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
@@ -373,7 +374,13 @@ from .tool_provider import (
     tool_name_matches_patterns,
 )
 from .tool_registry import ToolRegistry
-from .workflow import WorkflowPreset, load_builtin_workflow_preset_registry
+from .workflow import (
+    WorkflowModeResolution,
+    WorkflowPreset,
+    get_builtin_workflow_mode,
+    load_builtin_workflow_preset_registry,
+    resolve_workflow_mode,
+)
 from .workflow_snapshot import (
     read_only_workflow_tool_names,
     workflow_snapshot_from_metadata,
@@ -457,6 +464,7 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "providers",
     "resolved_provider",
     "agent",
+    "workflow",
     "lsp",
     "mcp",
 )
@@ -557,6 +565,9 @@ class VoidCodeRuntime:
         self._model_provider_registry = (
             model_provider_registry
             or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
+        )
+        self._config_workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata(
+            {}
         )
         self._hydrate_provider_model_catalog_cache()
         initial_agent = self._config.agent
@@ -976,6 +987,7 @@ class VoidCodeRuntime:
 
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._effective_runtime_config_from_metadata(None)
+        _ = self._workflow_mode_resolution_for_request_metadata(request.metadata)
         workflow_preset = request.metadata.get("workflow_preset")
         if workflow_preset is not None:
             assert isinstance(workflow_preset, str)
@@ -1155,6 +1167,259 @@ class VoidCodeRuntime:
             payload["verification_guidance"] = preset.verification_guidance
         return payload
 
+    def _workflow_mode_resolution_for_request_metadata(
+        self,
+        metadata: Mapping[str, object],
+    ) -> WorkflowModeResolution:
+        command_workflow_mode: str | None = None
+        command_metadata = metadata.get("command")
+        if isinstance(command_metadata, dict):
+            command_payload = cast(dict[str, object], command_metadata)
+            raw_command_workflow_mode = command_payload.get("workflow_mode")
+            if isinstance(raw_command_workflow_mode, str):
+                command_workflow_mode = raw_command_workflow_mode
+            elif isinstance(command_payload.get("name"), str):
+                command_definition = load_command_registry(workspace=self._workspace).get(
+                    cast(str, command_payload["name"])
+                )
+                if command_definition is not None:
+                    command_workflow_mode = command_definition.workflow_mode
+        raw_workflow_mode = metadata.get("workflow_mode")
+        metadata_workflow_mode = raw_workflow_mode if isinstance(raw_workflow_mode, str) else None
+        explicit_metadata_workflow_mode = metadata_workflow_mode is not None
+        raw_workflow_preset = metadata.get("workflow_preset")
+        workflow_preset = raw_workflow_preset if isinstance(raw_workflow_preset, str) else None
+        if metadata_workflow_mode is None:
+            raw_top_workflow_mode = metadata.get("workflow_mode")
+            if isinstance(raw_top_workflow_mode, str):
+                metadata_workflow_mode = raw_top_workflow_mode
+        inherited_workflow_mode: str | None = None
+        raw_workflow = metadata.get("workflow")
+        if isinstance(raw_workflow, dict):
+            normalized_workflow = self._workflow_snapshot_from_metadata(
+                {"workflow": cast(dict[str, object], raw_workflow)}
+            )
+            if normalized_workflow is not None:
+                raw_effective = normalized_workflow.get("effective")
+                if isinstance(raw_effective, dict):
+                    raw_mode = cast(dict[str, object], raw_effective).get("mode")
+                    if isinstance(raw_mode, str):
+                        inherited_workflow_mode = raw_mode
+                if inherited_workflow_mode is None:
+                    raw_requested = normalized_workflow.get("requested")
+                    if isinstance(raw_requested, dict):
+                        raw_mode = cast(dict[str, object], raw_requested).get("workflow_mode")
+                        if isinstance(raw_mode, str):
+                            inherited_workflow_mode = raw_mode
+        if metadata_workflow_mode is None:
+            metadata_workflow_mode = inherited_workflow_mode
+        if workflow_preset is not None and self._workflow_preset(workflow_preset) is not None:
+            try:
+                builtin_workflow_preset = load_builtin_workflow_preset_registry().get(
+                    workflow_preset
+                )
+                resolved_metadata_workflow_mode = (
+                    metadata_workflow_mode if explicit_metadata_workflow_mode else None
+                )
+                resolution = (
+                    resolve_workflow_mode(
+                        command_workflow_mode=command_workflow_mode,
+                        metadata_workflow_mode=resolved_metadata_workflow_mode,
+                        workflow_preset=workflow_preset
+                        if builtin_workflow_preset is not None
+                        else None,
+                    )
+                    if resolved_metadata_workflow_mode is not None
+                    or command_workflow_mode is not None
+                    or builtin_workflow_preset is not None
+                    else None
+                )
+                mode = (
+                    resolution.mode
+                    if resolution is not None
+                    else get_builtin_workflow_mode("default")
+                )
+                assert mode is not None
+                return WorkflowModeResolution(
+                    mode=mode,
+                    source="workflow_preset"
+                    if resolution is None or resolution.source == "default"
+                    else resolution.source,
+                    workflow_mode=mode.id,
+                    workflow_preset=workflow_preset,
+                )
+            except ValueError as exc:
+                raise RuntimeRequestError(str(exc)) from exc
+        try:
+            return resolve_workflow_mode(
+                command_workflow_mode=command_workflow_mode,
+                metadata_workflow_mode=metadata_workflow_mode,
+                workflow_preset=workflow_preset,
+            )
+        except ValueError as exc:
+            if metadata_workflow_mode is None and workflow_preset is not None:
+                mode = get_builtin_workflow_mode("default")
+                assert mode is not None
+                return WorkflowModeResolution(
+                    mode=mode,
+                    source="workflow_preset",
+                    workflow_mode=mode.id,
+                    workflow_preset=workflow_preset,
+                )
+            raise RuntimeRequestError(str(exc)) from exc
+
+    @staticmethod
+    def _workflow_mode_prompt_context(resolution: WorkflowModeResolution | None) -> str:
+        if resolution is None:
+            return ""
+        mode = resolution.mode
+        return "\n".join(
+            (
+                f"Workflow mode: {mode.id}.",
+                mode.description,
+                "Apply this mode as runtime guidance without expanding tool permissions, "
+                "approval policy, lifecycle hook execution, or active agent scope.",
+            )
+        )
+
+    @staticmethod
+    def _metadata_without_workflow_mode(metadata: Mapping[str, object]) -> dict[str, object]:
+        sanitized = dict(metadata)
+        sanitized.pop("workflow_mode", None)
+        raw_command = sanitized.get("command")
+        if isinstance(raw_command, dict):
+            command = dict(cast(dict[str, object], raw_command))
+            command.pop("workflow_mode", None)
+            sanitized["command"] = command
+        return sanitized
+
+    @staticmethod
+    def _workflow_snapshot_with_effective_mode(
+        workflow_snapshot: Mapping[str, object],
+        workflow_mode: str,
+    ) -> dict[str, object]:
+        payload = dict(workflow_snapshot)
+        raw_requested = payload.get("requested")
+        requested = (
+            dict(cast(dict[str, object], raw_requested)) if isinstance(raw_requested, dict) else {}
+        )
+        requested["workflow_mode"] = workflow_mode
+        payload["requested"] = requested
+        raw_effective = payload.get("effective")
+        effective = (
+            dict(cast(dict[str, object], raw_effective)) if isinstance(raw_effective, dict) else {}
+        )
+        effective["mode"] = workflow_mode
+        payload["effective"] = effective
+        payload["mode"] = workflow_mode
+        return payload
+
+    def _workflow_snapshot_for_resolution(
+        self,
+        resolution: WorkflowModeResolution,
+    ) -> dict[str, object]:
+        preset_snapshot = self._workflow_preset_snapshot(resolution.workflow_preset)
+        if preset_snapshot is None and resolution.workflow_preset is not None:
+            preset = self._workflow_preset(resolution.workflow_preset)
+            if preset is not None:
+                preset_snapshot = {
+                    "snapshot_version": 1,
+                    "selected_preset": preset.id,
+                    "preset_source": "runtime_config",
+                    "category": preset.category,
+                    "default_agent": preset.default_agent,
+                    "effective_agent": preset.default_agent
+                    if preset.default_agent in self._agent_registry.executable_primary_ids()
+                    else None,
+                    "default_agent_executable_top_level": preset.default_agent
+                    in self._agent_registry.executable_primary_ids(),
+                    "read_only_default": preset.read_only_default,
+                    "skill_refs": list(preset.skill_refs),
+                    "force_load_skills": list(preset.force_load_skills),
+                    "hook_preset_refs": list(preset.hook_preset_refs),
+                    "context_transform_refs": list(preset.context_transform_refs),
+                    "mcp_binding_intents": self._workflow_mcp_binding_intent_snapshots(preset),
+                    "materialization": "runtime_policy_enforced",
+                    "governance": (
+                        "workflow presets materialize runtime-governed skill, MCP, tool, and "
+                        "permission policy metadata; recognized policy refs are enforced by runtime"
+                    ),
+                    **(
+                        {"prompt_append": preset.prompt_append}
+                        if preset.prompt_append is not None
+                        else {}
+                    ),
+                    **(
+                        {"tool_policy_ref": preset.tool_policy_ref}
+                        if preset.tool_policy_ref is not None
+                        else {}
+                    ),
+                    **(
+                        {"permission_policy_ref": preset.permission_policy_ref}
+                        if preset.permission_policy_ref is not None
+                        else {}
+                    ),
+                    **(
+                        {"verification_guidance": preset.verification_guidance}
+                        if preset.verification_guidance is not None
+                        else {}
+                    ),
+                }
+        effective: dict[str, object] = {
+            "mode": resolution.workflow_mode,
+            "source": resolution.source,
+        }
+        if resolution.workflow_preset is not None:
+            effective["legacy_preset"] = resolution.workflow_preset
+        if preset_snapshot is not None:
+            raw_effective = preset_snapshot.get("effective")
+            if isinstance(raw_effective, dict):
+                effective = {**cast(dict[str, object], raw_effective), **effective}
+                if "delegated_child" in preset_snapshot and resolution.workflow_mode:
+                    effective["mode"] = resolution.workflow_mode
+            elif "effective" in preset_snapshot:
+                effective["mode"] = None
+            else:
+                for key in (
+                    "category",
+                    "default_agent",
+                    "effective_agent",
+                    "read_only_default",
+                    "prompt_append",
+                    "hook_preset_refs",
+                    "skill_refs",
+                    "force_load_skills",
+                    "mcp_binding_intents",
+                    "verification_guidance",
+                ):
+                    if key in preset_snapshot:
+                        effective[key] = preset_snapshot[key]
+        snapshot: dict[str, object] = {
+            **(preset_snapshot or {}),
+            "snapshot_version": 2
+            if preset_snapshot is None
+            else preset_snapshot.get("snapshot_version", 1),
+            "requested": {
+                "workflow_mode": resolution.workflow_mode
+                if "requested" not in (preset_snapshot or {})
+                or "delegated_child" in (preset_snapshot or {})
+                else None,
+                "workflow_preset": resolution.workflow_preset,
+            },
+            "effective": effective,
+            "mode": resolution.workflow_mode
+            if "mode" not in (preset_snapshot or {}) or "delegated_child" in (preset_snapshot or {})
+            else None,
+            "source": resolution.source,
+        }
+        for key, value in effective.items():
+            if key not in snapshot:
+                snapshot[key] = value
+        if resolution.workflow_preset is not None:
+            snapshot["selected_preset"] = resolution.workflow_preset
+            snapshot["legacy_preset"] = resolution.workflow_preset
+        return snapshot
+
     def _workflow_mcp_binding_intent_snapshots(
         self,
         preset: WorkflowPreset,
@@ -1279,6 +1544,11 @@ class VoidCodeRuntime:
     ) -> dict[str, object]:
         child_workflow_preset = metadata.get("workflow_preset")
         inherited_snapshot = self._workflow_snapshot_from_metadata(metadata)
+        if (
+            inherited_snapshot is not None
+            and self._workflow_snapshot_selected_preset(inherited_snapshot) is None
+        ):
+            inherited_snapshot = None
         if inherited_snapshot is None and parent_session_id is not None:
             parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
             parent_metadata = (
@@ -1287,6 +1557,11 @@ class VoidCodeRuntime:
                 else self._active_session_metadata(parent_session_id)
             )
             inherited_snapshot = self._workflow_snapshot_from_metadata(parent_metadata)
+            if (
+                inherited_snapshot is not None
+                and self._workflow_snapshot_selected_preset(inherited_snapshot) is None
+            ):
+                inherited_snapshot = None
         if isinstance(child_workflow_preset, str):
             child_snapshot = self._workflow_preset_snapshot(child_workflow_preset)
             if child_snapshot is None:
@@ -1985,13 +2260,23 @@ class VoidCodeRuntime:
         if "provider_stream" in request.metadata:
             return self._run_with_persistence(request)
 
+        stream_metadata = {**request.metadata, "provider_stream": True}
+        validated_stream_metadata = validate_runtime_request_metadata(
+            self._metadata_without_workflow_mode(stream_metadata)
+        )
+        if "workflow_mode" in stream_metadata:
+            validated_stream_metadata = cast(
+                RuntimeRequestMetadataPayload,
+                {
+                    **cast(dict[str, object], validated_stream_metadata),
+                    "workflow_mode": stream_metadata["workflow_mode"],
+                },
+            )
         request_with_stream = RuntimeRequest(
             prompt=request.prompt,
             session_id=request.session_id,
             parent_session_id=request.parent_session_id,
-            metadata=validate_runtime_request_metadata(
-                {**request.metadata, "provider_stream": True}
-            ),
+            metadata=validated_stream_metadata,
             allocate_session_id=request.allocate_session_id,
         )
         return self._run_with_persistence(request_with_stream)
@@ -2011,6 +2296,33 @@ class VoidCodeRuntime:
         request_metadata = self._request_metadata_with_workflow_defaults(
             self._fresh_request_metadata(request.metadata)
         )
+        workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata(
+            request_metadata
+        )
+        self._config_workflow_mode_resolution = workflow_mode_resolution
+        workflow_snapshot = self._workflow_snapshot_for_resolution(workflow_mode_resolution)
+        existing_workflow = request_metadata.get("workflow")
+        if isinstance(existing_workflow, dict):
+            workflow_snapshot = dict(cast(dict[str, object], existing_workflow))
+        if "delegated_child" in workflow_snapshot:
+            workflow_snapshot = self._workflow_snapshot_with_effective_mode(
+                workflow_snapshot,
+                workflow_mode_resolution.workflow_mode,
+            )
+        explicit_workflow_mode = (
+            workflow_mode_resolution.source != "default"
+            or "workflow_mode" in request_metadata
+            or "workflow_preset" in request_metadata
+        )
+        if explicit_workflow_mode:
+            workflow_snapshot_for_session = workflow_snapshot
+            request_metadata = {
+                **request_metadata,
+                "workflow_mode": workflow_mode_resolution.workflow_mode,
+                "workflow": workflow_snapshot_for_session,
+            }
+        else:
+            workflow_snapshot_for_session = workflow_snapshot
         rehydrated_tool_results = self._rehydrated_tool_results_for_existing_session(
             session_id=request.session_id,
             parent_session_id=request.parent_session_id,
@@ -2027,7 +2339,11 @@ class VoidCodeRuntime:
                     "request_metadata": {key: value for key, value in request_metadata.items()},
                 },
             )
-        resolved_hook_presets = self._build_hook_preset_snapshot(effective_config.agent)
+        hook_workflow_mode_resolution = workflow_mode_resolution if explicit_workflow_mode else None
+        resolved_hook_presets = self._build_hook_preset_snapshot(
+            effective_config.agent,
+            workflow_mode_resolution=hook_workflow_mode_resolution,
+        )
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
         session_request_metadata.pop("show_thinking", None)
@@ -2041,7 +2357,10 @@ class VoidCodeRuntime:
                 "runtime_config": self._runtime_config_metadata(
                     effective_config,
                     workflow_preset=request_metadata.get("workflow_preset"),
-                    workflow_snapshot=request_metadata.get("workflow"),
+                    workflow_snapshot=workflow_snapshot_for_session
+                    if explicit_workflow_mode
+                    else None,
+                    workflow_mode_resolution=hook_workflow_mode_resolution,
                 ),
                 **(
                     {"resolved_hook_presets": resolved_hook_presets.to_payload()}
@@ -2144,6 +2463,7 @@ class VoidCodeRuntime:
             effective_config=effective_config,
             request_metadata=request_metadata,
             resolved_hook_presets=resolved_hook_presets,
+            workflow_snapshot=workflow_snapshot_for_session,
         )
 
         tool_registry = self._tool_registry_for_effective_config(
@@ -2274,6 +2594,9 @@ class VoidCodeRuntime:
                 tool_results=rehydrated_tool_results,
                 session_metadata=session.metadata,
                 skill_prompt_context=skill_prompt_context,
+                workflow_mode_prompt_context=self._workflow_mode_prompt_context(
+                    workflow_mode_resolution if explicit_workflow_mode else None
+                ),
             ),
             metadata={
                 **request_metadata,
@@ -5705,10 +6028,25 @@ class VoidCodeRuntime:
         if session_id is not None and parent_session_id == session_id:
             raise RuntimeRequestError("parent_session_id must not match session_id")
 
+        raw_metadata = {key: value for key, value in request.metadata.items()}
+        raw_workflow_mode = raw_metadata.get("workflow_mode")
+        raw_workflow_preset = raw_metadata.get("workflow_preset")
+        if raw_workflow_mode is not None or raw_workflow_preset is not None:
+            if not isinstance(raw_workflow_mode, str) or not raw_workflow_mode:
+                if raw_workflow_mode is not None:
+                    raise RuntimeRequestError(
+                        "request metadata 'workflow_mode' must be a non-empty string"
+                    )
+            _ = self._workflow_mode_resolution_for_request_metadata(raw_metadata)
         metadata = validate_runtime_request_metadata(
-            {key: value for key, value in request.metadata.items()},
+            self._metadata_without_workflow_mode(raw_metadata),
             allow_internal_fields=allow_internal_metadata,
         )
+        if isinstance(raw_workflow_mode, str):
+            metadata = cast(
+                RuntimeRequestMetadataPayload,
+                {**cast(dict[str, object], metadata), "workflow_mode": raw_workflow_mode},
+            )
         existing_session = (
             self._load_existing_session_if_present(session_id=session_id)
             if session_id is not None
@@ -5787,7 +6125,7 @@ class VoidCodeRuntime:
             resolution=resolution,
             metadata=normalized,
         )
-        normalized["command"] = {
+        command_metadata: dict[str, object] = {
             "name": resolution.invocation.name,
             "source": resolution.invocation.source,
             "arguments": list(resolution.invocation.arguments),
@@ -5797,15 +6135,28 @@ class VoidCodeRuntime:
         command_agent = resolution.definition.agent
         if command_agent is not None and "agent" not in normalized:
             normalized["agent"] = {"preset": command_agent}
+        command_workflow_mode = resolution.definition.workflow_mode
+        if command_workflow_mode is not None:
+            command_metadata["workflow_mode"] = command_workflow_mode
+        if command_workflow_mode is not None and "workflow_mode" not in normalized:
+            normalized["workflow_mode"] = command_workflow_mode
         command_workflow_preset = resolution.definition.workflow_preset
+        normalized["command"] = command_metadata
         if command_workflow_preset is not None and "workflow_preset" not in normalized:
             normalized["workflow_preset"] = command_workflow_preset
+        _ = self._workflow_mode_resolution_for_request_metadata(normalized)
         if prompt == resolution.invocation.original_prompt:
             prompt = resolution.invocation.rendered_prompt
-        return prompt, validate_runtime_request_metadata(
-            normalized,
+        validated = validate_runtime_request_metadata(
+            self._metadata_without_workflow_mode(normalized),
             allow_internal_fields=allow_internal_fields or "workflow_plan" in normalized,
         )
+        if command_workflow_mode is not None:
+            validated = cast(
+                RuntimeRequestMetadataPayload,
+                {**cast(dict[str, object], validated), "workflow_mode": command_workflow_mode},
+            )
+        return prompt, validated
 
     def _metadata_with_delegation_governance(
         self,
@@ -5855,8 +6206,8 @@ class VoidCodeRuntime:
         delegation["depth"] = request_depth
         delegation["remaining_spawn_budget"] = remaining_spawn_budget
         normalized["delegation"] = delegation
-        return validate_runtime_request_metadata(
-            normalized,
+        validated = validate_runtime_request_metadata(
+            self._metadata_without_workflow_mode(normalized),
             allow_internal_fields=(
                 "background_run" in normalized
                 or "background_rate_limit_retry" in normalized
@@ -5864,6 +6215,15 @@ class VoidCodeRuntime:
                 or "workflow" in normalized
             ),
         )
+        if "workflow_mode" in normalized:
+            validated = cast(
+                RuntimeRequestMetadataPayload,
+                {
+                    **cast(dict[str, object], validated),
+                    "workflow_mode": normalized["workflow_mode"],
+                },
+            )
+        return validated
 
     @staticmethod
     def _delegation_depth_from_metadata(metadata: dict[str, object] | None) -> int:
@@ -6183,8 +6543,28 @@ class VoidCodeRuntime:
         tool_results: tuple[ToolResult, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
+        workflow_mode_prompt_context: str = "",
         preserved_system_segments: tuple[str, ...] = (),
     ) -> RuntimeAssembledContext:
+        if not workflow_mode_prompt_context and session_metadata.get("workflow_mode") is not None:
+            workflow = self._workflow_snapshot_from_metadata(session_metadata)
+            if workflow is not None:
+                raw_effective = workflow.get("effective")
+                raw_mode = (
+                    cast(dict[str, object], raw_effective).get("mode")
+                    if isinstance(raw_effective, dict)
+                    else None
+                )
+                if isinstance(raw_mode, str) and raw_mode:
+                    mode = get_builtin_workflow_mode(raw_mode)
+                    if mode is not None:
+                        workflow_mode_prompt_context = self._workflow_mode_prompt_context(
+                            WorkflowModeResolution(
+                                mode=mode,
+                                source="workflow_mode",
+                                workflow_mode=mode.id,
+                            )
+                        )
         effective_config = self._effective_runtime_config_from_metadata(session_metadata)
         provider_attempt = self._provider_attempt_from_metadata(session_metadata)
         policy = self._context_window_policy_from_config(
@@ -6247,6 +6627,7 @@ class VoidCodeRuntime:
             hook_preset_context=hook_preset_context,
             context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,
+            workflow_mode_prompt_context=workflow_mode_prompt_context,
             preserved_system_segments=preserved_system_segments,
             loaded_skills=loaded_skills,
             preserved_continuity_state=self._continuity_state_from_session_metadata(
@@ -6499,6 +6880,7 @@ class VoidCodeRuntime:
         metadata: dict[str, object],
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
+        workflow_snapshot: dict[str, object] | None = None,
     ) -> dict[str, object]:
         runtime_config = metadata.get("runtime_config")
         runtime_config_payload = (
@@ -6575,10 +6957,11 @@ class VoidCodeRuntime:
             },
             **(
                 {"workflow": workflow_snapshot}
-                if isinstance(
-                    workflow_snapshot := runtime_config_payload.get("workflow"),
-                    dict,
-                )
+                if workflow_snapshot is not None
+                else {"workflow": runtime_workflow}
+                if isinstance(runtime_workflow := runtime_config_payload.get("workflow"), dict)
+                else {"workflow": metadata_workflow}
+                if isinstance(metadata_workflow := metadata.get("workflow"), dict)
                 else {}
             ),
             "runtime": {
@@ -6607,6 +6990,7 @@ class VoidCodeRuntime:
         effective_config: EffectiveRuntimeConfig,
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
+        workflow_snapshot: dict[str, object] | None = None,
     ) -> SessionState:
         return SessionState(
             session=session.session,
@@ -6619,6 +7003,7 @@ class VoidCodeRuntime:
                     metadata=session.metadata,
                     request_metadata=request_metadata,
                     resolved_hook_presets=resolved_hook_presets,
+                    workflow_snapshot=workflow_snapshot,
                 ),
             },
         )
@@ -6735,8 +7120,13 @@ class VoidCodeRuntime:
     def _build_hook_preset_snapshot(
         self,
         agent: RuntimeAgentConfig | None,
+        *,
+        workflow_mode_resolution: WorkflowModeResolution | None = None,
     ) -> ResolvedHookPresetSnapshot:
-        refs = self._hook_preset_refs_for_agent(agent)
+        refs = hook_preset_refs_for_mode_and_agent(
+            workflow_mode_resolution.mode if workflow_mode_resolution is not None else None,
+            agent,
+        )
         return resolve_hook_preset_refs(refs)
 
     @staticmethod
@@ -6833,6 +7223,7 @@ class VoidCodeRuntime:
         *,
         workflow_preset: object | None = None,
         workflow_snapshot: object | None = None,
+        workflow_mode_resolution: WorkflowModeResolution | None = None,
     ) -> dict[str, object]:
         effective_config = config or self._effective_runtime_config_from_metadata(None)
         runtime_config_metadata: dict[str, object] = {
@@ -6867,7 +7258,10 @@ class VoidCodeRuntime:
         serialized_agent = serialize_runtime_agent_config(effective_config.agent)
         if serialized_agent is not None:
             runtime_config_metadata["agent"] = serialized_agent
-        resolved_hook_presets = self._build_hook_preset_snapshot(effective_config.agent)
+        resolved_hook_presets = self._build_hook_preset_snapshot(
+            effective_config.agent,
+            workflow_mode_resolution=workflow_mode_resolution,
+        )
         if resolved_hook_presets.presets:
             runtime_config_metadata["resolved_hook_presets"] = resolved_hook_presets.to_payload()
         serialized_agents = serialize_runtime_agents_config(self._config.agents)
@@ -6888,12 +7282,25 @@ class VoidCodeRuntime:
             "configured_enabled": mcp_state.configuration.configured_enabled,
             "servers": list(mcp_state.configuration.servers),
         }
+        if (
+            isinstance(workflow_snapshot, dict)
+            and "delegated_child" in workflow_snapshot
+            and workflow_mode_resolution is not None
+        ):
+            workflow_snapshot = self._workflow_snapshot_with_effective_mode(
+                cast(dict[str, object], workflow_snapshot),
+                workflow_mode_resolution.workflow_mode,
+            )
         if isinstance(workflow_snapshot, dict):
             runtime_config_metadata["workflow"] = dict(cast(dict[str, object], workflow_snapshot))
         else:
             resolved_workflow_snapshot = self._workflow_preset_snapshot(workflow_preset)
             if resolved_workflow_snapshot is not None:
                 runtime_config_metadata["workflow"] = resolved_workflow_snapshot
+            elif workflow_mode_resolution is not None:
+                runtime_config_metadata["workflow"] = self._workflow_snapshot_for_resolution(
+                    workflow_mode_resolution
+                )
         return runtime_config_metadata
 
     def _config_with_request_agent_override(
@@ -7183,6 +7590,22 @@ class VoidCodeRuntime:
                 )
             workflow_snapshot = {
                 **workflow_snapshot,
+                **(
+                    {
+                        "requested": normalized_workflow["requested"],
+                        "effective": normalized_workflow["effective"],
+                        "mode": normalized_workflow["mode"],
+                        "source": normalized_workflow["source"],
+                        "legacy_preset": normalized_workflow["legacy_preset"],
+                    }
+                    if (
+                        normalized_workflow := self._workflow_snapshot_from_metadata(
+                            {"workflow": workflow_snapshot}
+                        )
+                    )
+                    is not None
+                    else {}
+                ),
                 "delegated_child": {
                     "inherited_from_parent": inherited_from_parent,
                     "selected_child_preset": resolved_route.selected_preset,
@@ -7196,10 +7619,19 @@ class VoidCodeRuntime:
                 "workflow_preset",
                 snapshot_selected_preset,
             )
-        return validate_runtime_request_metadata(
-            normalized_metadata,
+        validated = validate_runtime_request_metadata(
+            self._metadata_without_workflow_mode(normalized_metadata),
             allow_internal_fields=allow_internal_fields or "workflow" in normalized_metadata,
         )
+        if "workflow_mode" in normalized_metadata:
+            validated = cast(
+                RuntimeRequestMetadataPayload,
+                {
+                    **cast(dict[str, object], validated),
+                    "workflow_mode": normalized_metadata["workflow_mode"],
+                },
+            )
+        return validated
 
     def _delegated_model_for_route(
         self,

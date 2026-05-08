@@ -23,6 +23,12 @@ class CommandRegistry:
     def get(self, name: str) -> CommandDefinition | None:
         return self._commands.get(normalize_command_name(name))
 
+    def get_workflow_mode(self, name: str) -> str | None:
+        command = self.get(name)
+        if command is None:
+            return None
+        return command.workflow_mode
+
     def list(
         self, *, include_hidden: bool = False, include_disabled: bool = False
     ) -> tuple[CommandDefinition, ...]:

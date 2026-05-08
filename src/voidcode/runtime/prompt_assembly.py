@@ -177,6 +177,7 @@ def build_prompt_assembly_plan(
     prompt: str,
     runtime_instruction_precedence: str,
     agent_prompt_context: str = "",
+    workflow_mode_prompt_context: str = "",
     preserved_system_segments: Iterable[str] = (),
     skill_prompt_context: str = "",
     context_transform_result: RuntimeContextTransformResult | None = None,
@@ -257,6 +258,11 @@ def build_prompt_assembly_plan(
             source="runtime_instruction_precedence",
             tier="instruction",
         )
+    append_system(
+        workflow_mode_prompt_context,
+        source="workflow_mode_prompt",
+        tier="instruction",
+    )
     for segment_content in preserved_system_segments:
         append_system(
             segment_content,

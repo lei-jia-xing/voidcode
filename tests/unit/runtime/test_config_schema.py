@@ -30,6 +30,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert isinstance(properties, dict)
     assert schema["additionalProperties"] is False
     assert "plan" not in properties
+    assert "workflow_mode" not in properties
     assert "agents" in properties
     assert "workflows" in properties
     assert properties["approval_mode"] == {
@@ -497,5 +498,16 @@ def test_runtime_config_rejects_workflow_unknown_context_transform_ref(tmp_path:
     with pytest.raises(
         ValueError,
         match=("context_transform_refs references unknown context transform provider"),
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_repo_local_workflow_mode_default(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(json.dumps({"workflow_mode": "review"}), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="runtime config field 'workflow_mode' is not supported",
     ):
         _ = load_runtime_config(tmp_path, env={})

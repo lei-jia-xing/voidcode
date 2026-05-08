@@ -27,6 +27,7 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+from voidcode.runtime.workflow_snapshot import workflow_snapshot_from_metadata
 from voidcode.tools import ToolResult, cap_tool_result_output
 
 
@@ -271,6 +272,159 @@ def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:
     assert zip_bundle.to_payload() == bundle.to_payload()
 
 
+def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "workflow_preset": "frontend",
+        "workflow": {
+            "snapshot_version": 2,
+            "requested": {"workflow_mode": "product", "workflow_preset": "frontend"},
+            "effective": {
+                "mode": "product",
+                "legacy_preset": "frontend",
+                "source": "workflow_preset",
+                "category": "frontend",
+                "default_agent": "leader",
+                "effective_agent": "leader",
+                "read_only_default": False,
+                "prompt_append": "Stored frontend guidance.",
+                "hook_preset_refs": ["role_reminder"],
+                "skill_refs": ["frontend-design", "playwright"],
+                "force_load_skills": [],
+                "mcp_binding_intents": [{"servers": ["playwright"], "required": False}],
+                "verification_guidance": "Run stored frontend checks.",
+            },
+        },
+    }
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="bundle workflow", session_id="workflow-bundle-session"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="workflow-bundle-session"),
+                status="completed",
+                turn=1,
+                metadata=metadata,
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="workflow-bundle-session",
+                    sequence=1,
+                    event_type="graph.response_ready",
+                    source="graph",
+                ),
+            ),
+            output="done",
+        ),
+    )
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="workflow-bundle-session",
+    )
+    parsed = parse_session_bundle(bundle.to_payload())
+    target_workspace = tmp_path / "imported"
+    target_workspace.mkdir()
+    apply_session_bundle(parsed, session_store=store, workspace=target_workspace)
+
+    bundle_payload = bundle.to_payload()
+    bundle_sessions = cast(list[object], bundle_payload["sessions"])
+    bundled_session = cast(dict[str, object], bundle_sessions[0])
+    bundled_metadata = bundled_session["metadata"]
+    imported = store.load_session(workspace=target_workspace, session_id="workflow-bundle-session")
+    bundled_snapshot = workflow_snapshot_from_metadata(cast(dict[str, object], bundled_metadata))
+    imported_snapshot = workflow_snapshot_from_metadata(imported.session.metadata)
+
+    assert bundled_snapshot == workflow_snapshot_from_metadata(metadata)
+    assert imported_snapshot == workflow_snapshot_from_metadata(metadata)
+
+
+def test_session_bundle_import_preserves_legacy_workflow_preset_only_metadata(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    bundle = parse_session_bundle(
+        _minimal_bundle_payload(
+            [
+                {
+                    **_minimal_session_payload("legacy-workflow-bundle"),
+                    "metadata": {"workflow_preset": "research"},
+                }
+            ]
+        )
+    )
+    target_workspace = tmp_path / "imported-legacy"
+    target_workspace.mkdir()
+
+    apply_session_bundle(bundle, session_store=store, workspace=target_workspace)
+
+    imported = store.load_session(
+        workspace=target_workspace,
+        session_id="legacy-workflow-bundle",
+    )
+    snapshot = workflow_snapshot_from_metadata(imported.session.metadata)
+
+    assert imported.session.metadata["workflow_preset"] == "research"
+    assert snapshot is not None
+    assert snapshot["requested"] == {"workflow_mode": None, "workflow_preset": "research"}
+    assert snapshot["effective"] == {
+        "mode": None,
+        "legacy_preset": "research",
+        "source": None,
+    }
+    assert snapshot["selected_preset"] == "research"
+
+
+def test_session_bundle_import_preserves_requested_and_effective_workflow_mode(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "workflow_mode": "review",
+        "workflow": {
+            "snapshot_version": 2,
+            "requested": {"workflow_mode": "review", "workflow_preset": None},
+            "effective": {
+                "mode": "review",
+                "legacy_preset": None,
+                "source": "workflow_mode",
+                "category": "review",
+                "default_agent": "leader",
+                "effective_agent": "leader",
+                "read_only_default": False,
+                "prompt_append": "Stored review guidance.",
+                "hook_preset_refs": [],
+                "skill_refs": ["review-work"],
+                "force_load_skills": [],
+                "mcp_binding_intents": [],
+                "verification_guidance": "Use stored review checks.",
+            },
+        },
+    }
+    bundle = parse_session_bundle(
+        _minimal_bundle_payload(
+            [
+                {
+                    **_minimal_session_payload("new-workflow-bundle"),
+                    "metadata": metadata,
+                }
+            ]
+        )
+    )
+    target_workspace = tmp_path / "imported-new"
+    target_workspace.mkdir()
+
+    apply_session_bundle(bundle, session_store=store, workspace=target_workspace)
+
+    imported = store.load_session(workspace=target_workspace, session_id="new-workflow-bundle")
+
+    imported_workflow = workflow_snapshot_from_metadata(imported.session.metadata)
+    expected_workflow = workflow_snapshot_from_metadata(metadata)
+
+    assert imported_workflow == expected_workflow
+
+
 def test_session_bundle_includes_available_artifacts_only_when_tool_output_requested(
     tmp_path: Path,
 ) -> None:
@@ -344,7 +498,8 @@ def test_session_bundle_reports_missing_artifact_without_content(tmp_path: Path)
     tool_payload = _save_session_with_tool_artifact(tmp_path)
     artifact = tool_payload["artifact"]
     assert isinstance(artifact, dict)
-    Path(cast(str, artifact["path"])).unlink()
+    artifact_payload = cast(dict[str, object], artifact)
+    Path(cast(str, artifact_payload["path"])).unlink()
     store = SqliteSessionStore()
 
     bundle = build_session_bundle(
