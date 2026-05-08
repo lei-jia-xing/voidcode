@@ -418,8 +418,6 @@ def _consume_runtime_stream(
 def _incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | None:
     if result.session.status in {"completed", "failed", "waiting"}:
         return None
-    if result.output is not None:
-        return None
     if _pending_blocked_event(result.session, _last_event(result)) is not None:
         return None
     last_event = _last_event(result)

@@ -1393,6 +1393,41 @@ def test_run_trace_respects_explicit_no_provider_stream() -> None:
     assert request.metadata["provider_stream"] is False
 
 
+def test_run_trace_fails_incomplete_stream_even_with_partial_output(capsys: Any) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (
+        _make_chunk(
+            session_id="partial-stream-session",
+            status="running",
+            event=_runtime_event(
+                "graph.model_delta",
+                sequence=1,
+                source="graph",
+                text="partial answer",
+            ),
+        ),
+        _make_chunk(
+            session_id="partial-stream-session",
+            status="running",
+            output="partial answer",
+        ),
+    )
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "go", "--workspace", str(workspace), "--trace"])
+
+    captured = capsys.readouterr()
+
+    assert result == 12
+    assert "✖ Failed: runtime stream ended without a terminal outcome" in captured.out
+    assert "partial answer" not in captured.out
+    assert captured.err == ""
+
+
 def test_run_trace_conflicts_with_json(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
 
