@@ -225,7 +225,8 @@ def _background_output_guidance(
     if block_timed_out:
         return (
             "Timed out waiting for the delegated child to finish. The returned status is current; "
-            "report it or call background_output again later, but do not loop indefinitely."
+            "report it or call background_output again after a meaningful state change, "
+            "but do not loop indefinitely."
         )
     if result.status == "failed":
         return (
@@ -247,7 +248,8 @@ def _background_output_guidance(
     if not result.result_available:
         return (
             "No child result is available yet. Report the current status or call background_output "
-            "again later with block=true; do not loop indefinitely."
+            "again later with block=true only when you intentionally want to wait in this turn; "
+            "do not loop indefinitely."
         )
     if result.status == "completed" and (empty_child_output or not content.strip()):
         return (
