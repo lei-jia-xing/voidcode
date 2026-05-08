@@ -62,8 +62,25 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: bun run build
+
+      - name: Stage frontend bundle into package tree
+        run: uv run python scripts/stage_frontend_bundle.py
+
       - name: Build package
         run: uv build
+
+      - name: Verify packaged web bundle
+        run: uv run python scripts/verify_packaged_web_bundle.py dist/*.whl
 
       - name: Verify package version matches release tag
         run: |

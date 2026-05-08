@@ -68,6 +68,7 @@ packages = ["src/voidcode"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "scripts",
   "src/voidcode",
   "tests",
   "schema",
@@ -79,6 +80,9 @@ include = [
   "CODE_OF_CONDUCT.md",
   "pyproject.toml",
 ]
+
+[tool.hatch.build.hooks.custom]
+path = "scripts/hatch_build.py"
 
 [tool.uv]
 package = true
