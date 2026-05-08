@@ -98,10 +98,11 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             kind="guidance",
             description="Encourage bounded, useful background task result retrieval.",
             guidance=(
-                "When reading background task output, request only the detail needed for the "
-                "current decision, do not poll immediately after starting a background task unless "
-                "you need a real status check, prefer waiting for the runtime completion reminder, "
-                "and summarize results before acting on them."
+                "When reading background task or process output, request only the detail needed "
+                "for the current decision, do not poll immediately after starting background "
+                "work unless you need a real status check, prefer waiting for the runtime "
+                "completion reminder or a meaningful state change, reuse returned task/process "
+                "ids instead of starting duplicates, and summarize results before acting on them."
             ),
         ),
         "delegated_retry_guidance": HookPreset(

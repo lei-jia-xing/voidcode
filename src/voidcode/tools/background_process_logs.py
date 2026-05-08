@@ -27,6 +27,21 @@ class BackgroundProcessLogsRuntime(Protocol):
     def background_process_manager(self) -> BackgroundProcessManager: ...
 
 
+def _background_process_logs_guidance(*, running: bool) -> str:
+    if running:
+        return (
+            "This is a bounded retained-tail status read, not a continuous watch loop. "
+            "Report the current status, continue other work, or wait for a meaningful "
+            "state change before reading logs again; do not immediately reread the same tail."
+        )
+    return (
+        "This is a bounded retained-tail status read, not a continuous watch loop. "
+        "The process is no longer running; use this retained tail as the final "
+        "process status unless a specific follow-up decision or meaningful state "
+        "change needs one last read of the retained tail."
+    )
+
+
 class BackgroundProcessLogsTool:
     definition = ToolDefinition(
         name="background_process_logs",
@@ -83,14 +98,18 @@ class BackgroundProcessLogsTool:
                 "to inspect retained log tails. Earlier dropped lines are no longer available.]"
             )
             output = f"{output}\n\n{hint}" if output else hint
+        running = state.process.poll() is None
+        exit_code = state.process.poll()
+        guidance = _background_process_logs_guidance(running=running)
+        output = f"{output}\n\nGuidance: {guidance}" if output else f"Guidance: {guidance}"
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=output,
             data={
                 "process_id": state.process_id,
-                "running": state.process.poll() is None,
-                "exit_code": state.process.poll(),
+                "running": running,
+                "exit_code": exit_code,
                 "stdout": stdout,
                 "stderr": stderr,
                 "stdout_retained_lines": len(state.stdout_chunks),
@@ -101,8 +120,10 @@ class BackgroundProcessLogsTool:
                 "stderr_artifact": stderr_artifact,
                 "truncated": truncated,
                 "references": references,
+                "guidance": guidance,
             },
             truncated=truncated,
             partial=truncated,
             reference=references[0] if references else None,
+            retry_guidance=guidance,
         )
