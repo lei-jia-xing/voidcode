@@ -28,6 +28,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_PROVIDER_FALLBACK,
+    RUNTIME_SESSION_IDLE,
     RUNTIME_TOOL_COMPLETED,
     EventEnvelope,
 )
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 _BACKGROUND_TASK_RATE_LIMIT_RETRIES = 2
 _BACKGROUND_TASK_RATE_LIMIT_BASE_BACKOFF_SECONDS = 0.05
+_RUNTIME_BACKGROUND_TASK_IDLE_REMINDER = "runtime.background_task_idle_reminder"
 
 
 @dataclass(frozen=True, slots=True)
@@ -474,6 +476,11 @@ class RuntimeBackgroundTaskSupervisor:
             workspace=runtime._workspace,
             task_id=task_id,
         )
+        runtime._session_store.stop_background_task_idle_reminder(
+            workspace=runtime._workspace,
+            task_id=task_id,
+            stop_condition="explicit_retry",
+        )
         if previous_task.status not in ("failed", "cancelled", "interrupted"):
             raise ValueError(
                 "background task retry requires a failed, cancelled, or interrupted task; "
@@ -859,6 +866,12 @@ class RuntimeBackgroundTaskSupervisor:
         )
         if task.status == "interrupted":
             task = self.repair_interrupted_task_from_child_terminal_session(task)
+        if emit_result_read_hook:
+            task = self._runtime._session_store.stop_background_task_idle_reminder(
+                workspace=self._runtime._workspace,
+                task_id=task.task.id,
+                stop_condition="result_read",
+            )
         self.backfill_parent_background_task_event(task=task)
         result = self.background_task_result(task=task)
         if emit_result_read_hook:
@@ -1177,6 +1190,10 @@ class RuntimeBackgroundTaskSupervisor:
         child_response = self.load_background_task_child_response(task=task)
         if child_response is None or child_response.session.status != "waiting":
             return
+        self.emit_background_task_idle_reminder_for_waiting_child(
+            task=task,
+            child_response=child_response,
+        )
         self.emit_background_task_waiting_approval(
             task=task,
             child_response=child_response,
@@ -1293,6 +1310,164 @@ class RuntimeBackgroundTaskSupervisor:
                 "skipping background waiting event for unavailable parent session: %s",
                 parent_session_id,
             )
+
+    def emit_background_task_idle_reminder_for_waiting_child(
+        self,
+        *,
+        task: BackgroundTaskState,
+        child_response: RuntimeResponse,
+    ) -> None:
+        if not self._runtime._config.background_task.delegated_reminders_enabled:
+            return
+        parent_session_id = task.parent_session_id
+        child_session_id = task.session_id
+        if parent_session_id is None or child_session_id is None:
+            return
+        if task.status != "running" or child_response.session.status != "waiting":
+            return
+        idle_event = self._latest_session_idle_event(child_response.events)
+        if idle_event is None:
+            return
+        self.emit_background_task_idle_reminder(
+            task=task,
+            child_session_id=child_session_id,
+            child_session_status=child_response.session.status,
+            idle_event_sequence=idle_event.sequence,
+            idle_reason=idle_event.payload.get("reason", "waiting"),
+        )
+
+    def emit_background_task_idle_reminder(
+        self,
+        *,
+        task: BackgroundTaskState,
+        child_session_id: str,
+        child_session_status: str,
+        idle_event_sequence: int,
+        idle_reason: object,
+    ) -> None:
+        if not self._runtime._config.background_task.delegated_reminders_enabled:
+            return
+        parent_session_id = task.parent_session_id
+        if parent_session_id is None:
+            return
+        if task.status != "running" or child_session_status != "waiting":
+            return
+        idle_episode_id = f"{child_session_id}:{idle_event_sequence}"
+        now_unix_ms = self._current_unix_ms()
+        reminder_state = task.delegated_reminder
+        if reminder_state is not None:
+            if reminder_state.idle_episode_id == idle_episode_id:
+                if not reminder_state.eligible:
+                    return
+            elif reminder_state.reminder_sent_at_unix_ms is not None:
+                cooldown_ms = (
+                    self._runtime._config.background_task.delegated_reminder_cooldown_seconds * 1000
+                )
+                if now_unix_ms - reminder_state.reminder_sent_at_unix_ms < cooldown_ms:
+                    return
+        eligible_task = self._runtime._session_store.record_background_task_idle_reminder_eligible(
+            workspace=self._runtime._workspace,
+            task_id=task.task.id,
+            child_session_id=child_session_id,
+            idle_episode_id=idle_episode_id,
+            idle_detected_at_unix_ms=now_unix_ms,
+        )
+        reminder_state = eligible_task.delegated_reminder
+        if reminder_state is None or not reminder_state.eligible:
+            return
+        appended = self._append_background_task_idle_reminder_event(
+            task=eligible_task,
+            child_session_status=child_session_status,
+            idle_event_sequence=idle_event_sequence,
+            idle_reason=idle_reason,
+            idle_episode_id=idle_episode_id,
+        )
+        if appended is None:
+            return
+        sent_task = self._runtime._session_store.mark_background_task_idle_reminder_sent(
+            workspace=self._runtime._workspace,
+            task_id=task.task.id,
+            idle_episode_id=idle_episode_id,
+            reminder_sent_at_unix_ms=self._current_unix_ms(),
+        )
+        self.run_background_task_lifecycle_surface(
+            task=sent_task,
+            surface="background_task_notification_enqueued",
+            session_id=parent_session_id,
+            extra_payload={
+                "notification_event_type": _RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
+                "notification_event_sequence": appended.sequence,
+                "idle_episode_id": idle_episode_id,
+            },
+        )
+
+    def _append_background_task_idle_reminder_event(
+        self,
+        *,
+        task: BackgroundTaskState,
+        child_session_status: str,
+        idle_event_sequence: int,
+        idle_reason: object,
+        idle_episode_id: str,
+    ) -> EventEnvelope | None:
+        runtime = self._runtime
+        parent_session_id = task.parent_session_id
+        child_session_id = task.session_id
+        if parent_session_id is None or child_session_id is None:
+            return None
+        session_event_appender = runtime._session_store
+        if not isinstance(session_event_appender, SessionEventAppender):
+            logger.debug(
+                "skipping background idle reminder for session store without append support"
+            )
+            return None
+        result = self.background_task_result(task=task)
+        _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
+        payload: dict[str, object] = {
+            "task_id": task.task.id,
+            "parent_session_id": parent_session_id,
+            "child_session_id": child_session_id,
+            "status": "running",
+            "result_available": result.result_available,
+            "idle_episode_id": idle_episode_id,
+            "idle_event_sequence": idle_event_sequence,
+            "idle_reason": idle_reason,
+            "reminder": (
+                "Delegated child session is idle and waiting for external action; "
+                "inspect or resume the child session when ready."
+            ),
+            "delegation": delegation_payload,
+            "message": message_payload,
+            **self._concurrency_payload_for_event(task),
+        }
+        if child_session_status == "waiting":
+            payload["child_session_status"] = "waiting"
+        try:
+            return session_event_appender.append_session_event(
+                workspace=runtime._workspace,
+                session_id=parent_session_id,
+                event_type=_RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
+                source="runtime",
+                payload=payload,
+                dedupe_key=f"{_RUNTIME_BACKGROUND_TASK_IDLE_REMINDER}:{task.task.id}:{idle_episode_id}",
+            )
+        except UnknownSessionError:
+            logger.debug(
+                "skipping background idle reminder for unavailable parent session: %s",
+                parent_session_id,
+            )
+            return None
+
+    @staticmethod
+    def _latest_session_idle_event(events: tuple[EventEnvelope, ...]) -> EventEnvelope | None:
+        for event in reversed(events):
+            if event.event_type == RUNTIME_SESSION_IDLE:
+                return event
+        return None
+
+    @staticmethod
+    def _current_unix_ms() -> int:
+        return int(time.time() * 1000)
 
     def finalize_background_task_from_session_response(
         self,
@@ -1554,6 +1729,18 @@ class RuntimeBackgroundTaskSupervisor:
                                 "progress_event_sequence": chunk.event.sequence,
                             },
                         )
+                        if chunk.event.event_type == RUNTIME_SESSION_IDLE:
+                            current_task = runtime._session_store.load_background_task(
+                                workspace=runtime._workspace,
+                                task_id=task_id,
+                            )
+                            self.emit_background_task_idle_reminder(
+                                task=current_task,
+                                child_session_id=session_id,
+                                child_session_status=chunk.session.status,
+                                idle_event_sequence=chunk.event.sequence,
+                                idle_reason=chunk.event.payload.get("reason", "waiting"),
+                            )
                         fallback_identity = self._fallback_identity_for_event(chunk.event)
                         if fallback_identity is not None and fallback_identity != slot_identity:
                             with self._queue_lock:
