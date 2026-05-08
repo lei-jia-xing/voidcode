@@ -5960,7 +5960,8 @@ class VoidCodeRuntime:
         stored = self._load_existing_session_if_present(session_id=session_id)
         if stored is None:
             return ()
-        if stored.session.session.parent_id != parent_session_id:
+        stored_parent_session_id = stored.session.session.parent_id
+        if parent_session_id is not None and stored_parent_session_id != parent_session_id:
             return ()
         _prompt, tool_results = self._prompt_and_tool_results_from_debug_events(stored.events)
         return tuple(self._eligible_rehydrated_tool_results(tool_results))

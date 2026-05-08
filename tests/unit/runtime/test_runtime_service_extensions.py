@@ -13824,6 +13824,56 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
     assert retained_indexes == [3, 4, 5]
 
 
+def test_rehydrated_tool_results_for_existing_child_session_allow_omitted_parent_id(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="parent-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "read_file",
+                    "tool_name": "read_file",
+                    "result": {
+                        "tool_name": "read_file",
+                        "status": "ok",
+                        "content": "alpha",
+                        "data": {"path": "sample.txt", "arguments": {"filePath": "sample.txt"}},
+                    },
+                },
+            ),
+        ),
+        output="done",
+    )
+    runtime._session_store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="child task",
+            session_id="child-session",
+            parent_session_id="parent-session",
+        ),
+        response=response,
+    )
+
+    rehydrated = runtime._rehydrated_tool_results_for_existing_session(
+        session_id="child-session",
+        parent_session_id=None,
+    )
+
+    assert len(rehydrated) == 1
+    assert rehydrated[0].tool_name == "read_file"
+
+
 def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     sample_file.write_text("alpha\n", encoding="utf-8")
