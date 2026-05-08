@@ -25,6 +25,7 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     BackgroundTaskStatus,
+    DelegatedReminderState,
     validate_background_task_id,
 )
 
@@ -149,6 +150,92 @@ def test_background_task_storage_persists_delegated_correlation_and_routing_colu
         None,
         0,
     )
+
+
+def test_background_task_storage_persists_delegated_reminder_episode_state(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-reminder"),
+        status="running",
+        request=BackgroundTaskRequestSnapshot(
+            prompt="delegate work",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "background", "category": "quick"}},
+        ),
+        session_id="child-session",
+    )
+
+    store.create_background_task(workspace=tmp_path, task=task)
+    eligible = store.record_background_task_idle_reminder_eligible(
+        workspace=tmp_path,
+        task_id="task-reminder",
+        child_session_id="child-session",
+        idle_episode_id="child-session:7",
+        idle_detected_at_unix_ms=111,
+    )
+    sent = store.mark_background_task_idle_reminder_sent(
+        workspace=tmp_path,
+        task_id="task-reminder",
+        idle_episode_id="child-session:7",
+        reminder_sent_at_unix_ms=222,
+    )
+
+    loaded = SqliteSessionStore(database_path=database_path).load_background_task(
+        workspace=tmp_path,
+        task_id="task-reminder",
+    )
+
+    assert eligible.delegated_reminder == DelegatedReminderState(
+        task_id="task-reminder",
+        parent_session_id="leader-session",
+        child_session_id="child-session",
+        idle_episode_id="child-session:7",
+        idle_detected_at_unix_ms=111,
+    )
+    assert sent.delegated_reminder == loaded.delegated_reminder
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.stop_condition == "already_sent_for_idle_episode"
+    assert loaded.delegated_reminder.reminder_sent_at_unix_ms == 222
+    assert loaded.delegated_reminder.stopped_at_unix_ms == 222
+
+
+def test_background_task_storage_stops_delegated_reminder_on_terminal_state(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-reminder-terminal"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegate work",
+                parent_session_id="leader-session",
+                metadata={"delegation": {"mode": "background", "category": "quick"}},
+            ),
+            session_id="child-session",
+        ),
+    )
+    _ = store.record_background_task_idle_reminder_eligible(
+        workspace=tmp_path,
+        task_id="task-reminder-terminal",
+        child_session_id="child-session",
+        idle_episode_id="child-session:8",
+        idle_detected_at_unix_ms=111,
+    )
+
+    terminal = store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id="task-reminder-terminal",
+        status="completed",
+    )
+
+    assert terminal.delegated_reminder is not None
+    assert terminal.delegated_reminder.stop_condition == "terminal_status"
+    assert terminal.delegated_reminder.stopped_at_unix_ms is not None
 
 
 def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_latest_update(
@@ -1364,6 +1451,7 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
 def test_runtime_events_define_delegated_background_task_durability_fields() -> None:
     assert DELEGATED_BACKGROUND_TASK_EVENT_TYPES == (
         "runtime.background_task_waiting_approval",
+        "runtime.background_task_idle_reminder",
         "runtime.background_task_completed",
         "runtime.background_task_failed",
         "runtime.background_task_cancelled",

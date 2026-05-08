@@ -33,6 +33,13 @@ type SubagentCancellationOwner = Literal["delegated_task"]
 type SubagentResumeOwner = Literal["child_session"]
 type SubagentRestartReconciliationOwner = Literal["runtime"]
 type SubagentExecutablePreset = str
+type DelegatedReminderStopCondition = Literal[
+    "result_read",
+    "explicit_retry",
+    "cancellation",
+    "terminal_status",
+    "already_sent_for_idle_episode",
+]
 
 
 def _parse_subagent_execution_mode(value: object) -> SubagentExecutionMode:
@@ -419,6 +426,30 @@ class BackgroundTaskObservability:
 
 
 @dataclass(frozen=True, slots=True)
+class DelegatedReminderState:
+    task_id: str
+    parent_session_id: str | None = None
+    child_session_id: str | None = None
+    idle_episode_id: str | None = None
+    idle_detected_at_unix_ms: int | None = None
+    reminder_sent_at_unix_ms: int | None = None
+    stopped_at_unix_ms: int | None = None
+    stop_condition: DelegatedReminderStopCondition | None = None
+
+    @property
+    def eligible(self) -> bool:
+        return (
+            self.idle_episode_id is not None
+            and self.stop_condition is None
+            and self.reminder_sent_at_unix_ms is None
+        )
+
+    @property
+    def already_sent_for_idle_episode(self) -> bool:
+        return self.reminder_sent_at_unix_ms is not None
+
+
+@dataclass(frozen=True, slots=True)
 class BackgroundTaskState:
     task: BackgroundTaskRef
     status: BackgroundTaskStatus = "queued"
@@ -439,6 +470,7 @@ class BackgroundTaskState:
     started_at_unix_ms: int | None = None
     finished_at_unix_ms: int | None = None
     cancel_requested_at: int | None = None
+    delegated_reminder: DelegatedReminderState | None = None
     observability: BackgroundTaskObservability | None = None
 
     @property

@@ -38,6 +38,8 @@ from .task import (
     ContinuationLoopRef,
     ContinuationLoopState,
     ContinuationLoopStatus,
+    DelegatedReminderState,
+    DelegatedReminderStopCondition,
     StoredBackgroundTaskSummary,
     StoredContinuationLoopSummary,
     is_background_task_terminal,
@@ -194,6 +196,33 @@ class SessionStore(Protocol):
         task_id: str,
     ) -> BackgroundTaskState: ...
 
+    def record_background_task_idle_reminder_eligible(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        child_session_id: str,
+        idle_episode_id: str,
+        idle_detected_at_unix_ms: int,
+    ) -> BackgroundTaskState: ...
+
+    def mark_background_task_idle_reminder_sent(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        idle_episode_id: str,
+        reminder_sent_at_unix_ms: int,
+    ) -> BackgroundTaskState: ...
+
+    def stop_background_task_idle_reminder(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        stop_condition: DelegatedReminderStopCondition,
+    ) -> BackgroundTaskState: ...
+
     def fail_incomplete_background_tasks(
         self,
         *,
@@ -287,7 +316,7 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 4
+    _SCHEMA_VERSION = 5
     _RESUME_CHECKPOINT_KINDS = frozenset(
         {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
     )
@@ -344,6 +373,7 @@ class SqliteSessionStore:
             ("question_request_id", "TEXT", 0, None, 0),
             ("cancellation_cause", "TEXT", 0, None, 0),
             ("result_available", "INTEGER", 1, "0", 0),
+            ("delegated_reminder_json", "TEXT", 0, None, 0),
             ("allocate_session_id", "INTEGER", 1, None, 0),
             ("session_id", "TEXT", 0, None, 0),
             ("error", "TEXT", 0, None, 0),
@@ -534,6 +564,7 @@ class SqliteSessionStore:
                 question_request_id TEXT,
                 cancellation_cause TEXT,
                 result_available INTEGER NOT NULL DEFAULT 0,
+                delegated_reminder_json TEXT,
                 allocate_session_id INTEGER NOT NULL,
                 session_id TEXT,
                 error TEXT,
@@ -1301,6 +1332,13 @@ class SqliteSessionStore:
             "status": cast(str, row["status"]),
             "result_available": bool(cast(int, row["result_available"])),
         }
+        reminder_state = SqliteSessionStore._delegated_reminder_state_from_payload(
+            cast(str | None, row["delegated_reminder_json"])
+        )
+        if reminder_state is not None:
+            durable_payload["delegated_reminder"] = (
+                SqliteSessionStore._delegated_reminder_state_payload(reminder_state)
+            )
         optional_fields: tuple[tuple[str, str], ...] = (
             ("requested_child_session_id", "requested_child_session_id"),
             ("child_session_id", "session_id"),
@@ -1318,6 +1356,85 @@ class SqliteSessionStore:
             if value is not None:
                 durable_payload[payload_key] = cast(object, value)
         return durable_payload
+
+    @staticmethod
+    def _delegated_reminder_state_payload(state: DelegatedReminderState) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "task_id": state.task_id,
+            "eligible": state.eligible,
+            "already_sent_for_idle_episode": state.already_sent_for_idle_episode,
+        }
+        optional_fields: tuple[tuple[str, object | None], ...] = (
+            ("parent_session_id", state.parent_session_id),
+            ("child_session_id", state.child_session_id),
+            ("idle_episode_id", state.idle_episode_id),
+            ("idle_detected_at_unix_ms", state.idle_detected_at_unix_ms),
+            ("reminder_sent_at_unix_ms", state.reminder_sent_at_unix_ms),
+            ("stopped_at_unix_ms", state.stopped_at_unix_ms),
+            ("stop_condition", state.stop_condition),
+        )
+        for key, value in optional_fields:
+            if value is not None:
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _parse_delegated_reminder_stop_condition(
+        value: object,
+    ) -> DelegatedReminderStopCondition | None:
+        if value is None:
+            return None
+        if value in {
+            "result_read",
+            "explicit_retry",
+            "cancellation",
+            "terminal_status",
+            "already_sent_for_idle_episode",
+        }:
+            return cast(DelegatedReminderStopCondition, value)
+        raise ValueError(f"invalid delegated reminder stop condition: {value!r}")
+
+    @classmethod
+    def _delegated_reminder_state_from_payload(
+        cls, payload: str | None
+    ) -> DelegatedReminderState | None:
+        if payload is None:
+            return None
+        decoded = cls._decode_json_object_payload(
+            payload,
+            malformed_message="persisted delegated reminder JSON is malformed",
+            non_object_message="persisted delegated reminder payload must decode to an object",
+        )
+        task_id = decoded.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("persisted delegated reminder task_id must be a non-empty string")
+        stop_condition = cls._parse_delegated_reminder_stop_condition(decoded.get("stop_condition"))
+        return DelegatedReminderState(
+            task_id=task_id,
+            parent_session_id=cls._optional_string(decoded.get("parent_session_id")),
+            child_session_id=cls._optional_string(decoded.get("child_session_id")),
+            idle_episode_id=cls._optional_string(decoded.get("idle_episode_id")),
+            idle_detected_at_unix_ms=cls._optional_int(decoded.get("idle_detected_at_unix_ms")),
+            reminder_sent_at_unix_ms=cls._optional_int(decoded.get("reminder_sent_at_unix_ms")),
+            stopped_at_unix_ms=cls._optional_int(decoded.get("stopped_at_unix_ms")),
+            stop_condition=stop_condition,
+        )
+
+    @staticmethod
+    def _optional_string(value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise ValueError("persisted delegated reminder string fields must be non-empty strings")
+        return value
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError("persisted delegated reminder timestamp fields must be integers")
+        return value
 
     @staticmethod
     def _pending_question_payload(pending_question: PendingQuestion) -> dict[str, object]:
@@ -1917,6 +2034,36 @@ class SqliteSessionStore:
             ),
         )
 
+    def _stop_delegated_reminder_state(
+        self,
+        *,
+        existing_payload: str | None,
+        stop_condition: DelegatedReminderStopCondition,
+        stopped_at_unix_ms: int,
+    ) -> str | None:
+        reminder_state = self._delegated_reminder_state_from_payload(existing_payload)
+        if reminder_state is None:
+            return None
+        if (
+            reminder_state.stop_condition is not None
+            and stop_condition == "already_sent_for_idle_episode"
+        ):
+            return existing_payload
+        stopped_state = DelegatedReminderState(
+            task_id=reminder_state.task_id,
+            parent_session_id=reminder_state.parent_session_id,
+            child_session_id=reminder_state.child_session_id,
+            idle_episode_id=reminder_state.idle_episode_id,
+            idle_detected_at_unix_ms=reminder_state.idle_detected_at_unix_ms,
+            reminder_sent_at_unix_ms=reminder_state.reminder_sent_at_unix_ms,
+            stopped_at_unix_ms=stopped_at_unix_ms,
+            stop_condition=stop_condition,
+        )
+        return json.dumps(
+            self._delegated_reminder_state_payload(stopped_state),
+            sort_keys=True,
+        )
+
     def _enriched_background_task_event_payload(
         self,
         *,
@@ -2493,12 +2640,13 @@ class SqliteSessionStore:
                     routing_mode, routing_category, routing_subagent_type,
                     routing_description, routing_command, approval_request_id,
                     question_request_id, cancellation_cause, result_available,
-                    allocate_session_id, session_id, error, cancel_requested_at,
+                    delegated_reminder_json, allocate_session_id, session_id,
+                    error, cancel_requested_at,
                     created_at, updated_at, started_at, finished_at,
                     created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -2519,6 +2667,7 @@ class SqliteSessionStore:
                     initial_runtime_state["question_request_id"],
                     initial_runtime_state["cancellation_cause"],
                     initial_runtime_state["result_available"],
+                    None,
                     1 if task.request.allocate_session_id else 0,
                     task.session_id,
                     task.error,
@@ -3068,11 +3217,17 @@ class SqliteSessionStore:
             result_available = 1 if status in ("completed", "failed", "interrupted") else 0
             updated_at = self._next_background_task_timestamp(connection=connection)
             finished_at_unix_ms = self._current_unix_ms()
+            delegated_reminder_json = self._stop_delegated_reminder_state(
+                existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                stop_condition="terminal_status",
+                stopped_at_unix_ms=finished_at_unix_ms,
+            )
             _ = connection.execute(
                 """
                 UPDATE background_tasks
                 SET status = ?, error = ?, finished_at = ?, updated_at = ?,
-                    cancellation_cause = ?, result_available = ?, finished_at_unix_ms = ?
+                    cancellation_cause = ?, result_available = ?, finished_at_unix_ms = ?,
+                    delegated_reminder_json = ?
                 WHERE workspace_id = ? AND task_id = ?
                 """,
                 (
@@ -3083,6 +3238,7 @@ class SqliteSessionStore:
                     cancellation_cause,
                     result_available,
                     finished_at_unix_ms,
+                    delegated_reminder_json,
                     str(workspace),
                     task_id,
                 ),
@@ -3114,11 +3270,18 @@ class SqliteSessionStore:
                 return self._background_task_state_from_row(current)
             if current_status == "queued":
                 updated_at = self._next_background_task_timestamp(connection=connection)
+                stopped_at_unix_ms = self._current_unix_ms()
+                delegated_reminder_json = self._stop_delegated_reminder_state(
+                    existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                    stop_condition="cancellation",
+                    stopped_at_unix_ms=stopped_at_unix_ms,
+                )
                 cancelled = connection.execute(
                     """
                     UPDATE background_tasks
                     SET status = 'cancelled', error = ?, cancellation_cause = ?,
-                        result_available = 0, finished_at = ?, updated_at = ?
+                        result_available = 0, finished_at = ?, updated_at = ?,
+                        delegated_reminder_json = ?
                     WHERE workspace_id = ? AND task_id = ? AND status = 'queued'
                     """,
                     (
@@ -3126,6 +3289,7 @@ class SqliteSessionStore:
                         "cancelled before start",
                         updated_at,
                         updated_at,
+                        delegated_reminder_json,
                         str(workspace),
                         task_id,
                     ),
@@ -3148,14 +3312,177 @@ class SqliteSessionStore:
                     connection.commit()
                     return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
+            delegated_reminder_json = self._stop_delegated_reminder_state(
+                existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                stop_condition="cancellation",
+                stopped_at_unix_ms=self._current_unix_ms(),
+            )
             _ = connection.execute(
                 """
                 UPDATE background_tasks
-                SET cancel_requested_at = ?, updated_at = ?
+                SET cancel_requested_at = ?, updated_at = ?, delegated_reminder_json = ?
                 WHERE workspace_id = ? AND task_id = ? AND status = 'running'
                     AND cancel_requested_at IS NULL
                 """,
-                (updated_at, updated_at, str(workspace), task_id),
+                (updated_at, updated_at, delegated_reminder_json, str(workspace), task_id),
+            )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            connection.commit()
+        return self._background_task_state_from_row(updated_row)
+
+    def record_background_task_idle_reminder_eligible(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        child_session_id: str,
+        idle_episode_id: str,
+        idle_detected_at_unix_ms: int,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._write_connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            if is_background_task_terminal(current_status):
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            existing_state = self._delegated_reminder_state_from_payload(
+                cast(str | None, current["delegated_reminder_json"])
+            )
+            if existing_state is not None and existing_state.stop_condition in {
+                "result_read",
+                "explicit_retry",
+                "cancellation",
+                "terminal_status",
+            }:
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            if existing_state is not None and existing_state.idle_episode_id == idle_episode_id:
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            reminder_state = DelegatedReminderState(
+                task_id=task_id,
+                parent_session_id=cast(str | None, current["request_parent_session_id"]),
+                child_session_id=child_session_id,
+                idle_episode_id=idle_episode_id,
+                idle_detected_at_unix_ms=idle_detected_at_unix_ms,
+            )
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET delegated_reminder_json = ?, updated_at = ?
+                WHERE workspace_id = ? AND task_id = ?
+                """,
+                (
+                    json.dumps(
+                        self._delegated_reminder_state_payload(reminder_state),
+                        sort_keys=True,
+                    ),
+                    updated_at,
+                    str(workspace),
+                    task_id,
+                ),
+            )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            connection.commit()
+        return self._background_task_state_from_row(updated_row)
+
+    def mark_background_task_idle_reminder_sent(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        idle_episode_id: str,
+        reminder_sent_at_unix_ms: int,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._write_connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            reminder_state = self._delegated_reminder_state_from_payload(
+                cast(str | None, current["delegated_reminder_json"])
+            )
+            if reminder_state is None or reminder_state.idle_episode_id != idle_episode_id:
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            sent_state = DelegatedReminderState(
+                task_id=reminder_state.task_id,
+                parent_session_id=reminder_state.parent_session_id,
+                child_session_id=reminder_state.child_session_id,
+                idle_episode_id=reminder_state.idle_episode_id,
+                idle_detected_at_unix_ms=reminder_state.idle_detected_at_unix_ms,
+                reminder_sent_at_unix_ms=reminder_sent_at_unix_ms,
+                stopped_at_unix_ms=reminder_sent_at_unix_ms,
+                stop_condition="already_sent_for_idle_episode",
+            )
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET delegated_reminder_json = ?, updated_at = ?
+                WHERE workspace_id = ? AND task_id = ?
+                """,
+                (
+                    json.dumps(self._delegated_reminder_state_payload(sent_state), sort_keys=True),
+                    updated_at,
+                    str(workspace),
+                    task_id,
+                ),
+            )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            connection.commit()
+        return self._background_task_state_from_row(updated_row)
+
+    def stop_background_task_idle_reminder(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        stop_condition: DelegatedReminderStopCondition,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._write_connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            delegated_reminder_json = self._stop_delegated_reminder_state(
+                existing_payload=cast(str | None, current["delegated_reminder_json"]),
+                stop_condition=stop_condition,
+                stopped_at_unix_ms=self._current_unix_ms(),
+            )
+            if delegated_reminder_json == cast(str | None, current["delegated_reminder_json"]):
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET delegated_reminder_json = ?, updated_at = ?
+                WHERE workspace_id = ? AND task_id = ?
+                """,
+                (delegated_reminder_json, updated_at, str(workspace), task_id),
             )
             updated_row = self._background_task_runtime_row(
                 connection=connection,
@@ -3182,7 +3509,8 @@ class SqliteSessionStore:
                 list[sqlite3.Row],
                 connection.execute(
                     f"""
-                    SELECT background_tasks.task_id, background_tasks.cancel_requested_at
+                    SELECT background_tasks.task_id, background_tasks.cancel_requested_at,
+                           background_tasks.delegated_reminder_json
                     FROM background_tasks
                     LEFT JOIN sessions
                       ON sessions.workspace_id = background_tasks.workspace_id
@@ -3211,6 +3539,11 @@ class SqliteSessionStore:
                 cancel_requested_at = cast(int | None, row["cancel_requested_at"])
                 updated_at = self._next_background_task_timestamp(connection=connection)
                 if cancel_requested_at is not None:
+                    delegated_reminder_json = self._stop_delegated_reminder_state(
+                        existing_payload=cast(str | None, row["delegated_reminder_json"]),
+                        stop_condition="cancellation",
+                        stopped_at_unix_ms=self._current_unix_ms(),
+                    )
                     _ = connection.execute(
                         """
                         UPDATE background_tasks
@@ -3219,7 +3552,8 @@ class SqliteSessionStore:
                             cancellation_cause = COALESCE(cancellation_cause, ?),
                             finished_at = ?,
                             updated_at = ?,
-                            result_available = 0
+                            result_available = 0,
+                            delegated_reminder_json = ?
                         WHERE workspace_id = ?
                           AND task_id = ?
                           AND status = 'running'
@@ -3230,11 +3564,17 @@ class SqliteSessionStore:
                             "cancelled by parent during delegated execution",
                             updated_at,
                             updated_at,
+                            delegated_reminder_json,
                             str(workspace),
                             task_id,
                         ),
                     )
                 else:
+                    delegated_reminder_json = self._stop_delegated_reminder_state(
+                        existing_payload=cast(str | None, row["delegated_reminder_json"]),
+                        stop_condition="terminal_status",
+                        stopped_at_unix_ms=self._current_unix_ms(),
+                    )
                     _ = connection.execute(
                         """
                         UPDATE background_tasks
@@ -3242,13 +3582,21 @@ class SqliteSessionStore:
                             error = ?,
                             finished_at = ?,
                             updated_at = ?,
-                            result_available = 1
+                            result_available = 1,
+                            delegated_reminder_json = ?
                         WHERE workspace_id = ?
                           AND task_id = ?
                           AND status IN ('queued', 'running')
                           AND cancel_requested_at IS NULL
                         """,
-                        (message, updated_at, updated_at, str(workspace), task_id),
+                        (
+                            message,
+                            updated_at,
+                            updated_at,
+                            delegated_reminder_json,
+                            str(workspace),
+                            task_id,
+                        ),
                     )
                 reconciled_task_ids.append(task_id)
             connection.commit()
@@ -3343,6 +3691,9 @@ class SqliteSessionStore:
             started_at_unix_ms=cast(int | None, row["started_at_unix_ms"]),
             finished_at_unix_ms=cast(int | None, row["finished_at_unix_ms"]),
             cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
+            delegated_reminder=self._delegated_reminder_state_from_payload(
+                cast(str | None, row["delegated_reminder_json"])
+            ),
         )
 
     @staticmethod
