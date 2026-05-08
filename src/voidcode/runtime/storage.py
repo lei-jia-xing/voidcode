@@ -324,7 +324,6 @@ class SqliteSessionStore:
             ("position", "INTEGER", 1, None, 3),
             ("content", "TEXT", 1, None, 0),
             ("status", "TEXT", 1, None, 0),
-            ("priority", "TEXT", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
         ),
         "background_tasks": (
@@ -510,7 +509,6 @@ class SqliteSessionStore:
                 position INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 status TEXT NOT NULL,
-                priority TEXT NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (workspace_id, session_id, position)
             )
@@ -1040,8 +1038,8 @@ class SqliteSessionStore:
         _ = connection.executemany(
             """
             INSERT INTO session_todos (
-                workspace_id, session_id, position, content, status, priority, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                workspace_id, session_id, position, content, status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -1050,7 +1048,6 @@ class SqliteSessionStore:
                     todo["position"],
                     todo["content"],
                     todo["status"],
-                    todo["priority"],
                     todo["updated_at"],
                 )
                 for todo in todos
@@ -1068,7 +1065,7 @@ class SqliteSessionStore:
             list[sqlite3.Row],
             connection.execute(
                 """
-                SELECT position, content, status, priority, updated_at
+                SELECT position, content, status, updated_at
                 FROM session_todos
                 WHERE workspace_id = ? AND session_id = ?
                 ORDER BY position ASC
@@ -1084,7 +1081,6 @@ class SqliteSessionStore:
                     "position": cast(int, row["position"]),
                     "content": cast(str, row["content"]),
                     "status": cast(str, row["status"]),
-                    "priority": cast(str, row["priority"]),
                     "updated_at": cast(int, row["updated_at"]),
                 }
                 for row in rows

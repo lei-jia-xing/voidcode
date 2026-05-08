@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -50,7 +49,6 @@ from voidcode.tools import (
     EditTool,
     GlobTool,
     GrepTool,
-    InteractiveShellTool,
     LocalCustomTool,
     McpTool,
     MultiEditTool,
@@ -262,8 +260,6 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         MultiEditTool,
         TodoWriteTool,
     ]
-    if os.name != "nt":
-        expected_tools.append(InteractiveShellTool)
 
     for expected in expected_tools:
         assert expected in tools_by_type, f"Missing tool: {expected.__name__}"
@@ -521,6 +517,22 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
         "new file or intentionally replacing the whole file"
         in definitions["write_file"].description
     )
+    assert "a prior read is not required" in definitions["write_file"].description
+    assert (
+        "Prefer this tool when the desired file content is already known"
+        in definitions["write_file"].description
+    )
+    assert (
+        "produced or transformed by running a real program" in definitions["write_file"].description
+    )
+    assert (
+        "Do not use this tool to start a long-lived dev server"
+        in definitions["shell_exec"].description
+    )
+    assert (
+        "Use shell execution when the work is inherently command-driven"
+        in definitions["shell_exec"].description
+    )
     assert definitions["ast_grep_search"].description.startswith(
         "Use ast-grep tools for structural code matching"
     )
@@ -648,8 +660,6 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "web_search",
         "write_file",
     ]
-    if os.name != "nt":
-        core_tools.insert(3, "interactive_shell")
     for tool_name in core_tools:
         assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
         assert registry.resolve(tool_name) is provided_by_name[tool_name]

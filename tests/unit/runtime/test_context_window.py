@@ -268,7 +268,6 @@ def test_assemble_provider_context_second_stage_preserves_non_recent_tiers() -> 
                         {
                             "content": "must survive compaction",
                             "status": "in_progress",
-                            "priority": "high",
                             "position": 1,
                             "updated_at": 12,
                         }
@@ -306,14 +305,12 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
                         {
                             "content": "implement runtime todo state",
                             "status": "in_progress",
-                            "priority": "high",
                             "position": 1,
                             "updated_at": 12,
                         },
                         {
                             "content": "old finished task",
                             "status": "completed",
-                            "priority": "low",
                             "position": 2,
                             "updated_at": 12,
                         },
@@ -361,7 +358,6 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
                         {
                             "content": "implement tiers",
                             "status": "in_progress",
-                            "priority": "high",
                             "position": 1,
                             "updated_at": 12,
                         }
@@ -621,7 +617,6 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
                         {
                             "content": "stale tool feedback",
                             "status": "pending",
-                            "priority": "low",
                         }
                     ],
                 },
@@ -642,7 +637,6 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
                         {
                             "content": "authoritative runtime state",
                             "status": "in_progress",
-                            "priority": "high",
                             "position": 1,
                             "updated_at": 2,
                         }
@@ -789,7 +783,6 @@ def test_provider_context_inspector_strips_sentinels_from_provider_messages() ->
                             {
                                 "content": raw_todo_content,
                                 "status": "pending",
-                                "priority": "high",
                             }
                         ]
                     },
@@ -1082,7 +1075,6 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
                         {
                             "content": "preserve context parity",
                             "status": "in_progress",
-                            "priority": "high",
                         }
                     ]
                 },
@@ -1090,7 +1082,6 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
                     {
                         "content": "preserve context parity",
                         "status": "in_progress",
-                        "priority": "high",
                     }
                 ],
                 "summary": {"total": 1, "in_progress": 1},
@@ -1134,7 +1125,6 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
                         {
                             "content": "preserve context parity",
                             "status": "in_progress",
-                            "priority": "high",
                             "position": 1,
                             "updated_at": 1,
                         }

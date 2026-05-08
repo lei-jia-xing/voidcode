@@ -26,16 +26,6 @@ function TodoStatusIcon({ status }: { status: string }) {
   return <Circle className="h-3.5 w-3.5 text-[var(--vc-text-subtle)]" />;
 }
 
-function priorityClassName(priority: string) {
-  if (priority === "high") {
-    return "border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] text-[var(--vc-danger-text)]";
-  }
-  if (priority === "low") {
-    return "border-[color:var(--vc-border-subtle)] text-[var(--vc-text-subtle)]";
-  }
-  return "border-[color:var(--vc-border-strong)] text-[var(--vc-text-muted)]";
-}
-
 export function TodoPanel({
   snapshot,
 }: {
@@ -91,11 +81,6 @@ export function TodoPanel({
                 </span>
                 <span className="shrink-0 text-[11px] text-[var(--vc-text-subtle)]">
                   {t(`todo.status.${item.status}`, item.status)}
-                </span>
-                <span
-                  className={`shrink-0 rounded-[var(--vc-radius-control)] border px-1.5 py-0.5 text-[10px] uppercase ${priorityClassName(item.priority)}`}
-                >
-                  {t(`todo.priority.${item.priority}`, item.priority)}
                 </span>
               </div>
             ))}

@@ -3,10 +3,8 @@ from __future__ import annotations
 from typing import Literal, TypedDict, cast
 
 type TodoStatus = Literal["pending", "in_progress", "completed", "cancelled"]
-type TodoPriority = Literal["high", "medium", "low"]
 
 TODO_STATUSES: tuple[TodoStatus, ...] = ("pending", "in_progress", "completed", "cancelled")
-TODO_PRIORITIES: tuple[TodoPriority, ...] = ("high", "medium", "low")
 
 
 def _parse_todo_status(value: object) -> TodoStatus | None:
@@ -21,20 +19,9 @@ def _parse_todo_status(value: object) -> TodoStatus | None:
     return None
 
 
-def _parse_todo_priority(value: object) -> TodoPriority | None:
-    if value == "high":
-        return "high"
-    if value == "medium":
-        return "medium"
-    if value == "low":
-        return "low"
-    return None
-
-
 class RuntimeTodoItem(TypedDict):
     content: str
     status: TodoStatus
-    priority: TodoPriority
     position: int
     updated_at: int
 
@@ -77,16 +64,14 @@ def runtime_todos_from_tool_payload(
         item = cast(dict[object, object], raw_item)
         content = item.get("content")
         status = _parse_todo_status(item.get("status"))
-        priority = _parse_todo_priority(item.get("priority"))
         if not isinstance(content, str) or not content.strip():
             continue
-        if status is None or priority is None:
+        if status is None:
             continue
         todos.append(
             {
                 "content": content.strip(),
                 "status": status,
-                "priority": priority,
                 "position": position,
                 "updated_at": updated_at,
             }
@@ -104,12 +89,11 @@ def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem
         item = cast(dict[object, object], raw_item)
         content = item.get("content")
         status = _parse_todo_status(item.get("status"))
-        priority = _parse_todo_priority(item.get("priority"))
         raw_position = item.get("position")
         raw_updated_at = item.get("updated_at")
         if not isinstance(content, str) or not content.strip():
             continue
-        if status is None or priority is None:
+        if status is None:
             continue
         position = (
             raw_position
@@ -123,7 +107,6 @@ def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem
             {
                 "content": content.strip(),
                 "status": status,
-                "priority": priority,
                 "position": position,
                 "updated_at": updated_at,
             }
@@ -140,7 +123,6 @@ def runtime_todos_equal(
     return all(
         existing["content"] == proposed["content"]
         and existing["status"] == proposed["status"]
-        and existing["priority"] == proposed["priority"]
         and existing["position"] == proposed["position"]
         for existing, proposed in zip(current, candidate, strict=True)
     )
@@ -211,8 +193,8 @@ def render_provider_todo_state(session_metadata: dict[str, object]) -> str | Non
         "Runtime-managed todo state is active for this session.",
         "Use this as the current plan truth; do not recreate it from older tool results.",
         (
-            "Do not call todo_write again unless you are actually changing todo content, "
-            "status, or priority. If the plan is unchanged, execute the next item instead."
+            "Do not call todo_write again unless you are actually changing todo content "
+            "or status. If the plan is unchanged, execute the next item instead."
         ),
         (
             "If any todo is already in_progress, continue that item with implementation tools. "
@@ -221,5 +203,5 @@ def render_provider_todo_state(session_metadata: dict[str, object]) -> str | Non
         "Current active todos:",
     ]
     for todo in active_todos:
-        lines.append(f"{todo['position']}. [{todo['status']}/{todo['priority']}] {todo['content']}")
+        lines.append(f"{todo['position']}. [{todo['status']}] {todo['content']}")
     return "\n".join(lines)

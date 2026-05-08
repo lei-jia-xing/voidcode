@@ -2,4 +2,4 @@ Use this tool to search known files or directories in the workspace for text.
 
 Literal search is the default, and regular expressions are available when you need more precise matching. You can narrow directory searches with include or exclude patterns, and you can request surrounding context when nearby lines matter.
 
-Treat the structured `match_count` and `matches` results as the source of truth for follow-up decisions. If you do not know where to search yet, use `glob` or `list` first.
+Treat the structured `match_count` and `matches` results as the source of truth for follow-up decisions. If you do not know where to search yet, use `glob` first.

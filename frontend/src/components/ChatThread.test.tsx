@@ -750,12 +750,10 @@ describe("ChatThread", () => {
                     {
                       content: "Audit tool UI",
                       status: "completed",
-                      priority: "high",
                     },
                     {
                       content: "Ship observability",
                       status: "in_progress",
-                      priority: "medium",
                     },
                   ],
                 },
@@ -764,12 +762,10 @@ describe("ChatThread", () => {
                     {
                       content: "Audit tool UI",
                       status: "completed",
-                      priority: "high",
                     },
                     {
                       content: "Ship observability",
                       status: "in_progress",
-                      priority: "medium",
                     },
                   ],
                   summary: {
@@ -797,8 +793,8 @@ describe("ChatThread", () => {
     );
     expect(screen.getByText("Audit tool UI")).toBeInTheDocument();
     expect(screen.getByText("Ship observability")).toBeInTheDocument();
-    expect(screen.getByText("completed · high")).toBeInTheDocument();
-    expect(screen.getByText("in_progress · medium")).toBeInTheDocument();
+    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.getByText("in_progress")).toBeInTheDocument();
     expect(screen.getByText(/in_progress=1/)).toBeInTheDocument();
   });
 });

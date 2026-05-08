@@ -1153,7 +1153,6 @@ def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
                         {
                             "content": raw_todo_content,
                             "status": "pending",
-                            "priority": "high",
                         }
                     ]
                 },
@@ -1753,7 +1752,6 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
                         {
                             "content": raw_todo_content,
                             "status": "pending",
-                            "priority": "high",
                         }
                     ]
                 },

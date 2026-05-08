@@ -273,6 +273,53 @@ def test_apply_patch_rejects_malformed_structured_add_file_line(
     assert not (tmp_path / "README.md").exists()
 
 
+def test_apply_patch_rejects_stray_text_before_structured_file_operation(
+    tmp_path: Path,
+) -> None:
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "unexpected text",
+            "*** Add File: README.md",
+            "+# Demo",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="malformed patch: expected a file operation"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "README.md").exists()
+
+
+def test_apply_patch_rejects_stray_text_between_structured_file_operations(
+    tmp_path: Path,
+) -> None:
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: one.txt",
+            "+one",
+            "unexpected text",
+            "*** Add File: two.txt",
+            "+two",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"Add File content lines must start with '\+'"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    assert not (tmp_path / "one.txt").exists()
+    assert not (tmp_path / "two.txt").exists()
+
+
 def test_apply_patch_rejects_structured_add_file_when_destination_exists(
     tmp_path: Path,
 ) -> None:
@@ -623,11 +670,68 @@ def test_apply_patch_raises_on_invalid_patch(tmp_path: Path) -> None:
     (tmp_path / "sample.txt").write_text("line-1\n", encoding="utf-8")
 
     tool = ApplyPatchTool()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="malformed patch text"):
         tool.invoke(
             ToolCall(tool_name="apply_patch", arguments={"patch": "not a patch"}),
             workspace=tmp_path,
         )
+
+
+def test_apply_patch_rejects_empty_patch_with_clear_guidance(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+
+    with pytest.raises(ValueError, match="empty patch text") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": ""}),
+            workspace=tmp_path,
+        )
+
+    message = str(exc_info.value)
+    assert "structured patch envelope" in message
+    assert "*** Begin Patch" in message
+
+
+def test_apply_patch_rejects_whitespace_only_patch_with_clear_guidance(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+
+    with pytest.raises(ValueError, match="empty patch text"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": "  \n\n  "}),
+            workspace=tmp_path,
+        )
+
+
+def test_apply_patch_rejects_empty_structured_envelope_with_clear_guidance(
+    tmp_path: Path,
+) -> None:
+    patch_text = "*** Begin Patch\n*** End Patch\n"
+
+    with pytest.raises(ValueError, match="patch rejected: empty patch"):
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+
+def test_apply_patch_wraps_git_no_valid_patches_error_with_clear_guidance(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    (tmp_path / "sample.txt").write_text("line-1\n", encoding="utf-8")
+    patch_text = "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+
+    with pytest.raises(ValueError, match="malformed patch text") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    message = str(exc_info.value)
+    assert "Underlying error" in message
+    assert "patch with only garbage" in message
+    assert "valid unified diff" in message
 
 
 def test_apply_patch_reports_only_patch_touched_paths_in_dirty_worktree(tmp_path: Path) -> None:

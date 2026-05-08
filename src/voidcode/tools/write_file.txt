@@ -6,3 +6,5 @@ Usage:
 - A successful result returns a short write summary plus metadata such as path and byte_count; it does not return the full file content.
 - For existing files, prefer edit or multi_edit for targeted replacements; use write_file when creating a new file or intentionally replacing the whole file.
 - Read existing content first when you need to preserve or modify part of a file.
+- For brand-new files, use this tool directly; a prior read is not required.
+- Prefer this tool when the desired file content is already known. Prefer command execution only when the file must be produced or transformed by running a real program rather than writing the text directly.

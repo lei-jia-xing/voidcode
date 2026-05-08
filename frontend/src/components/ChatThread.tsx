@@ -999,9 +999,7 @@ function TaskToolActivity({
   );
 }
 
-function todoItems(
-  tool: ChatTool,
-): { content: string; status: string; priority: string }[] {
+function todoItems(tool: ChatTool): { content: string; status: string }[] {
   const data = resultData(tool);
   const rawTodos = Array.isArray(data?.todos)
     ? data.todos
@@ -1016,7 +1014,6 @@ function todoItems(
     .map((item) => ({
       content: toolValue(item.content) ?? "Untitled todo",
       status: toolValue(item.status) ?? "pending",
-      priority: toolValue(item.priority) ?? "medium",
     }));
 }
 
@@ -1065,7 +1062,7 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
               </span>
               <span className="flex-1">{item.content}</span>
               <span className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--vc-text-subtle)]">
-                {item.status} · {item.priority}
+                {item.status}
               </span>
             </div>
           ))}

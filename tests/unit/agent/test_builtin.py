@@ -232,6 +232,11 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     assert worker is not None
     assert write_tools.issubset(worker.tool_allowlist)
     assert "task" not in worker.tool_allowlist
+    assert "todo_write" in worker.tool_allowlist
+
+    researcher = get_builtin_agent_manifest("researcher")
+    assert researcher is not None
+    assert "todo_write" not in researcher.tool_allowlist
 
 
 def test_builtin_read_only_agent_tool_allowlists_exclude_mutating_capabilities() -> None:
@@ -254,6 +259,7 @@ def test_builtin_retry_tool_is_leader_only_runtime_recovery_surface() -> None:
     leader = get_builtin_agent_manifest("leader")
     assert leader is not None
     assert "background_retry" in leader.tool_allowlist
+    assert "todo_write" in leader.tool_allowlist
 
     for preset in _CALLABLE_CHILD_AGENT_PRESETS:
         manifest = get_builtin_agent_manifest(preset)
@@ -299,6 +305,7 @@ def test_product_prompt_and_manifest_remain_planning_only() -> None:
     assert manifest.mode == "primary"
     assert manifest.top_level_selectable is True
     assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
+    assert "todo_write" in manifest.tool_allowlist
     assert "planning preset" in prompt
     assert "not an executor" in prompt
     assert "Do not claim code execution" in prompt

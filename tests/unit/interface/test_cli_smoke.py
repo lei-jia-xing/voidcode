@@ -1166,8 +1166,8 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
             event=_runtime_event(
                 "runtime.todo_updated",
                 todos=[
-                    {"content": "Create sample file", "status": "completed", "priority": "high"},
-                    {"content": "Run tests", "status": "in_progress", "priority": "high"},
+                    {"content": "Create sample file", "status": "completed"},
+                    {"content": "Run tests", "status": "in_progress"},
                 ],
             ),
         ),

@@ -15,11 +15,7 @@ def test_tools_package_and_default_registry_export_interactive_shell_tool() -> N
     registry = ToolRegistry.with_defaults()
 
     assert "InteractiveShellTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
-    if os.name == "nt":
-        assert "interactive_shell" not in registry.tools
-    else:
-        assert registry.resolve("interactive_shell").definition.name == "interactive_shell"
-        assert registry.resolve("interactive_shell").definition.read_only is False
+    assert "interactive_shell" not in registry.tools
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux unavailable")
