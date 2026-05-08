@@ -3,5 +3,6 @@ Stop a long-running background process by id.
 Usage:
 - Pass a process_id previously returned by `background_process_start`.
 - Use this tool to shut down a background server or watcher when verification is complete.
+- Prefer stopping a superseded process explicitly before starting a replacement with a different command, configuration, or port.
 - If you started a service with `background_process_start`, prefer stopping it here instead of trying to kill it through `shell_exec`.
 - Treat the returned running flag and exit_code as the source of truth.

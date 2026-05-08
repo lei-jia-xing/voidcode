@@ -7,6 +7,8 @@ Usage:
 - Commands are executed by a non-interactive shell, so normal shell operators such as pipes, redirects, wildcard expansion, and command chaining are available.
 - Use this tool for tests, builds, diagnostics, and one-shot local commands that cannot be expressed through narrower tools.
 - Do not use this tool to start a long-lived dev server, watcher, or daemon that must keep running while the agent continues working. Use `background_process_start` instead, then inspect readiness with `background_process_logs` and stop it with `background_process_stop`.
-- Prefer dedicated file/edit tools when the target content is already known. Use shell execution when the work is inherently command-driven, such as builds, tests, package managers, generators, or environment-specific tooling.
+- Do not use this tool for interactive scaffolds, installers, or generators that prompt for input. Prefer a non-interactive command with explicit target paths, or create the needed project structure directly with other tools.
+- Prefer dedicated file/edit tools when the target content is already known. Use shell execution when the work is inherently command-driven, such as builds, tests, package managers, non-interactive generators, or environment-specific tooling.
+- Do not rerun a scaffold command over an existing project root unless that command is explicitly intended to update the existing project in place.
 - Prefer dedicated file/search tools for file reads, file writes, and text/path search when they fit the task.
 - Treat exit_code, stdout, stderr, timeout, and truncated as the source of truth.
