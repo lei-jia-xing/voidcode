@@ -225,6 +225,8 @@ def test_runtime_background_task_config_serializes_non_default_maps() -> None:
 
     assert payload == {
         "default_concurrency": 4,
+        "delegated_reminders_enabled": True,
+        "delegated_reminder_cooldown_seconds": 300,
         "provider_concurrency": {"openai": 3},
         "model_concurrency": {"openai/gpt-4.1": 2},
     }

@@ -8283,10 +8283,23 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
             updated_at=1,
         ),
     )
+    _ = store.record_background_task_idle_reminder_eligible(
+        workspace=tmp_path,
+        task_id="task-retry-queued",
+        child_session_id="child-session",
+        idle_episode_id="child-session:1",
+        idle_detected_at_unix_ms=111,
+    )
     runtime._background_tasks_reconciled = True
 
     with pytest.raises(ValueError, match="requires a failed, cancelled, or interrupted task"):
         runtime.retry_background_task("task-retry-queued")
+
+    loaded = runtime.load_background_task("task-retry-queued")
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.idle_episode_id == "child-session:1"
+    assert loaded.delegated_reminder.stop_condition is None
+    assert loaded.delegated_reminder.reminder_sent_at_unix_ms is None
 
 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:

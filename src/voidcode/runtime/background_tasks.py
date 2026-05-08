@@ -476,16 +476,16 @@ class RuntimeBackgroundTaskSupervisor:
             workspace=runtime._workspace,
             task_id=task_id,
         )
-        runtime._session_store.stop_background_task_idle_reminder(
-            workspace=runtime._workspace,
-            task_id=task_id,
-            stop_condition="explicit_retry",
-        )
         if previous_task.status not in ("failed", "cancelled", "interrupted"):
             raise ValueError(
                 "background task retry requires a failed, cancelled, or interrupted task; "
                 f"task {task_id} is {previous_task.status}"
             )
+        runtime._session_store.stop_background_task_idle_reminder(
+            workspace=runtime._workspace,
+            task_id=task_id,
+            stop_condition="explicit_retry",
+        )
         return self.start_background_task(
             RuntimeRequest(
                 prompt=previous_task.request.prompt,
