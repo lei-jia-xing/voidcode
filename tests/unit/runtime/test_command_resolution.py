@@ -195,6 +195,34 @@ def test_command_workflow_mode_precedes_request_metadata_mode(tmp_path: Path) ->
     assert response.output == "Deep target.py"
 
 
+def test_command_workflow_mode_skips_legacy_preset_conflict_when_command_wins(
+    tmp_path: Path,
+) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "start-work.md").write_text(
+        "---\n"
+        "description: Start work\n"
+        "workflow_mode: sustain\n"
+        "workflow_preset: implementation\n"
+        "---\n"
+        "Start $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="/start-work accepted plan",
+            metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": "review"}),
+        )
+    )
+
+    assert response.session.metadata["workflow_mode"] == "sustain"
+    assert response.session.metadata["workflow_preset"] == "implementation"
+    assert response.output == "Start accepted plan"
+
+
 def test_request_workflow_mode_survives_project_command_without_frontmatter(
     tmp_path: Path,
 ) -> None:

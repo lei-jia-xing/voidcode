@@ -265,7 +265,12 @@ def resolve_workflow_mode(
         source = "default"
 
     selected_mode = _require_workflow_mode(selected_mode_id)
-    if metadata_mode is not None and preset_mode_id is not None and metadata_mode != preset_mode_id:
+    if (
+        command_mode is None
+        and metadata_mode is not None
+        and preset_mode_id is not None
+        and metadata_mode != preset_mode_id
+    ):
         raise ValueError(
             "workflow_mode and workflow_preset resolve to different modes: "
             f"workflow_mode={metadata_mode!r}, workflow_preset={preset_id!r}"
