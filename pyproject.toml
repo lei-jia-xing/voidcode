@@ -113,6 +113,9 @@ redundant-final-classvar = "error"
 # [tool.ty.rules] if a specific check turns out to be too noisy.
 error-on-warning = true
 
+[tool.ty.src]
+exclude = ["scripts"]
+
 [tool.pytest.ini_options]
 addopts = ""
 markers = [
