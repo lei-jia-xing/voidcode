@@ -238,6 +238,47 @@ def test_background_task_storage_stops_delegated_reminder_on_terminal_state(
     assert terminal.delegated_reminder.stopped_at_unix_ms is not None
 
 
+def test_background_task_storage_mark_sent_preserves_stronger_stop_condition(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-reminder-read"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="delegate work",
+                parent_session_id="leader-session",
+                metadata={"delegation": {"mode": "background", "category": "quick"}},
+            ),
+            session_id="child-session",
+        ),
+    )
+    _ = store.record_background_task_idle_reminder_eligible(
+        workspace=tmp_path,
+        task_id="task-reminder-read",
+        child_session_id="child-session",
+        idle_episode_id="child-session:9",
+        idle_detected_at_unix_ms=111,
+    )
+    stopped = store.stop_background_task_idle_reminder(
+        workspace=tmp_path,
+        task_id="task-reminder-read",
+        stop_condition="result_read",
+    )
+    marked = store.mark_background_task_idle_reminder_sent(
+        workspace=tmp_path,
+        task_id="task-reminder-read",
+        idle_episode_id="child-session:9",
+        reminder_sent_at_unix_ms=222,
+    )
+
+    assert stopped.delegated_reminder is not None
+    assert stopped.delegated_reminder.stop_condition == "result_read"
+    assert marked.delegated_reminder == stopped.delegated_reminder
+
+
 def test_background_task_storage_create_assigns_store_timestamps_and_orders_by_latest_update(
     tmp_path: Path,
 ) -> None:

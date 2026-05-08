@@ -232,6 +232,20 @@ def test_runtime_background_task_config_serializes_non_default_maps() -> None:
     }
 
 
+def test_runtime_config_rejects_unknown_background_task_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps({"background_task": {"unknown_key": True}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'background_task\.unknown_key' is not supported",
+    ):
+        _ = load_runtime_config(tmp_path, env={})
+
+
 def test_runtime_config_defaults_to_provider_for_product_runs(
     tmp_path: Path,
 ) -> None:

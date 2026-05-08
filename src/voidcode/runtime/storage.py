@@ -3421,6 +3421,9 @@ class SqliteSessionStore:
             if reminder_state is None or reminder_state.idle_episode_id != idle_episode_id:
                 connection.commit()
                 return self._background_task_state_from_row(current)
+            if reminder_state.stop_condition not in (None, "already_sent_for_idle_episode"):
+                connection.commit()
+                return self._background_task_state_from_row(current)
             sent_state = DelegatedReminderState(
                 task_id=reminder_state.task_id,
                 parent_session_id=reminder_state.parent_session_id,
