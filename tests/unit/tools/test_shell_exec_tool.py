@@ -11,7 +11,6 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ShellExecTool, ToolCall
-from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.output import MAX_TOOL_OUTPUT_BYTES, cap_tool_result_output
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from voidcode.tools.shell_exec import kill_timed_out_process
@@ -49,9 +48,9 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
 
 def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
     tool = ShellExecTool()
-    command = "printf 'alpha\\n' | tr a-z A-Z"
+    command = "printf 'alpha\\n' > sample.txt && cat sample.txt"
     if shutil.which("cmd.exe") is not None:
-        command = 'cmd.exe /c "echo alpha | findstr ."'
+        command = "echo alpha>sample.txt && type sample.txt"
 
     result = tool.invoke(
         ToolCall(
@@ -63,37 +62,8 @@ def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
 
     assert result.status == "ok"
     assert isinstance(result.content, str)
-    assert result.content.strip() in {"ALPHA", "alpha"}
-
-
-@pytest.mark.parametrize(
-    "command",
-    (
-        "echo hello > sample.txt",
-        "printf 'hello\n' > sample.txt",
-        "cat <<EOF > sample.txt\nhello\nEOF",
-    ),
-)
-def test_shell_exec_tool_rejects_shell_based_file_authoring(
-    tmp_path: Path,
-    command: str,
-) -> None:
-    tool = ShellExecTool()
-
-    with pytest.raises(
-        ToolDiagnosticError,
-        match="shell_exec does not allow shell-based file authoring",
-    ) as exc_info:
-        tool.invoke(
-            ToolCall(tool_name="shell_exec", arguments={"command": command}),
-            workspace=tmp_path,
-        )
-
-    assert exc_info.value.error_kind == "tool_input_mismatch"
-    assert exc_info.value.error_details == {
-        "reason": "shell_file_authoring",
-        "command": command,
-    }
+    assert result.content.strip() == "alpha"
+    assert (tmp_path / "sample.txt").read_text(encoding="utf-8").strip() == "alpha"
 
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:

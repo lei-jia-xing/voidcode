@@ -17,7 +17,6 @@ from ..security.shell_policy import (
     resolve_shell_execution_policy,
 )
 from ._pydantic_args import ShellExecArgs, format_validation_error
-from ._repair import raise_tool_diagnostic
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
 
@@ -60,17 +59,6 @@ def _safe_emit_shell_progress(
     except Exception:
         # Progress is observational only; never let streaming failures alter the command result.
         return
-
-
-def _looks_like_shell_file_authoring_command(command_text: str) -> bool:
-    lowered = command_text.lower()
-    if "cat <<" in lowered and ">" in lowered:
-        return True
-    if ">" not in lowered:
-        return False
-    authored_prefixes = ("echo ", "printf ", "cat <<", "cat >")
-    stripped = lowered.lstrip()
-    return stripped.startswith(authored_prefixes)
 
 
 def _read_pipe_incrementally(
@@ -200,21 +188,6 @@ class ShellExecTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         command_text = args.command.strip()
-        if _looks_like_shell_file_authoring_command(command_text):
-            raise_tool_diagnostic(
-                message=(
-                    "shell_exec does not allow shell-based file authoring when the file content "
-                    "is already known"
-                ),
-                error_kind="tool_input_mismatch",
-                reason="shell_file_authoring",
-                retry_guidance=(
-                    "Use write_file for new files or full rewrites, and use edit or multi_edit "
-                    "for targeted changes. Avoid shell redirection or heredocs for authored file "
-                    "content."
-                ),
-                details={"command": command_text},
-            )
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         policy = resolve_shell_execution_policy(
