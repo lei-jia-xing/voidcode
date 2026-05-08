@@ -1888,6 +1888,34 @@ def _wait_for_background_task_session(
     raise AssertionError(f"background task {task_id} did not allocate a child session")
 
 
+def _wait_for_background_task_waiting_response(
+    runtime: VoidCodeRuntime, task_id: str
+) -> tuple[BackgroundTaskState, RuntimeResponse]:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        task = runtime.load_background_task(task_id)
+        if task.session_id is None:
+            time.sleep(0.01)
+            continue
+        try:
+            response = runtime._session_store.load_session(
+                workspace=runtime._workspace,
+                session_id=task.session_id,
+            )
+        except RuntimeRequestError:
+            time.sleep(0.01)
+            continue
+        except Exception as exc:
+            if "unknown session:" in str(exc):
+                time.sleep(0.01)
+                continue
+            raise
+        if response.session.status == "waiting":
+            return task, response
+        time.sleep(0.01)
+    raise AssertionError(f"background task {task_id} did not persist a waiting child session")
+
+
 def _wait_for_session_event(
     runtime: VoidCodeRuntime,
     session_id: str,
@@ -2224,6 +2252,71 @@ def test_runtime_background_idle_reminder_dedupe_survives_reconciliation(
         )
         == 1
     )
+
+
+def test_runtime_reconcile_backfills_idle_reminder_for_persisted_waiting_child(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            background_task=RuntimeBackgroundTaskConfig(
+                delegated_reminders_enabled=False,
+            ),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    waiting, _ = _wait_for_background_task_waiting_response(runtime, started.task.id)
+    initial_parent = runtime.session_result(session_id="leader-session")
+
+    assert waiting.status == "running"
+    assert all(
+        event.event_type != "runtime.background_task_idle_reminder"
+        for event in initial_parent.transcript
+    )
+
+    restarted_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            background_task=RuntimeBackgroundTaskConfig(
+                delegated_reminders_enabled=True,
+            ),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    restarted_runtime._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+        parent_session_id="leader-session"
+    )
+    parent = restarted_runtime.session_result(session_id="leader-session")
+
+    reminders = [
+        event
+        for event in parent.transcript
+        if event.event_type == "runtime.background_task_idle_reminder"
+    ]
+    assert len(reminders) == 1
+    reminder = reminders[0]
+    assert reminder.payload["task_id"] == started.task.id
+    assert reminder.payload["parent_session_id"] == "leader-session"
+    assert reminder.payload["child_session_id"] == waiting.session_id
+    assert reminder.payload["status"] == "running"
+    assert reminder.payload["result_available"] is True
 
 
 def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
@@ -7019,6 +7112,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         "status": "running",
         "approval_blocked": True,
         "result_available": True,
+        "delegated_reminder": waiting_events[0].payload["delegated_reminder"],
         "delegation": {
             "parent_session_id": "leader-session",
             "requested_child_session_id": child_session_id,
@@ -8062,6 +8156,7 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
         "status": "running",
         "approval_blocked": True,
         "result_available": True,
+        "delegated_reminder": waiting_events[0].payload["delegated_reminder"],
         "delegation": {
             "parent_session_id": "leader-session",
             "requested_child_session_id": child_session_id,

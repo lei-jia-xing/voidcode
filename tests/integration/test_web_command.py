@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -36,7 +37,7 @@ def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
     """Verify the web command prints the banner and a usable local URL."""
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/web-banner-test")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
@@ -54,11 +55,77 @@ def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
     assert "http://127.0.0.1:8080" in captured.out
 
 
+def test_web_prints_auto_assigned_url_when_port_unspecified(capsys: Any, tmp_path: Path) -> None:
+    server = importlib.import_module("voidcode.server")
+    workspace = Path("/tmp/web-banner-auto-port-test")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    frontend_dist = write_frontend_dist_fixture(tmp_path)
+    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener_socket.bind(("127.0.0.1", 0))
+
+    try:
+        expected_port = cast(int, listener_socket.getsockname()[1])
+        with patch.object(server, "_run_runtime_server", autospec=True):
+            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+                with patch.object(
+                    server,
+                    "_reserve_listener_socket",
+                    autospec=True,
+                    return_value=listener_socket,
+                ):
+                    server.web(
+                        workspace=workspace,
+                        host="127.0.0.1",
+                        port=None,
+                        config=config,
+                        open_browser=False,
+                    )
+
+        captured = capsys.readouterr()
+        assert "VoidCode" in captured.out
+        assert f"http://127.0.0.1:{expected_port}" in captured.out
+    finally:
+        listener_socket.close()
+
+
+def test_web_prints_ipv6_auto_assigned_url_when_host_is_ipv6(capsys: Any, tmp_path: Path) -> None:
+    server = importlib.import_module("voidcode.server")
+    workspace = Path("/tmp/web-banner-ipv6-auto-port-test")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    frontend_dist = write_frontend_dist_fixture(tmp_path)
+    listener_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener_socket.bind(("::1", 0, 0, 0))
+
+    try:
+        expected_port = cast(int, listener_socket.getsockname()[1])
+        with patch.object(server, "_run_runtime_server", autospec=True):
+            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+                with patch.object(
+                    server,
+                    "_reserve_listener_socket",
+                    autospec=True,
+                    return_value=listener_socket,
+                ):
+                    server.web(
+                        workspace=workspace,
+                        host="::1",
+                        port=None,
+                        config=config,
+                        open_browser=False,
+                    )
+
+        captured = capsys.readouterr()
+        assert "VoidCode" in captured.out
+        assert f"http://::1:{expected_port}" in captured.out
+    finally:
+        listener_socket.close()
+
+
 def test_web_browser_open_failure_does_not_crash(capsys: Any, tmp_path: Path) -> None:
     """Verify graceful degradation when webbrowser.open raises."""
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/web-browser-fail")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
@@ -76,7 +143,7 @@ def test_web_browser_open_gracefully_handles_false_return(tmp_path: Path) -> Non
     """Verify graceful degradation when webbrowser.open returns False."""
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/web-browser-false")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
@@ -90,7 +157,7 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
     """Verify the web command delegates to the runtime server primitive."""
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/web-delegate-test")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
@@ -109,6 +176,7 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
         port=8001,
         config=config,
         frontend_dist=frontend_dist,
+        listener_socket=None,
     )
 
 
@@ -138,7 +206,7 @@ def test_serve_remains_headless_and_uses_shared_runtime_server() -> None:
     """Verify the headless serve command does not inject frontend_dist."""
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/serve-headless-test")
-    config = SimpleNamespace(approval_mode="allow")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
         server.serve(workspace=workspace, host="127.0.0.1", port=9000, config=config)
