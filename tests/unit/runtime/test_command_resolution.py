@@ -195,6 +195,31 @@ def test_command_workflow_mode_precedes_request_metadata_mode(tmp_path: Path) ->
     assert response.output == "Deep target.py"
 
 
+def test_request_workflow_mode_survives_project_command_without_frontmatter(
+    tmp_path: Path,
+) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "echo.md").write_text(
+        "---\ndescription: Echo without workflow selectors\n---\nEcho $ARGUMENTS\n",
+        encoding="utf-8",
+    )
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="/echo target.py",
+            metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": "review"}),
+        )
+    )
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+
+    assert response.session.metadata["workflow_mode"] == "review"
+    assert cast(dict[str, object], workflow["effective"])["mode"] == "review"
+    assert response.output == "Echo target.py"
+
+
 def test_runtime_command_metadata_validates_continuation_loop_shape() -> None:
     metadata = validate_runtime_request_metadata(
         {

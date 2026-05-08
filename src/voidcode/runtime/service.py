@@ -6151,10 +6151,11 @@ class VoidCodeRuntime:
             self._metadata_without_workflow_mode(normalized),
             allow_internal_fields=allow_internal_fields or "workflow_plan" in normalized,
         )
-        if command_workflow_mode is not None:
+        workflow_mode = normalized.get("workflow_mode")
+        if isinstance(workflow_mode, str):
             validated = cast(
                 RuntimeRequestMetadataPayload,
-                {**cast(dict[str, object], validated), "workflow_mode": command_workflow_mode},
+                {**cast(dict[str, object], validated), "workflow_mode": workflow_mode},
             )
         return prompt, validated
 
