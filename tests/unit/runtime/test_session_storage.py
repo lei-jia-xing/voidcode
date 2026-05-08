@@ -370,7 +370,6 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "position",
         "content",
         "status",
-        "priority",
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]

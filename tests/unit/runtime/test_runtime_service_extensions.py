@@ -10878,7 +10878,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
 ) -> None:
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             execution_engine="provider",
@@ -10887,10 +10887,10 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
                 presets={
                     "child-review": WorkflowPreset(
                         id="child-review",
-                        default_agent="advisor",
+                        default_agent="worker",
                         category="review",
                         prompt_append="Original child review.",
-                        read_only_default=True,
+                        read_only_default=False,
                         tool_policy_ref="original-readonly-tools",
                         verification_guidance="Original child verification.",
                     )
@@ -10907,7 +10907,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
             parent_session_id="workflow-child-parent",
             metadata={
                 "workflow_preset": "child-review",
-                "delegation": {"mode": "background", "subagent_type": "advisor"},
+                "delegation": {"mode": "background", "subagent_type": "worker"},
             },
             allocate_session_id=True,
         )
@@ -10917,9 +10917,9 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
     child_waiting = _wait_for_session_event(
         initial_runtime,
         child_session_id,
-        "runtime.question_requested",
+        "runtime.approval_requested",
     )
-    question_request_id = cast(str, child_waiting.events[-1].payload["request_id"])
+    approval_request_id = cast(str, child_waiting.events[-1].payload["request_id"])
     original_runtime_config = cast(
         dict[str, object], child_waiting.session.metadata["runtime_config"]
     )
@@ -10927,7 +10927,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
 
     drifted_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             execution_engine="provider",
@@ -10936,7 +10936,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
                 presets={
                     "child-review": WorkflowPreset(
                         id="child-review",
-                        default_agent="advisor",
+                        default_agent="worker",
                         category="review",
                         prompt_append="Drifted child review.",
                         read_only_default=False,
@@ -10949,10 +10949,10 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    resumed = drifted_runtime.answer_question(
+    resumed = drifted_runtime.resume(
         child_session_id,
-        question_request_id=question_request_id,
-        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
     )
     replay = drifted_runtime.resume(child_session_id)
 
