@@ -23,6 +23,7 @@ from .model_catalog import (
 )
 from .models import ProviderResolutionSource
 from .openai import OpenAIModelProvider
+from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .protocol import ModelTurnProvider, StubTurnProvider, TurnProvider
 from .qwen import QwenModelProvider
@@ -58,7 +59,7 @@ class ModelProviderRegistry:
         configs = provider_configs or ProviderConfigs()
         return cls(
             providers={
-                "opencode": StaticModelProvider(name="opencode"),
+                "opencode": OpenCodeModelProvider(config=configs.opencode),
                 "openai": OpenAIModelProvider(config=configs.openai),
                 "anthropic": AnthropicModelProvider(config=configs.anthropic),
                 "google": GoogleModelProvider(config=configs.google),

@@ -674,6 +674,11 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
             else None
         ),
         litellm=_litellm_provider_config_from_env(env),
+        opencode=(
+            LiteLLMProviderConfig(api_key=opencode_key)
+            if (opencode_key := env.get(_OPENCODE_API_KEY_ENV_VAR))
+            else None
+        ),
         deepseek=_simplified_provider_config_from_env(env, _DEEPSEEK_API_KEY_ENV_VAR),
         glm=_simplified_provider_config_from_env(
             env,
@@ -1006,6 +1011,7 @@ def parse_provider_configs_payload(
             payload.opencode,
             field_path=_nested_config_field(source, "opencode"),
             env=environment,
+            default_api_key_env_var=_OPENCODE_API_KEY_ENV_VAR,
         ),
         deepseek=_parse_simplified_provider_config(
             payload.deepseek,
@@ -1474,6 +1480,7 @@ def _parse_litellm_provider_config(
     *,
     field_path: str,
     env: Mapping[str, str],
+    default_api_key_env_var: str | None = None,
 ) -> LiteLLMProviderConfig | None:
     if raw_value is None:
         return None
@@ -1492,6 +1499,8 @@ def _parse_litellm_provider_config(
     if api_key is None:
         if api_key_env_var is not None:
             api_key = env.get(api_key_env_var)
+        elif default_api_key_env_var is not None:
+            api_key = env.get(default_api_key_env_var)
         else:
             api_key = env.get(_LITELLM_API_KEY_ENV_VAR) or env.get(_LITELLM_PROXY_API_KEY_ENV_VAR)
 

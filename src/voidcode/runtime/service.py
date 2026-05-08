@@ -4572,6 +4572,8 @@ class VoidCodeRuntime:
             return providers.minimax is not None
         if provider_name == "kimi":
             return providers.kimi is not None
+        if provider_name == "opencode":
+            return providers.opencode is not None
         if provider_name == "opencode-go":
             return providers.opencode_go is not None
         if provider_name == "qwen":
