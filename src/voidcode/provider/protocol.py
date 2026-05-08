@@ -178,25 +178,16 @@ class ProviderAssembledContext(Protocol):
 class ProviderTokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
-    cache_creation_tokens: int = 0
-    cache_read_tokens: int = 0
 
     def metadata_payload(self) -> dict[str, int]:
         return {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
-            "cache_creation_tokens": self.cache_creation_tokens,
-            "cache_read_tokens": self.cache_read_tokens,
         }
 
     @property
     def total_tokens(self) -> int:
-        return (
-            self.input_tokens
-            + self.output_tokens
-            + self.cache_creation_tokens
-            + self.cache_read_tokens
-        )
+        return self.input_tokens + self.output_tokens
 
 
 @dataclass(frozen=True, slots=True)

@@ -6557,7 +6557,7 @@ def test_runtime_load_background_task_result_reconciles_before_parent_terminal_b
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(
             task=task_module.BackgroundTaskRef(id=task_id),
-            status="interrupted",
+            status="running",
             request=task_module.BackgroundTaskRequestSnapshot(
                 prompt="background child",
                 parent_session_id="leader-session",
@@ -6566,9 +6566,8 @@ def test_runtime_load_background_task_result_reconciles_before_parent_terminal_b
             session_id=child_session_id,
             created_at=1,
             updated_at=2,
-            finished_at=2,
-            error="background task interrupted before completion",
-            result_available=True,
+            error=None,
+            result_available=False,
         ),
     )
     store.save_run(
@@ -14289,16 +14288,12 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
         "latest": {
             "input_tokens": 10,
             "output_tokens": 3,
-            "cache_creation_tokens": 0,
-            "cache_read_tokens": 0,
         },
         "latest_run_id": latest_run_id,
         "latest_provider_attempt": 0,
         "cumulative": {
             "input_tokens": 10,
             "output_tokens": 3,
-            "cache_creation_tokens": 0,
-            "cache_read_tokens": 0,
         },
         "turn_count": 1,
     }
@@ -14319,16 +14314,12 @@ def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -
                 "latest": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "latest_run_id": "previous-run",
                 "latest_provider_attempt": 0,
                 "cumulative": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "turn_count": 1,
             },
@@ -14365,16 +14356,12 @@ def test_runtime_context_pressure_ignores_previous_provider_attempt_usage(
                 "latest": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "latest_run_id": "current-run",
                 "latest_provider_attempt": 0,
                 "cumulative": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "turn_count": 1,
             },

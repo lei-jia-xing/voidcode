@@ -2817,12 +2817,7 @@ class RuntimeRunLoopCoordinator:
             return None
         latest = cast(dict[str, object], raw_latest)
         total_tokens = 0
-        for key in (
-            "input_tokens",
-            "output_tokens",
-            "cache_creation_tokens",
-            "cache_read_tokens",
-        ):
+        for key in ("input_tokens", "output_tokens"):
             raw_value = latest.get(key, 0)
             if not isinstance(raw_value, int) or isinstance(raw_value, bool):
                 return None

@@ -2921,6 +2921,7 @@ class VoidCodeRuntime:
         *,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
+        self._reconcile_background_tasks_if_needed()
         return self._background_task_supervisor.load_background_task_result(
             task_id,
             emit_result_read_hook=emit_result_read_hook,

@@ -9,7 +9,6 @@ from typing import Any, cast
 import pytest
 
 from voidcode.provider.anthropic import AnthropicModelProvider
-from voidcode.provider.capability import ProviderCapability
 from voidcode.provider.config import (
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
@@ -708,7 +707,6 @@ def test_provider_adapter_propose_turn_returns_token_usage(
         usage={
             "prompt_tokens": 12,
             "completion_tokens": 4,
-            "prompt_tokens_details": {"cached_tokens": 3},
         },
     )
 
@@ -717,7 +715,6 @@ def test_provider_adapter_propose_turn_returns_token_usage(
     assert result.usage == ProviderTokenUsage(
         input_tokens=12,
         output_tokens=4,
-        cache_read_tokens=3,
     )
 
 
@@ -2328,543 +2325,6 @@ def _messages_from_last_payload() -> list[dict[str, object]]:
     return cast(list[dict[str, object]], messages_obj)
 
 
-def _cache_marker_matrix_request(
-    base_request: ProviderTurnRequest,
-    *,
-    raw_model: str,
-    provider_name: str,
-    model_name: str,
-) -> ProviderTurnRequest:
-    return ProviderTurnRequest(
-        assembled_context=_StubAssembledContext(
-            prompt="read sample.txt",
-            tool_results=(
-                ToolResult(
-                    tool_name="read_file",
-                    status="ok",
-                    content="<!-- voidcode:dynamic-boundary -->",
-                    data={
-                        "tool_call_id": "read_0",
-                        "arguments": {"filePath": "sample.txt"},
-                    },
-                ),
-            ),
-            continuity_state=None,
-            segments=(
-                ProviderContextSegment(role="system", content="stable system prompt"),
-                ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
-                ProviderContextSegment(role="user", content="read sample.txt"),
-                ProviderContextSegment(
-                    role="assistant",
-                    content=None,
-                    tool_call_id="read_0",
-                    tool_name="read_file",
-                    tool_arguments={"filePath": "sample.txt"},
-                ),
-                ProviderContextSegment(
-                    role="tool",
-                    content="<!-- voidcode:dynamic-boundary -->",
-                    tool_call_id="read_0",
-                    tool_name="read_file",
-                    metadata={
-                        "status": "ok",
-                        "error": None,
-                        "data": {
-                            "tool_call_id": "read_0",
-                            "arguments": {"filePath": "sample.txt"},
-                        },
-                        "truncated": False,
-                        "partial": False,
-                        "reference": None,
-                    },
-                ),
-            ),
-            metadata={},
-        ),
-        available_tools=base_request.available_tools,
-        raw_model=raw_model,
-        provider_name=provider_name,
-        model_name=model_name,
-        attempt=base_request.attempt,
-        abort_signal=base_request.abort_signal,
-    )
-
-
-@pytest.mark.parametrize(
-    (
-        "case_name",
-        "provider",
-        "raw_model",
-        "provider_name",
-        "model_name",
-        "expects_cache_control",
-    ),
-    [
-        (
-            "anthropic-capable",
-            AnthropicModelProvider().turn_provider(),
-            "anthropic/claude-3-5-sonnet-latest",
-            "anthropic",
-            "claude-3-5-sonnet-latest",
-            True,
-        ),
-        (
-            "deepseek",
-            LiteLLMBackendSingleAgentProvider(name="deepseek", config=None),
-            "deepseek/deepseek-v4-pro",
-            "deepseek",
-            "deepseek-v4-pro",
-            False,
-        ),
-        (
-            "openai-compatible",
-            LiteLLMBackendSingleAgentProvider(
-                name="custom-openai",
-                config=LiteLLMProviderConfig(base_url="http://localhost:4000"),
-            ),
-            "custom-openai/gpt-4o-compatible",
-            "custom-openai",
-            "gpt-4o-compatible",
-            False,
-        ),
-        (
-            "unknown",
-            LiteLLMBackendSingleAgentProvider(name="unknown", config=None),
-            "unknown/mystery-model",
-            "unknown",
-            "mystery-model",
-            False,
-        ),
-    ],
-)
-def test_provider_adapter_cache_control_marker_matrix(
-    monkeypatch: pytest.MonkeyPatch,
-    case_name: str,
-    provider: TurnProvider,
-    raw_model: str,
-    provider_name: str,
-    model_name: str,
-    expects_cache_control: bool,
-) -> None:
-    _ = case_name
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="done",
-    )
-
-    _ = provider.propose_turn(
-        _cache_marker_matrix_request(
-            _build_turn_request(model_name=provider_name),
-            raw_model=raw_model,
-            provider_name=provider_name,
-            model_name=model_name,
-        )
-    )
-
-    messages = _messages_from_last_payload()
-    assert messages[0] == {"role": "system", "content": "stable system prompt"}
-    assert messages[2] == {"role": "user", "content": "read sample.txt"}
-    assert messages[3]["role"] == "assistant"
-    assert messages[4]["role"] == "tool"
-    assert isinstance(messages[4]["content"], str)
-    assert "cache_control" not in json.dumps(messages[4], sort_keys=True)
-
-    if expects_cache_control:
-        assert messages[1] == {
-            "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "<!-- voidcode:dynamic-boundary -->",
-                    "cache_control": {"type": "ephemeral", "ttl": "5m"},
-                }
-            ],
-        }
-        return
-
-    assert messages[1] == {
-        "role": "system",
-        "content": "<!-- voidcode:dynamic-boundary -->",
-    }
-    assert "cache_control" not in json.dumps(messages, sort_keys=True)
-
-
-def test_provider_adapter_marks_anthropic_stable_boundary_for_cache_control(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = AnthropicModelProvider().turn_provider()
-    request = _build_turn_request(model_name="anthropic")
-    request = ProviderTurnRequest(
-        assembled_context=_StubAssembledContext(
-            prompt="read sample.txt",
-            tool_results=(),
-            continuity_state=None,
-            segments=(
-                ProviderContextSegment(role="system", content="stable system prompt"),
-                ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
-                ProviderContextSegment(role="user", content="read sample.txt"),
-            ),
-            metadata={},
-        ),
-        available_tools=request.available_tools,
-        raw_model="anthropic/claude-3-5-sonnet-latest",
-        provider_name="anthropic",
-        model_name="claude-3-5-sonnet-latest",
-        attempt=request.attempt,
-        abort_signal=request.abort_signal,
-    )
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(request)
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, object]], messages_obj)
-    assert messages[0] == {"role": "system", "content": "stable system prompt"}
-    assert messages[1] == {
-        "role": "system",
-        "content": [
-            {
-                "type": "text",
-                "text": "<!-- voidcode:dynamic-boundary -->",
-                "cache_control": {"type": "ephemeral", "ttl": "5m"},
-            }
-        ],
-    }
-    assert messages[2] == {"role": "user", "content": "read sample.txt"}
-
-
-def _anthropic_cache_ttl_from_last_payload() -> object:
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, object]], messages_obj)
-    content_obj = messages[1]["content"]
-    assert isinstance(content_obj, list)
-    block = cast(dict[str, object], content_obj[0])
-    cache_control_obj = block["cache_control"]
-    assert isinstance(cache_control_obj, dict)
-    cache_control = cast(dict[str, object], cache_control_obj)
-    return cache_control["ttl"]
-
-
-@pytest.fixture
-def _isolated_anthropic_cache_ttl_latches() -> Any:
-    import voidcode.provider.litellm_backend as backend_module
-
-    backend_module._SESSION_CACHE_TTL_LATCHES.clear()
-    yield backend_module
-    backend_module._SESSION_CACHE_TTL_LATCHES.clear()
-
-
-def _anthropic_cache_ttl_request(session_id: str, model_name: str) -> ProviderTurnRequest:
-    base_request = _build_turn_request(model_name="anthropic")
-    return ProviderTurnRequest(
-        assembled_context=_StubAssembledContext(
-            prompt="read sample.txt",
-            tool_results=(),
-            continuity_state=None,
-            segments=(
-                ProviderContextSegment(role="system", content="stable system prompt"),
-                ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
-                ProviderContextSegment(role="user", content="read sample.txt"),
-            ),
-            metadata={},
-        ),
-        available_tools=base_request.available_tools,
-        raw_model=f"anthropic/{model_name}",
-        provider_name="anthropic",
-        model_name=model_name,
-        session_id=session_id,
-        attempt=base_request.attempt,
-        abort_signal=base_request.abort_signal,
-    )
-
-
-def _force_anthropic_cache_ttl(
-    monkeypatch: pytest.MonkeyPatch,
-    backend_module: Any,
-    ttl: str,
-) -> None:
-    monkeypatch.setattr(
-        backend_module,
-        "detect_capability",
-        lambda _model, _config: ProviderCapability(
-            supports_anthropic_cache_control=True,
-            default_cache_ttl=cast(Any, ttl),
-            reports_cache_metadata=True,
-        ),
-    )
-
-
-def test_provider_adapter_keeps_same_session_anthropic_cache_ttl_latched(
-    monkeypatch: pytest.MonkeyPatch,
-    _isolated_anthropic_cache_ttl_latches: Any,
-) -> None:
-    backend_module = _isolated_anthropic_cache_ttl_latches
-    provider = AnthropicModelProvider().turn_provider()
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(
-        _anthropic_cache_ttl_request("session-stable", "claude-3-5-sonnet-latest")
-    )
-    assert _anthropic_cache_ttl_from_last_payload() == "5m"
-
-    _force_anthropic_cache_ttl(monkeypatch, backend_module, "1h")
-
-    _ = provider.propose_turn(
-        _anthropic_cache_ttl_request("session-stable", "claude-3-7-sonnet-latest")
-    )
-    assert _anthropic_cache_ttl_from_last_payload() == "5m"
-
-
-def test_provider_adapter_allows_different_sessions_to_choose_different_ttls(
-    monkeypatch: pytest.MonkeyPatch,
-    _isolated_anthropic_cache_ttl_latches: Any,
-) -> None:
-    backend_module = _isolated_anthropic_cache_ttl_latches
-    provider = AnthropicModelProvider().turn_provider()
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(
-        _anthropic_cache_ttl_request("session-five-minute", "claude-3-5-sonnet-latest")
-    )
-    assert _anthropic_cache_ttl_from_last_payload() == "5m"
-
-    _force_anthropic_cache_ttl(monkeypatch, backend_module, "1h")
-
-    _ = provider.propose_turn(
-        _anthropic_cache_ttl_request("session-one-hour", "claude-3-7-sonnet-latest")
-    )
-    assert _anthropic_cache_ttl_from_last_payload() == "1h"
-
-
-def test_provider_adapter_isolates_anthropic_cache_ttl_latches_between_tests(
-    _isolated_anthropic_cache_ttl_latches: Any,
-) -> None:
-    backend_module = _isolated_anthropic_cache_ttl_latches
-
-    assert backend_module._SESSION_CACHE_TTL_LATCHES == {}
-    backend_module._SESSION_CACHE_TTL_LATCHES["leak-check"] = "1h"
-
-
-def test_provider_adapter_omits_cache_control_for_non_anthropic_provider(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = OpenAIModelProvider().turn_provider()
-    request = _build_turn_request(model_name="openai")
-    request = ProviderTurnRequest(
-        assembled_context=_StubAssembledContext(
-            prompt="read sample.txt",
-            tool_results=(),
-            continuity_state=None,
-            segments=(
-                ProviderContextSegment(role="system", content="stable system prompt"),
-                ProviderContextSegment(role="system", content="<!-- voidcode:dynamic-boundary -->"),
-                ProviderContextSegment(role="user", content="read sample.txt"),
-            ),
-            metadata={},
-        ),
-        available_tools=request.available_tools,
-        raw_model="openai/gpt-4o",
-        provider_name="openai",
-        model_name="gpt-4o",
-        attempt=request.attempt,
-        abort_signal=request.abort_signal,
-    )
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(request)
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, object]], messages_obj)
-    assert messages[1] == {
-        "role": "system",
-        "content": "<!-- voidcode:dynamic-boundary -->",
-    }
-    assert "cache_control" not in json.dumps(messages, sort_keys=True)
-
-
-def test_provider_adapter_strips_nested_cache_control_for_non_anthropic_provider(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = OpenAIModelProvider().turn_provider()
-    request = _build_turn_request(model_name="openai")
-    request = ProviderTurnRequest(
-        assembled_context=_StubAssembledContext(
-            prompt="read sample.txt",
-            tool_results=(),
-            continuity_state=None,
-            segments=(
-                ProviderContextSegment(
-                    role="system",
-                    content=cast(
-                        Any,
-                        [
-                            {
-                                "type": "text",
-                                "text": "stable system prompt",
-                                "cache_control": {"type": "ephemeral"},
-                            },
-                            {
-                                "type": "text",
-                                "text": "nested marker",
-                                "id": "keep-block-id",
-                                "metadata": {
-                                    "cache_control": {"type": "ephemeral"},
-                                    "keep": "value",
-                                    "nested": [
-                                        "left",
-                                        {
-                                            "right": "value",
-                                            "cache_control": {"type": "ephemeral"},
-                                        },
-                                    ],
-                                },
-                            },
-                        ],
-                    ),
-                ),
-                ProviderContextSegment(role="user", content="read sample.txt"),
-            ),
-            metadata={},
-        ),
-        available_tools=request.available_tools,
-        raw_model="openai/gpt-4o",
-        provider_name="openai",
-        model_name="gpt-4o",
-        attempt=request.attempt,
-        abort_signal=request.abort_signal,
-    )
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="hello world",
-    )
-
-    _ = provider.propose_turn(request)
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, object]], messages_obj)
-    assert "cache_control" not in json.dumps(messages, sort_keys=True)
-    content = messages[0]["content"]
-    assert isinstance(content, list)
-    first_block = cast(dict[str, object], content[0])
-    second_block = cast(dict[str, object], content[1])
-    assert first_block == {"type": "text", "text": "stable system prompt"}
-    assert second_block == {
-        "type": "text",
-        "text": "nested marker",
-        "id": "keep-block-id",
-        "metadata": {"keep": "value", "nested": ["left", {"right": "value"}]},
-    }
-
-
-def test_provider_adapter_does_not_mark_tool_result_messages_for_cache_control(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = AnthropicModelProvider().turn_provider()
-    request = _build_turn_request(model_name="anthropic")
-    tool_results = (
-        ToolResult(
-            tool_name="read_file",
-            status="ok",
-            content="<!-- voidcode:dynamic-boundary -->",
-            data={"tool_call_id": "read_0", "arguments": {"filePath": "sample.txt"}},
-        ),
-    )
-    request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
-            prompt=request.prompt,
-            tool_results=tool_results,
-            context_window=_StubContextWindow(
-                prompt=request.context_window.prompt,
-                tool_results=tool_results,
-            ),
-            applied_skills=request.applied_skills,
-        ),
-        available_tools=request.available_tools,
-        raw_model="anthropic/claude-3-5-sonnet-latest",
-        provider_name="anthropic",
-        model_name="claude-3-5-sonnet-latest",
-        attempt=request.attempt,
-        abort_signal=request.abort_signal,
-    )
-    _patch_litellm_completion(
-        monkeypatch,
-        mode="completion",
-        completion_content="done",
-    )
-
-    _ = provider.propose_turn(request)
-
-    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
-    assert isinstance(payload_obj, dict)
-    payload = cast(dict[str, object], payload_obj)
-    messages_obj = payload.get("messages")
-    assert isinstance(messages_obj, list)
-    messages = cast(list[dict[str, object]], messages_obj)
-    assert messages[2]["role"] == "tool"
-    assert isinstance(messages[2]["content"], str)
-    assert "cache_control" not in json.dumps(messages[2], sort_keys=True)
-
-
-def test_provider_adapter_rejects_cache_control_on_tool_result_messages() -> None:
-    import voidcode.provider.litellm_backend as backend_module
-
-    messages: list[dict[str, object]] = [
-        {"role": "user", "content": "read sample.txt"},
-        {
-            "role": "tool",
-            "tool_call_id": "read_0",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "hello world",
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-        },
-    ]
-
-    with pytest.raises(AssertionError, match="tool result messages"):
-        backend_module._messages_for_cache_capability(
-            messages,
-            supports_anthropic_cache_control=True,
-            cache_ttl="5m",
-        )
-
-
 def test_provider_adapter_uses_runtime_assembled_context_for_agent_system_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3816,7 +3276,9 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
     ]
 
 
-def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_litellm_backend_skips_debug_without_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import voidcode.provider.litellm_backend as backend_module
 
     calls: list[str] = []
@@ -3832,6 +3294,44 @@ def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
     monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.delenv("VOIDCODE_LITELLM_DEBUG", raising=False)
+    monkeypatch.setattr(
+        backend_module.LiteLLMBackendSingleAgentProvider,
+        "_redirect_litellm_debug_logs",
+        lambda: redirects.append("redirect"),
+    )
+
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek-v4-pro")
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+
+    assert first.output == "ok"
+    assert second.output == "ok"
+    assert calls == []
+    assert redirects == []
+
+
+def test_litellm_backend_enables_debug_once_with_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    calls: list[str] = []
+    redirects: list[str] = []
+
+    class _FakeLiteLLM:
+        def _turn_on_debug(self) -> None:
+            calls.append("debug")
+
+        def completion(self, *args: Any, **kwargs: Any):
+            _ = args, kwargs
+            return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.setenv("VOIDCODE_LITELLM_DEBUG", "1")
     monkeypatch.setattr(
         backend_module.LiteLLMBackendSingleAgentProvider,
         "_redirect_litellm_debug_logs",
@@ -3847,6 +3347,38 @@ def test_litellm_backend_enables_debug_once(monkeypatch: pytest.MonkeyPatch) -> 
     assert first.output == "ok"
     assert second.output == "ok"
     assert calls == ["debug"]
+    assert redirects == ["redirect"]
+
+
+def test_litellm_backend_marks_debug_enabled_without_private_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    redirects: list[str] = []
+
+    class _FakeLiteLLM:
+        def completion(self, *args: Any, **kwargs: Any):
+            _ = args, kwargs
+            return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.setenv("VOIDCODE_LITELLM_DEBUG", "1")
+    monkeypatch.setattr(
+        backend_module.LiteLLMBackendSingleAgentProvider,
+        "_redirect_litellm_debug_logs",
+        lambda: redirects.append("redirect"),
+    )
+
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek-v4-pro")
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+
+    assert first.output == "ok"
+    assert second.output == "ok"
     assert redirects == ["redirect"]
 
 
