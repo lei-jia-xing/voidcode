@@ -9,3 +9,5 @@ Usage:
 - This tool is read-only. It never modifies background task state.
 - If the task is still running, rely on the returned `status`, `approval_blocked`, and `result_available` fields instead of guessing.
 - If a child session/result is not ready yet, report the current status, continue other work, or wait intentionally with `block=true` instead of looping.
+- Do not repeatedly poll this tool in a tight loop. Prefer waiting for the runtime completion reminder unless the current turn truly requires an explicit status check.
+- Do not read a running child transcript just to peek at intermediate progress. Use this surface for intentional status/result retrieval, not speculative mid-flight inspection.
