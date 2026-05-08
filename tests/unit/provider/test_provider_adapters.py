@@ -1754,6 +1754,7 @@ def test_opencode_zen_provider_sends_raw_model_id(monkeypatch: pytest.MonkeyPatc
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == "gpt-5.5"
     assert payload["api_base"] == "https://opencode.ai/zen/v1"
+    assert payload["custom_llm_provider"] == "openai"
 
 
 def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(

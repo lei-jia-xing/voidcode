@@ -143,6 +143,41 @@ def test_registry_registers_opencode_zen_provider_with_model_discovery() -> None
     assert resolved.name == "opencode"
 
 
+def test_registry_opencode_zen_custom_base_url_disables_default_discovery() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            opencode=LiteLLMProviderConfig(
+                api_key="opencode-key",
+                base_url="https://opencode-proxy.example.test/zen/v1",
+            )
+        )
+    )
+
+    config = registry.provider_config("opencode")
+
+    assert config is not None
+    assert config.base_url == "https://opencode-proxy.example.test/zen/v1"
+    assert config.discovery_base_url is None
+
+
+def test_registry_opencode_zen_explicit_discovery_base_url_wins_with_custom_base_url() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            opencode=LiteLLMProviderConfig(
+                api_key="opencode-key",
+                base_url="https://opencode-proxy.example.test/zen/v1",
+                discovery_base_url="https://opencode-proxy.example.test/zen/v1/models",
+            )
+        )
+    )
+
+    config = registry.provider_config("opencode")
+
+    assert config is not None
+    assert config.base_url == "https://opencode-proxy.example.test/zen/v1"
+    assert config.discovery_base_url == "https://opencode-proxy.example.test/zen/v1/models"
+
+
 def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
     litellm_config = LiteLLMProviderConfig(
         base_url="http://127.0.0.1:65534",
