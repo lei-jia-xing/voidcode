@@ -277,6 +277,38 @@ def test_runtime_command_metadata_validates_continuation_loop_shape() -> None:
     assert loop_metadata["status"] == "active"
 
 
+def test_runtime_rejects_invalid_command_workflow_mode_during_request_normalization(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    try:
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="plain prompt",
+                metadata=cast(
+                    RuntimeRequestMetadataPayload,
+                    {
+                        "command": {
+                            "name": "custom",
+                            "source": "project",
+                            "arguments": [],
+                            "raw_arguments": "",
+                            "original_prompt": "/custom",
+                            "workflow_mode": "banana",
+                        }
+                    },
+                ),
+            )
+        )
+    except RuntimeRequestError as exc:
+        assert "unknown workflow_mode: banana" in str(exc)
+    else:
+        raise AssertionError(
+            "invalid command workflow_mode should fail runtime request normalization"
+        )
+
+
 def test_compact_command_renders_runtime_continuity_prompt(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
 

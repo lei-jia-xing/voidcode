@@ -1294,6 +1294,15 @@ class VoidCodeRuntime:
         return sanitized
 
     @staticmethod
+    def _validate_command_workflow_metadata(metadata: Mapping[str, object]) -> None:
+        raw_command = metadata.get("command")
+        if not isinstance(raw_command, dict):
+            return
+        from .contracts import validate_runtime_command_metadata
+
+        _ = validate_runtime_command_metadata(raw_command)
+
+    @staticmethod
     def _workflow_snapshot_with_effective_mode(
         workflow_snapshot: Mapping[str, object],
         workflow_mode: str,
@@ -2261,6 +2270,7 @@ class VoidCodeRuntime:
             return self._run_with_persistence(request)
 
         stream_metadata = {**request.metadata, "provider_stream": True}
+        self._validate_command_workflow_metadata(stream_metadata)
         validated_stream_metadata = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(stream_metadata)
         )
@@ -6031,6 +6041,7 @@ class VoidCodeRuntime:
         raw_metadata = {key: value for key, value in request.metadata.items()}
         raw_workflow_mode = raw_metadata.get("workflow_mode")
         raw_workflow_preset = raw_metadata.get("workflow_preset")
+        self._validate_command_workflow_metadata(raw_metadata)
         if raw_workflow_mode is not None or raw_workflow_preset is not None:
             if not isinstance(raw_workflow_mode, str) or not raw_workflow_mode:
                 if raw_workflow_mode is not None:
@@ -6147,6 +6158,7 @@ class VoidCodeRuntime:
         _ = self._workflow_mode_resolution_for_request_metadata(normalized)
         if prompt == resolution.invocation.original_prompt:
             prompt = resolution.invocation.rendered_prompt
+        self._validate_command_workflow_metadata(normalized)
         validated = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(normalized),
             allow_internal_fields=allow_internal_fields or "workflow_plan" in normalized,
@@ -6207,6 +6219,7 @@ class VoidCodeRuntime:
         delegation["depth"] = request_depth
         delegation["remaining_spawn_budget"] = remaining_spawn_budget
         normalized["delegation"] = delegation
+        self._validate_command_workflow_metadata(normalized)
         validated = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(normalized),
             allow_internal_fields=(
@@ -7620,6 +7633,7 @@ class VoidCodeRuntime:
                 "workflow_preset",
                 snapshot_selected_preset,
             )
+        self._validate_command_workflow_metadata(normalized_metadata)
         validated = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(normalized_metadata),
             allow_internal_fields=allow_internal_fields or "workflow" in normalized_metadata,
