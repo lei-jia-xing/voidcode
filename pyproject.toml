@@ -68,6 +68,7 @@ packages = ["src/voidcode"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "scripts",
   "src/voidcode",
   "tests",
   "schema",
@@ -79,6 +80,9 @@ include = [
   "CODE_OF_CONDUCT.md",
   "pyproject.toml",
 ]
+
+[tool.hatch.build.hooks.custom]
+path = "scripts/hatch_build.py"
 
 [tool.uv]
 package = true
@@ -108,6 +112,9 @@ redundant-final-classvar = "error"
 # Any future warning-level diagnostic should fail CI; opt out per-rule via
 # [tool.ty.rules] if a specific check turns out to be too noisy.
 error-on-warning = true
+
+[tool.ty.src]
+exclude = ["scripts"]
 
 [tool.pytest.ini_options]
 addopts = ""

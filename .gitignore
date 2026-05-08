@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+src/voidcode/_web_dist/
 *.egg-info/
 .env
 .env.local
