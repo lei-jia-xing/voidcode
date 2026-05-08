@@ -19,9 +19,10 @@ from voidcode.provider.kimi import KimiModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.minimax import MiniMaxModelProvider
 from voidcode.provider.openai import OpenAIModelProvider
+from voidcode.provider.opencode import OpenCodeModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.qwen import QwenModelProvider
-from voidcode.provider.registry import ModelProviderRegistry, StaticModelProvider
+from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 
 
@@ -133,13 +134,48 @@ def test_registry_resolve_with_metadata_distinguishes_builtin_custom_and_default
     assert fallback.provider.name == "typo-provider"
 
 
-def test_registry_keeps_existing_opencode_static_provider_behavior() -> None:
+def test_registry_registers_opencode_zen_provider_with_model_discovery() -> None:
     registry = ModelProviderRegistry.with_defaults()
 
     resolved = registry.resolve("opencode")
 
-    assert isinstance(resolved, StaticModelProvider)
+    assert isinstance(resolved, OpenCodeModelProvider)
     assert resolved.name == "opencode"
+
+
+def test_registry_opencode_zen_custom_base_url_disables_default_discovery() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            opencode=LiteLLMProviderConfig(
+                api_key="opencode-key",
+                base_url="https://opencode-proxy.example.test/zen/v1",
+            )
+        )
+    )
+
+    config = registry.provider_config("opencode")
+
+    assert config is not None
+    assert config.base_url == "https://opencode-proxy.example.test/zen/v1"
+    assert config.discovery_base_url is None
+
+
+def test_registry_opencode_zen_explicit_discovery_base_url_wins_with_custom_base_url() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            opencode=LiteLLMProviderConfig(
+                api_key="opencode-key",
+                base_url="https://opencode-proxy.example.test/zen/v1",
+                discovery_base_url="https://opencode-proxy.example.test/zen/v1/models",
+            )
+        )
+    )
+
+    config = registry.provider_config("opencode")
+
+    assert config is not None
+    assert config.base_url == "https://opencode-proxy.example.test/zen/v1"
+    assert config.discovery_base_url == "https://opencode-proxy.example.test/zen/v1/models"
 
 
 def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:

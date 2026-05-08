@@ -3351,6 +3351,7 @@ def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) ->
         ("google", providers.google),
         ("copilot", providers.copilot),
         ("litellm", providers.litellm),
+        ("opencode", providers.opencode),
         ("deepseek", providers.deepseek),
         ("glm", providers.glm),
         ("grok", providers.grok),
@@ -3382,6 +3383,8 @@ def _provider_api_key_present(
         return bool(providers.copilot and providers.copilot.auth and providers.copilot.auth.token)
     if provider == "litellm":
         return bool(providers.litellm and providers.litellm.api_key)
+    if provider == "opencode":
+        return bool(providers.opencode and providers.opencode.api_key)
     if provider == "deepseek":
         return bool(providers.deepseek and providers.deepseek.api_key)
     if provider == "glm":
@@ -3412,7 +3415,7 @@ def _set_provider_api_key_payload(
         nested_payload["api_key"] = api_key
         providers_payload[provider] = nested_payload
         return providers_payload
-    if provider in {"openai", "anthropic", "litellm"}:
+    if provider in {"openai", "anthropic", "litellm", "opencode"}:
         nested = providers_payload.get(provider)
         nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
         nested_payload["api_key"] = api_key

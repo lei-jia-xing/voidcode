@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 from typing import cast
 
 from ..skills import SkillRegistry
@@ -12,6 +13,12 @@ from .skills import (
     snapshot_from_payload,
     snapshot_payload,
 )
+
+
+def _skill_entry_uri(path: Path) -> str:
+    if path.is_absolute():
+        return path.as_uri()
+    return path.resolve().as_uri()
 
 
 def loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
@@ -217,7 +224,7 @@ def catalog_skill_context(
                 "  <skill>",
                 f"    <name>{skill.name}</name>",
                 f"    <description>{skill.description}</description>",
-                f"    <location>{skill.entry_path.as_uri()}</location>",
+                f"    <location>{_skill_entry_uri(skill.entry_path)}</location>",
                 "  </skill>",
             )
         )

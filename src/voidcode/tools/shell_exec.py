@@ -109,14 +109,21 @@ def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
             pass
         return
     killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", None)
     if killpg is None:
         try:
             process.kill()
         except ProcessLookupError:
             pass
         return
+    if sigkill is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        return
     try:
-        killpg(process.pid, signal.SIGKILL)
+        killpg(process.pid, sigkill)
     except AttributeError:
         try:
             process.kill()

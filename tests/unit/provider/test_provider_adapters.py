@@ -26,6 +26,7 @@ from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.litellm_backend import LiteLLMBackendSingleAgentProvider
 from voidcode.provider.model_catalog import ProviderModelMetadata, infer_model_metadata
 from voidcode.provider.openai import OpenAIModelProvider
+from voidcode.provider.opencode import OpenCodeModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.protocol import (
     ModelProvider,
@@ -1729,6 +1730,31 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
     assert "Completed tool calls for current request:" in feedback
     assert '"tool_name": "glob"' in feedback
     assert "tool_calls" not in messages[1]
+
+
+def test_opencode_zen_provider_sends_raw_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OpenCodeModelProvider().turn_provider()
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_from_legacy(
+            prompt="read sample.txt",
+            tool_results=(),
+            context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
+            applied_skills=(),
+        ),
+        raw_model="opencode/gpt-5.5",
+        provider_name="opencode",
+        model_name="gpt-5.5",
+    )
+    _patch_litellm_completion(monkeypatch, mode="completion", completion_content="done")
+
+    _ = provider.propose_turn(request)
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["model"] == "gpt-5.5"
+    assert payload["api_base"] == "https://opencode.ai/zen/v1"
+    assert payload["custom_llm_provider"] == "openai"
 
 
 def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(

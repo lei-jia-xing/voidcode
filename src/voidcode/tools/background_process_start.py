@@ -142,6 +142,7 @@ def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
         return
 
     killpg = getattr(os, "killpg", None)
+    sigkill = getattr(signal, "SIGKILL", None)
     if callable(killpg):
         process_group_id = process.pid
         try:
@@ -154,9 +155,9 @@ def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
         except subprocess.TimeoutExpired:
             pass
 
-        if _process_group_exists(process_group_id):
+        if sigkill is not None and _process_group_exists(process_group_id):
             try:
-                killpg(process_group_id, signal.SIGKILL)
+                killpg(process_group_id, sigkill)
             except ProcessLookupError:
                 return
             if process.poll() is None:
@@ -195,8 +196,11 @@ def _terminate_windows_process_tree(process: subprocess.Popen[str]) -> None:
 
 
 def _process_group_exists(process_group_id: int) -> bool:
+    killpg = getattr(os, "killpg", None)
+    if not callable(killpg):
+        return False
     try:
-        os.killpg(process_group_id, 0)
+        killpg(process_group_id, 0)
     except ProcessLookupError:
         return False
     except PermissionError:

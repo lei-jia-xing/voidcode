@@ -414,6 +414,7 @@ def _provider_runtime(
             object,
             runtime_class(
                 workspace=tmp_path,
+                graph=_ProviderRuntimeParityGraph(),
                 config=runtime_config(
                     approval_mode=mode,
                     execution_engine="provider",
@@ -495,6 +496,41 @@ class _ScriptedModelProvider:
                 return outcome
 
         return _Provider()
+
+
+class _ProviderRuntimeParityGraph:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        _ = session
+        prompt = cast(RuntimeRequestLike, request).prompt
+        tool_call_factory = cast(
+            ToolCallFactory,
+            importlib.import_module("voidcode.tools.contracts").ToolCall,
+        )
+        if not tool_results:
+            if prompt.startswith("write danger.txt "):
+                content = prompt.removeprefix("write danger.txt ")
+                return _GraphStep(
+                    events=(),
+                    tool_call=tool_call_factory(
+                        tool_name="write_file",
+                        arguments={"path": "danger.txt", "content": content},
+                    ),
+                )
+            return _GraphStep(
+                events=(),
+                tool_call=tool_call_factory(
+                    tool_name="read_file",
+                    arguments={"filePath": "sample.txt"},
+                ),
+            )
+        if prompt.startswith("write danger.txt "):
+            return _GraphStep(
+                events=(),
+                tool_call=None,
+                output="Wrote file successfully: danger.txt",
+                is_finished=True,
+            )
+        return _GraphStep(events=(), tool_call=None, output="alpha\nbeta", is_finished=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3698,7 +3734,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "mode": "disabled",
         "status": "disconnected",
     }
-    assert result.events[4].payload["mode"] == "provider"
+    assert runtime_config_payload["execution_engine"] == "provider"
     assert replay.output == result.output
 
 
@@ -3745,7 +3781,8 @@ def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) ->
     )
 
     assert waiting.session.status == "waiting"
-    assert waiting.events[4].payload["mode"] == "provider"
+    waiting_runtime_config = cast(dict[str, object], waiting.session.metadata["runtime_config"])
+    assert waiting_runtime_config["execution_engine"] == "provider"
     assert waiting.events[-1].event_type == "runtime.approval_requested"
     assert resumed.session.status == "completed"
     assert resumed.output == "Wrote file successfully: danger.txt"

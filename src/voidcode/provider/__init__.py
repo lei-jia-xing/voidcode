@@ -52,6 +52,7 @@ from .models import (
     ResolvedProviderModel,
 )
 from .openai import OpenAIModelProvider
+from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
 from .protocol import (
     ModelTurnProvider,
@@ -86,6 +87,7 @@ __all__ = [
     "ProviderModelMetadata",
     "ModelProviderRegistry",
     "OpenAIModelProvider",
+    "OpenCodeModelProvider",
     "ProviderAuthAuthorizeRequest",
     "ProviderAuthAuthorizeResult",
     "ProviderAuthCallback",

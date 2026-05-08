@@ -10,6 +10,12 @@ from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
+def _skill_entry_uri(path: Path) -> str:
+    if path.is_absolute():
+        return path.as_uri()
+    return path.resolve().as_uri()
+
+
 class _SkillArgs(BaseModel):
     name: str
     user_message: str | None = None
@@ -55,7 +61,7 @@ class SkillTool:
                         "  <skill>",
                         f"    <name>{skill.name}</name>",
                         f"    <description>{skill.description}</description>",
-                        f"    <location>{skill.entry_path.as_uri()}</location>",
+                        f"    <location>{_skill_entry_uri(skill.entry_path)}</location>",
                         "  </skill>",
                     )
                 )

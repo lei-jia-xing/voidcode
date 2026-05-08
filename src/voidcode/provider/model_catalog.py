@@ -1017,7 +1017,7 @@ def _fetch_openai_compatible_models(
     else:
         models_url = f"{base_url}/v1/models"
 
-    http_request = Request(url=models_url, headers=request.headers, method="GET")
+    http_request = Request(url=models_url, headers=_http_headers(request.headers), method="GET")
     with urlopen(http_request, timeout=request.timeout_seconds) as response:  # noqa: S310
         payload = json.loads(response.read().decode("utf-8"))
 
@@ -1027,7 +1027,7 @@ def _fetch_openai_compatible_models(
 def _fetch_anthropic_models(request: DiscoveryRequest) -> ModelDiscoveryFetchResult:
     base_url = request.base_url.rstrip("/")
     models_url = f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
-    http_request = Request(url=models_url, headers=request.headers, method="GET")
+    http_request = Request(url=models_url, headers=_http_headers(request.headers), method="GET")
     with urlopen(http_request, timeout=request.timeout_seconds) as response:  # noqa: S310
         payload = json.loads(response.read().decode("utf-8"))
 
@@ -1056,8 +1056,18 @@ def _fetch_google_models(request: DiscoveryRequest) -> ModelDiscoveryFetchResult
     ):
         models_url = f"{models_url}?key={quote(request.api_key, safe='')}"
 
-    http_request = Request(url=models_url, headers=request.headers, method="GET")
+    http_request = Request(url=models_url, headers=_http_headers(request.headers), method="GET")
     with urlopen(http_request, timeout=request.timeout_seconds) as response:  # noqa: S310
         payload = json.loads(response.read().decode("utf-8"))
 
     return _parse_google_discovery_payload(payload)
+
+
+def _http_headers(configured: Mapping[str, str]) -> dict[str, str]:
+    headers = dict(configured)
+    lower_names = {name.lower() for name in headers}
+    if "accept" not in lower_names:
+        headers["Accept"] = "application/json"
+    if "user-agent" not in lower_names:
+        headers["User-Agent"] = "voidcode-model-discovery/1.0"
+    return headers

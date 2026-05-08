@@ -187,6 +187,16 @@ class ProviderAuthResolver:
                 methods=_LITELLM_METHODS,
                 default_method=default_method,
             )
+        if provider == "opencode":
+            configured = self._providers.opencode
+            default_method = "none"
+            if configured is not None and configured.api_key is not None:
+                default_method = "api_key"
+            return ProviderAuthMethodsResponse(
+                provider=provider,
+                methods=_LITELLM_METHODS,
+                default_method=default_method,
+            )
         simplified_config = self._simplified_provider_config(provider)
         if simplified_config is not None:
             default_method = "api_key"
@@ -230,6 +240,12 @@ class ProviderAuthResolver:
                 request=request,
                 provider_name="litellm",
                 provider_config=self._providers.litellm,
+            )
+        if request.provider == "opencode":
+            return self._authorize_litellm_compatible(
+                request=request,
+                provider_name="opencode",
+                provider_config=self._providers.opencode,
             )
         simplified_config = self._simplified_provider_config(request.provider)
         if simplified_config is not None:
