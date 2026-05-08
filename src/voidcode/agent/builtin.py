@@ -14,15 +14,9 @@ _WORKSPACE_DISCOVERY_TOOLS = (
     "lsp",
 )
 
-_LEADER_CONTROL_TOOLS = (
-    "question",
-    "skill",
-    "background_output",
-)
 
 _LEADER_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
-    *_LEADER_CONTROL_TOOLS,
     "write_file",
     "edit",
     "multi_edit",
@@ -36,6 +30,9 @@ _LEADER_TOOL_ALLOWLIST = (
     "todo_write",
     "background_cancel",
     "background_retry",
+    "background_output",
+    "question",
+    "skill",
     "ast_grep_preview",
     "ast_grep_replace",
     "web_search",
