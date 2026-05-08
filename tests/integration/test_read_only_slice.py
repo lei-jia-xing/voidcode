@@ -1904,10 +1904,22 @@ def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
     cases = (
         (
             "explore",
-            {"write_file", "edit", "multi_edit", "apply_patch", "task"},
+            {
+                "write_file",
+                "edit",
+                "multi_edit",
+                "apply_patch",
+                "task",
+                "question",
+                "background_output",
+            },
             {"read_file", "grep", "glob"},
         ),
-        ("worker", {"task"}, {"read_file", "write_file", "edit", "apply_patch"}),
+        (
+            "worker",
+            {"task", "question", "background_output"},
+            {"read_file", "write_file", "edit", "apply_patch"},
+        ),
     )
     for subagent_type, denied_tools, expected_tools in cases:
         requests: list[object] = []

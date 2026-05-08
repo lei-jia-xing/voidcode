@@ -391,9 +391,6 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
                 "grep",
                 "ast_grep_search",
                 "lsp",
-                "question",
-                "skill",
-                "background_output",
             ),
         ),
     )
@@ -402,6 +399,8 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
     assert "grep" in scoped.tools
     assert "write_file" not in scoped.tools
     assert "task" not in scoped.tools
+    assert "question" not in scoped.tools
+    assert "background_output" not in scoped.tools
 
 
 def test_scoped_tool_registry_can_exclude_builtins() -> None:
