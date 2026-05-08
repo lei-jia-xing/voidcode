@@ -13,6 +13,7 @@ import asyncio
 import importlib
 import json
 import socket
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -33,6 +34,11 @@ def write_frontend_dist_fixture(tmp_path: Path) -> Path:
     return frontend_dist
 
 
+@contextmanager
+def frontend_dist_override(frontend_dist: Path) -> Any:
+    yield frontend_dist
+
+
 def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
     """Verify the web command prints the banner and a usable local URL."""
     server = importlib.import_module("voidcode.server")
@@ -41,7 +47,8 @@ def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+        with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+            frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
             server.web(
                 workspace=workspace,
                 host="127.0.0.1",
@@ -66,7 +73,10 @@ def test_web_prints_auto_assigned_url_when_port_unspecified(capsys: Any, tmp_pat
     try:
         expected_port = cast(int, listener_socket.getsockname()[1])
         with patch.object(server, "_run_runtime_server", autospec=True):
-            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+            with patch.object(
+                server, "_frontend_dist_context", autospec=True
+            ) as frontend_context_mock:
+                frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
                 with patch.object(
                     server,
                     "_reserve_listener_socket",
@@ -99,7 +109,10 @@ def test_web_prints_ipv6_auto_assigned_url_when_host_is_ipv6(capsys: Any, tmp_pa
     try:
         expected_port = cast(int, listener_socket.getsockname()[1])
         with patch.object(server, "_run_runtime_server", autospec=True):
-            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+            with patch.object(
+                server, "_frontend_dist_context", autospec=True
+            ) as frontend_context_mock:
+                frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
                 with patch.object(
                     server,
                     "_reserve_listener_socket",
@@ -129,7 +142,8 @@ def test_web_browser_open_failure_does_not_crash(capsys: Any, tmp_path: Path) ->
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+        with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+            frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
             with patch.object(server, "webbrowser", autospec=True) as webbrowser_mock:
                 webbrowser_mock.open.side_effect = RuntimeError("no browser available")
                 server.web(workspace=workspace, host="127.0.0.1", port=8080, config=config)
@@ -147,7 +161,8 @@ def test_web_browser_open_gracefully_handles_false_return(tmp_path: Path) -> Non
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+        with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+            frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
             with patch.object(server, "webbrowser", autospec=True) as webbrowser_mock:
                 webbrowser_mock.open.return_value = False
                 server.web(workspace=workspace, host="127.0.0.1", port=8080, config=config)
@@ -161,7 +176,8 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+        with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+            frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
             server.web(
                 workspace=workspace,
                 host="127.0.0.1",
@@ -186,7 +202,8 @@ def test_web_can_skip_browser_open(tmp_path: Path) -> None:
     frontend_dist = write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True):
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+        with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+            frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
             with patch.object(server, "webbrowser", autospec=True) as webbrowser_mock:
                 server.web(workspace=tmp_path, port=8001, open_browser=False)
 
@@ -197,7 +214,8 @@ def test_web_fails_fast_when_frontend_dist_missing(tmp_path: Path) -> None:
     """Verify web command does not launch a broken server when dist is absent."""
     server = importlib.import_module("voidcode.server")
 
-    with patch.object(server, "_FRONTEND_DIST", tmp_path / "missing-dist"):
+    with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+        frontend_context_mock.side_effect = SystemExit("frontend web bundle not found")
         with pytest.raises(SystemExit, match="frontend web bundle not found"):
             server.web(workspace=tmp_path, host="127.0.0.1", port=8001)
 

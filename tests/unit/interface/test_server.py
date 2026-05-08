@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import socket
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -23,6 +24,11 @@ def _write_frontend_dist_fixture(tmp_path: Path) -> Path:
     frontend_dist.mkdir()
     (frontend_dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
     return frontend_dist
+
+
+@contextmanager
+def _frontend_dist_override(frontend_dist: Path) -> Any:
+    yield frontend_dist
 
 
 def test_serve_forwards_runtime_config_to_http_app_factory() -> None:
@@ -64,7 +70,8 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
     frontend_dist = _write_frontend_dist_fixture(tmp_path)
 
     with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
-        with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+        with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+            frontend_context_mock.return_value = _frontend_dist_override(frontend_dist)
             server.web(
                 workspace=workspace,
                 host="127.0.0.1",
@@ -94,7 +101,10 @@ def test_web_selects_ephemeral_port_when_unspecified(tmp_path: Path) -> None:
     try:
         expected_port = cast(int, listener_socket.getsockname()[1])
         with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
-            with patch.object(server, "_FRONTEND_DIST", frontend_dist):
+            with patch.object(
+                server, "_frontend_dist_context", autospec=True
+            ) as frontend_context_mock:
+                frontend_context_mock.return_value = _frontend_dist_override(frontend_dist)
                 with patch.object(
                     server,
                     "_reserve_listener_socket",
@@ -203,8 +213,12 @@ def test_web_closes_reserved_listener_when_frontend_setup_fails() -> None:
             autospec=True,
             return_value=listener_socket,
         ):
-            with patch.object(server, "_resolve_frontend_dist", autospec=True) as resolve_mock:
-                resolve_mock.side_effect = SystemExit("error: frontend web bundle not found")
+            with patch.object(
+                server, "_frontend_dist_context", autospec=True
+            ) as frontend_context_mock:
+                frontend_context_mock.side_effect = SystemExit(
+                    "error: frontend web bundle not found"
+                )
                 try:
                     server.web(workspace=Path("/tmp/server-workspace"), host="127.0.0.1", port=None)
                 except SystemExit as exc:

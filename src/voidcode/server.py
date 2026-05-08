@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import importlib.resources as importlib_resources
 import socket
 import webbrowser
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from .runtime.config import RuntimeConfig
 from .runtime.http import create_runtime_app
@@ -62,17 +64,34 @@ __   _____ (_) __| | ___ ___   __| | ___
 
 # Locate the built frontend dist relative to this package.
 # server.py lives at src/voidcode/server.py; the repo root is 3 levels up.
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+_PACKAGED_FRONTEND_DIST = "_web_dist"
+_REPO_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
-def _resolve_frontend_dist() -> Path:
-    if not _FRONTEND_DIST.is_dir() or not (_FRONTEND_DIST / "index.html").is_file():
-        raise SystemExit(
-            "error: frontend web bundle not found. "
-            "Run `mise run frontend:build` before `voidcode web`, "
-            "or install a package that includes the built frontend assets."
-        )
-    return _FRONTEND_DIST
+def _packaged_frontend_dist() -> object | None:
+    package_root = importlib_resources.files("voidcode")
+    frontend_dist = package_root.joinpath(_PACKAGED_FRONTEND_DIST)
+    if frontend_dist.is_dir() and frontend_dist.joinpath("index.html").is_file():
+        return frontend_dist
+    return None
+
+
+@contextmanager
+def _frontend_dist_context() -> Iterator[Path]:
+    packaged_frontend_dist = _packaged_frontend_dist()
+    if packaged_frontend_dist is not None:
+        packaged_traversable = cast(Any, packaged_frontend_dist)
+        with importlib_resources.as_file(packaged_traversable) as frontend_dist:
+            yield frontend_dist
+        return
+    if _REPO_FRONTEND_DIST.is_dir() and (_REPO_FRONTEND_DIST / "index.html").is_file():
+        yield _REPO_FRONTEND_DIST
+        return
+    raise SystemExit(
+        "error: frontend web bundle not found. "
+        "Run `mise run frontend:build` before `voidcode web` in a source checkout, "
+        "or install a package that includes the built frontend assets."
+    )
 
 
 def _reserve_listener_socket(host: str) -> socket.socket:
@@ -118,27 +137,26 @@ def web(
         else:
             selected_port = cast(int, port)
         url = f"http://{host}:{selected_port}"
-        frontend_dist = _resolve_frontend_dist()
+        with _frontend_dist_context() as frontend_dist:
+            print("VoidCode")
+            print(_BANNER)
+            print(f"  Local server running at: {url}")
+            print()
 
-        print("VoidCode")
-        print(_BANNER)
-        print(f"  Local server running at: {url}")
-        print()
+            if open_browser:
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass
 
-        if open_browser:
-            try:
-                webbrowser.open(url)
-            except Exception:
-                pass
-
-        _run_runtime_server(
-            workspace=workspace,
-            host=host,
-            port=selected_port,
-            config=config,
-            frontend_dist=frontend_dist,
-            listener_socket=listener_socket,
-        )
+            _run_runtime_server(
+                workspace=workspace,
+                host=host,
+                port=selected_port,
+                config=config,
+                frontend_dist=frontend_dist,
+                listener_socket=listener_socket,
+            )
     except BaseException:
         if listener_socket is not None:
             listener_socket.close()
