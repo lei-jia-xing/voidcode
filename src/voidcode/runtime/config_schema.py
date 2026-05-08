@@ -268,6 +268,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": True,
                 "description": "Background task queue and concurrency limits.",
                 "properties": {
+                    "delegated_reminders_enabled": {"type": "boolean"},
+                    "delegated_reminder_cooldown_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
                     "default_concurrency": {"type": "integer", "minimum": 1},
                     "provider_concurrency": {
                         "type": "object",

@@ -177,6 +177,15 @@ _LSP_CONFIG_KEYS = frozenset({"enabled", "servers"})
 _LSP_SERVER_CONFIG_KEYS = frozenset(
     {"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"}
 )
+_BACKGROUND_TASK_CONFIG_KEYS = frozenset(
+    {
+        "default_concurrency",
+        "provider_concurrency",
+        "model_concurrency",
+        "delegated_reminders_enabled",
+        "delegated_reminder_cooldown_seconds",
+    }
+)
 _MCP_CONFIG_KEYS = frozenset({"enabled", "servers", "request_timeout_seconds"})
 _MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env", "scope", "url"})
 _TUI_CONFIG_KEYS = frozenset({"leader_key", "keymap", "preferences"})
@@ -368,6 +377,8 @@ class RuntimeBackgroundTaskConfig:
     model_concurrency: Mapping[str, int] = field(
         default_factory=_empty_background_task_concurrency_map
     )
+    delegated_reminders_enabled: bool = True
+    delegated_reminder_cooldown_seconds: int = 300
 
 
 type McpTransport = Literal["stdio", "remote-http"]
@@ -1541,11 +1552,31 @@ def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskCon
     if not isinstance(raw_value, dict):
         raise ValueError("runtime config field 'background_task' must be an object when provided")
     payload = cast(dict[str, object], raw_value)
+    _reject_unknown_config_keys(
+        payload,
+        allowed_keys=_BACKGROUND_TASK_CONFIG_KEYS,
+        field_path="background_task",
+    )
+    defaults = RuntimeBackgroundTaskConfig()
     default_concurrency = RuntimeBackgroundTaskConfig().default_concurrency
     if "default_concurrency" in payload:
         default_concurrency = _parse_concurrency_limit(
             payload.get("default_concurrency"),
             field_path="background_task.default_concurrency",
+        )
+    delegated_reminders_enabled = defaults.delegated_reminders_enabled
+    if "delegated_reminders_enabled" in payload:
+        delegated_reminders_enabled = _parse_optional_bool(
+            payload.get("delegated_reminders_enabled"),
+            field_path="background_task.delegated_reminders_enabled",
+        )
+        if delegated_reminders_enabled is None:
+            delegated_reminders_enabled = defaults.delegated_reminders_enabled
+    delegated_reminder_cooldown_seconds = defaults.delegated_reminder_cooldown_seconds
+    if "delegated_reminder_cooldown_seconds" in payload:
+        delegated_reminder_cooldown_seconds = _parse_concurrency_limit(
+            payload.get("delegated_reminder_cooldown_seconds"),
+            field_path="background_task.delegated_reminder_cooldown_seconds",
         )
     return RuntimeBackgroundTaskConfig(
         default_concurrency=default_concurrency,
@@ -1557,6 +1588,8 @@ def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskCon
             payload.get("model_concurrency"),
             field_path="background_task.model_concurrency",
         ),
+        delegated_reminders_enabled=delegated_reminders_enabled,
+        delegated_reminder_cooldown_seconds=delegated_reminder_cooldown_seconds,
     )
 
 
@@ -3053,6 +3086,10 @@ def serialize_runtime_background_task_config(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "default_concurrency": background_task.default_concurrency,
+        "delegated_reminders_enabled": background_task.delegated_reminders_enabled,
+        "delegated_reminder_cooldown_seconds": (
+            background_task.delegated_reminder_cooldown_seconds
+        ),
     }
     if background_task.provider_concurrency:
         payload["provider_concurrency"] = dict(background_task.provider_concurrency)
