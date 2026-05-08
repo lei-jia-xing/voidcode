@@ -1303,29 +1303,43 @@ class VoidCodeRuntime:
         _ = validate_runtime_command_metadata(raw_command)
 
     @staticmethod
+    def _validate_explicit_workflow_mode_metadata(metadata: Mapping[str, object]) -> None:
+        raw_workflow_mode = metadata.get("workflow_mode")
+        if raw_workflow_mode is None:
+            return
+        if not isinstance(raw_workflow_mode, str) or not raw_workflow_mode:
+            raise RuntimeRequestError("request metadata 'workflow_mode' must be a non-empty string")
+
+    @staticmethod
     def _restore_explicit_workflow_mode(
         metadata: RuntimeRequestMetadataPayload,
         raw_metadata: Mapping[str, object],
     ) -> RuntimeRequestMetadataPayload:
-        raw_workflow_mode = raw_metadata.get("workflow_mode")
-        if isinstance(raw_workflow_mode, str):
+        raw_command = raw_metadata.get("command")
+        if not isinstance(raw_command, dict):
+            raw_workflow_mode = raw_metadata.get("workflow_mode")
+            if not isinstance(raw_workflow_mode, str):
+                return metadata
             return cast(
                 RuntimeRequestMetadataPayload,
                 {**cast(dict[str, object], metadata), "workflow_mode": raw_workflow_mode},
             )
-        raw_command = raw_metadata.get("command")
-        if not isinstance(raw_command, dict):
-            return metadata
         raw_command_payload = cast(dict[str, object], raw_command)
         raw_command_workflow_mode = raw_command_payload.get("workflow_mode")
-        if not isinstance(raw_command_workflow_mode, str):
+        if isinstance(raw_command_workflow_mode, str):
+            return cast(
+                RuntimeRequestMetadataPayload,
+                {
+                    **cast(dict[str, object], metadata),
+                    "workflow_mode": raw_command_workflow_mode,
+                },
+            )
+        raw_workflow_mode = raw_metadata.get("workflow_mode")
+        if not isinstance(raw_workflow_mode, str):
             return metadata
         return cast(
             RuntimeRequestMetadataPayload,
-            {
-                **cast(dict[str, object], metadata),
-                "workflow_mode": raw_command_workflow_mode,
-            },
+            {**cast(dict[str, object], metadata), "workflow_mode": raw_workflow_mode},
         )
 
     @staticmethod
@@ -2296,6 +2310,7 @@ class VoidCodeRuntime:
             return self._run_with_persistence(request)
 
         stream_metadata = {**request.metadata, "provider_stream": True}
+        self._validate_explicit_workflow_mode_metadata(stream_metadata)
         self._validate_command_workflow_metadata(stream_metadata)
         validated_stream_metadata = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(stream_metadata)
@@ -6063,13 +6078,9 @@ class VoidCodeRuntime:
         raw_metadata = {key: value for key, value in request.metadata.items()}
         raw_workflow_mode = raw_metadata.get("workflow_mode")
         raw_workflow_preset = raw_metadata.get("workflow_preset")
+        self._validate_explicit_workflow_mode_metadata(raw_metadata)
         self._validate_command_workflow_metadata(raw_metadata)
         if raw_workflow_mode is not None or raw_workflow_preset is not None:
-            if not isinstance(raw_workflow_mode, str) or not raw_workflow_mode:
-                if raw_workflow_mode is not None:
-                    raise RuntimeRequestError(
-                        "request metadata 'workflow_mode' must be a non-empty string"
-                    )
             _ = self._workflow_mode_resolution_for_request_metadata(raw_metadata)
         metadata = validate_runtime_request_metadata(
             self._metadata_without_workflow_mode(raw_metadata),

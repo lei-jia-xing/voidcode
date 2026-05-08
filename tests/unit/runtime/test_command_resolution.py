@@ -341,6 +341,57 @@ def test_runtime_preserves_command_only_workflow_mode_for_structured_unregistere
     assert response.output == "plain prompt"
 
 
+def test_runtime_command_workflow_mode_overrides_stale_top_level_mode_for_structured_command(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="plain prompt",
+            metadata=cast(
+                RuntimeRequestMetadataPayload,
+                {
+                    "workflow_mode": "deep_work",
+                    "command": {
+                        "name": "custom",
+                        "source": "project",
+                        "arguments": [],
+                        "raw_arguments": "",
+                        "original_prompt": "/custom",
+                        "workflow_mode": "review",
+                    },
+                },
+            ),
+        )
+    )
+
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+
+    assert response.session.metadata["workflow_mode"] == "review"
+    assert cast(dict[str, object], workflow["effective"])["mode"] == "review"
+    assert response.output == "plain prompt"
+
+
+def test_runtime_stream_rejects_invalid_top_level_workflow_mode_type(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    try:
+        _ = tuple(
+            runtime.run_stream(
+                RuntimeRequest(
+                    prompt="plain prompt",
+                    metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": 123}),
+                )
+            )
+        )
+    except RuntimeRequestError as exc:
+        assert "request metadata 'workflow_mode' must be a non-empty string" in str(exc)
+    else:
+        raise AssertionError("invalid workflow_mode type should fail run_stream validation")
+
+
 def test_compact_command_renders_runtime_continuity_prompt(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
 
