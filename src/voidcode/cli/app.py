@@ -2691,7 +2691,7 @@ def _web_server_command(
     *,
     workspace: Path,
     host: str,
-    port: int,
+    port: int | None,
     approval_mode: str | None,
     open_browser: bool,
 ) -> int:
@@ -2735,7 +2735,12 @@ def serve_command(workspace: Path, host: str, port: int, approval_mode: str | No
 )
 @_workspace_option("Workspace root used by the local runtime and session database.")
 @click.option("--host", default="127.0.0.1", help="Host interface for the local launcher server.")
-@click.option("--port", type=int, default=8000, help="Port for the local launcher server.")
+@click.option(
+    "--port",
+    type=int,
+    default=None,
+    help="Port for the local launcher server. Defaults to an auto-assigned local port.",
+)
 @click.option(
     "--approval-mode",
     type=click.Choice(_APPROVAL_MODES),
@@ -2751,7 +2756,7 @@ def serve_command(workspace: Path, host: str, port: int, approval_mode: str | No
 def web_command(
     workspace: Path,
     host: str,
-    port: int,
+    port: int | None,
     approval_mode: str | None,
     open_browser: bool,
 ) -> int:
