@@ -2338,12 +2338,13 @@ def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
     started = runtime.start_background_task(
         RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
     )
-    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    _ = _wait_for_background_task_session(runtime, started.task.id)
     _ = _wait_for_session_transcript_event(
         runtime,
         "leader-session",
         "runtime.background_task_idle_reminder",
     )
+    _, waiting_response = _wait_for_background_task_waiting_response(runtime, started.task.id)
     _ = runtime.load_background_task_result(started.task.id)
 
     loaded = runtime.load_background_task(started.task.id)
@@ -2351,10 +2352,7 @@ def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
     assert loaded.delegated_reminder.stop_condition == "result_read"
     runtime._background_task_supervisor.emit_background_task_idle_reminder_for_waiting_child(
         task=loaded,
-        child_response=runtime._session_store.load_session(
-            workspace=tmp_path,
-            session_id=cast(str, waiting.session_id),
-        ),
+        child_response=waiting_response,
     )
     parent = runtime.session_result(session_id="leader-session")
 
@@ -2386,14 +2384,17 @@ def test_runtime_child_session_result_read_stops_idle_reminder_reeligibility(
     started = runtime.start_background_task(
         RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
     )
-    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    _ = _wait_for_background_task_session(runtime, started.task.id)
     _ = _wait_for_session_transcript_event(
         runtime,
         "leader-session",
         "runtime.background_task_idle_reminder",
     )
+    waiting_task, waiting_response = _wait_for_background_task_waiting_response(
+        runtime, started.task.id
+    )
 
-    _ = runtime.session_result(session_id=cast(str, waiting.session_id))
+    _ = runtime.session_result(session_id=cast(str, waiting_task.session_id))
 
     loaded = runtime.load_background_task(started.task.id)
     assert loaded.delegated_reminder is not None
@@ -2401,10 +2402,7 @@ def test_runtime_child_session_result_read_stops_idle_reminder_reeligibility(
 
     runtime._background_task_supervisor.emit_background_task_idle_reminder_for_waiting_child(
         task=loaded,
-        child_response=runtime._session_store.load_session(
-            workspace=tmp_path,
-            session_id=cast(str, waiting.session_id),
-        ),
+        child_response=waiting_response,
     )
     parent = runtime.session_result(session_id="leader-session")
 
