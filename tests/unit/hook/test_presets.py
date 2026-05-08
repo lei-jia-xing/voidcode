@@ -43,6 +43,7 @@ def test_builtin_hook_presets_carry_guidance_metadata() -> None:
     assert "active agent preset" in role_reminder.guidance
     assert "do not poll immediately" in background_guidance.guidance
     assert "runtime completion reminder" in background_guidance.guidance
+    assert "reuse returned task/process ids" in background_guidance.guidance
     assert delegated_retry.kind == "guard"
     assert "background_retry" in delegated_retry.guidance
     assert "escalate repeated failures" in delegated_retry.guidance

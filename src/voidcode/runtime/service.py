@@ -3057,6 +3057,16 @@ class VoidCodeRuntime:
         )
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        delegated_task = self._session_store.load_background_task_by_child_session(
+            workspace=self._workspace,
+            child_session_id=session_id,
+        )
+        if delegated_task is not None:
+            self._session_store.stop_background_task_idle_reminder(
+                workspace=self._workspace,
+                task_id=delegated_task.task.id,
+                stop_condition="result_read",
+            )
         _ = self._load_session_result(session_id=session_id)
         self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
             parent_session_id=session_id

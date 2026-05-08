@@ -50,6 +50,7 @@ from voidcode.runtime.acp import (
     ManagedAcpAdapter,
 )
 from voidcode.runtime.config import (
+    RUNTIME_CONFIG_FILE_NAME,
     RuntimeAcpConfig,
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
@@ -66,6 +67,8 @@ from voidcode.runtime.config import (
     RuntimeSkillsConfig,
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
+    load_runtime_config,
+    serialize_runtime_background_task_config,
 )
 from voidcode.runtime.context_transforms import (
     HookPresetGuidanceTransformProvider,
@@ -130,6 +133,7 @@ from voidcode.runtime.service import (
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
+    RuntimeSessionResult,
     RuntimeStreamChunk,
     SessionState,
     ToolRegistry,
@@ -183,6 +187,36 @@ def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> N
     )
 
     assert top_level_manifest_ids == executable_agent_presets
+
+
+def test_runtime_background_task_reminder_config_round_trips(tmp_path: Path) -> None:
+    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
+    config_path.write_text(
+        json.dumps(
+            {
+                "background_task": {
+                    "default_concurrency": 2,
+                    "delegated_reminders_enabled": False,
+                    "delegated_reminder_cooldown_seconds": 45,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+    payload = serialize_runtime_background_task_config(config.background_task)
+
+    assert config.background_task == RuntimeBackgroundTaskConfig(
+        default_concurrency=2,
+        delegated_reminders_enabled=False,
+        delegated_reminder_cooldown_seconds=45,
+    )
+    assert payload == {
+        "default_concurrency": 2,
+        "delegated_reminders_enabled": False,
+        "delegated_reminder_cooldown_seconds": 45,
+    }
 
 
 def _prompt_materialization_payload(profile: str) -> dict[str, object]:
@@ -1396,6 +1430,23 @@ class _BackgroundTaskSuccessGraph:
         return _StubStep(output=request.prompt, is_finished=True)
 
 
+class _BackgroundTaskApprovalGraph:
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = request, tool_results, session
+        return _StubStep(
+            tool_call=ToolCall(
+                tool_name="write_file",
+                arguments={"path": "alpha.txt", "content": "1"},
+            )
+        )
+
+
 class _BlockingBackgroundTaskGraph:
     def __init__(self) -> None:
         self.release_first = threading.Event()
@@ -1855,6 +1906,20 @@ def _wait_for_session_event(
     raise AssertionError(f"session {session_id} did not receive {event_type}")
 
 
+def _wait_for_session_transcript_event(
+    runtime: VoidCodeRuntime,
+    session_id: str,
+    event_type: str,
+) -> RuntimeSessionResult:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        result = runtime.session_result(session_id=session_id)
+        if any(event.event_type == event_type for event in result.transcript):
+            return result
+        time.sleep(0.01)
+    raise AssertionError(f"session {session_id} did not receive {event_type}")
+
+
 def _wait_for_path_text(path: Path, *, timeout_seconds: float = 2.0) -> str:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -1984,6 +2049,279 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
     assert completed == loaded
+
+
+def test_runtime_background_child_idle_emits_one_parent_reminder_per_episode(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    runtime._background_task_supervisor.backfill_parent_background_task_event(task=waiting)
+    runtime._background_task_supervisor.backfill_parent_background_task_event(task=waiting)
+    parent = _wait_for_session_transcript_event(
+        runtime,
+        "leader-session",
+        "runtime.background_task_idle_reminder",
+    )
+
+    reminders = [
+        event
+        for event in parent.transcript
+        if event.event_type == "runtime.background_task_idle_reminder"
+    ]
+    assert len(reminders) == 1
+    reminder = reminders[0]
+    assert reminder.payload["task_id"] == started.task.id
+    assert reminder.payload["parent_session_id"] == "leader-session"
+    assert reminder.payload["child_session_id"] == waiting.session_id
+    assert reminder.payload["status"] == "running"
+    assert reminder.payload["result_available"] is False
+    assert "transcript" not in reminder.payload
+    loaded = runtime.load_background_task(started.task.id)
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.stop_condition == "already_sent_for_idle_episode"
+
+
+def test_runtime_background_child_idle_reminder_reopens_for_later_episode_after_cooldown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            background_task=RuntimeBackgroundTaskConfig(
+                delegated_reminder_cooldown_seconds=1,
+            ),
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    first_parent = _wait_for_session_transcript_event(
+        runtime,
+        "leader-session",
+        "runtime.background_task_idle_reminder",
+    )
+    first_reminder = next(
+        event
+        for event in first_parent.transcript
+        if event.event_type == "runtime.background_task_idle_reminder"
+    )
+    child_session_id = cast(str, waiting.session_id)
+    first_idle_sequence = cast(int, first_reminder.payload["idle_event_sequence"])
+    second_idle_sequence = first_idle_sequence + 1
+    first_reminder_task = runtime.load_background_task(started.task.id)
+    assert first_reminder_task.delegated_reminder is not None
+    assert first_reminder_task.delegated_reminder.reminder_sent_at_unix_ms is not None
+    second_idle_at = first_reminder_task.delegated_reminder.reminder_sent_at_unix_ms + 1000
+    monkeypatch.setattr(
+        runtime._background_task_supervisor,
+        "_current_unix_ms",
+        lambda: second_idle_at,
+    )
+
+    runtime._background_task_supervisor.emit_background_task_idle_reminder(
+        task=first_reminder_task,
+        child_session_id=child_session_id,
+        child_session_status="waiting",
+        idle_event_sequence=second_idle_sequence,
+        idle_reason="waiting",
+    )
+    runtime._background_task_supervisor.emit_background_task_idle_reminder(
+        task=runtime.load_background_task(started.task.id),
+        child_session_id=child_session_id,
+        child_session_status="waiting",
+        idle_event_sequence=second_idle_sequence,
+        idle_reason="waiting",
+    )
+    parent = runtime.session_result(session_id="leader-session")
+    reminders = [
+        event
+        for event in parent.transcript
+        if event.event_type == "runtime.background_task_idle_reminder"
+    ]
+
+    assert len(reminders) == 2
+    assert [reminder.payload["idle_episode_id"] for reminder in reminders] == [
+        f"{child_session_id}:{first_idle_sequence}",
+        f"{child_session_id}:{second_idle_sequence}",
+    ]
+
+
+def test_runtime_background_idle_reminder_dedupe_survives_reconciliation(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    _ = _wait_for_background_task_session(runtime, started.task.id)
+    _ = _wait_for_session_transcript_event(
+        runtime,
+        "leader-session",
+        "runtime.background_task_idle_reminder",
+    )
+
+    restarted_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    restarted_runtime._background_task_supervisor.reconcile_parent_background_task_events_for_session(
+        parent_session_id="leader-session"
+    )
+    parent = restarted_runtime.session_result(session_id="leader-session")
+
+    assert (
+        sum(
+            event.event_type == "runtime.background_task_idle_reminder"
+            for event in parent.transcript
+        )
+        == 1
+    )
+
+
+def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    _ = _wait_for_session_transcript_event(
+        runtime,
+        "leader-session",
+        "runtime.background_task_idle_reminder",
+    )
+    _ = runtime.load_background_task_result(started.task.id)
+
+    loaded = runtime.load_background_task(started.task.id)
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.stop_condition == "result_read"
+    runtime._background_task_supervisor.emit_background_task_idle_reminder_for_waiting_child(
+        task=loaded,
+        child_response=runtime._session_store.load_session(
+            workspace=tmp_path,
+            session_id=cast(str, waiting.session_id),
+        ),
+    )
+    parent = runtime.session_result(session_id="leader-session")
+
+    assert (
+        sum(
+            event.event_type == "runtime.background_task_idle_reminder"
+            for event in parent.transcript
+        )
+        == 1
+    )
+
+
+def test_runtime_child_session_result_read_stops_idle_reminder_reeligibility(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    _ = _wait_for_session_transcript_event(
+        runtime,
+        "leader-session",
+        "runtime.background_task_idle_reminder",
+    )
+
+    _ = runtime.session_result(session_id=cast(str, waiting.session_id))
+
+    loaded = runtime.load_background_task(started.task.id)
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.stop_condition == "result_read"
+
+    runtime._background_task_supervisor.emit_background_task_idle_reminder_for_waiting_child(
+        task=loaded,
+        child_response=runtime._session_store.load_session(
+            workspace=tmp_path,
+            session_id=cast(str, waiting.session_id),
+        ),
+    )
+    parent = runtime.session_result(session_id="leader-session")
+
+    assert (
+        sum(
+            event.event_type == "runtime.background_task_idle_reminder"
+            for event in parent.transcript
+        )
+        == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -3084,11 +3422,12 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "kind": "guidance",
                 "source": "builtin",
                 "guidance": (
-                    "When reading background task output, request only the detail needed for the "
-                    "current decision, do not poll immediately after starting a background task "
-                    "unless you need a real status check, prefer waiting for the runtime "
-                    "completion "
-                    "reminder, and summarize results before acting on them."
+                    "When reading background task or process output, request only the detail "
+                    "needed for the current decision, do not poll immediately after starting "
+                    "background work unless you need a real status check, prefer waiting for "
+                    "the runtime completion reminder or a meaningful state change, reuse "
+                    "returned task/process ids instead of starting duplicates, and summarize "
+                    "results before acting on them."
                 ),
             },
             {
@@ -7994,10 +8333,23 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
             updated_at=1,
         ),
     )
+    _ = store.record_background_task_idle_reminder_eligible(
+        workspace=tmp_path,
+        task_id="task-retry-queued",
+        child_session_id="child-session",
+        idle_episode_id="child-session:1",
+        idle_detected_at_unix_ms=111,
+    )
     runtime._background_tasks_reconciled = True
 
     with pytest.raises(ValueError, match="requires a failed, cancelled, or interrupted task"):
         runtime.retry_background_task("task-retry-queued")
+
+    loaded = runtime.load_background_task("task-retry-queued")
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.idle_episode_id == "child-session:1"
+    assert loaded.delegated_reminder.stop_condition is None
+    assert loaded.delegated_reminder.reminder_sent_at_unix_ms is None
 
 
 def test_runtime_cancel_background_task_reconciles_orphaned_queued_task(tmp_path: Path) -> None:

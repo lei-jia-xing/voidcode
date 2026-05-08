@@ -373,7 +373,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 4
+    assert schema_version == 5
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -512,7 +512,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 4 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 5 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -522,7 +522,7 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
 ) -> None:
     database_path = tmp_path / "invalid-sessions.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("PRAGMA user_version = 4")
+        _ = connection.execute("PRAGMA user_version = 5")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
@@ -620,7 +620,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
 ) -> None:
     database_path = tmp_path / "wrong-table-shape.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute("PRAGMA user_version = 4")
+        _ = connection.execute("PRAGMA user_version = 5")
         _ = connection.execute(
             """
             CREATE TABLE sessions (
@@ -723,7 +723,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         RuntimeError,
         match=(
             r"table 'background_tasks' missing columns: created_at_unix_ms, "
-            r"finished_at_unix_ms, started_at_unix_ms.*"
+            r"delegated_reminder_json, finished_at_unix_ms, started_at_unix_ms.*"
             r"Reset the runtime database with `uv run voidcode storage reset` "
             r"or remove '.*[\\/]wrong-table-shape\.sqlite3' "
             r"plus matching -wal/-shm files\."

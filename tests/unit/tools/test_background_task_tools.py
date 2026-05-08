@@ -643,8 +643,9 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     assert result.status == "ok"
     assert result.data["status"] == "running"
     assert result.data["block_timed_out"] is True
-    assert "Timed out waiting" in str(result.data["guidance"])
+    assert "meaningful state change" in str(result.data["guidance"])
     assert result.retry_guidance is not None
+    assert result.data["guidance"] == result.retry_guidance
     assert "do not loop indefinitely" in result.retry_guidance
 
 
@@ -681,6 +682,7 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
     assert "background_retry(task_id='task-1')" in result.content
     assert "After repeated failures" in result.content
     assert "do not retry automatically" in str(result.data["guidance"])
+    assert result.data["guidance"] == result.retry_guidance
 
 
 def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Path) -> None:
@@ -755,9 +757,14 @@ def test_background_output_tool_guides_unavailable_result_without_looping(tmp_pa
 
     assert result.status == "ok"
     assert result.content is not None
+    assert (
+        "background_output again later with block=true only when you intentionally "
+        "want to wait in this turn" in result.content
+    )
     assert "do not loop indefinitely" in result.content
     assert result.data["result_available"] is False
     assert result.retry_guidance is not None
+    assert result.data["guidance"] == result.retry_guidance
     assert "do not loop indefinitely" in result.retry_guidance
 
 

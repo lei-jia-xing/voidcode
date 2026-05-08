@@ -164,7 +164,15 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         ),
     }
     background_task_schema = cast(dict[str, object], properties["background_task"])
+    assert background_task_schema["additionalProperties"] is False
     background_task_properties = cast(dict[str, object], background_task_schema["properties"])
+    assert background_task_properties["delegated_reminders_enabled"] == {
+        "type": "boolean",
+    }
+    assert background_task_properties["delegated_reminder_cooldown_seconds"] == {
+        "type": "integer",
+        "minimum": 1,
+    }
     assert background_task_properties["default_concurrency"] == {
         "type": "integer",
         "minimum": 1,

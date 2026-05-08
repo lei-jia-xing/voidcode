@@ -144,6 +144,10 @@ Hook 命令 stdout 可返回 JSON：
 
 - 这是 runtime-owned waiting/idle 信号
 - 不能由客户端的“UI 空闲”替代
+- 对 delegated/background reminder v1 来说，它是 eligibility 的权威 lifecycle signal；只有 runtime 观察到这个信号，提醒逻辑才可以进入待投递状态
+- hooks 与 reminders 仍然只是通知与干预面，不拥有 task/session truth，也不能把自己变成新的 authority layer
+
+也就是说，`session_idle` 负责说明 runtime 何时可以考虑 reminder eligibility，但它不改变 task/session truth，也不把 hook 变成 authority。提醒逻辑只能消费这层 truth，不能自己发明新的空闲判定。
 
 ### `background_task_registered`
 

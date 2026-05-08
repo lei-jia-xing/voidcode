@@ -77,6 +77,9 @@ def test_background_process_start_reuses_running_process_for_same_command(tmp_pa
     assert first.data["process_id"] == second.data["process_id"]
     assert second.data["reused"] is True
     assert "Reusing background process" in cast(str, second.content)
+    assert "exact-match process is already running" in cast(str, second.content)
+    assert "reuse process_id" in cast(str, second.data["guidance"])
+    assert second.retry_guidance == second.data["guidance"]
 
     stop_tool.invoke(
         ToolCall(
@@ -84,6 +87,93 @@ def test_background_process_start_reuses_running_process_for_same_command(tmp_pa
             arguments={"process_id": str(first.data["process_id"])},
         ),
         workspace=tmp_path,
+    )
+    runtime.__exit__(None, None, None)
+
+
+def test_background_process_start_reuses_running_process_for_same_trimmed_command_and_workspace(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    start_tool = runtime._base_tool_registry.resolve("background_process_start")
+    stop_tool = runtime._base_tool_registry.resolve("background_process_stop")
+    trimmed_command = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+    padded_command = f"  {trimmed_command}  "
+
+    first = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": padded_command}),
+        workspace=tmp_path,
+    )
+    second = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": trimmed_command}),
+        workspace=tmp_path,
+    )
+
+    assert first.data["process_id"] == second.data["process_id"]
+    assert second.data["reused"] is True
+    assert "same trimmed command in this workspace" in cast(str, second.content)
+
+    stop_tool.invoke(
+        ToolCall(
+            tool_name="background_process_stop",
+            arguments={"process_id": str(first.data["process_id"])},
+        ),
+        workspace=tmp_path,
+    )
+    runtime.__exit__(None, None, None)
+
+
+def test_background_process_start_creates_new_process_for_different_command_or_workspace(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    start_tool = runtime._base_tool_registry.resolve("background_process_start")
+    stop_tool = runtime._base_tool_registry.resolve("background_process_stop")
+    first_command = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+    second_command = (
+        f'"{sys.executable}" -c "import time; print(\'different\', flush=True); time.sleep(5)"'
+    )
+    other_workspace = tmp_path / "other-workspace"
+    other_workspace.mkdir()
+
+    first = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": first_command}),
+        workspace=tmp_path,
+    )
+    second = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": second_command}),
+        workspace=tmp_path,
+    )
+    third = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": first_command}),
+        workspace=other_workspace,
+    )
+
+    assert first.data["process_id"] != second.data["process_id"]
+    assert second.data["reused"] is False
+    assert first.data["process_id"] != third.data["process_id"]
+    assert third.data["reused"] is False
+
+    stop_tool.invoke(
+        ToolCall(
+            tool_name="background_process_stop",
+            arguments={"process_id": str(first.data["process_id"])},
+        ),
+        workspace=tmp_path,
+    )
+    stop_tool.invoke(
+        ToolCall(
+            tool_name="background_process_stop",
+            arguments={"process_id": str(second.data["process_id"])},
+        ),
+        workspace=tmp_path,
+    )
+    stop_tool.invoke(
+        ToolCall(
+            tool_name="background_process_stop",
+            arguments={"process_id": str(third.data["process_id"])},
+        ),
+        workspace=other_workspace,
     )
     runtime.__exit__(None, None, None)
 
@@ -132,6 +222,9 @@ def test_background_process_logs_retains_bounded_recent_lines(tmp_path: Path) ->
     assert logs_result.reference == references[0]
     assert "Background process logs truncated" in (logs_result.content or "")
     assert "retained log tails" in (logs_result.content or "")
+    assert "continuous watch loop" in (logs_result.content or "")
+    assert "meaningful state change" in (logs_result.content or "")
+    assert logs_result.data["guidance"] == logs_result.retry_guidance
     assert "full logs" not in (logs_result.content or "")
     stop_tool.invoke(
         ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),

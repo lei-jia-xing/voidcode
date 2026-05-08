@@ -58,6 +58,7 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.background_task_registered",
     "runtime.background_task_started",
     "runtime.background_task_progress",
+    "runtime.background_task_idle_reminder",
     "runtime.tool_progress",
     "runtime.background_task_waiting_approval",
     "runtime.background_task_completed",
@@ -75,6 +76,7 @@ type PrototypeAdditiveEventType = Literal[
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_waiting_approval",
+    "runtime.background_task_idle_reminder",
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
@@ -179,6 +181,9 @@ RUNTIME_BACKGROUND_TASK_STARTED: Final[PrototypeAdditiveEventType] = (
 RUNTIME_BACKGROUND_TASK_PROGRESS: Final[PrototypeAdditiveEventType] = (
     "runtime.background_task_progress"
 )
+RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: Final[PrototypeAdditiveEventType] = (
+    "runtime.background_task_idle_reminder"
+)
 RUNTIME_TOOL_PROGRESS: Final[PrototypeAdditiveEventType] = "runtime.tool_progress"
 RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[PrototypeAdditiveEventType] = (
     "runtime.background_task_waiting_approval"
@@ -263,6 +268,7 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_BACKGROUND_TASK_REGISTERED,
     RUNTIME_BACKGROUND_TASK_STARTED,
     RUNTIME_BACKGROUND_TASK_PROGRESS,
+    RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
@@ -374,6 +380,7 @@ KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
 )
 DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
@@ -413,6 +420,7 @@ _DELEGATED_EVENT_STATUS_BY_TYPE: Final[
     dict[DelegatedBackgroundTaskEventType | ExistingEventType, DelegatedLifecycleStatus]
 ] = {
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: "waiting_approval",
+    RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: "running",
     RUNTIME_BACKGROUND_TASK_COMPLETED: "completed",
     RUNTIME_BACKGROUND_TASK_FAILED: "failed",
     RUNTIME_BACKGROUND_TASK_CANCELLED: "cancelled",

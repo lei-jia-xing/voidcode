@@ -287,6 +287,55 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 3. 通知顺序反映 runtime 提交生命周期真相的顺序，而不是客户端收到事件的时机
 4. 如果某个通知同时带有 `result_available`，则该字段不得早于其所依赖的生命周期真相被持久化
 
+## v1 delegated/background idle reminder
+
+v1 的 delegated/background idle reminder 只能由 runtime 拥有，并且只能基于已经存在的 runtime truth 来判定是否需要轻量提醒。
+
+它是一个 soft nudge 机制，不是 scheduler，也不是覆盖所有 session 的全局 reminder system。它只面向带有 `parent_session_id` 的 delegated/background child session，并且只在 runtime 已经观察到真实的 `session_idle` / waiting 语义后才进入可投递状态。
+
+约束如下：
+
+- 触发源以 `session_idle` 这类真实 lifecycle signal 为准，而不是客户端空闲、prompt 文本或定时调度
+- reminder 的目标是提示 leader 继续查看、恢复或显式处理 child session，而不是替代 task/session truth
+- reminder 不能把自己变成新的 authority layer，也不能把 hook、client 或 prompt 文本变成 truth source
+
+### cooldown 与 dedupe
+
+同一 eligible idle episode 只应发送一次 reminder。
+
+这里的 eligible idle episode 指的是：runtime 已经观察到 child session 进入 idle/waiting 语义，但该 episode 还没有被新的 progress、result、retry、cancel 或 terminal transition 终结。
+
+episode 级 dedupe 的意思是：只要当前 episode 已经发过一次 reminder，后续再看到同一个 episode 的 idle/waiting 事实，也不能重复投递。
+
+如果 child session 重新进入新的 idle episode，runtime 才可以再次产生新的 reminder。
+
+### stop conditions
+
+一旦出现以下任一情况，runtime 必须停止对当前 eligible idle episode 继续发 reminder：
+
+- result 已被读取，包括 `background_output(task_id)`、`load_background_task_result(task_id)` 或通过 `resume(child_session_id)` 消费 child transcript 的路径
+- 显式 retry
+- cancel
+- terminal completion
+- terminal failure
+- interruption
+- 当前 eligible idle episode 的 reminder 已经发出过一次
+
+也就是说，stop condition 既包括对结果的读取，也包括对 episode 的终止、重试或取消，不允许 runtime 围绕同一 episode 持续补发 reminder。
+
+## Background process guardrail scope
+
+background process 相关 guardrail 只覆盖当前 v1 已落地的有限范围，不延伸为模糊去重或连续监视系统。
+
+约束如下：
+
+- `background_process_start.py` 中的 live process reuse 仍然以精确匹配为准，只有 trimmed command 相同且 workspace 相同才算同一个可复用进程
+- `background_process_logs.py` 提供的是有界的日志状态检查，读取的是 retained stdout/stderr，不是持续 watch 或订阅流
+- v1 不做 fuzzy duplicate-process suppression，也不做基于启发式的进程身份推断
+- v1 不把日志读取改造成 scheduler、watcher 或跨进程协调层
+
+这意味着，当前背景进程护栏只负责 exact-match reuse 和 bounded log read 两件事，重复读取日志只是有界的状态检查，不是连续监视或自动去重决策。
+
 ## 去重规则
 
 leader notification 必须满足：**对同一语义转换至多投递一次**。

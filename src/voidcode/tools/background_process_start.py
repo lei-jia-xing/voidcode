@@ -236,6 +236,20 @@ class BackgroundProcessStartRuntime(Protocol):
     def background_process_manager(self) -> BackgroundProcessManager: ...
 
 
+def _background_process_start_guidance(*, process_id: str, reused: bool) -> str:
+    if reused:
+        return (
+            f"An exact-match process is already running; reuse process_id '{process_id}' "
+            "instead of calling background_process_start again for the same trimmed command "
+            "in this workspace. Report status, continue other work, or read logs only when "
+            "a meaningful state change would affect your next decision."
+        )
+    return (
+        f"Track this process by process_id '{process_id}'. Do not start duplicate long-running "
+        "processes for the same trimmed command in this workspace; reuse this id for logs or stop."
+    )
+
+
 class BackgroundProcessStartTool:
     definition = ToolDefinition(
         name="background_process_start",
@@ -274,6 +288,10 @@ class BackgroundProcessStartTool:
         )
         reused = existing is not None
         pid = state.process.pid
+        guidance = _background_process_start_guidance(
+            process_id=state.process_id,
+            reused=reused,
+        )
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
@@ -281,7 +299,8 @@ class BackgroundProcessStartTool:
                 f"{'Reusing' if reused else 'Started'} background process "
                 f"{state.process_id} (pid={pid}) "
                 f"for command: {args.command}. "
-                f"Use background_process_logs(process_id='{state.process_id}') to inspect output."
+                f"Use background_process_logs(process_id='{state.process_id}') to inspect output. "
+                f"Guidance: {guidance}"
             ),
             data={
                 "process_id": state.process_id,
@@ -290,5 +309,7 @@ class BackgroundProcessStartTool:
                 "cwd": state.cwd,
                 "running": state.process.poll() is None,
                 "reused": reused,
+                "guidance": guidance,
             },
+            retry_guidance=guidance,
         )
