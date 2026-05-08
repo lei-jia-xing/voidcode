@@ -111,30 +111,35 @@ def web(
     open_browser: bool = True,
 ) -> None:
     listener_socket = _reserve_listener_socket(host) if port is None else None
-    selected_port: int
-    if listener_socket is not None:
-        selected_port = cast(int, listener_socket.getsockname()[1])
-    else:
-        selected_port = cast(int, port)
-    url = f"http://{host}:{selected_port}"
-    frontend_dist = _resolve_frontend_dist()
+    try:
+        selected_port: int
+        if listener_socket is not None:
+            selected_port = cast(int, listener_socket.getsockname()[1])
+        else:
+            selected_port = cast(int, port)
+        url = f"http://{host}:{selected_port}"
+        frontend_dist = _resolve_frontend_dist()
 
-    print("VoidCode")
-    print(_BANNER)
-    print(f"  Local server running at: {url}")
-    print()
+        print("VoidCode")
+        print(_BANNER)
+        print(f"  Local server running at: {url}")
+        print()
 
-    if open_browser:
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+        if open_browser:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
 
-    _run_runtime_server(
-        workspace=workspace,
-        host=host,
-        port=selected_port,
-        config=config,
-        frontend_dist=frontend_dist,
-        listener_socket=listener_socket,
-    )
+        _run_runtime_server(
+            workspace=workspace,
+            host=host,
+            port=selected_port,
+            config=config,
+            frontend_dist=frontend_dist,
+            listener_socket=listener_socket,
+        )
+    except BaseException:
+        if listener_socket is not None:
+            listener_socket.close()
+        raise

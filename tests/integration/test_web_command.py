@@ -176,6 +176,7 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
         port=8001,
         config=config,
         frontend_dist=frontend_dist,
+        listener_socket=None,
     )
 
 

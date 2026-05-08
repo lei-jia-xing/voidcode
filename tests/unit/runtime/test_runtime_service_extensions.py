@@ -2119,7 +2119,7 @@ def test_runtime_background_child_idle_emits_one_parent_reminder_per_episode(
     assert reminder.payload["parent_session_id"] == "leader-session"
     assert reminder.payload["child_session_id"] == waiting.session_id
     assert reminder.payload["status"] == "running"
-    assert reminder.payload["result_available"] is True
+    assert reminder.payload["result_available"] is False
     assert "transcript" not in reminder.payload
     loaded = runtime.load_background_task(started.task.id)
     assert loaded.delegated_reminder is not None
@@ -7112,6 +7112,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         "status": "running",
         "approval_blocked": True,
         "result_available": True,
+        "delegated_reminder": waiting_events[0].payload["delegated_reminder"],
         "delegation": {
             "parent_session_id": "leader-session",
             "requested_child_session_id": child_session_id,
@@ -8155,6 +8156,7 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
         "status": "running",
         "approval_blocked": True,
         "result_available": True,
+        "delegated_reminder": waiting_events[0].payload["delegated_reminder"],
         "delegation": {
             "parent_session_id": "leader-session",
             "requested_child_session_id": child_session_id,

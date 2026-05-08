@@ -79,6 +79,7 @@ def test_web_delegates_to_shared_runtime_server(tmp_path: Path) -> None:
         port=8001,
         config=config,
         frontend_dist=frontend_dist,
+        listener_socket=None,
     )
 
 
@@ -184,6 +185,33 @@ def test_run_runtime_server_passes_reserved_socket_fd() -> None:
                 )
 
         app_mock.assert_called_once_with(workspace=workspace, config=config, frontend_dist=None)
+        assert listener_socket.fileno() == -1
+    finally:
+        if listener_socket.fileno() != -1:
+            listener_socket.close()
+
+
+def test_web_closes_reserved_listener_when_frontend_setup_fails() -> None:
+    server = importlib.import_module("voidcode.server")
+    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener_socket.bind(("127.0.0.1", 0))
+
+    try:
+        with patch.object(
+            server,
+            "_reserve_listener_socket",
+            autospec=True,
+            return_value=listener_socket,
+        ):
+            with patch.object(server, "_resolve_frontend_dist", autospec=True) as resolve_mock:
+                resolve_mock.side_effect = SystemExit("error: frontend web bundle not found")
+                try:
+                    server.web(workspace=Path("/tmp/server-workspace"), host="127.0.0.1", port=None)
+                except SystemExit as exc:
+                    assert str(exc) == "error: frontend web bundle not found"
+                else:
+                    raise AssertionError("expected frontend setup failure")
+
         assert listener_socket.fileno() == -1
     finally:
         if listener_socket.fileno() != -1:
