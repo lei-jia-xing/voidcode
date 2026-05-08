@@ -521,6 +521,8 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
         "Prefer this tool when the desired file content is already known"
         in definitions["write_file"].description
     )
+    assert "Provide the complete final content directly" in definitions["write_file"].description
+    assert "Do not create placeholder files" in definitions["write_file"].description
     assert (
         "produced or transformed by running a real program" in definitions["write_file"].description
     )
@@ -528,6 +530,12 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
         "Do not use this tool to start a long-lived dev server"
         in definitions["shell_exec"].description
     )
+    assert (
+        "Do not use this tool to author file contents that are already known"
+        in definitions["shell_exec"].description
+    )
+    assert "echo > file" in definitions["shell_exec"].description
+    assert "cat <<EOF > file" in definitions["shell_exec"].description
     assert (
         "Use shell execution when the work is inherently command-driven"
         in definitions["shell_exec"].description
@@ -572,6 +580,23 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         filename = guidance_filename_for_tool(tool_name)
         assert filename is not None, f"Missing guidance mapping for {tool_name}"
         assert guidance_for_tool(tool_name), f"Missing sidecar content for {tool_name}"
+
+
+def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() -> None:
+    assert "Do not sleep, poll in a loop" in guidance_for_tool("task")
+    assert "Do not guess or fabricate a background task's result" in guidance_for_tool("task")
+    assert "Do not repeatedly poll this tool in a tight loop" in guidance_for_tool(
+        "background_output"
+    )
+    assert "Do not read a running child transcript just to peek" in guidance_for_tool(
+        "background_output"
+    )
+    assert "instead of repeatedly starting replacement processes" in guidance_for_tool(
+        "background_process_start"
+    )
+    assert "Prefer this tool over launching another process" in guidance_for_tool(
+        "background_process_logs"
+    )
 
 
 def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:

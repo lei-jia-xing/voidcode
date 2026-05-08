@@ -4,7 +4,10 @@ Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
 - The path parameter must stay inside the workspace.
 - A successful result returns a short write summary plus metadata such as path and byte_count; it does not return the full file content.
+- Use this tool when you already know the full intended file content and want to create a new file or completely replace an existing file in one step.
+- Provide the complete final content directly in the tool call. Do not create placeholder files and then fill them with shell commands.
 - For existing files, prefer edit or multi_edit for targeted replacements; use write_file when creating a new file or intentionally replacing the whole file.
 - Read existing content first when you need to preserve or modify part of a file.
 - For brand-new files, use this tool directly; a prior read is not required.
 - Prefer this tool when the desired file content is already known. Prefer command execution only when the file must be produced or transformed by running a real program rather than writing the text directly.
+- If you only need to change part of an existing file, use edit or multi_edit instead of rewriting the entire file.
