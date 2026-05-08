@@ -63,6 +63,7 @@ from .execution_seams import RuntimeGraphSelection
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .question import PendingQuestion
 from .session import SessionState
+from .session_metadata_helpers import todo_state_matches_payload
 from .tool_display import build_tool_display, build_tool_status
 
 if TYPE_CHECKING:
@@ -1212,7 +1213,6 @@ class RuntimeRunLoopCoordinator:
                     compaction_reason=base_context.compaction_reason,
                     original_tool_result_count=base_context.original_tool_result_count,
                     retained_tool_result_count=base_context.retained_tool_result_count,
-                    max_tool_result_count=base_context.max_tool_result_count,
                     original_tool_result_tokens=base_context.original_tool_result_tokens,
                     retained_tool_result_tokens=base_context.retained_tool_result_tokens,
                     dropped_tool_result_tokens=base_context.dropped_tool_result_tokens,
@@ -2360,6 +2360,22 @@ class RuntimeRunLoopCoordinator:
                 )
 
             runtime_tool_result_data = dict(tool_result.data)
+            duplicate_todo_write = (
+                plan_tool_call.tool_name == "todo_write"
+                and tool_result.status == "ok"
+                and todo_state_matches_payload(
+                    session,
+                    raw_todos=runtime_tool_result_data.get("todos"),
+                    revision=sequence + 1,
+                )
+            )
+            if duplicate_todo_write:
+                tool_result = replace(
+                    tool_result,
+                    content="Updated 0 todos (unchanged)",
+                    data={**tool_result.data, "unchanged": True},
+                )
+                runtime_tool_result_data["unchanged"] = True
 
             sanitized_arguments = sanitize_tool_arguments(dict(plan_tool_call.arguments))
             tool_result = cap_tool_result_output(
@@ -2507,23 +2523,25 @@ class RuntimeRunLoopCoordinator:
 
             if plan_tool_call.tool_name == "todo_write" and tool_result.status == "ok":
                 revision = sequence + 1
-                session, todo_payload = runtime._session_with_todo_state(
-                    session,
-                    raw_todos=runtime_tool_result_data.get("todos"),
-                    revision=revision,
-                )
-                sequence = revision
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_TODO_UPDATED,
-                        source="runtime",
-                        payload=todo_payload,
-                    ),
-                )
+                raw_todos = runtime_tool_result_data.get("todos")
+                if not duplicate_todo_write:
+                    session, todo_payload = runtime._session_with_todo_state(
+                        session,
+                        raw_todos=raw_todos,
+                        revision=revision,
+                    )
+                    sequence = revision
+                    yield RuntimeStreamChunk(
+                        kind="event",
+                        session=session,
+                        event=EventEnvelope(
+                            session_id=session.session.id,
+                            sequence=sequence,
+                            event_type=RUNTIME_TODO_UPDATED,
+                            source="runtime",
+                            payload=todo_payload,
+                        ),
+                    )
 
             if _is_abort_requested(active_graph_request):
                 yield runtime._failed_chunk(
@@ -2799,12 +2817,7 @@ class RuntimeRunLoopCoordinator:
             return None
         latest = cast(dict[str, object], raw_latest)
         total_tokens = 0
-        for key in (
-            "input_tokens",
-            "output_tokens",
-            "cache_creation_tokens",
-            "cache_read_tokens",
-        ):
+        for key in ("input_tokens", "output_tokens"):
             raw_value = latest.get(key, 0)
             if not isinstance(raw_value, int) or isinstance(raw_value, bool):
                 return None

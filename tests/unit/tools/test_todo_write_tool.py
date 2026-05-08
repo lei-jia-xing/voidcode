@@ -19,8 +19,8 @@ def test_todo_write_returns_session_metadata_without_workspace_artifact(tmp_path
             tool_name="todo_write",
             arguments={
                 "todos": [
-                    {"content": "  task-a  ", "status": "pending", "priority": "high"},
-                    {"content": "task-b", "status": "completed", "priority": "low"},
+                    {"content": "  task-a  ", "status": "pending"},
+                    {"content": "task-b", "status": "completed"},
                 ]
             },
         ),
@@ -35,7 +35,7 @@ def test_todo_write_returns_session_metadata_without_workspace_artifact(tmp_path
     assert payload[0]["content"] == "task-a"
     assert payload[1]["status"] == "completed"
     assert result.status == "ok"
-    assert result.content == "Updated 2 todos\n1. [pending/high] task-a\n2. [completed/low] task-b"
+    assert result.content == "Updated 2 todos\n1. [pending] task-a\n2. [completed] task-b"
     summary_raw = result.data["summary"]
     assert isinstance(summary_raw, dict)
     summary = cast(dict[str, object], summary_raw)
@@ -49,20 +49,7 @@ def test_todo_write_rejects_invalid_status(tmp_path: Path) -> None:
         tool.invoke(
             ToolCall(
                 tool_name="todo_write",
-                arguments={"todos": [{"content": "a", "status": "bad", "priority": "high"}]},
-            ),
-            workspace=tmp_path,
-        )
-
-
-def test_todo_write_rejects_invalid_priority(tmp_path: Path) -> None:
-    tool = TodoWriteTool()
-
-    with pytest.raises(ValueError, match="invalid priority"):
-        tool.invoke(
-            ToolCall(
-                tool_name="todo_write",
-                arguments={"todos": [{"content": "a", "status": "pending", "priority": "urgent"}]},
+                arguments={"todos": [{"content": "a", "status": "bad"}]},
             ),
             workspace=tmp_path,
         )
@@ -80,12 +67,10 @@ def test_todo_write_rejects_more_than_one_in_progress_todo(tmp_path: Path) -> No
                         {
                             "content": "first concurrent task",
                             "status": "in_progress",
-                            "priority": "high",
                         },
                         {
                             "content": "second concurrent task",
                             "status": "in_progress",
-                            "priority": "high",
                         },
                     ]
                 },
@@ -102,9 +87,9 @@ def test_todo_write_accepts_single_in_progress_todo(tmp_path: Path) -> None:
             tool_name="todo_write",
             arguments={
                 "todos": [
-                    {"content": "queued", "status": "pending", "priority": "high"},
-                    {"content": "active", "status": "in_progress", "priority": "high"},
-                    {"content": "shipped", "status": "completed", "priority": "low"},
+                    {"content": "queued", "status": "pending"},
+                    {"content": "active", "status": "in_progress"},
+                    {"content": "shipped", "status": "completed"},
                 ]
             },
         ),
@@ -115,6 +100,27 @@ def test_todo_write_accepts_single_in_progress_todo(tmp_path: Path) -> None:
     assert isinstance(summary_raw, dict)
     summary = cast(dict[str, object], summary_raw)
     assert summary["in_progress"] == 1
+
+
+def test_todo_write_keeps_identical_payloads_valid(tmp_path: Path) -> None:
+    tool = TodoWriteTool()
+    todos = [
+        {"content": "same", "status": "pending"},
+        {"content": "still same", "status": "completed"},
+    ]
+
+    first = tool.invoke(
+        ToolCall(tool_name="todo_write", arguments={"todos": todos}),
+        workspace=tmp_path,
+    )
+    second = tool.invoke(
+        ToolCall(tool_name="todo_write", arguments={"todos": todos}),
+        workspace=tmp_path,
+    )
+
+    assert first.status == "ok"
+    assert second.status == "ok"
+    assert second.data["todos"] == first.data["todos"]
 
 
 def test_todo_write_description_codifies_harness_discipline() -> None:

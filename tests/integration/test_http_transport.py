@@ -3654,15 +3654,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
     assert cast(dict[str, object], status_payload["lsp"])["state"] == "unconfigured"
     assert cast(dict[str, object], status_payload["acp"])["state"] == "unconfigured"
     assert mcp_payload["state"] == "failed"
-    assert isinstance(mcp_payload["error"], str)
-    assert mcp_payload["error"]
-    assert any(
-        fragment in mcp_payload["error"]
-        for fragment in (
-            "failed to start server",
-            "Connection closed",
-        )
-    )
+    assert mcp_payload["error"] == "MCP server error: Connection closed"
     assert mcp_details["configured_server_count"] == 1
     assert mcp_details["active_server_count"] == 1
     assert mcp_details["running_server_count"] == 0
@@ -3674,6 +3666,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
     assert server_payload["transport"] == "stdio"
     assert server_payload["workspace_root"] == str(tmp_path)
     assert server_payload["stage"] == "startup"
+    assert server_payload["error"] == "MCP server error: Connection closed"
     assert server_payload["retry_available"] is True
     assert server_payload["command"] == list(failing_command)
 

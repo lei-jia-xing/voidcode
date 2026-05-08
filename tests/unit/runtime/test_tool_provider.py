@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -50,7 +49,6 @@ from voidcode.tools import (
     EditTool,
     GlobTool,
     GrepTool,
-    InteractiveShellTool,
     LocalCustomTool,
     McpTool,
     MultiEditTool,
@@ -262,8 +260,6 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         MultiEditTool,
         TodoWriteTool,
     ]
-    if os.name != "nt":
-        expected_tools.append(InteractiveShellTool)
 
     for expected in expected_tools:
         assert expected in tools_by_type, f"Missing tool: {expected.__name__}"
@@ -395,9 +391,6 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
                 "grep",
                 "ast_grep_search",
                 "lsp",
-                "question",
-                "skill",
-                "background_output",
             ),
         ),
     )
@@ -406,6 +399,8 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
     assert "grep" in scoped.tools
     assert "write_file" not in scoped.tools
     assert "task" not in scoped.tools
+    assert "question" not in scoped.tools
+    assert "background_output" not in scoped.tools
 
 
 def test_scoped_tool_registry_can_exclude_builtins() -> None:
@@ -521,6 +516,25 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
         "new file or intentionally replacing the whole file"
         in definitions["write_file"].description
     )
+    assert "a prior read is not required" in definitions["write_file"].description
+    assert (
+        "Prefer this tool when the desired file content is already known"
+        in definitions["write_file"].description
+    )
+    assert "Provide the complete final content directly" in definitions["write_file"].description
+    assert "Do not create placeholder files" in definitions["write_file"].description
+    assert (
+        "produced or transformed by running a real program" in definitions["write_file"].description
+    )
+    assert (
+        "Do not use this tool to start a long-lived dev server"
+        in definitions["shell_exec"].description
+    )
+    assert "When the desired file content is already known" in definitions["shell_exec"].description
+    assert (
+        "Use shell execution when the work is inherently command-driven"
+        in definitions["shell_exec"].description
+    )
     assert definitions["ast_grep_search"].description.startswith(
         "Use ast-grep tools for structural code matching"
     )
@@ -561,6 +575,23 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         filename = guidance_filename_for_tool(tool_name)
         assert filename is not None, f"Missing guidance mapping for {tool_name}"
         assert guidance_for_tool(tool_name), f"Missing sidecar content for {tool_name}"
+
+
+def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() -> None:
+    assert "Do not sleep, poll in a loop" in guidance_for_tool("task")
+    assert "Do not guess or fabricate a background task's result" in guidance_for_tool("task")
+    assert "Do not repeatedly poll this tool in a tight loop" in guidance_for_tool(
+        "background_output"
+    )
+    assert "Do not read a running child transcript just to peek" in guidance_for_tool(
+        "background_output"
+    )
+    assert "instead of repeatedly starting replacement processes" in guidance_for_tool(
+        "background_process_start"
+    )
+    assert "Prefer this tool over launching another process" in guidance_for_tool(
+        "background_process_logs"
+    )
 
 
 def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
@@ -648,8 +679,6 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "web_search",
         "write_file",
     ]
-    if os.name != "nt":
-        core_tools.insert(3, "interactive_shell")
     for tool_name in core_tools:
         assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
         assert registry.resolve(tool_name) is provided_by_name[tool_name]

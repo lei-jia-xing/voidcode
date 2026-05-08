@@ -40,6 +40,9 @@ class BackgroundProcessManager:
         self._lock = threading.RLock()
 
     def start(self, *, command: str, workspace: Path) -> BackgroundProcessState:
+        existing = self.load_running(command=command, workspace=workspace)
+        if existing is not None:
+            return existing
         process = subprocess.Popen(
             command,
             cwd=workspace,
@@ -67,6 +70,20 @@ class BackgroundProcessManager:
         self._start_reader(state, stream_name="stdout")
         self._start_reader(state, stream_name="stderr")
         return state
+
+    def load_running(self, *, command: str, workspace: Path) -> BackgroundProcessState | None:
+        normalized_command = command.strip()
+        normalized_cwd = str(workspace)
+        with self._lock:
+            for state in self._processes.values():
+                if state.process.poll() is not None:
+                    continue
+                if state.command.strip() != normalized_command:
+                    continue
+                if state.cwd != normalized_cwd:
+                    continue
+                return state
+        return None
 
     def load(self, process_id: str) -> BackgroundProcessState | None:
         with self._lock:
@@ -248,15 +265,21 @@ class BackgroundProcessStartTool:
                     "background_process_start aborted before launching process"
                 )
 
-        state = self._runtime.background_process_manager.start(
+        existing = self._runtime.background_process_manager.load_running(
             command=args.command, workspace=workspace
         )
+        state = self._runtime.background_process_manager.start(
+            command=args.command,
+            workspace=workspace,
+        )
+        reused = existing is not None
         pid = state.process.pid
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=(
-                f"Started background process {state.process_id} (pid={pid}) "
+                f"{'Reusing' if reused else 'Started'} background process "
+                f"{state.process_id} (pid={pid}) "
                 f"for command: {args.command}. "
                 f"Use background_process_logs(process_id='{state.process_id}') to inspect output."
             ),
@@ -266,5 +289,6 @@ class BackgroundProcessStartTool:
                 "command": args.command,
                 "cwd": state.cwd,
                 "running": state.process.poll() is None,
+                "reused": reused,
             },
         )

@@ -3,4 +3,7 @@ Read the accumulated stdout and stderr from a long-running background process.
 Usage:
 - Pass a process_id previously returned by `background_process_start`.
 - Use this tool to inspect whether a dev server or watcher has started successfully.
+- After `background_process_start`, check this tool before assuming the service is ready. For HTTP services, wait until logs show a listening address or successful startup message before issuing requests.
+- If a matching workspace service may already be running, inspect the existing process logs before starting a replacement.
+- Prefer this tool over launching another process when you are only trying to understand readiness, startup failure, or which port the current process actually bound.
 - The output is observational; use `background_process_stop` to terminate the process.

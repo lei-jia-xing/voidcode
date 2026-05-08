@@ -9,6 +9,8 @@ Usage:
 - When `run_in_background` is true, this tool starts a real background task and returns a `task_id`.
 - After starting a background task, continue other safe work first. Do not call `background_output` immediately unless you truly need a status check.
 - Prefer waiting for the runtime completion reminder before reading results; use `background_output(block=true)` only when you intentionally want to wait in the current turn.
+- Do not sleep, poll in a loop, or repeatedly re-launch equivalent background work just to check progress. Trust the runtime completion reminder and use the dedicated background result surface when you actually need it.
+- Do not guess or fabricate a background task's result before the runtime delivers it. Report current status only, or continue other independent work.
 - Use `background_output` to read status/results and `background_cancel` to cancel a task by id.
 - Example background call: `task(prompt="Inspect the auth flow", run_in_background=true, load_skills=[], subagent_type="explore")`
 - Example sync call: `task(prompt="Summarize these findings", run_in_background=false, load_skills=[], category="writing")`

@@ -59,6 +59,35 @@ def test_background_process_start_logs_and_stop(tmp_path: Path) -> None:
     runtime.__exit__(None, None, None)
 
 
+def test_background_process_start_reuses_running_process_for_same_command(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    start_tool = runtime._base_tool_registry.resolve("background_process_start")
+    stop_tool = runtime._base_tool_registry.resolve("background_process_stop")
+    command = f'"{sys.executable}" -c "import time; print(\'ready\', flush=True); time.sleep(5)"'
+
+    first = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": command}),
+        workspace=tmp_path,
+    )
+    second = start_tool.invoke(
+        ToolCall(tool_name="background_process_start", arguments={"command": command}),
+        workspace=tmp_path,
+    )
+
+    assert first.data["process_id"] == second.data["process_id"]
+    assert second.data["reused"] is True
+    assert "Reusing background process" in cast(str, second.content)
+
+    stop_tool.invoke(
+        ToolCall(
+            tool_name="background_process_stop",
+            arguments={"process_id": str(first.data["process_id"])},
+        ),
+        workspace=tmp_path,
+    )
+    runtime.__exit__(None, None, None)
+
+
 def test_background_process_logs_retains_bounded_recent_lines(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     start_tool = runtime._base_tool_registry.resolve("background_process_start")

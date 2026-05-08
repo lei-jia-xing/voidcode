@@ -2,6 +2,11 @@ Start a long-running non-interactive background process in the workspace.
 
 Usage:
 - Use this tool for dev servers or watchers such as `npm run dev`, `vite`, or `uvicorn` when the agent must keep working without blocking.
+- Prefer this tool over `shell_exec` whenever a command should keep running after the current step, especially for backend servers, frontend dev servers, file watchers, and local daemons used during QA.
+- Before starting another long-lived process, prefer reusing a matching process that is already running in the same workspace. Check its logs/readiness first instead of launching duplicates during retries.
+- Use this tool only for the long-lived target process itself, not for interactive scaffold prompts or one-shot setup commands.
+- After starting a process, inspect readiness with `background_process_logs` instead of repeatedly starting replacement processes with slightly different commands, ports, or flags.
+- If readiness is unclear, report the current logs/status and continue only when you have a concrete reason to replace the process.
 - Prefer `shell_exec` for one-shot commands that should finish inside the current turn.
 - Use `background_process_logs` to inspect output and `background_process_stop` to stop the process.
 - Treat process_id, running, and exit_code as the source of truth.

@@ -11,7 +11,6 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 class _TodoItemModel(BaseModel):
     content: str
     status: Literal["pending", "in_progress", "completed", "cancelled"]
-    priority: Literal["high", "medium", "low"]
 
     @field_validator("content", mode="after")
     @classmethod
@@ -45,17 +44,11 @@ def _parse_todo_item(item: object, *, idx: int) -> dict[str, str]:
             raise ValueError(
                 f"todo_write item #{idx} invalid status: {item_payload.get('status')}"
             ) from exc
-        if field_name == "priority":
-            raise ValueError(
-                f"todo_write item #{idx} invalid priority: {item_payload.get('priority')}"
-            ) from exc
-
         raise ValueError(f"todo_write item #{idx} must be an object") from exc
 
     return {
         "content": parsed.content,
         "status": parsed.status,
-        "priority": parsed.priority,
     }
 
 
@@ -64,7 +57,7 @@ def _render_todo_content(todos: list[dict[str, str]]) -> str:
         return "Updated 0 todos"
     lines = [f"Updated {len(todos)} todos"]
     for position, todo in enumerate(todos, start=1):
-        lines.append(f"{position}. [{todo['status']}/{todo['priority']}] {todo['content']}")
+        lines.append(f"{position}. [{todo['status']}] {todo['content']}")
     return "\n".join(lines)
 
 
@@ -89,10 +82,9 @@ _TODO_WRITE_DESCRIPTION = (
     "    payloads that violate this constraint.\n"
     "  - Mark `completed` IMMEDIATELY after finishing; never batch.\n"
     "  - Use `cancelled` (not delete) when a todo becomes irrelevant.\n"
-    "  - Each item must have content, status, and priority.\n"
+    "  - Each item must have content and status.\n"
     "\n"
-    "ITEM SHAPE: {content: str, status: pending|in_progress|completed|cancelled,\n"
-    "             priority: high|medium|low}\n"
+    "ITEM SHAPE: {content: str, status: pending|in_progress|completed|cancelled}\n"
 )
 
 
@@ -104,7 +96,7 @@ class TodoWriteTool:
             "todos": {
                 "type": "array",
                 "description": (
-                    "Full replacement list of {content, status, priority} items. "
+                    "Full replacement list of {content, status} items. "
                     "At most one item may have status='in_progress'."
                 ),
             },

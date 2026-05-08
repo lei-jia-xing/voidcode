@@ -5,7 +5,6 @@ type ChatTool = ChatMessage["tools"][number];
 export interface TodoPanelItem {
   content: string;
   status: string;
-  priority: string;
 }
 
 export interface TodoPanelSnapshot {
@@ -54,7 +53,6 @@ function normalizeTodoItems(rawTodos: unknown[]): TodoPanelItem[] {
     .map((item) => ({
       content: todoContent(item) ?? "Untitled todo",
       status: stringValue(item.status) ?? "pending",
-      priority: stringValue(item.priority) ?? "medium",
     }));
 }
 
@@ -63,15 +61,14 @@ function parseTodosFromContent(
 ): TodoPanelItem[] {
   if (!content) return [];
   const itemPattern =
-    /^\s*\d+\.\s+\[(pending|in_progress|completed|cancelled)\/(high|medium|low)\]\s+(.+?)\s*$/;
+    /^\s*\d+\.\s+\[(pending|in_progress|completed|cancelled)\]\s+(.+?)\s*$/;
   return content
     .split(/\r?\n/)
     .map((line) => itemPattern.exec(line))
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => ({
       status: match[1],
-      priority: match[2],
-      content: match[3].trim(),
+      content: match[2].trim(),
     }));
 }
 

@@ -2011,6 +2011,10 @@ class VoidCodeRuntime:
         request_metadata = self._request_metadata_with_workflow_defaults(
             self._fresh_request_metadata(request.metadata)
         )
+        rehydrated_tool_results = self._rehydrated_tool_results_for_existing_session(
+            session_id=request.session_id,
+            parent_session_id=request.parent_session_id,
+        )
         if run_id is not None:
             _ACTIVE_SESSION_REGISTRY.remember_metadata(
                 workspace=self._workspace,
@@ -2261,13 +2265,13 @@ class VoidCodeRuntime:
             available_tools=tool_registry.definitions(),
             context_window=self._prepare_provider_context_window(
                 prompt=request.prompt,
-                tool_results=(),
+                tool_results=rehydrated_tool_results,
                 session_metadata=session.metadata,
                 abort_signal=abort_signal,
             ),
             assembled_context=self._assemble_provider_context(
                 prompt=request.prompt,
-                tool_results=(),
+                tool_results=rehydrated_tool_results,
                 session_metadata=session.metadata,
                 skill_prompt_context=skill_prompt_context,
             ),
@@ -2290,7 +2294,7 @@ class VoidCodeRuntime:
             },
             abort_signal=abort_signal,
         )
-        tool_results: list[ToolResult] = []
+        tool_results: list[ToolResult] = list(rehydrated_tool_results)
         graph = self._graph_for_session_metadata(session.metadata)
 
         last_chunk: RuntimeStreamChunk | None = None
@@ -2918,6 +2922,7 @@ class VoidCodeRuntime:
         *,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
+        self._reconcile_background_tasks_if_needed()
         return self._background_task_supervisor.load_background_task_result(
             task_id,
             emit_result_read_hook=emit_result_read_hook,
@@ -5994,6 +5999,39 @@ class VoidCodeRuntime:
             policy=policy or self._default_context_window_policy,
         )
 
+    def _rehydrated_tool_results_for_existing_session(
+        self,
+        *,
+        session_id: str | None,
+        parent_session_id: str | None,
+    ) -> tuple[ToolResult, ...]:
+        if session_id is None:
+            return ()
+        stored = self._load_existing_session_if_present(session_id=session_id)
+        if stored is None:
+            return ()
+        stored_parent_session_id = stored.session.session.parent_id
+        if parent_session_id is not None and stored_parent_session_id != parent_session_id:
+            return ()
+        _prompt, tool_results = self._prompt_and_tool_results_from_debug_events(stored.events)
+        return tuple(self._eligible_rehydrated_tool_results(tool_results))
+
+    @staticmethod
+    def _eligible_rehydrated_tool_results(
+        tool_results: list[ToolResult],
+    ) -> list[ToolResult]:
+        eligible: list[ToolResult] = []
+        for result in tool_results:
+            if result.tool_name in {"read_file", "grep", "glob", "ast_grep_search"}:
+                eligible.append(result)
+                continue
+            if result.tool_name != "shell_exec":
+                continue
+            command = result.data.get("command")
+            if isinstance(command, str) and command.strip():
+                eligible.append(result)
+        return eligible
+
     @staticmethod
     def _should_fetch_distillation_candidate(
         *,
@@ -6170,6 +6208,7 @@ class VoidCodeRuntime:
             else None
         )
         model_family = effective_config.resolved_provider.active_target.selection.provider
+        tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
         agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
         hook_preset_context = self._hook_preset_context_from_metadata(
             session_metadata,
@@ -6190,6 +6229,9 @@ class VoidCodeRuntime:
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
             agent_prompt_context=agent_prompt_context,
+            prompt_profile_name=effective_config.agent.prompt_profile
+            if effective_config.agent is not None
+            else None,
             hook_preset_context=hook_preset_context,
             context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,
@@ -6199,6 +6241,7 @@ class VoidCodeRuntime:
                 session_metadata
             ),
             workspace=self._workspace,
+            replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
         )
 
     @staticmethod

@@ -168,10 +168,16 @@ def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
     hunks: list[_MarkerHunk] = []
     current = begin_index + 1
     while current < end_index:
-        header = _parse_marker_header(lines, current)
-        if header is None:
+        current_line = lines[current]
+        if not current_line.strip():
             current += 1
             continue
+        header = _parse_marker_header(lines, current)
+        if header is None:
+            raise ValueError(
+                "malformed patch: expected a file operation "
+                f"(*** Add File / *** Update File / *** Delete File), got: {current_line}"
+            )
 
         action, path, move_path, next_index = header
         if action == "add":
@@ -548,6 +554,8 @@ def _run_git_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[
 
 
 def _format_patch_error(error: str, patch_text: str) -> str:
+    if "No valid patches in input" in error or "patch with only garbage" in error:
+        return _invalid_patch_text_error(patch_text, detail=error)
     match = re.search(r"(?:line\s+|:)(\d+)(?:\n|$)", error)
     if match is None:
         return error
@@ -564,6 +572,22 @@ def _format_patch_error(error: str, patch_text: str) -> str:
             "*** Begin Patch / *** Add File envelope to avoid manual hunk counts."
         )
     return f"{error}\nPatch context near line {line_number}:\n{context}{hint}"
+
+
+def _invalid_patch_text_error(patch_text: str, *, detail: str | None = None) -> str:
+    stripped = _strip_heredoc(patch_text).strip()
+    if not stripped:
+        base = "apply_patch received empty patch text."
+    else:
+        base = "apply_patch received malformed patch text: no valid file operations were found."
+    guidance = (
+        "\nProvide exactly one structured patch envelope with at least one file operation, "
+        "or a valid unified diff that git apply can parse."
+        "\nExample:\n*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch"
+    )
+    if detail:
+        return f"{base}\nUnderlying error: {detail}{guidance}"
+    return f"{base}{guidance}"
 
 
 def _formatter_feedback_for_changes(
@@ -833,6 +857,10 @@ class ApplyPatchTool:
         if not isinstance(patch_text, str):
             raise ValueError("apply_patch requires a string 'patch' argument")
 
+        stripped_patch = _strip_heredoc(patch_text).strip()
+        if not stripped_patch:
+            raise ValueError(_invalid_patch_text_error(patch_text))
+
         if _looks_like_marker_patch(patch_text):
             result = _apply_marker_patch(patch_text, workspace=workspace)
             return _with_formatter_feedback(
@@ -843,6 +871,8 @@ class ApplyPatchTool:
 
         normalized_patch = _normalize_patch_text(patch_text)
         changes = _changes_from_patch(patch_text)
+        if not changes and not _looks_like_mode_only_patch(patch_text):
+            raise ValueError(_invalid_patch_text_error(patch_text))
         _guard_changes_before_write(
             changes,
             workspace=workspace,

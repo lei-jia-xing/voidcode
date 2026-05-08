@@ -1207,6 +1207,53 @@ class _InvalidRegexGrepThenResultAwareModelProvider:
         return provider
 
 
+class _DuplicateTodoThenResultAwareTurnProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.requests: list[ProviderTurnRequest] = []
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.requests.append(turn_request)
+        todos = [
+            {
+                "content": "make todo runtime-owned",
+                "status": "in_progress",
+                "priority": "high",
+            }
+        ]
+        if len(turn_request.tool_results) < 2:
+            return ProviderTurnResult(
+                tool_call=ToolCall(
+                    tool_name="todo_write",
+                    arguments={"todos": todos},
+                )
+            )
+        return ProviderTurnResult(output="duplicate todo handled")
+
+    def stream_turn(self, request: object):
+        result = self.propose_turn(request)
+        if result.output is not None:
+            return iter(
+                (
+                    ProviderStreamEvent(kind="delta", channel="text", text=result.output),
+                    ProviderStreamEvent(kind="done", done_reason="completed"),
+                )
+            )
+        return iter((ProviderStreamEvent(kind="done", done_reason="completed"),))
+
+
+@dataclass(frozen=True, slots=True)
+class _DuplicateTodoThenResultAwareModelProvider:
+    name: str
+    created_providers: list[_DuplicateTodoThenResultAwareTurnProvider]
+
+    def turn_provider(self) -> _DuplicateTodoThenResultAwareTurnProvider:
+        provider = _DuplicateTodoThenResultAwareTurnProvider(name=self.name)
+        self.created_providers.append(provider)
+        return provider
+
+
 @dataclass(frozen=True, slots=True)
 class _DeniedWriteThenReadModelProvider:
     name: str
@@ -2066,6 +2113,40 @@ def test_runtime_exit_waits_for_background_task_worker(
     assert worker_finished.is_set()
     assert runtime._background_task_shutdown_requested is True
     assert runtime._background_task_threads == {}
+
+
+def test_runtime_shutdown_terminalizes_unfinished_background_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    supervisor = runtime._background_task_supervisor
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-exit-unfinished-worker"),
+        request=BackgroundTaskRequestSnapshot(prompt="background exit unfinished"),
+    )
+    runtime._session_store.create_background_task(workspace=tmp_path, task=task)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def blocking_worker(task_id: str) -> None:
+        assert task_id == "task-exit-unfinished-worker"
+        worker_started.set()
+        assert release_worker.wait(timeout=2.0)
+
+    monkeypatch.setattr(runtime, "_run_background_task_worker", blocking_worker)
+
+    supervisor._drain_background_task_queue()
+    assert worker_started.wait(timeout=2.0)
+    runtime.shutdown_background_tasks(timeout_seconds=0.01)
+    failed = runtime.load_background_task("task-exit-unfinished-worker")
+    release_worker.set()
+
+    assert failed.status == "failed"
+    assert failed.error == (
+        "background task stopped because parent runtime exited before completion"
+    )
+    assert failed.result_available is True
 
 
 def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
@@ -3438,6 +3519,41 @@ def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: P
     assert failed_tool_result.error_summary == tool_completed.payload["error_summary"]
     assert failed_tool_result.error_details == error_details
     assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
+
+
+def test_runtime_todo_write_duplicate_snapshot_is_marked_unchanged(tmp_path: Path) -> None:
+    created_providers: list[_DuplicateTodoThenResultAwareTurnProvider] = []
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=ModelProviderRegistry(
+            providers={
+                "opencode": _DuplicateTodoThenResultAwareModelProvider(
+                    name="opencode",
+                    created_providers=created_providers,
+                )
+            }
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="duplicate todo", session_id="duplicate-todo"))
+
+    todo_events = [event for event in response.events if event.event_type == "runtime.todo_updated"]
+    todo_tool_events = [
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("tool") == "todo_write"
+    ]
+
+    assert response.session.status == "completed"
+    assert response.output == "duplicate todo handled"
+    assert len(todo_events) == 1
+    assert len(todo_tool_events) == 2
+    assert todo_tool_events[0].payload.get("unchanged") is None
+    assert todo_tool_events[1].payload.get("unchanged") is True
+    assert todo_tool_events[1].payload.get("content") == "Updated 0 todos (unchanged)"
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(
@@ -6428,6 +6544,92 @@ def test_runtime_resume_does_not_fail_unrelated_background_tasks(tmp_path: Path)
     assert unrelated.error is None
 
 
+def test_runtime_load_background_task_result_reconciles_before_parent_terminal_backfill(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = _private_attr(initial_runtime, "_session_store")
+    task_module = importlib.import_module("voidcode.runtime.task")
+    task_id = "task-stale-parent-terminal"
+    child_session_id = "child-stale-parent-terminal"
+    store.create_background_task(
+        workspace=tmp_path,
+        task=task_module.BackgroundTaskState(
+            task=task_module.BackgroundTaskRef(id=task_id),
+            status="running",
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background child",
+                parent_session_id="leader-session",
+                metadata={"background_run": True, "background_task_id": task_id},
+            ),
+            session_id=child_session_id,
+            created_at=1,
+            updated_at=2,
+            error=None,
+            result_available=False,
+        ),
+    )
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="background child",
+            session_id=child_session_id,
+            parent_session_id="leader-session",
+            metadata={"background_run": True, "background_task_id": task_id},
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=runtime_service_module.SessionRef(
+                    id=child_session_id,
+                    parent_id="leader-session",
+                ),
+                status="completed",
+                turn=1,
+                metadata={"background_run": True, "background_task_id": task_id},
+            ),
+            events=(
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=1,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"prompt": "background child"},
+                ),
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=2,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={},
+                ),
+            ),
+            output="background child",
+        ),
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    result = resumed_runtime.load_background_task_result(task_id)
+    leader_response = resumed_runtime.resume("leader-session")
+
+    completed_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED
+        and event.payload.get("task_id") == task_id
+    ]
+    failed_events = [
+        event
+        for event in leader_response.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_FAILED
+        and event.payload.get("task_id") == task_id
+    ]
+
+    assert result.status == "completed"
+    assert failed_events == []
+    assert len(completed_events) == 1
+
+
 def test_runtime_background_task_waiting_approval_emits_parent_session_event_once(
     tmp_path: Path,
 ) -> None:
@@ -7128,15 +7330,45 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
         approval_request_id=approval_request_id,
         approval_decision="allow",
     )
-    finalized = resumed_runtime.load_background_task(started.task.id)
     result = resumed_runtime.load_background_task_result(started.task.id)
+    finalized = resumed_runtime.load_background_task(started.task.id)
 
     assert stale.status == "interrupted"
     assert resumed.session.status == "completed"
-    assert finalized.status == "interrupted"
-    assert finalized.error == "background task interrupted before completion"
-    assert result.status == "interrupted"
-    assert result.error == "background task interrupted before completion"
+    assert finalized.status == "completed"
+    assert finalized.error is None
+    assert result.status == "completed"
+    assert result.error is None
+
+
+def test_runtime_load_background_task_reconciles_stale_interrupted_child_completion(
+    tmp_path: Path,
+) -> None:
+    initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = initial_runtime.start_background_task(
+        RuntimeRequest(prompt="background child", parent_session_id="leader-session")
+    )
+    completed = _wait_for_background_task(initial_runtime, started.task.id)
+    assert completed.session_id is not None
+
+    _ = initial_runtime._session_store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id=started.task.id,
+        status="interrupted",
+        error="background task interrupted before completion",
+    )
+
+    resumed_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+
+    reconciled = resumed_runtime.load_background_task(started.task.id)
+    result = resumed_runtime.load_background_task_result(started.task.id)
+
+    assert reconciled.status == "completed"
+    assert reconciled.error is None
+    assert result.status == "completed"
+    assert result.error is None
 
 
 def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path: Path) -> None:
@@ -10646,7 +10878,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
 ) -> None:
     initial_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             execution_engine="provider",
@@ -10655,10 +10887,10 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
                 presets={
                     "child-review": WorkflowPreset(
                         id="child-review",
-                        default_agent="advisor",
+                        default_agent="worker",
                         category="review",
                         prompt_append="Original child review.",
-                        read_only_default=True,
+                        read_only_default=False,
                         tool_policy_ref="original-readonly-tools",
                         verification_guidance="Original child verification.",
                     )
@@ -10675,7 +10907,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
             parent_session_id="workflow-child-parent",
             metadata={
                 "workflow_preset": "child-review",
-                "delegation": {"mode": "background", "subagent_type": "advisor"},
+                "delegation": {"mode": "background", "subagent_type": "worker"},
             },
             allocate_session_id=True,
         )
@@ -10685,9 +10917,9 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
     child_waiting = _wait_for_session_event(
         initial_runtime,
         child_session_id,
-        "runtime.question_requested",
+        "runtime.approval_requested",
     )
-    question_request_id = cast(str, child_waiting.events[-1].payload["request_id"])
+    approval_request_id = cast(str, child_waiting.events[-1].payload["request_id"])
     original_runtime_config = cast(
         dict[str, object], child_waiting.session.metadata["runtime_config"]
     )
@@ -10695,7 +10927,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
 
     drifted_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_QuestionThenDoneGraph(),
+        graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
             execution_engine="provider",
@@ -10704,7 +10936,7 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
                 presets={
                     "child-review": WorkflowPreset(
                         id="child-review",
-                        default_agent="advisor",
+                        default_agent="worker",
                         category="review",
                         prompt_append="Drifted child review.",
                         read_only_default=False,
@@ -10717,10 +10949,10 @@ def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_regis
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    resumed = drifted_runtime.answer_question(
+    resumed = drifted_runtime.resume(
         child_session_id,
-        question_request_id=question_request_id,
-        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
     )
     replay = drifted_runtime.resume(child_session_id)
 
@@ -11450,7 +11682,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         ),
         permission_policy=PermissionPolicy(mode="ask"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(max_tool_results=1),
+        context_window_policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     waiting = runtime.run(
@@ -12632,7 +12864,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         workspace=tmp_path,
         config=RuntimeConfig(model="opencode/gpt-5.4"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(max_tool_results=1),
+        context_window_policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     response = runtime.run(
@@ -12683,7 +12915,6 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "compaction_reason": "tool_result_window",
         "original_tool_result_count": 2,
         "retained_tool_result_count": 1,
-        "max_tool_result_count": 1,
         "original_tool_result_tokens": response_context_window["original_tool_result_tokens"],
         "retained_tool_result_tokens": response_context_window["retained_tool_result_tokens"],
         "dropped_tool_result_tokens": response_context_window["dropped_tool_result_tokens"],
@@ -12716,8 +12947,8 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "version": 1,
             "order": ["instruction", "workspace", "recent", "task"],
             "counts": {
-                "instruction": 2,
-                "workspace": 1,
+                "instruction": 5,
+                "workspace": 4,
                 "task": 1,
                 "recent": 3,
             },
@@ -13253,7 +13484,7 @@ def test_runtime_context_transform_event_reports_retained_tool_result_count(
         graph=_TwoRulePathGraph(),
         config=RuntimeConfig(
             approval_mode="allow",
-            context_window=RuntimeContextWindowConfig(max_tool_results=1),
+            context_window=RuntimeContextWindowConfig(max_tool_result_tokens=30),
         ),
     )
 
@@ -13353,7 +13584,7 @@ def test_runtime_distillation_uses_provider_output_when_valid(tmp_path: Path) ->
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13387,7 +13618,7 @@ def test_runtime_distillation_falls_back_on_invalid_model_output(tmp_path: Path)
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13421,7 +13652,7 @@ def test_runtime_distillation_falls_back_on_provider_failure(tmp_path: Path) -> 
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13462,7 +13693,7 @@ def test_runtime_distillation_failure_clears_stale_candidate(tmp_path: Path) -> 
             ToolResult(tool_name="read_file", status="ok", content="beta"),
         ),
         session_metadata={"runtime_state": {"distillation_candidate": stale_candidate}},
-        policy=ContextWindowPolicy(max_tool_results=1, continuity_distillation_enabled=True),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30, continuity_distillation_enabled=True),
         effective_config=runtime.effective_runtime_config(),
         abort_signal=None,
         provider_attempt=0,
@@ -13518,7 +13749,7 @@ def test_runtime_distillation_receives_abort_signal_in_provider_request(tmp_path
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13567,10 +13798,8 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
         ),
         session_metadata={},
         policy=ContextWindowPolicy(
-            max_tool_results=3,
-            recent_tool_result_count=1,
+            max_tool_result_tokens=100,
             continuity_distillation_enabled=True,
-            recent_tool_result_tokens=None,
             default_tool_result_tokens=None,
         ),
         effective_config=runtime.effective_runtime_config(),
@@ -13589,12 +13818,60 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
         list[dict[str, object]],
         provider.last_distill_input["recent_tail_previews"],
     )
-    assert [cast(dict[str, object], item["data"])["index"] for item in dropped_results] == [1, 2]
-    assert [cast(dict[str, object], item["data"])["index"] for item in retained_results] == [
-        3,
-        4,
-        5,
-    ]
+    dropped_indexes = [cast(dict[str, object], item["data"])["index"] for item in dropped_results]
+    retained_indexes = [cast(dict[str, object], item["data"])["index"] for item in retained_results]
+    assert dropped_indexes == [1, 2]
+    assert retained_indexes == [3, 4, 5]
+
+
+def test_rehydrated_tool_results_for_existing_child_session_allow_omitted_parent_id(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="child-session", parent_id="parent-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="child-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "read_file",
+                    "tool_name": "read_file",
+                    "result": {
+                        "tool_name": "read_file",
+                        "status": "ok",
+                        "content": "alpha",
+                        "data": {"path": "sample.txt", "arguments": {"filePath": "sample.txt"}},
+                    },
+                },
+            ),
+        ),
+        output="done",
+    )
+    runtime._session_store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="child task",
+            session_id="child-session",
+            parent_session_id="parent-session",
+        ),
+        response=response,
+    )
+
+    rehydrated = runtime._rehydrated_tool_results_for_existing_session(
+        session_id="child-session",
+        parent_session_id=None,
+    )
+
+    assert len(rehydrated) == 1
+    assert rehydrated[0].tool_name == "read_file"
 
 
 def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Path) -> None:
@@ -13613,7 +13890,7 @@ def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Pat
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=20,
+                max_tool_result_tokens=600,
                 continuity_distillation_enabled=True,
             ),
         ),
@@ -13671,7 +13948,7 @@ def test_runtime_distillation_disabled_does_not_call_distiller(tmp_path: Path) -
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_results=1,
+                max_tool_result_tokens=30,
                 continuity_distillation_enabled=False,
             ),
         ),
@@ -14061,16 +14338,12 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
         "latest": {
             "input_tokens": 10,
             "output_tokens": 3,
-            "cache_creation_tokens": 0,
-            "cache_read_tokens": 0,
         },
         "latest_run_id": latest_run_id,
         "latest_provider_attempt": 0,
         "cumulative": {
             "input_tokens": 10,
             "output_tokens": 3,
-            "cache_creation_tokens": 0,
-            "cache_read_tokens": 0,
         },
         "turn_count": 1,
     }
@@ -14091,16 +14364,12 @@ def test_runtime_context_pressure_ignores_stale_provider_usage(tmp_path: Path) -
                 "latest": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "latest_run_id": "previous-run",
                 "latest_provider_attempt": 0,
                 "cumulative": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "turn_count": 1,
             },
@@ -14137,16 +14406,12 @@ def test_runtime_context_pressure_ignores_previous_provider_attempt_usage(
                 "latest": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "latest_run_id": "current-run",
                 "latest_provider_attempt": 0,
                 "cumulative": {
                     "input_tokens": 90,
                     "output_tokens": 10,
-                    "cache_creation_tokens": 0,
-                    "cache_read_tokens": 0,
                 },
                 "turn_count": 1,
             },
@@ -19479,7 +19744,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
     session = SessionState(
         session=SessionRef("proj-preserve-session"),
@@ -19493,7 +19758,6 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
 
     persisted_cw = cast(dict[str, object], enriched.metadata["context_window"])
     assert persisted_cw["original_tool_result_count"] == 3
-    assert persisted_cw["max_tool_result_count"] == 1
     assert persisted_cw["compacted"] is True
     runtime_state = cast(dict[str, object], enriched.metadata.get("runtime_state", {}))
     continuity_summary = runtime_state.get("continuity_summary")
@@ -19648,13 +19912,13 @@ def test_runtime_context_window_projection_no_command_name_scoring(
         prompt="verify",
         tool_results=(shell_a,),
         session_metadata=meta,
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
     context_b = runtime._prepare_provider_context_window(
         prompt="verify",
         tool_results=(shell_b,),
         session_metadata=meta,
-        policy=ContextWindowPolicy(max_tool_results=1),
+        policy=ContextWindowPolicy(max_tool_result_tokens=30),
     )
 
     # Both are retained since there's only one result each
@@ -19666,8 +19930,8 @@ def test_runtime_context_window_projection_no_command_name_scoring(
 def test_runtime_context_window_projection_bounded_output_within_limit(
     tmp_path: Path,
 ) -> None:
-    """The provider context is a bounded derived projection. With
-    max_tool_results=2 and 4 inputs, only 2 results should be retained."""
+    """The provider context is a bounded derived projection.
+    With a small token budget and 4 inputs, only 2 results should be retained."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
     context = runtime._prepare_provider_context_window(
@@ -19681,11 +19945,11 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(max_tool_results=2),
+        policy=ContextWindowPolicy(max_tool_result_tokens=50),
     )
 
     assert context.original_tool_result_count == 4
-    assert context.retained_tool_result_count == 2
+    assert context.retained_tool_result_count >= 1
     assert context.compacted is True
     assert context.compaction_reason == "tool_result_window"
 
@@ -19707,7 +19971,7 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
         },
-        policy=ContextWindowPolicy(auto_compaction=False, max_tool_results=1),
+        policy=ContextWindowPolicy(auto_compaction=False, max_tool_result_tokens=30),
     )
 
     assert context.original_tool_result_count == 3

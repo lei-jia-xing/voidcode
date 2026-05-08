@@ -64,6 +64,24 @@ def test_write_file_tool_allows_overwrite_after_prior_read(tmp_path: Path) -> No
     assert target.read_text(encoding="utf-8") == "new"
 
 
+def test_write_file_tool_allows_new_file_without_prior_read_even_with_runtime_context(
+    tmp_path: Path,
+) -> None:
+    tool = WriteFileTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="write_file",
+                arguments={"path": "new-file.txt", "content": "hello"},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert (tmp_path / "new-file.txt").read_text(encoding="utf-8") == "hello"
+
+
 def test_edit_tool_rejects_modify_without_prior_read(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("old", encoding="utf-8")

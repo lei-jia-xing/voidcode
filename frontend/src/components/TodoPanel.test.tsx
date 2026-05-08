@@ -32,18 +32,16 @@ function messageWithTodos(
 }
 
 describe("TodoPanel", () => {
-  it("renders todo content with status and priority metadata", () => {
+  it("renders todo content with status metadata", () => {
     const snapshot: TodoPanelSnapshot = {
       items: [
         {
           content: "Fix tool grouping",
           status: "in_progress",
-          priority: "high",
         },
         {
           content: "Add tests",
           status: "pending",
-          priority: "medium",
         },
       ],
     };
@@ -61,21 +59,18 @@ describe("TodoPanel", () => {
     expect(screen.getByText("Fix tool grouping")).toBeInTheDocument();
     expect(screen.getByText("Add tests")).toBeInTheDocument();
     expect(screen.getByText("in progress")).toBeInTheDocument();
-    expect(screen.getByText("high")).toBeInTheDocument();
   });
 
   it("derives the latest todo_write snapshot from chat messages", () => {
     const snapshot = deriveLatestTodoSnapshot([
-      messageWithTodos("old", [
-        { content: "Old item", status: "pending", priority: "low" },
-      ]),
+      messageWithTodos("old", [{ content: "Old item", status: "pending" }]),
       messageWithTodos("new", [
-        { content: "Current item", status: "completed", priority: "high" },
+        { content: "Current item", status: "completed" },
       ]),
     ]);
 
     expect(snapshot?.items).toEqual([
-      { content: "Current item", status: "completed", priority: "high" },
+      { content: "Current item", status: "completed" },
     ]);
   });
 
@@ -94,7 +89,6 @@ describe("TodoPanel", () => {
                   {
                     content: "Nested item",
                     status: "pending",
-                    priority: "medium",
                   },
                 ],
               },
@@ -118,12 +112,12 @@ describe("TodoPanel", () => {
             status: "completed",
             result: {
               todos: [
-                { content: "", status: "completed", priority: "high" },
-                { content: "", status: "in_progress", priority: "high" },
+                { content: "", status: "completed" },
+                { content: "", status: "in_progress" },
               ],
             },
             content:
-              "Updated 2 todos\n1. [completed/high] 阅读项目文档，了解整体架构\n2. [in_progress/high] 实现用户登录功能",
+              "Updated 2 todos\n1. [completed] 阅读项目文档，了解整体架构\n2. [in_progress] 实现用户登录功能",
           },
         ],
       },
@@ -133,12 +127,10 @@ describe("TodoPanel", () => {
       {
         content: "阅读项目文档，了解整体架构",
         status: "completed",
-        priority: "high",
       },
       {
         content: "实现用户登录功能",
         status: "in_progress",
-        priority: "high",
       },
     ]);
   });

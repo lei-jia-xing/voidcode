@@ -238,8 +238,7 @@ def test_runtime_config_defaults_to_provider_for_product_runs(
     assert config.execution_engine == "provider"
     assert config.model is None
     assert RuntimeConfig().execution_engine == "provider"
-    assert RuntimeContextWindowConfig().max_tool_results == 8
-    assert RuntimeContextWindowConfig().recent_tool_result_tokens == 3_000
+    assert RuntimeContextWindowConfig().max_tool_result_tokens is None
     assert RuntimeContextWindowConfig().default_tool_result_tokens == 1_500
     assert RuntimeContextWindowConfig().tokenizer_model == "cl100k_base"
 
@@ -266,14 +265,10 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
             {
                 "context_window": {
                     "auto_compaction": False,
-                    "max_tool_results": 6,
                     "max_tool_result_tokens": 2_000,
                     "max_context_ratio": 0.25,
                     "model_context_window_tokens": 128_000,
                     "reserved_output_tokens": 20_000,
-                    "minimum_retained_tool_results": 2,
-                    "recent_tool_result_count": 3,
-                    "recent_tool_result_tokens": 8_000,
                     "default_tool_result_tokens": 1_000,
                     "per_tool_result_tokens": {"grep": 500},
                     "tokenizer_model": "gpt-4o",
@@ -297,14 +292,10 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
 
     assert config.context_window == RuntimeContextWindowConfig(
         auto_compaction=False,
-        max_tool_results=6,
         max_tool_result_tokens=2_000,
         max_context_ratio=0.25,
         model_context_window_tokens=128_000,
         reserved_output_tokens=20_000,
-        minimum_retained_tool_results=2,
-        recent_tool_result_count=3,
-        recent_tool_result_tokens=8_000,
         default_tool_result_tokens=1_000,
         per_tool_result_tokens={"grep": 500},
         tokenizer_model="gpt-4o",
@@ -335,16 +326,13 @@ def test_runtime_config_uses_current_context_window_defaults_for_partial_repo_fi
     assert config.context_window is not None
     assert config.context_window == RuntimeContextWindowConfig(
         auto_compaction=True,
-        recent_tool_result_tokens=3_000,
         default_tool_result_tokens=1_500,
         tokenizer_model="cl100k_base",
     )
-    assert config.context_window.max_tool_results == 8
 
 
 def test_runtime_context_window_config_serializes_for_session_resume() -> None:
     config = RuntimeContextWindowConfig(
-        max_tool_results=5,
         reserved_output_tokens=100,
         per_tool_result_tokens={"shell_exec": 400},
         context_pressure_threshold=0.72,
@@ -411,7 +399,7 @@ def test_runtime_config_rejects_distillation_max_input_chars_below_minimum(
 def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
     _ = (tmp_path / "README.md").write_text("context window\n", encoding="utf-8")
     context_window = RuntimeContextWindowConfig(
-        max_tool_results=5,
+        max_tool_result_tokens=500,
         reserved_output_tokens=100,
         per_tool_result_tokens={"shell_exec": 400},
     )
@@ -2194,23 +2182,6 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
             {"hooks": {"timeout_seconds": "slow"}},
             "runtime config field 'hooks.timeout_seconds'",
             id="hook-timeout-type",
-        ),
-        pytest.param(
-            {"context_window": {"max_tool_results": 0}},
-            "runtime config field 'context_window.max_tool_results'.*greater than or equal to 1",
-            id="context-window-max-tool-results-zero",
-        ),
-        pytest.param(
-            {"context_window": {"minimum_retained_tool_results": 0}},
-            "runtime config field 'context_window.minimum_retained_tool_results'"
-            ".*greater than or equal to 1",
-            id="context-window-minimum-retained-zero",
-        ),
-        pytest.param(
-            {"context_window": {"recent_tool_result_count": 0}},
-            "runtime config field 'context_window.recent_tool_result_count'"
-            ".*greater than or equal to 1",
-            id="context-window-recent-count-zero",
         ),
         pytest.param(
             {"context_window": {"reserved_output_tokens": 0}},

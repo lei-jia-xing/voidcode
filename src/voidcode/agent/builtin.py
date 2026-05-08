@@ -6,29 +6,33 @@ from ..hook.presets import validate_hook_preset_refs
 from .models import AgentManifest, AgentManifestId, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
-_READ_ONLY_WORKSPACE_TOOLS = (
+_WORKSPACE_DISCOVERY_TOOLS = (
     "read_file",
     "glob",
     "grep",
     "ast_grep_search",
     "lsp",
-    "question",
-    "skill",
-    "background_output",
 )
 
+
 _LEADER_TOOL_ALLOWLIST = (
-    *_READ_ONLY_WORKSPACE_TOOLS,
+    *_WORKSPACE_DISCOVERY_TOOLS,
     "write_file",
     "edit",
     "multi_edit",
     "apply_patch",
+    "background_process_start",
+    "background_process_logs",
+    "background_process_stop",
     "shell_exec",
     "format_file",
     "task",
     "todo_write",
     "background_cancel",
     "background_retry",
+    "background_output",
+    "question",
+    "skill",
     "ast_grep_preview",
     "ast_grep_replace",
     "web_search",
@@ -84,13 +88,18 @@ WORKER_AGENT_MANIFEST = AgentManifest(
     prompt_profile="worker",
     execution_engine="provider",
     tool_allowlist=(
-        *_READ_ONLY_WORKSPACE_TOOLS,
+        *_WORKSPACE_DISCOVERY_TOOLS,
         "write_file",
         "edit",
         "multi_edit",
         "apply_patch",
+        "background_process_start",
+        "background_process_logs",
+        "background_process_stop",
         "shell_exec",
         "format_file",
+        "todo_write",
+        "mcp/*",
     ),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
@@ -112,7 +121,7 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
     ),
     prompt_profile="advisor",
     execution_engine="provider",
-    tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
+    tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
@@ -134,7 +143,7 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     ),
     prompt_profile="explore",
     execution_engine="provider",
-    tool_allowlist=_READ_ONLY_WORKSPACE_TOOLS,
+    tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
@@ -168,7 +177,9 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
 )
 
 _PRODUCT_TOOL_ALLOWLIST = (
-    *_READ_ONLY_WORKSPACE_TOOLS,
+    *_WORKSPACE_DISCOVERY_TOOLS,
+    "question",
+    "skill",
     "todo_write",
     "web_search",
     "web_fetch",

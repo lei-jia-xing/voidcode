@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -12,7 +11,6 @@ from ..tools.contracts import Tool
 from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
-from ..tools.interactive_shell import InteractiveShellTool
 from ..tools.local_custom import discover_local_custom_tools
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
@@ -37,7 +35,6 @@ BUILTIN_TOOL_NAMES = frozenset(
         "format_file",
         "glob",
         "grep",
-        "interactive_shell",
         "lsp",
         "multi_edit",
         "read_file",
@@ -243,9 +240,6 @@ class BuiltinToolProvider:
             WebSearchTool(),
             WriteFileTool(hooks_config=self._hooks_config),
         ]
-
-        if os.name != "nt":
-            tools.append(InteractiveShellTool())
 
         if self._lsp_tool is not None:
             tools.append(self._lsp_tool)

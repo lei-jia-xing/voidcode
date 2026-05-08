@@ -707,7 +707,6 @@ def test_provider_adapter_propose_turn_returns_token_usage(
         usage={
             "prompt_tokens": 12,
             "completion_tokens": 4,
-            "prompt_tokens_details": {"cached_tokens": 3},
         },
     )
 
@@ -716,7 +715,6 @@ def test_provider_adapter_propose_turn_returns_token_usage(
     assert result.usage == ProviderTokenUsage(
         input_tokens=12,
         output_tokens=4,
-        cache_read_tokens=3,
     )
 
 
@@ -1155,7 +1153,6 @@ def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
                         {
                             "content": raw_todo_content,
                             "status": "pending",
-                            "priority": "high",
                         }
                     ]
                 },
@@ -1755,7 +1752,6 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
                         {
                             "content": raw_todo_content,
                             "status": "pending",
-                            "priority": "high",
                         }
                     ]
                 },
@@ -2316,6 +2312,15 @@ def test_provider_adapter_logs_bounded_request_diagnostics(
     assert "synthetic_tool_feedback_size=" in message
     assert "continuity_summary_size=" in message
     assert "largest_message=" in message
+
+
+def _messages_from_last_payload() -> list[dict[str, object]]:
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    messages_obj = payload.get("messages")
+    assert isinstance(messages_obj, list)
+    return cast(list[dict[str, object]], messages_obj)
 
 
 def test_provider_adapter_uses_runtime_assembled_context_for_agent_system_message(
@@ -3267,6 +3272,112 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
         ProviderStreamEvent(kind="delta", channel="text", text="Visible answer"),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
+
+
+def test_litellm_backend_skips_debug_without_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    calls: list[str] = []
+    redirects: list[str] = []
+
+    class _FakeLiteLLM:
+        def _turn_on_debug(self) -> None:
+            calls.append("debug")
+
+        def completion(self, *args: Any, **kwargs: Any):
+            _ = args, kwargs
+            return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.delenv("VOIDCODE_LITELLM_DEBUG", raising=False)
+    monkeypatch.setattr(
+        backend_module.LiteLLMBackendSingleAgentProvider,
+        "_redirect_litellm_debug_logs",
+        lambda: redirects.append("redirect"),
+    )
+
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek-v4-pro")
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+
+    assert first.output == "ok"
+    assert second.output == "ok"
+    assert calls == []
+    assert redirects == []
+
+
+def test_litellm_backend_enables_debug_once_with_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    calls: list[str] = []
+    redirects: list[str] = []
+
+    class _FakeLiteLLM:
+        def _turn_on_debug(self) -> None:
+            calls.append("debug")
+
+        def completion(self, *args: Any, **kwargs: Any):
+            _ = args, kwargs
+            return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.setenv("VOIDCODE_LITELLM_DEBUG", "1")
+    monkeypatch.setattr(
+        backend_module.LiteLLMBackendSingleAgentProvider,
+        "_redirect_litellm_debug_logs",
+        lambda: redirects.append("redirect"),
+    )
+
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek-v4-pro")
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+
+    assert first.output == "ok"
+    assert second.output == "ok"
+    assert calls == ["debug"]
+    assert redirects == ["redirect"]
+
+
+def test_litellm_backend_marks_debug_enabled_without_private_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    redirects: list[str] = []
+
+    class _FakeLiteLLM:
+        def completion(self, *args: Any, **kwargs: Any):
+            _ = args, kwargs
+            return _StubCompletionResponse(content="ok")
+
+    monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    monkeypatch.setattr(backend_module, "_LITELLM_DEBUG_ENABLED", False)
+    monkeypatch.setenv("VOIDCODE_LITELLM_DEBUG", "1")
+    monkeypatch.setattr(
+        backend_module.LiteLLMBackendSingleAgentProvider,
+        "_redirect_litellm_debug_logs",
+        lambda: redirects.append("redirect"),
+    )
+
+    provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
+    request = _build_turn_request(model_name="deepseek-v4-pro")
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+
+    assert first.output == "ok"
+    assert second.output == "ok"
+    assert redirects == ["redirect"]
 
 
 @pytest.mark.parametrize(

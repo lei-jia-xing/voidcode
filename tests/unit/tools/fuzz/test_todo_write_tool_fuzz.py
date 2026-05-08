@@ -29,12 +29,10 @@ _content_text = st.text(alphabet=_content_chars, min_size=1, max_size=30).filter
     lambda text: text.strip() != ""
 )
 _status = st.sampled_from(("pending", "in_progress", "completed", "cancelled"))
-_priority = st.sampled_from(("high", "medium", "low"))
 _todo_item = st.fixed_dictionaries(
     {
         "content": _content_text.map(lambda text: f"  {text}  "),
         "status": _status,
-        "priority": _priority,
     }
 )
 
@@ -46,7 +44,6 @@ def test_parse_todo_item_trims_content_and_preserves_enums(item: dict[str, str],
 
     assert parsed["content"] == item["content"].strip()
     assert parsed["status"] == item["status"]
-    assert parsed["priority"] == item["priority"]
 
 
 @CI_SETTINGS

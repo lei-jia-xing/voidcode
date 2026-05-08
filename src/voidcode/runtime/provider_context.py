@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Literal, cast
 
 from ..provider.model_catalog import ToolFeedbackMode
+from ..tools.contracts import ToolResult
 from ..tools.output import (
     redacted_argument_keys_for_tool,
     sanitize_tool_arguments,
@@ -72,6 +73,7 @@ def inspect_provider_context(
     provider_messages = tuple(
         _provider_message_snapshots(
             segments=assembled_context.segments,
+            tool_results=assembled_context.tool_results,
             tool_feedback_mode=tool_feedback_mode,
         )
     )
@@ -346,10 +348,11 @@ def _segment_snapshot(
 def _provider_message_snapshots(
     *,
     segments: tuple[RuntimeContextSegment, ...],
+    tool_results: tuple[ToolResult, ...],
     tool_feedback_mode: ToolFeedbackMode,
 ) -> list[RuntimeProviderMessageSnapshot]:
     if tool_feedback_mode == "synthetic_user_message":
-        return _synthetic_tool_feedback_message_snapshots(segments)
+        return _synthetic_tool_feedback_message_snapshots(segments, tool_results=tool_results)
     return _standard_tool_message_snapshots(segments)
 
 
@@ -415,13 +418,17 @@ def _standard_tool_message_snapshots(
 
 def _synthetic_tool_feedback_message_snapshots(
     segments: tuple[RuntimeContextSegment, ...],
+    *,
+    tool_results: tuple[ToolResult, ...],
 ) -> list[RuntimeProviderMessageSnapshot]:
     messages: list[RuntimeProviderMessageSnapshot] = []
     tool_feedback_lines: list[str] = []
+    has_runtime_todos = any(
+        segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state"
+        for segment in segments
+    )
     for segment in segments:
-        if segment.role == "tool":
-            tool_feedback_lines.append(_tool_payload_json(segment))
-        elif segment.role != "assistant":
+        if segment.role != "assistant":
             content, content_truncated = _clip_content(segment.content)
             messages.append(
                 RuntimeProviderMessageSnapshot(
@@ -432,6 +439,10 @@ def _synthetic_tool_feedback_message_snapshots(
                     content_truncated=content_truncated,
                 )
             )
+    for result in tool_results:
+        if has_runtime_todos and result.tool_name == "todo_write":
+            continue
+        tool_feedback_lines.append(_tool_result_payload_json(result))
     if tool_feedback_lines:
         content, content_truncated = _clip_content(
             "\n".join(
@@ -490,6 +501,35 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
+def _tool_result_payload_json(result: ToolResult) -> str:
+    sanitized_data = _sanitize_debug_data(result.data)
+    raw_arguments = sanitized_data.get("arguments")
+    sanitized_arguments = (
+        _provider_visible_debug_arguments(
+            result.tool_name,
+            cast(dict[str, object], raw_arguments),
+        )
+        if isinstance(raw_arguments, dict)
+        else {}
+    )
+    payload = {
+        "tool_name": result.tool_name,
+        "arguments": sanitized_arguments,
+        "status": result.status,
+        "content": _redact_debug_text(result.content or ""),
+        "error": _safe_payload(result.error),
+        "data": {
+            key: value
+            for key, value in sanitized_data.items()
+            if key not in {"tool_call_id", "arguments"}
+        },
+        "truncated": result.truncated,
+        "partial": result.partial,
+        "reference": result.reference,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def _sanitize_debug_arguments(arguments: dict[str, object]) -> dict[str, object]:
     sanitized = sanitize_tool_arguments(arguments)
     return cast(dict[str, object], _safe_payload(sanitized))
@@ -537,8 +577,8 @@ def _diagnostics(
     )
     diagnostics.extend(_context_window_diagnostics(context_metadata))
     diagnostics.extend(_todo_projection_diagnostics(segments))
-    if tool_feedback_mode == "synthetic_user_message" and any(
-        segment.role == "tool" for segment in segments
+    if tool_feedback_mode == "synthetic_user_message" and context_metadata.get(
+        "retained_tool_result_count", 0
     ):
         diagnostics.append(
             RuntimeProviderContextDiagnostic(

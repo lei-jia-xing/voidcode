@@ -174,12 +174,45 @@ class RuntimeBackgroundTaskSupervisor:
             for task_id, thread in threads:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self._fail_unfinished_shutdown_threads(threads)
                     return
                 thread.join(timeout=min(remaining, 0.1))
                 if not thread.is_alive():
                     with self._queue_lock:
                         if self._threads.get(task_id) is thread:
                             self._threads.pop(task_id, None)
+
+    def _fail_unfinished_shutdown_threads(
+        self, threads: tuple[tuple[str, threading.Thread], ...]
+    ) -> None:
+        runtime = self._runtime
+        for task_id, thread in threads:
+            if not thread.is_alive():
+                with self._queue_lock:
+                    if self._threads.get(task_id) is thread:
+                        self._threads.pop(task_id, None)
+                continue
+            try:
+                task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=task_id,
+                    status="failed",
+                    error="background task stopped because parent runtime exited before completion",
+                )
+            except Exception as exc:
+                if "unknown background task" in str(exc):
+                    logger.debug(
+                        "background task %s disappeared before shutdown finalization: %s",
+                        task_id,
+                        exc,
+                    )
+                    continue
+                logger.exception(
+                    "background task %s could not persist shutdown failure state",
+                    task_id,
+                )
+                continue
+            self.run_background_task_lifecycle_hook(task)
 
     def task_observability(
         self,
@@ -819,7 +852,13 @@ class RuntimeBackgroundTaskSupervisor:
         *,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
-        task = self._runtime.load_background_task(task_id)
+        validate_background_task_id(task_id)
+        task = self._runtime._session_store.load_background_task(
+            workspace=self._runtime._workspace,
+            task_id=task_id,
+        )
+        if task.status == "interrupted":
+            task = self.repair_interrupted_task_from_child_terminal_session(task)
         self.backfill_parent_background_task_event(task=task)
         result = self.background_task_result(task=task)
         if emit_result_read_hook:
@@ -832,6 +871,29 @@ class RuntimeBackgroundTaskSupervisor:
                 or "runtime",
             )
         return result
+
+    def repair_interrupted_task_from_child_terminal_session(
+        self, task: BackgroundTaskState
+    ) -> BackgroundTaskState:
+        """Recover a stale interrupted task when its child session already finished.
+
+        This is intentionally not a general reconciliation path: active running tasks
+        keep their task row as the runtime truth while their worker owns finalization.
+        """
+        if task.session_id is None:
+            return task
+        if task.status != "interrupted":
+            return task
+        child_response = self.load_background_task_child_response(task=task)
+        if child_response is None:
+            return task
+        if child_response.session.status in {"completed", "failed"}:
+            self.finalize_background_task_from_session_response(session_response=child_response)
+            return self._runtime._session_store.load_background_task(
+                workspace=self._runtime._workspace,
+                task_id=task.task.id,
+            )
+        return task
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         runtime = self._runtime
@@ -1172,7 +1234,7 @@ class RuntimeBackgroundTaskSupervisor:
             )
             return
         result = self.background_task_result(task=task)
-        result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
+        _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
         try:
             appended = session_event_appender.append_session_event(
                 workspace=runtime._workspace,
@@ -1247,9 +1309,9 @@ class RuntimeBackgroundTaskSupervisor:
             workspace=runtime._workspace,
             task_id=background_task_id,
         )
-        if is_background_task_terminal(current_task.status):
-            return
         if session_response.session.status == "waiting":
+            if is_background_task_terminal(current_task.status):
+                return
             self.emit_background_task_waiting_approval(
                 task=current_task,
                 child_response=session_response,
@@ -1258,7 +1320,13 @@ class RuntimeBackgroundTaskSupervisor:
         terminal_status: BackgroundTaskStatus = (
             "completed" if session_response.session.status == "completed" else "failed"
         )
-        if current_task.status == terminal_status:
+        if current_task.status == terminal_status and current_task.error is None:
+            return
+        if (
+            is_background_task_terminal(current_task.status)
+            and current_task.status != "interrupted"
+            and current_task.status != terminal_status
+        ):
             return
         error: str | None = None
         if terminal_status == "failed":
@@ -1510,8 +1578,6 @@ class RuntimeBackgroundTaskSupervisor:
                         task_id=task_id,
                     )
                     if current_task_state.cancel_requested_at is not None:
-                        if final_session is None:
-                            raise ValueError("runtime stream emitted no chunks")
                         cancel_metadata = dict(final_session.metadata)
                         cancel_metadata["abort_requested"] = True
                         cancelled_response = RuntimeResponse(
