@@ -172,6 +172,10 @@ class SessionStore(Protocol):
         self, *, workspace: Path, parent_session_id: str
     ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
+    def load_background_task_by_child_session(
+        self, *, workspace: Path, child_session_id: str
+    ) -> BackgroundTaskState | None: ...
+
     def mark_background_task_running(
         self,
         *,
@@ -2754,6 +2758,30 @@ class SqliteSessionStore:
                 ).fetchall(),
             )
         return tuple(self._background_task_summary_from_row(row) for row in rows)
+
+    def load_background_task_by_child_session(
+        self,
+        *,
+        workspace: Path,
+        child_session_id: str,
+    ) -> BackgroundTaskState | None:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT *
+                    FROM background_tasks
+                    WHERE workspace_id = ? AND session_id = ?
+                    ORDER BY updated_at DESC, task_id DESC
+                    LIMIT 1
+                    """,
+                    (str(workspace), child_session_id),
+                ).fetchone(),
+            )
+        if row is None:
+            return None
+        return self._background_task_state_from_row(row)
 
     def mark_background_task_running(
         self,

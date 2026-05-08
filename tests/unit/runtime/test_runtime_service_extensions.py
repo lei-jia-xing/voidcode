@@ -2274,6 +2274,56 @@ def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
     )
 
 
+def test_runtime_child_session_result_read_stops_idle_reminder_reeligibility(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskApprovalGraph(),
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_idle=((sys.executable, "-c", ""),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session")
+    )
+    waiting = _wait_for_background_task_session(runtime, started.task.id)
+    _ = _wait_for_session_transcript_event(
+        runtime,
+        "leader-session",
+        "runtime.background_task_idle_reminder",
+    )
+
+    _ = runtime.session_result(session_id=cast(str, waiting.session_id))
+
+    loaded = runtime.load_background_task(started.task.id)
+    assert loaded.delegated_reminder is not None
+    assert loaded.delegated_reminder.stop_condition == "result_read"
+
+    runtime._background_task_supervisor.emit_background_task_idle_reminder_for_waiting_child(
+        task=loaded,
+        child_response=runtime._session_store.load_session(
+            workspace=tmp_path,
+            session_id=cast(str, waiting.session_id),
+        ),
+    )
+    parent = runtime.session_result(session_id="leader-session")
+
+    assert (
+        sum(
+            event.event_type == "runtime.background_task_idle_reminder"
+            for event in parent.transcript
+        )
+        == 1
+    )
+
+
 @pytest.mark.parametrize(
     "hooks",
     (
