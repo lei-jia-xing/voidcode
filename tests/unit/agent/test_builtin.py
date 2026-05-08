@@ -235,6 +235,7 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     assert write_tools.issubset(worker.tool_allowlist)
     assert "task" not in worker.tool_allowlist
     assert "todo_write" in worker.tool_allowlist
+    assert "mcp/*" in worker.tool_allowlist
     assert "background_output" not in worker.tool_allowlist
     assert "question" not in worker.tool_allowlist
 

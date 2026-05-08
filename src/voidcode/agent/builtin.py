@@ -99,6 +99,7 @@ WORKER_AGENT_MANIFEST = AgentManifest(
         "shell_exec",
         "format_file",
         "todo_write",
+        "mcp/*",
     ),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
