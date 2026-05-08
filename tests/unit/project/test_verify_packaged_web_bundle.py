@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import queue
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,16 @@ class _SilentStdout(io.TextIOBase):
         raise AssertionError("readline should not be called when selector reports no data")
 
 
+class _BlockingStdout(io.TextIOBase):
+    def fileno(self) -> int:
+        return 0
+
+    def readline(self, size: int = -1) -> str:
+        _ = size
+        while True:
+            pass
+
+
 def test_wait_for_url_from_stream_times_out_for_silent_alive_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -36,22 +47,17 @@ def test_wait_for_url_from_stream_times_out_for_silent_alive_process(
 
     monkeypatch.setattr(verify_packaged_web_bundle.time, "monotonic", fake_monotonic)
 
-    class _Selector:
-        def __enter__(self) -> _Selector:
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            _ = (exc_type, exc, tb)
-            return None
-
-        def register(self, fileobj: object, events: object) -> None:
-            _ = (fileobj, events)
-
-        def select(self, timeout: float | None = None) -> list[tuple[object, object]]:
+    class _Queue:
+        def get(self, timeout: float | None = None) -> str | None:
             _ = timeout
-            return []
+            raise queue.Empty
 
-    monkeypatch.setattr(verify_packaged_web_bundle.selectors, "DefaultSelector", _Selector)
+    monkeypatch.setattr(verify_packaged_web_bundle.queue, "Queue", lambda: _Queue())
+    monkeypatch.setattr(
+        verify_packaged_web_bundle.threading,
+        "Thread",
+        lambda *args, **kwargs: type("T", (), {"start": lambda self: None})(),
+    )
 
     stdout = _SilentStdout()
     with pytest.raises(SystemExit, match="timed out waiting for packaged launcher URL"):
@@ -71,22 +77,20 @@ def test_wait_for_url_from_stream_surfaces_launcher_output_on_early_exit(
         def fileno(self) -> int:
             return 0
 
-    class _Selector:
-        def __enter__(self) -> _Selector:
-            return self
+    class _Queue:
+        def __init__(self) -> None:
+            self._values = iter(["starting up\n", None])
 
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            _ = (exc_type, exc, tb)
-            return None
-
-        def register(self, fileobj: object, events: object) -> None:
-            _ = (fileobj, events)
-
-        def select(self, timeout: float | None = None) -> list[tuple[object, object]]:
+        def get(self, timeout: float | None = None) -> str | None:
             _ = timeout
-            return [(object(), object())]
+            return next(self._values)
 
-    monkeypatch.setattr(verify_packaged_web_bundle.selectors, "DefaultSelector", _Selector)
+    monkeypatch.setattr(verify_packaged_web_bundle.queue, "Queue", _Queue)
+    monkeypatch.setattr(
+        verify_packaged_web_bundle.threading,
+        "Thread",
+        lambda *args, **kwargs: type("T", (), {"start": lambda self: None})(),
+    )
 
     stdout = _ReadableStdout("starting up\n")
     poll_results = iter([1])
@@ -96,4 +100,34 @@ def test_wait_for_url_from_stream_surfaces_launcher_output_on_early_exit(
             stdout=stdout,
             poll=lambda: next(poll_results),
             timeout_seconds=30.0,
+        )
+
+
+def test_wait_for_url_from_stream_does_not_require_selector_compatible_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    time_values = iter([0.0, 0.0, 0.2, 0.4, 0.6, 0.6])
+
+    def fake_monotonic() -> float:
+        return next(time_values)
+
+    monkeypatch.setattr(verify_packaged_web_bundle.time, "monotonic", fake_monotonic)
+
+    class _Queue:
+        def get(self, timeout: float | None = None) -> str | None:
+            _ = timeout
+            raise queue.Empty
+
+    monkeypatch.setattr(verify_packaged_web_bundle.queue, "Queue", lambda: _Queue())
+    monkeypatch.setattr(
+        verify_packaged_web_bundle.threading,
+        "Thread",
+        lambda *args, **kwargs: type("T", (), {"start": lambda self: None})(),
+    )
+
+    with pytest.raises(SystemExit, match="timed out waiting for packaged launcher URL"):
+        verify_packaged_web_bundle._wait_for_url_from_stream(
+            stdout=_BlockingStdout(),
+            poll=lambda: None,
+            timeout_seconds=0.5,
         )

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import io
 import os
-import selectors
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import venv
@@ -46,31 +47,44 @@ def _wait_for_url_from_stream(
     poll_fn = poll
     if not callable(poll_fn):
         raise TypeError("poll must be callable")
-    with selectors.DefaultSelector() as selector:
-        selector.register(stdout, selectors.EVENT_READ)
-        while time.monotonic() < deadline:
-            remaining = max(deadline - time.monotonic(), 0.0)
-            ready = selector.select(timeout=min(remaining, 0.1))
-            if not ready:
-                if poll_fn() is not None:
-                    output = "".join(buffered_lines).strip()
-                    raise SystemExit(
-                        "packaged launcher exited before printing its local URL"
-                        + (f"\nlauncher output:\n{output}" if output else "")
-                    )
-                continue
+    line_queue: queue.Queue[str | None] = queue.Queue()
+
+    def _read_stdout() -> None:
+        while True:
             line = stdout.readline()
-            if not line:
-                if poll_fn() is not None:
-                    output = "".join(buffered_lines).strip()
-                    raise SystemExit(
-                        "packaged launcher exited before printing its local URL"
-                        + (f"\nlauncher output:\n{output}" if output else "")
-                    )
-                continue
-            buffered_lines.append(line)
-            if "Local server running at:" in line:
-                return line.split("Local server running at:", 1)[1].strip()
+            if line == "":
+                line_queue.put(None)
+                return
+            line_queue.put(line)
+
+    reader = threading.Thread(target=_read_stdout, daemon=True)
+    reader.start()
+
+    while time.monotonic() < deadline:
+        remaining = max(deadline - time.monotonic(), 0.0)
+        try:
+            item = line_queue.get(timeout=min(remaining, 0.1))
+        except queue.Empty:
+            if poll_fn() is not None:
+                output = "".join(buffered_lines).strip()
+                raise SystemExit(
+                    "packaged launcher exited before printing its local URL"
+                    + (f"\nlauncher output:\n{output}" if output else "")
+                ) from None
+            continue
+
+        if item is None:
+            if poll_fn() is not None:
+                output = "".join(buffered_lines).strip()
+                raise SystemExit(
+                    "packaged launcher exited before printing its local URL"
+                    + (f"\nlauncher output:\n{output}" if output else "")
+                )
+            continue
+
+        buffered_lines.append(item)
+        if "Local server running at:" in item:
+            return item.split("Local server running at:", 1)[1].strip()
     raise SystemExit("timed out waiting for packaged launcher URL")
 
 
