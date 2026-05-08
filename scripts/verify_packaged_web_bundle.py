@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import os
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -27,25 +29,48 @@ def _assert_wheel_contains_web_bundle(wheel_path: Path) -> None:
 
 
 def _wait_for_url(process: subprocess.Popen[str]) -> str:
-    deadline = time.monotonic() + 30.0
     stdout = process.stdout
     if stdout is None:
         raise SystemExit("packaged launcher stdout pipe is unavailable")
+    return _wait_for_url_from_stream(stdout=stdout, poll=process.poll, timeout_seconds=30.0)
+
+
+def _wait_for_url_from_stream(
+    *,
+    stdout: io.TextIOBase,
+    poll: object,
+    timeout_seconds: float,
+) -> str:
     buffered_lines: list[str] = []
-    while time.monotonic() < deadline:
-        line = stdout.readline()
-        if not line:
-            if process.poll() is not None:
-                output = "".join(buffered_lines).strip()
-                raise SystemExit(
-                    "packaged launcher exited before printing its local URL"
-                    + (f"\nlauncher output:\n{output}" if output else "")
-                )
-            time.sleep(0.1)
-            continue
-        buffered_lines.append(line)
-        if "Local server running at:" in line:
-            return line.split("Local server running at:", 1)[1].strip()
+    deadline = time.monotonic() + timeout_seconds
+    poll_fn = poll
+    if not callable(poll_fn):
+        raise TypeError("poll must be callable")
+    with selectors.DefaultSelector() as selector:
+        selector.register(stdout, selectors.EVENT_READ)
+        while time.monotonic() < deadline:
+            remaining = max(deadline - time.monotonic(), 0.0)
+            ready = selector.select(timeout=min(remaining, 0.1))
+            if not ready:
+                if poll_fn() is not None:
+                    output = "".join(buffered_lines).strip()
+                    raise SystemExit(
+                        "packaged launcher exited before printing its local URL"
+                        + (f"\nlauncher output:\n{output}" if output else "")
+                    )
+                continue
+            line = stdout.readline()
+            if not line:
+                if poll_fn() is not None:
+                    output = "".join(buffered_lines).strip()
+                    raise SystemExit(
+                        "packaged launcher exited before printing its local URL"
+                        + (f"\nlauncher output:\n{output}" if output else "")
+                    )
+                continue
+            buffered_lines.append(line)
+            if "Local server running at:" in line:
+                return line.split("Local server running at:", 1)[1].strip()
     raise SystemExit("timed out waiting for packaged launcher URL")
 
 
