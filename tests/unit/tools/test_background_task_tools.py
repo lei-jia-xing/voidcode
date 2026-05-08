@@ -209,6 +209,29 @@ class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
         )
 
 
+class _InterruptedBackgroundRuntimeWithTrailingGenericFailure(_InterruptedBackgroundRuntime):
+    def session_result(self, *, session_id: str) -> RuntimeSessionResult:
+        result = super().session_result(session_id=session_id)
+        return RuntimeSessionResult(
+            session=result.session,
+            prompt=result.prompt,
+            status=result.status,
+            summary=result.summary,
+            error=result.error,
+            transcript=(
+                result.transcript[0],
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=2,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={"error": "wrapper failure after provider failure"},
+                ),
+            ),
+            last_event_sequence=2,
+        )
+
+
 class _UnavailableBackgroundRuntime(_StubBackgroundRuntime):
     def load_background_task_result(
         self,
@@ -700,6 +723,26 @@ def test_background_output_full_session_surfaces_provider_failure_details_for_in
         cast(dict[str, object], provider_failure["provider_error_details"])["exception_type"]
         == "APIConnectionError"
     )
+
+
+def test_background_output_full_session_scans_older_failed_events_for_provider_details(
+    tmp_path: Path,
+) -> None:
+    tool = BackgroundOutputTool(runtime=_InterruptedBackgroundRuntimeWithTrailingGenericFailure())
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "full_session": True},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    provider_failure = cast(dict[str, object], result.data["provider_failure"])
+    assert provider_failure["provider_error_kind"] == "transient_failure"
+    assert provider_failure["provider"] == "deepseek"
+    assert provider_failure["model"] == "deepseek-v4-pro"
 
 
 def test_background_output_tool_guides_unavailable_result_without_looping(tmp_path: Path) -> None:

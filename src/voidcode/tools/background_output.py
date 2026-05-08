@@ -387,7 +387,7 @@ def _provider_failure_details_from_session_result(
         if not isinstance(provider_error_kind, str) and not isinstance(
             provider_error_details, dict
         ):
-            return None
+            continue
         details: dict[str, object] = {}
         if isinstance(provider_error_kind, str):
             details["provider_error_kind"] = provider_error_kind
