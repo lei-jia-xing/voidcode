@@ -39,6 +39,11 @@ def _run_runtime_server(
     if listener_socket is None:
         uvicorn.run(app, host=host, port=port, lifespan="off")
         return
+    if not hasattr(socket, "AF_UNIX"):
+        with closing(listener_socket):
+            pass
+        uvicorn.run(app, host=host, port=port, lifespan="off")
+        return
     with closing(listener_socket):
         uvicorn.run(app, host=host, port=port, lifespan="off", fd=listener_socket.fileno())
 
