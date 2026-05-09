@@ -47,11 +47,11 @@ Git status: {git_status}
 def delegation_envelope_block() -> str:
     return """<delegation_envelope>
 Use this structure when handing work to another bounded executor:
-- [CONTEXT] Share only the facts, files, constraints, and prior results needed.
-- [GOAL] State the desired outcome and acceptance criteria in concrete terms.
-- [DOWNSTREAM] Name the expected evidence, risks, and follow-up questions.
-- [REQUEST] Give the immediate action, scoped to the role and available tools.
-Keep delegation narrow, verifiable, and grounded in the active runtime boundaries.
+- [CONTEXT] Facts, files, constraints, prior results.
+- [GOAL] Concrete outcome and acceptance criteria.
+- [DOWNSTREAM] Evidence or follow-up the caller needs.
+- [REQUEST] Immediate scoped action.
+Keep delegation narrow and verifiable.
 </delegation_envelope>"""
 
 
@@ -59,13 +59,12 @@ def search_agent_contract_block() -> str:
     return """<search_agent_contract>
 Return repository or research discovery in this format:
 <findings>
-- List the directly relevant facts, paths, APIs, or source references.
+- Relevant facts, paths, APIs, or source references.
 - Separate confirmed evidence from uncertainty.
-- Include enough context for the caller to act without repeating the search.
 </findings>
 <results>
-- Answer the caller's underlying question directly.
-- Identify the next useful step when one is implied by the findings.
+- Answer the underlying question directly.
+- Give the next useful step when implied.
 </results>
 </search_agent_contract>"""
 

@@ -109,20 +109,54 @@ def _expected_agent_models(global_model: str | None) -> dict[str, dict[str, obje
     }
 
 
-def _expected_unconfigured_mcp_status() -> dict[str, object]:
+def _expected_default_mcp_status() -> dict[str, object]:
     return {
-        "state": "unconfigured",
+        "state": "stopped",
         "error": None,
         "details": {
-            "mode": "disabled",
-            "configured": False,
-            "configured_enabled": False,
-            "configured_server_count": 0,
-            "active_server_count": 0,
+            "mode": "managed",
+            "configured": True,
+            "configured_enabled": True,
+            "configured_server_count": 3,
+            "active_server_count": 3,
             "running_server_count": 0,
             "failed_server_count": 0,
             "retry_available": False,
-            "servers": [],
+            "servers": [
+                {
+                    "server": "context7",
+                    "status": "stopped",
+                    "scope": "runtime",
+                    "transport": "remote-http",
+                    "workspace_root": None,
+                    "stage": None,
+                    "error": None,
+                    "command": [],
+                    "retry_available": False,
+                },
+                {
+                    "server": "grep_app",
+                    "status": "stopped",
+                    "scope": "runtime",
+                    "transport": "remote-http",
+                    "workspace_root": None,
+                    "stage": None,
+                    "error": None,
+                    "command": [],
+                    "retry_available": False,
+                },
+                {
+                    "server": "websearch",
+                    "status": "stopped",
+                    "scope": "runtime",
+                    "transport": "remote-http",
+                    "workspace_root": None,
+                    "stage": None,
+                    "error": None,
+                    "command": [],
+                    "retry_available": False,
+                },
+            ],
         },
     }
 
@@ -2481,7 +2515,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
             },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
-        "mcp": _expected_unconfigured_mcp_status(),
+        "mcp": _expected_default_mcp_status(),
     }
     assert "Traceback" not in result.stderr
 
@@ -2708,7 +2742,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
-        "mcp": _expected_unconfigured_mcp_status(),
+        "mcp": _expected_default_mcp_status(),
     }
     assert "Traceback" not in result.stderr
 
@@ -2755,7 +2789,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
             )
             runtime_class.return_value.provider_readiness.return_value = readiness
             runtime_class.return_value.current_status.return_value = SimpleNamespace(
-                mcp=SimpleNamespace(**_expected_unconfigured_mcp_status())
+                mcp=SimpleNamespace(**_expected_default_mcp_status())
             )
             result = cli.main(
                 [
@@ -2823,7 +2857,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
             "reasoning_controls": {},
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
-        "mcp": _expected_unconfigured_mcp_status(),
+        "mcp": _expected_default_mcp_status(),
     }
 
 
