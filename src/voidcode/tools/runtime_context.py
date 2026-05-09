@@ -27,6 +27,15 @@ class RuntimeMemoryToolFacade(Protocol):
     def delete_memory(self, memory_id: str) -> MemoryRecord: ...
 
 
+class RuntimeLspToolFacade(Protocol):
+    def request_diagnostics(
+        self,
+        *,
+        file_path: str,
+        workspace: str,
+    ) -> dict[str, object]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeToolInvocationContext:
     session_id: str
@@ -37,6 +46,7 @@ class RuntimeToolInvocationContext:
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
     memory: RuntimeMemoryToolFacade | None = None
+    lsp: RuntimeLspToolFacade | None = None
 
 
 _CURRENT_RUNTIME_TOOL_CONTEXT: ContextVar[RuntimeToolInvocationContext | None] = ContextVar(
