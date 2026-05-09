@@ -12613,7 +12613,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
     assert effective.max_steps == 7
 
 
-def test_runtime_effective_runtime_config_defaults_missing_persisted_external_write_to_ask(
+def test_runtime_effective_runtime_config_defaults_missing_persisted_external_write_to_allow(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -12661,7 +12661,7 @@ def test_runtime_effective_runtime_config_defaults_missing_persisted_external_wr
         session_id="persisted-missing-external-write"
     )
 
-    assert effective.permission.write.rules == (("*", "ask"),)
+    assert effective.permission.write.rules == (("*", "allow"),)
 
 
 def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:

@@ -2627,6 +2627,42 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
     }
 
 
+def test_runtime_emits_hook_events_when_hooks_block_omits_enabled_flag(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    hooks_config = cast(Callable[..., object], config_module.RuntimeHooksConfig)
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                permission_policy=policy,
+                config=runtime_config(
+                    approval_mode="allow",
+                    execution_engine="deterministic",
+                    hooks=hooks_config(
+                        pre_tool=((sys.executable, "-c", "print('pre ok')"),),
+                        post_tool=((sys.executable, "-c", "print('post ok')"),),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    command = _cwd_command()
+    prompt = f"run {command}"
+    result = runtime.run(runtime_request(prompt=prompt, session_id="hook-default-enabled"))
+
+    event_types = [event.event_type for event in result.events]
+    assert "runtime.tool_hook_pre" in event_types
+    assert "runtime.tool_hook_post" in event_types
+
+
 def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
@@ -4615,20 +4651,23 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
         "runtime.tool_completed",
     ]
     assert [event.sequence for event in denied.events] == list(range(1, 17))
+    assert denied.events[15].payload["permission_denied"] is True
+    assert denied.events[15].payload["denied_by"] == "user"
+    assert denied.events[15].payload["error"] == "permission denied for tool: write_file"
+    assert denied.events[-1].payload["tool"] == "write_file"
     assert denied.events[-1].payload["status"] == "error"
-    assert denied.events[-1].payload["permission_denied"] is True
     assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
     assert denied.output is None
-    assert replay.output is None
+    assert replay.output == denied.output
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
         (event.sequence, event.event_type, event.payload) for event in denied.events
     ]
     assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
-    assert "grep" not in [
+    assert [
         cast(str, event.payload.get("tool"))
         for event in denied.events
         if event.event_type == "graph.tool_request_created"
-    ]
+    ] == ["read_file", "write_file"]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
     assert sessions[0].status == "running"
     assert sessions[0].updated_at == 2
@@ -4915,6 +4954,7 @@ def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
     ]
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
+    assert denied.events[-1].payload["denied_by"] == "user"
     assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
     assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False

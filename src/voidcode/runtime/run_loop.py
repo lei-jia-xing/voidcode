@@ -2640,6 +2640,11 @@ class RuntimeRunLoopCoordinator:
             if pending.policy_surface is not None:
                 result_data["policy_surface"] = pending.policy_surface
 
+        denied_by: str | None = None
+        if pending is not None and pending.policy_mode == "ask":
+            denied_by = "user"
+            result_data["denied_by"] = denied_by
+
         tool_result = ToolResult(
             tool_name=tool_call.tool_name,
             status="error",
@@ -2652,7 +2657,10 @@ class RuntimeRunLoopCoordinator:
                 tool_name=tool_call.tool_name,
                 error=error,
                 error_kind="permission_denied",
-                extra={"permission_denied": True},
+                extra={
+                    "permission_denied": True,
+                    **({"denied_by": denied_by} if denied_by is not None else {}),
+                },
             ),
             retry_guidance="Adjust the request or approval settings, then retry.",
         )

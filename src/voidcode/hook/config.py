@@ -35,7 +35,7 @@ type RuntimeHookFailureMode = Literal["warn", "fail"]
 
 @dataclass(frozen=True, slots=True)
 class RuntimeHooksConfig:
-    enabled: bool | None = None
+    enabled: bool | None = True
     timeout_seconds: float | None = 30.0
     failure_mode: RuntimeHookFailureMode = "warn"
     pre_tool: tuple[tuple[str, ...], ...] = ()

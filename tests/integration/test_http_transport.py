@@ -1782,9 +1782,10 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "runtime.tool_completed",
     ]
     events = cast(list[dict[str, object]], payload["events"])
-    feedback_payload = cast(dict[str, object], events[-1]["payload"])
+    feedback_payload = cast(dict[str, object], events[8]["payload"])
     assert feedback_payload["status"] == "error"
     assert feedback_payload["permission_denied"] is True
+    assert feedback_payload["denied_by"] == "user"
     assert (tmp_path / "danger.txt").exists() is False
 
 

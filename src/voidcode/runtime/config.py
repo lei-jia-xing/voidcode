@@ -1044,8 +1044,8 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         allowed_keys=_HOOKS_CONFIG_KEYS,
         field_path="hooks",
     )
-    enabled = hooks_payload.get("enabled")
-    if enabled is not None and not isinstance(enabled, bool):
+    enabled = hooks_payload.get("enabled", True)
+    if not isinstance(enabled, bool):
         raise ValueError("runtime config field 'hooks.enabled' must be a boolean when provided")
     timeout_seconds = _parse_hook_timeout_seconds(
         hooks_payload.get("timeout_seconds"),
