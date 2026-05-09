@@ -36,7 +36,7 @@ class PermissionPolicy:
 
 @dataclass(frozen=True, slots=True)
 class ExternalDirectoryPolicy:
-    rules: tuple[tuple[str, PermissionDecision], ...] = (("*", "allow"),)
+    rules: tuple[tuple[str, PermissionDecision], ...] = (("*", "ask"),)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +51,7 @@ class PatternPermissionRule:
 class ExternalDirectoryPermissionConfig:
     read: ExternalDirectoryPolicy = field(default_factory=ExternalDirectoryPolicy)
     write: ExternalDirectoryPolicy = field(
-        default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "allow"),))
+        default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "ask"),))
     )
     rules: tuple[PatternPermissionRule, ...] = ()
 

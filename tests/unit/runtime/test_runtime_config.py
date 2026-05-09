@@ -134,7 +134,7 @@ def test_runtime_config_defaults_missing_external_write_rule_to_ask(tmp_path: Pa
     config = load_runtime_config(tmp_path, env={})
 
     assert config.permission.read.rules == (("~/.config/voidcode/skills/**", "allow"),)
-    assert config.permission.write.rules == (("*", "allow"),)
+    assert config.permission.write.rules == (("*", "ask"),)
 
 
 def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
@@ -1205,13 +1205,6 @@ def test_runtime_config_rejects_agent_preset_alias_maps(
         match="runtime config field 'agent.leader' is not supported",
     ):
         _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_defaults_external_directory_permissions_to_allow(tmp_path: Path) -> None:
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.permission.read.rules == (("*", "allow"),)
-    assert config.permission.write.rules == (("*", "allow"),)
 
 
 def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None:
