@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,7 +28,7 @@ from .events import (
     EventSource,
 )
 from .memory import MemoryKind, MemoryRecord, MemorySearchResult, MemoryStatus
-from .paths import sessions_db_path
+from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -535,6 +536,7 @@ class SqliteSessionStore:
                 should_reset = (
                     attempt == 0
                     and self._database_path is None
+                    and not os.environ.get(DB_PATH_ENV)
                     and self._is_schema_mismatch_runtime_error(exc)
                 )
                 if should_reset:

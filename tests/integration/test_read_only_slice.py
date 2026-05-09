@@ -4537,7 +4537,11 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
     assert (tmp_path / "copied.txt").exists() is False
 
 
-def test_runtime_rejects_stale_session_schema_for_pending_approval(tmp_path: Path) -> None:
+def test_runtime_rejects_stale_session_schema_for_pending_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(tmp_path / "stale-schema.sqlite3"))
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
     database_path = sessions_db_path()
     database_path.parent.mkdir(parents=True, exist_ok=True)

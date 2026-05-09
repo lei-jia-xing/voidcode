@@ -218,6 +218,50 @@ def test_run_runtime_server_passes_reserved_socket_fd() -> None:
             listener_socket.close()
 
 
+def test_run_runtime_server_skips_fd_mode_on_windows(monkeypatch: Any) -> None:
+    server = importlib.import_module("voidcode.server")
+    workspace = Path("/tmp/server-workspace")
+    config = cast(Any, SimpleNamespace(approval_mode="allow"))
+    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener_socket.bind(("127.0.0.1", 0))
+    run_calls: list[dict[str, object]] = []
+
+    class _UvicornStub:
+        @staticmethod
+        def run(app: object, *, host: str, port: int, lifespan: str, fd: int | None = None) -> None:
+            run_calls.append(
+                {
+                    "app": app,
+                    "host": host,
+                    "port": port,
+                    "lifespan": lifespan,
+                    "fd": fd,
+                }
+            )
+
+    try:
+        monkeypatch.setattr(server.os, "name", "nt")
+        with patch.object(
+            server, "create_runtime_app", autospec=True, return_value=object()
+        ) as app_mock:
+            with patch("importlib.import_module", autospec=True, return_value=_UvicornStub):
+                server._run_runtime_server(
+                    workspace=workspace,
+                    host="127.0.0.1",
+                    port=cast(int, listener_socket.getsockname()[1]),
+                    config=config,
+                    listener_socket=listener_socket,
+                )
+
+        app_mock.assert_called_once_with(workspace=workspace, config=config, frontend_dist=None)
+        assert len(run_calls) == 1
+        assert run_calls[0]["fd"] is None
+        assert listener_socket.fileno() == -1
+    finally:
+        if listener_socket.fileno() != -1:
+            listener_socket.close()
+
+
 def test_web_closes_reserved_listener_when_frontend_setup_fails() -> None:
     server = importlib.import_module("voidcode.server")
     listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
