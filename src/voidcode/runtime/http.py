@@ -19,6 +19,7 @@ from .contracts import (
     AgentSummary,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
+    CommandSummary,
     GitStatusSnapshot,
     NoPendingQuestionError,
     ProviderInspectResult,
@@ -116,6 +117,8 @@ class RuntimeTransport(Protocol):
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]: ...
 
     def list_skill_summaries(self) -> tuple[SkillSummary, ...]: ...
+
+    def list_command_summaries(self) -> tuple[CommandSummary, ...]: ...
 
     def current_status(self) -> RuntimeStatusSnapshot: ...
 
@@ -547,6 +550,28 @@ class RuntimeTransportApp:
                 )
                 return
             await self._handle_list_skills(send)
+            return
+
+        if path == "/api/commands":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_commands(send)
+            return
+
+        if path == "/api/commands":
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return
+            await self._handle_list_commands(send)
             return
 
         if path == "/api/status":
@@ -1023,7 +1048,6 @@ class RuntimeTransportApp:
         *,
         show_thinking: bool = False,
     ) -> None:
-        runtime: RuntimeTransport | None = None
         try:
             body = await self._read_body(receive)
             request = self._parse_runtime_request(body)
@@ -1426,6 +1450,21 @@ class RuntimeTransportApp:
             try:
                 payload = [
                     self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()
+                ]
+            finally:
+                self._close_runtime(
+                    runtime,
+                    workspace_coordinator=self._workspace_coordinator,
+                )
+        await self._json_response(send, status=200, payload=payload)
+
+    async def _handle_list_commands(self, send: Send) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                payload = [
+                    self._serialize_command_summary(command)
+                    for command in runtime.list_command_summaries()
                 ]
             finally:
                 self._close_runtime(
@@ -2379,10 +2418,25 @@ class RuntimeTransportApp:
         return payload
 
     @staticmethod
+    def _serialize_command_summary(summary: CommandSummary) -> dict[str, object]:
+        return {
+            "name": summary.name,
+            "description": summary.description,
+            "source": summary.source,
+            "enabled": summary.enabled,
+            "hidden": summary.hidden,
+            "agent": summary.agent,
+            "model": summary.model,
+            "subtask": summary.subtask,
+            "path": summary.path,
+        }
+
+    @staticmethod
     def _serialize_git_status_snapshot(snapshot: GitStatusSnapshot) -> dict[str, object]:
         return {
             "state": snapshot.state,
             "root": snapshot.root,
+            "branch": snapshot.branch,
             "error": snapshot.error,
         }
 

@@ -42,15 +42,6 @@ const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 const MIN_SESSION_SIDEBAR_WIDTH = 244;
 const MAX_SESSION_SIDEBAR_WIDTH = 520;
 const SIDEBAR_KEYBOARD_RESIZE_STEP = 16;
-const MIN_REASONABLE_EPOCH_MS = Date.UTC(2000, 0, 1);
-
-type SessionUpdatedToken =
-  | {
-      kind: "relative";
-      unit: "just-now" | "minutes" | "hours" | "days";
-      value?: number;
-    }
-  | { kind: "revision"; value: number };
 
 function getViewportWidth(): number {
   return typeof window === "undefined" ? 1024 : window.innerWidth;
@@ -76,50 +67,6 @@ function clampSessionSidebarWidth(
   return Math.min(maxWidth, Math.max(MIN_SESSION_SIDEBAR_WIDTH, safeWidth));
 }
 
-function sessionUpdatedTimestamp(
-  updatedAt: number,
-  now = Date.now(),
-): number | null {
-  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
-    return null;
-  }
-  const timestamp =
-    updatedAt < 1_000_000_000_000 ? updatedAt * 1000 : updatedAt;
-  const maxReasonableFutureMs = now + 7 * 86_400_000;
-  if (
-    timestamp < MIN_REASONABLE_EPOCH_MS ||
-    timestamp > maxReasonableFutureMs
-  ) {
-    return null;
-  }
-  return timestamp;
-}
-
-function formatSessionUpdatedAt(
-  updatedAt: number,
-  now = Date.now(),
-): SessionUpdatedToken {
-  const timestamp = sessionUpdatedTimestamp(updatedAt, now);
-  if (timestamp === null) {
-    return { kind: "revision", value: updatedAt };
-  }
-  const diffMs = Math.max(0, now - timestamp);
-  const diffMinutes = Math.floor(diffMs / 60_000);
-  const diffHours = Math.floor(diffMs / 3_600_000);
-  const diffDays = Math.floor(diffMs / 86_400_000);
-
-  if (diffMinutes < 1) {
-    return { kind: "relative", unit: "just-now" };
-  }
-  if (diffMinutes < 60) {
-    return { kind: "relative", unit: "minutes", value: diffMinutes };
-  }
-  if (diffHours < 24) {
-    return { kind: "relative", unit: "hours", value: diffHours };
-  }
-  return { kind: "relative", unit: "days", value: Math.max(1, diffDays) };
-}
-
 export function SessionSidebar({
   workspaces,
   sessions,
@@ -139,49 +86,6 @@ export function SessionSidebar({
   const { t } = useTranslation();
   const [isResizing, setIsResizing] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(getViewportWidth);
-
-  const getSessionStatusDotClass = (status: string) => {
-    if (status === "running") {
-      return "bg-[var(--vc-text-primary)] animate-pulse";
-    }
-    if (status === "completed") return "bg-[var(--vc-text-muted)]";
-    if (status === "failed") return "bg-[var(--vc-text-subtle)]";
-    if (status === "waiting") return "bg-[var(--vc-text-subtle)]";
-    return "bg-[var(--vc-border-strong)]";
-  };
-
-  const getStatusColorClass = (status: string) => {
-    if (status === "in_progress" || status === "running") {
-      return "bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)] border-[color:var(--vc-border-strong)]";
-    }
-    if (status === "completed") {
-      return "bg-[var(--vc-surface-1)] text-[var(--vc-text-muted)] border-[color:var(--vc-border-subtle)]";
-    }
-    if (status === "failed") {
-      return "bg-[var(--vc-surface-1)] text-[var(--vc-text-muted)] border-[color:var(--vc-border-subtle)]";
-    }
-    if (status === "waiting") {
-      return "bg-[var(--vc-surface-1)] text-[var(--vc-text-muted)] border-[color:var(--vc-border-subtle)]";
-    }
-    return "bg-[var(--vc-surface-1)] text-[var(--vc-text-subtle)] border-[color:var(--vc-border-subtle)]";
-  };
-
-  const formatSessionUpdatedLabel = (updatedAt: number) => {
-    const token = formatSessionUpdatedAt(updatedAt);
-    if (token.kind === "revision") {
-      return t("session.updatedAtRevision", { count: token.value });
-    }
-    if (token.unit === "just-now") {
-      return t("session.updatedAtJustNow");
-    }
-    if (token.unit === "minutes") {
-      return t("session.updatedAtMinutesAgo", { count: token.value });
-    }
-    if (token.unit === "hours") {
-      return t("session.updatedAtHoursAgo", { count: token.value });
-    }
-    return t("session.updatedAtDaysAgo", { count: token.value });
-  };
 
   const sortedSessions = useMemo(
     () => [...sessions].sort((a, b) => b.updated_at - a.updated_at),
@@ -372,14 +276,6 @@ export function SessionSidebar({
                     sessionSummary={s}
                     isActive={currentSessionId === s.session.id}
                     isDisabled={isRunning || isReplayLoading}
-                    statusDotClass={getSessionStatusDotClass(s.status)}
-                    statusColorClass={getStatusColorClass(s.status)}
-                    updatedLabel={formatSessionUpdatedLabel(s.updated_at)}
-                    statusLabel={
-                      s.status === "running"
-                        ? t("session.agentBusy")
-                        : t(`task.status.${s.status}`)
-                    }
                     onSelectSession={onSelectSession}
                   />
                 ))}
@@ -454,19 +350,11 @@ function SessionListItem({
   sessionSummary,
   isActive,
   isDisabled,
-  statusDotClass,
-  statusColorClass,
-  updatedLabel,
-  statusLabel,
   onSelectSession,
 }: {
   sessionSummary: StoredSessionSummary;
   isActive: boolean;
   isDisabled: boolean;
-  statusDotClass: string;
-  statusColorClass: string;
-  updatedLabel: string;
-  statusLabel: string;
   onSelectSession: (sessionId: string) => void;
 }) {
   const displayTitle = buildSessionDisplayTitle(
@@ -479,40 +367,14 @@ function SessionListItem({
       type="button"
       onClick={() => onSelectSession(sessionSummary.session.id)}
       disabled={isDisabled}
-      className={`w-full flex flex-col items-start justify-center px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
+      className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
         isActive
           ? "bg-[var(--vc-surface-2)] border-[color:var(--vc-border-strong)] text-[var(--vc-text-primary)]"
           : "border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
       }`}
       title={displayTitle}
     >
-      <div className="w-full flex items-center justify-between gap-2 mb-1">
-        <div className="flex items-center truncate max-w-[75%]">
-          <div
-            className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mr-2 ${statusDotClass}`}
-          />
-          <span className="font-medium text-sm truncate">{displayTitle}</span>
-        </div>
-        <span
-          className={`flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md font-medium border ${statusColorClass}`}
-        >
-          {statusLabel}
-        </span>
-      </div>
-      <div className="w-full flex items-center justify-between gap-2 text-[11px] text-[var(--vc-text-subtle)]">
-        <div className="min-w-0 flex flex-col items-start">
-          <span
-            className="font-mono truncate max-w-full"
-            title={sessionSummary.session.id}
-          >
-            {sessionSummary.session.id.substring(0, 8)}
-          </span>
-          <span className="truncate max-w-full">{updatedLabel}</span>
-        </div>
-        <span className="flex-shrink-0 font-medium">
-          T{sessionSummary.turn}
-        </span>
-      </div>
+      <span className="font-medium text-sm truncate">{displayTitle}</span>
     </button>
   );
 }

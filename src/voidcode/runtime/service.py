@@ -20,6 +20,7 @@ from ..command import (
     load_command_registry,
     resolve_prompt_command,
 )
+from ..command.models import CommandDefinition
 from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import (
@@ -181,6 +182,7 @@ from .contracts import (
     AgentSummary,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
+    CommandSummary,
     GitStatusSnapshot,
     ProviderInspectResult,
     ProviderModelMetadata,
@@ -1921,6 +1923,25 @@ class VoidCodeRuntime:
                 workspace=workspace,
             )
         )
+
+    def request_diagnostics(
+        self,
+        *,
+        file_path: str,
+        workspace: str,
+    ) -> dict[str, object]:
+        _ = workspace
+        result = self.request_lsp(
+            server_name=None,
+            method="textDocument/diagnostic",
+            params={
+                "textDocument": {
+                    "uri": (self._workspace / file_path).resolve().as_uri(),
+                }
+            },
+            workspace=self._workspace,
+        )
+        return {"lsp_response": result.response}
 
     def request_mcp_tool(
         self,
@@ -4845,6 +4866,28 @@ class VoidCodeRuntime:
             )
         return tuple(summaries)
 
+    def list_command_summaries(self) -> tuple[CommandSummary, ...]:
+        registry = load_command_registry(workspace=self._workspace)
+        commands = registry.list()
+        summaries: list[CommandSummary] = []
+        for command in commands:
+            summaries.append(self._command_summary(command))
+        return tuple(summaries)
+
+    @staticmethod
+    def _command_summary(command: CommandDefinition) -> CommandSummary:
+        return CommandSummary(
+            name=command.name,
+            description=command.description,
+            source=command.source,
+            enabled=command.enabled,
+            hidden=command.hidden,
+            agent=command.agent,
+            model=command.model,
+            subtask=command.subtask,
+            path=(str(command.path) if command.path is not None else None),
+        )
+
     def current_status(self) -> RuntimeStatusSnapshot:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         git = self._git_status_snapshot()
@@ -5049,12 +5092,31 @@ class VoidCodeRuntime:
         stdout = self._decode_subprocess_text_output(result.stdout)
         stderr = self._decode_subprocess_text_output(result.stderr)
         if result.returncode == 0:
-            return GitStatusSnapshot(state="git_ready", root=stdout.strip() or str(self._workspace))
+            branch_result = subprocess.run(
+                ["git", "-C", str(self._workspace), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return GitStatusSnapshot(
+                state="git_ready",
+                root=stdout.strip() or str(self._workspace),
+                branch=branch_result.stdout.strip() or None
+                if branch_result.returncode == 0
+                else None,
+            )
         if "not a git repository" in stderr.lower():
-            return GitStatusSnapshot(state="not_git_repo", root=None, error=stderr or None)
+            return GitStatusSnapshot(
+                state="not_git_repo",
+                root=None,
+                branch=None,
+                error=stderr or None,
+            )
         return GitStatusSnapshot(
             state="git_error",
             root=None,
+            error=stderr or stdout.strip() or None,
+            branch=None,
             error=stderr or stdout.strip() or None,
         )
 

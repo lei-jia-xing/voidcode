@@ -176,6 +176,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
       () => Promise<{ provider: string; configured: boolean; models: [] }>
     >(),
   listAgentsMock: vi.fn<() => Promise<[]>>(),
+  listCommandsMock: vi.fn<() => Promise<[]>>(),
   listSessionsMock: vi.fn<() => Promise<StoredSessionSummary[]>>(),
   getSessionReplayMock:
     vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
@@ -246,6 +247,7 @@ vi.mock("./lib/runtime/client", () => ({
     listProviders: runtimeClientMocks.listProvidersMock,
     listProviderModels: runtimeClientMocks.listProviderModelsMock,
     listAgents: runtimeClientMocks.listAgentsMock,
+    listCommands: runtimeClientMocks.listCommandsMock,
     listSessions: runtimeClientMocks.listSessionsMock,
     getSessionReplay: runtimeClientMocks.getSessionReplayMock,
     getStatus: runtimeClientMocks.getStatusMock,
@@ -355,6 +357,7 @@ describe("useAppStore integration flow", () => {
       models: [],
     });
     runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
+    runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
     runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
     runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
     runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(
@@ -952,6 +955,7 @@ describe("useAppStore integration flow", () => {
       requestId,
       [{ header: "Direction", answers: ["left"] }],
     );
+    expect(state.questionStatus).toBe("idle");
     expect(state.currentSessionState?.status).toBe("completed");
     expect(state.currentSessionOutput).toBe("continued");
   });
@@ -2277,7 +2281,7 @@ describe("useAppStore integration flow", () => {
     });
   });
 
-  it("loads runtime-owned settings and syncs providerModel from returned model", async () => {
+  it("loads runtime-owned settings without overriding an existing live providerModel", async () => {
     runtimeClientMocks.getSettingsMock.mockResolvedValue({
       provider: "glm",
       provider_api_key_present: true,
@@ -2293,10 +2297,29 @@ describe("useAppStore integration flow", () => {
       provider_api_key_present: true,
       model: "glm/glm-5",
     });
-    expect(state.providerModel).toBe("glm/glm-5");
+    expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
   });
 
-  it("uses the hydrated qualified settings model when providers still expose only a bare alias", async () => {
+  it("keeps an explicit live providerModel when loading runtime-owned settings", async () => {
+    useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
+    runtimeClientMocks.getSettingsMock.mockResolvedValue({
+      provider: "glm",
+      provider_api_key_present: true,
+      model: "glm/glm-5",
+    });
+
+    await useAppStore.getState().loadSettings();
+
+    const state = useAppStore.getState();
+    expect(state.settings).toEqual({
+      provider: "glm",
+      provider_api_key_present: true,
+      model: "glm/glm-5",
+    });
+    expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
+  });
+
+  it("keeps the live providerModel when settings load after hydration", async () => {
     const sessionId = "session-hydrated-qualified-model";
     const requestReceived = makeEvent(
       1,
@@ -2346,14 +2369,14 @@ describe("useAppStore integration flow", () => {
     await useAppStore.getState().loadSettings();
     await useAppStore.getState().runTask("hydrated qualified model");
 
-    expect(useAppStore.getState().providerModel).toBe("opencode-go/kimi-k2.6");
+    expect(useAppStore.getState().providerModel).toBe("kimi-k2.6");
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
       prompt: "hydrated qualified model",
       session_id: null,
       metadata: {
         agent: {
           preset: "leader",
-          model: "opencode-go/kimi-k2.6",
+          model: "kimi-k2.6",
         },
       },
     });
@@ -2436,6 +2459,28 @@ describe("useAppStore integration flow", () => {
       model: "deepseek/deepseek-v4-pro",
     });
     expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("keeps an explicit live providerModel when saving runtime-owned settings", async () => {
+    useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
+    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
+      provider: "deepseek",
+      provider_api_key_present: true,
+      model: "deepseek/deepseek-v4-pro",
+    });
+
+    await useAppStore.getState().updateSettings({
+      provider: "deepseek",
+      model: "deepseek/deepseek-v4-pro",
+    });
+
+    const state = useAppStore.getState();
+    expect(state.settings).toEqual({
+      provider: "deepseek",
+      provider_api_key_present: true,
+      model: "deepseek/deepseek-v4-pro",
+    });
+    expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
   });
 
   it("records provider credential validation results by provider", async () => {

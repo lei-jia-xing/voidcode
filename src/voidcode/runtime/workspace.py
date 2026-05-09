@@ -13,7 +13,7 @@ from .contracts import WorkspaceRegistrySnapshot, WorkspaceSummary
 from .session import StoredSessionSummary
 from .task import StoredBackgroundTaskSummary
 
-_RECENT_WORKSPACES_LIMIT = 10
+_RECENT_WORKSPACES_LIMIT = 5
 
 
 class WorkspaceOpenError(ValueError):

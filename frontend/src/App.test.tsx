@@ -34,12 +34,14 @@ describe("App", () => {
     providerValidationError: {},
     agentPresets: [],
     skills: [],
+    commands: [],
     loadWorkspaces: vi.fn(),
     switchWorkspace: vi.fn(),
     loadProviders: vi.fn(),
     validateProviderCredentials: vi.fn(),
     loadAgents: vi.fn(),
     loadSkills: vi.fn(),
+    loadCommands: vi.fn(),
     statusSnapshot: null,
     statusStatus: "idle",
     statusError: null,
@@ -165,46 +167,7 @@ describe("App", () => {
     expect(mockStore.loadSettings).toHaveBeenCalled();
   });
 
-  it("opens child session when picker selects a background task with child session id", () => {
-    const selectSession = vi.fn();
-    const loadBackgroundTaskOutput = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
-      ...mockStore,
-      selectSession,
-      loadBackgroundTaskOutput,
-      workspaces: {
-        current: {
-          path: "/workspace",
-          label: "workspace",
-          available: true,
-          current: true,
-          last_opened_at: 1,
-        },
-        recent: [],
-        candidates: [],
-      },
-      backgroundTasks: [
-        {
-          task: { id: "task-123" },
-          status: "running",
-          prompt: "explore runtime http",
-          session_id: "child-session-123",
-          error: null,
-          created_at: 1,
-          updated_at: 2,
-        },
-      ],
-    });
-
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Runtime Ops" }));
-    fireEvent.click(screen.getByRole("button", { name: "Open subsession" }));
-
-    expect(selectSession).not.toHaveBeenCalled();
-    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-123");
-  });
-
-  it("renders Server LSP and MCP status details without Git in the runtime status popover", () => {
+  it("renders runtime status popover without task tab or summary stat cards", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -220,13 +183,18 @@ describe("App", () => {
       },
       statusStatus: "success",
       statusSnapshot: {
-        git: { state: "git_ready", root: "/workspace", error: null },
+        git: {
+          state: "git_ready",
+          root: "/workspace",
+          branch: "feature/demo",
+          error: null,
+        },
         lsp: { state: "running", error: null, details: {} },
         mcp: { state: "stopped", error: null, details: {} },
         acp: {
           state: "running",
           error: null,
-          details: { status: "connected", last_request_type: "handshake" },
+          details: { url: "http://127.0.0.1:8000" },
         },
       },
     });
@@ -237,9 +205,9 @@ describe("App", () => {
     expect(screen.getAllByText("Server").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("LSP").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("MCP").length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByText("Git")).not.toBeInTheDocument();
-    expect(screen.getByText("last request")).toBeInTheDocument();
-    expect(screen.getByText("handshake")).toBeInTheDocument();
+    expect(screen.queryByText("Tasks")).not.toBeInTheDocument();
+    expect(screen.queryByText("configured")).not.toBeInTheDocument();
+    expect(screen.queryByText("Background Tasks")).not.toBeInTheDocument();
   });
 
   it("uses a working bar instead of the old agent idle header badge", () => {
@@ -266,6 +234,21 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Agent Idle")).not.toBeInTheDocument();
     expect(screen.queryByText("Agent Busy")).not.toBeInTheDocument();
+  });
+
+  it("shows a workspace loading state instead of flashing the empty project page during boot", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: null,
+      workspacesStatus: "loading",
+    });
+
+    render(<App />);
+
+    expect(screen.getByText("Loading projects...")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Open a project to get started"),
+    ).not.toBeInTheDocument();
   });
 
   it("wires the running composer stop button to cancel the current run", () => {
@@ -412,90 +395,6 @@ describe("App", () => {
     expect(
       screen.getByRole("button", { name: "Toggle code review" }),
     ).toHaveAttribute("aria-expanded", "true");
-  });
-
-  it("opens runtime ops and loads background task output from task selection", () => {
-    const loadBackgroundTaskOutput = vi.fn();
-    const selectSession = vi.fn();
-    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
-      ...mockStore,
-      workspaces: {
-        current: {
-          path: "/workspace",
-          label: "workspace",
-          available: true,
-          current: true,
-          last_opened_at: 1,
-        },
-        recent: [],
-        candidates: [],
-      },
-      backgroundTasks: [
-        {
-          task: { id: "task-output-1" },
-          status: "completed",
-          prompt: "inspect repo",
-          session_id: "session-1",
-          error: null,
-          created_at: 1,
-          updated_at: 1,
-        },
-      ],
-      selectedBackgroundTaskOutputId: "task-output-1",
-      backgroundTaskOutputStatus: "success",
-      backgroundTaskOutput: {
-        task: {
-          task_id: "task-output-1",
-          status: "completed",
-          parent_session_id: "session-1",
-          requested_child_session_id: "requested-child-1",
-          child_session_id: "child-session-1",
-          approval_request_id: null,
-          question_request_id: null,
-          approval_blocked: false,
-          summary_output: "Task summary text",
-          error: null,
-          result_available: true,
-          cancellation_cause: null,
-          duration_seconds: 12.5,
-          tool_call_count: 3,
-          routing: { mode: "subagent", subagent_type: "explore" },
-        },
-        session_result: {
-          session: {
-            session: { id: "child-session-1" },
-            status: "completed" as const,
-            turn: 1,
-            metadata: {},
-          },
-          prompt: "inspect repo",
-          status: "completed",
-          summary: "Session summary text",
-          output: "Session output text",
-          error: null,
-          last_event_sequence: 1,
-          transcript: [],
-        },
-        output: "Raw output text",
-      },
-      loadBackgroundTaskOutput,
-      selectSession,
-    });
-
-    render(<App />);
-    fireEvent.click(screen.getByLabelText("Runtime Ops"));
-    fireEvent.click(screen.getByRole("button", { name: "View output" }));
-
-    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-output-1");
-    expect(screen.getByText("Task summary text")).toBeInTheDocument();
-    expect(screen.getByText("Raw output text")).toBeInTheDocument();
-    expect(screen.getByText("Session output text")).toBeInTheDocument();
-    expect(screen.getByText("child-session-1")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
-    expect(screen.getByText("12.5s")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "child-session-1" }));
-    expect(selectSession).toHaveBeenCalledWith("child-session-1");
   });
 
   it("does not show the agent status badge in the workspace header", () => {
@@ -742,20 +641,13 @@ describe("App", () => {
     expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
   });
 
-  it("renders project-picker-first empty state when no current workspace exists", () => {
+  it("renders a workspace loading state before showing the empty project page", () => {
     render(<App />);
 
+    expect(screen.getByText("Loading projects...")).toBeInTheDocument();
     expect(
-      screen.getByText("Open a project to get started"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Choose a workspace first before using chat, review, or composer.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Open Project" }).length).toBe(
-      2,
-    );
+      screen.queryByText("Open a project to get started"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByPlaceholderText("Ask VoidCode to do something..."),
     ).not.toBeInTheDocument();
@@ -814,7 +706,7 @@ describe("App", () => {
     expect(screen.getByText("Here is the README content.")).toBeInTheDocument();
   });
 
-  it("does not render thinking block for reasoning events", () => {
+  it("renders thinking block for reasoning events", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -849,7 +741,8 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
+    expect(screen.getByText(/^Thinking:$/)).toBeInTheDocument();
+    expect(screen.getByText("Analyzing...")).toBeInTheDocument();
   });
 
   it("renders streamed assistant text before the final response event", () => {
@@ -1249,9 +1142,9 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByText("test prompt subtitle")).toBeInTheDocument();
-    expect(screen.getByText("T5")).toBeInTheDocument();
-    expect(screen.getByText("Completed")).toBeInTheDocument();
-    expect(screen.getByText("2m ago")).toBeInTheDocument();
+    expect(screen.queryByText("T5")).not.toBeInTheDocument();
+    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
+    expect(screen.queryByText("2m ago")).not.toBeInTheDocument();
   });
 
   it("renders idle session status labels from contract-valid summaries", () => {
@@ -1283,7 +1176,8 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByText("Pending")).toBeInTheDocument();
+    expect(screen.getByText("Resume existing session")).toBeInTheDocument();
+    expect(screen.queryByText("Pending")).not.toBeInTheDocument();
   });
 
   it("renders the header with current session prompt", () => {
@@ -1299,6 +1193,27 @@ describe("App", () => {
         },
         recent: [],
         candidates: [],
+      },
+      statusSnapshot: {
+        git: {
+          state: "git_ready",
+          root: "/workspace",
+          branch: "feature/demo",
+          error: null,
+        },
+        lsp: { state: "running", error: null, details: {} },
+        mcp: { state: "stopped", error: null, details: {} },
+        acp: { state: "running", error: null, details: {} },
+        background_tasks: {
+          active_worker_slots: 0,
+          queued_count: 0,
+          running_count: 0,
+          terminal_count: 0,
+          default_concurrency: 1,
+          provider_concurrency: {},
+          model_concurrency: {},
+          status_counts: {},
+        },
       },
       currentSessionId: "session-123456789",
       sessions: [
@@ -1319,6 +1234,7 @@ describe("App", () => {
     expect(
       screen.getAllByText("session-123456789").length,
     ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("feature/demo")).toBeInTheDocument();
   });
 
   it("renders concise deterministic titles for long session prompts in header and sidebar", () => {

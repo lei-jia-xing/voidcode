@@ -86,4 +86,38 @@ describe("OpenProjectModal", () => {
       screen.getByText("Failed to switch project: invalid workspace"),
     ).toBeInTheDocument();
   });
+
+  it("opens an explicitly entered local folder path", async () => {
+    const onSwitchWorkspace = vi.fn(() => Promise.resolve());
+    render(
+      <OpenProjectModal {...baseProps} onSwitchWorkspace={onSwitchWorkspace} />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Enter local folder path"), {
+      target: { value: "/tmp/project" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open folder" }));
+
+    await waitFor(() =>
+      expect(onSwitchWorkspace).toHaveBeenCalledWith("/tmp/project"),
+    );
+  });
+
+  it("caps the visible recent workspace list to five entries", () => {
+    const recentWorkspaces = Array.from({ length: 7 }, (_, index) => ({
+      path: `/recent-${index}`,
+      label: `Recent Project ${index}`,
+      available: true,
+      current: false,
+    }));
+
+    render(
+      <OpenProjectModal {...baseProps} recentWorkspaces={recentWorkspaces} />,
+    );
+
+    expect(screen.getByText("Recent Project 0")).toBeInTheDocument();
+    expect(screen.getByText("Recent Project 4")).toBeInTheDocument();
+    expect(screen.queryByText("Recent Project 5")).not.toBeInTheDocument();
+    expect(screen.queryByText("Recent Project 6")).not.toBeInTheDocument();
+  });
 });

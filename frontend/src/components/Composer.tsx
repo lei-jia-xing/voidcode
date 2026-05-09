@@ -1,11 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Search, Send, Sparkles, Square } from "lucide-react";
+import { Send, Sparkles, Square } from "lucide-react";
 import type {
   AgentSummary,
+  CommandSummary,
   ProviderModelsResult,
   ProviderSummary,
-  SkillSummary,
 } from "../lib/runtime/types";
 
 interface ComposerProps {
@@ -16,7 +16,7 @@ interface ComposerProps {
   reasoningEffort?: string;
   sessionMetadata?: Record<string, unknown>;
   agentPresets?: AgentSummary[];
-  skills?: SkillSummary[];
+  commands?: CommandSummary[];
   providers?: ProviderSummary[];
   providerModels?: Record<string, ProviderModelsResult>;
   sessionContextUsage?: SessionContextUsage;
@@ -47,7 +47,7 @@ export function Composer({
   reasoningEffort = "",
   sessionMetadata,
   agentPresets,
-  skills,
+  commands,
   providers,
   providerModels,
   sessionContextUsage,
@@ -121,25 +121,21 @@ export function Composer({
   const trimmedInput = input.trimStart();
   const slashMatch = trimmedInput.match(/^\/(\S*)/);
   const slashQuery = slashMatch?.[1] ?? "";
-  const exactSlashSkill = (skills ?? []).find(
-    (skill) => skill.name === slashQuery,
+  const slashCommands = useMemo(
+    () =>
+      (commands ?? []).filter((command) => !command.hidden && command.enabled),
+    [commands],
+  );
+  const exactSlashCommand = slashCommands.find(
+    (command) => command.name === slashQuery,
   );
   const slashCommandComplete = Boolean(
-    exactSlashSkill && trimmedInput.match(/^\/\S+\s+/),
+    exactSlashCommand && trimmedInput.match(/^\/\S+\s+/),
   );
   const slashMenuOpen = Boolean(slashMatch) && !slashCommandComplete;
   const slashSuggestions = !slashMenuOpen
     ? []
-    : (skills ?? [])
-        .filter((skill) => {
-          const normalized = slashQuery.toLowerCase();
-          if (!normalized) return true;
-          return (
-            skill.name.toLowerCase().includes(normalized) ||
-            skill.description.toLowerCase().includes(normalized)
-          );
-        })
-        .slice(0, 8);
+    : rankSlashCommands(slashCommands, slashQuery).slice(0, 8);
   const activeSlashIndex =
     slashSuggestions.length === 0
       ? 0
@@ -182,6 +178,16 @@ export function Composer({
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, []);
 
+  useEffect(() => {
+    if (!slashMenuOpen) return;
+    const active = document.querySelector<HTMLElement>(
+      '[data-slash-active="true"]',
+    );
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }, [slashMenuOpen]);
+
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -192,22 +198,7 @@ export function Composer({
   const handleSubmit = () => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
-    const leadingSlash = trimmed.match(/^\/(\S+)\s*(.*)$/s);
-    if (leadingSlash) {
-      const slashName = leadingSlash[1] ?? "";
-      const remainder = leadingSlash[2] ?? "";
-      const matchedSkill = (skills ?? []).find(
-        (skill) => skill.name === slashName,
-      );
-      if (matchedSkill) {
-        const finalPrompt = remainder.trim();
-        onSubmit(finalPrompt || trimmed, { skills: [matchedSkill.name] });
-      } else {
-        onSubmit(trimmed);
-      }
-    } else {
-      onSubmit(trimmed);
-    }
+    onSubmit(trimmed);
     setInput("");
     setSlashIndex(0);
     const el = textareaRef.current;
@@ -244,10 +235,8 @@ export function Composer({
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (slashQuery.length > 0 && !slashCommandComplete) {
-          applySlashSuggestion(slashSuggestions[activeSlashIndex]?.name ?? "");
-          return;
-        }
+        applySlashSuggestion(slashSuggestions[activeSlashIndex]?.name ?? "");
+        return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
@@ -262,10 +251,10 @@ export function Composer({
     }
   };
 
-  const applySlashSuggestion = (skillName: string) => {
-    if (!skillName) return;
+  const applySlashSuggestion = (commandName: string) => {
+    if (!commandName) return;
     const remainder = trimmedInput.replace(/^\/\S*\s*/, "");
-    const nextValue = `/${skillName}${remainder ? ` ${remainder}` : " "}`;
+    const nextValue = `/${commandName}${remainder ? ` ${remainder}` : " "}`;
     setInput(nextValue);
     setSlashIndex(0);
     requestAnimationFrame(() => {
@@ -297,28 +286,27 @@ export function Composer({
 
   return (
     <div className="border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-3">
-      <div className="max-w-3xl mx-auto">
+      <div className="mx-auto max-w-[var(--vc-chat-content-width)]">
         <div className="relative flex flex-col bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-strong)] rounded-xl focus-within:border-[color:var(--vc-focus-ring)] focus-within:ring-1 focus-within:ring-[color:var(--vc-focus-ring)] transition-colors">
           {slashMenuOpen && (
             <div className="absolute bottom-full left-3 right-3 z-[110] mb-2 overflow-hidden rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] shadow-xl">
-              <div className="flex items-center gap-2 border-b border-[color:var(--vc-border-subtle)] px-3 py-2 text-[11px] text-[var(--vc-text-subtle)]">
-                <Search className="h-3.5 w-3.5" />
-                <span>{t("composer.slashTitle")}</span>
-              </div>
               {slashSuggestions.length === 0 ? (
                 <div className="px-3 py-3 text-xs text-[var(--vc-text-subtle)]">
                   {t("composer.slashNoResults", { query: slashQuery })}
                 </div>
               ) : (
-                <div className="max-h-64 overflow-y-auto py-1">
-                  {slashSuggestions.map((skill, index) => {
+                <div role="listbox" className="max-h-64 overflow-y-auto py-1">
+                  {slashSuggestions.map((command, index) => {
                     const active = index === activeSlashIndex;
                     return (
                       <button
-                        key={skill.name}
+                        key={command.name}
                         type="button"
+                        role="option"
+                        aria-selected={active}
+                        data-slash-active={active ? "true" : undefined}
                         onMouseEnter={() => setSlashIndex(index)}
-                        onClick={() => applySlashSuggestion(skill.name)}
+                        onClick={() => applySlashSuggestion(command.name)}
                         className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors ${
                           active
                             ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)]"
@@ -328,10 +316,10 @@ export function Composer({
                         <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--vc-text-subtle)]" />
                         <span className="min-w-0 flex-1">
                           <span className="block text-sm font-medium">
-                            /{skill.name}
+                            /{command.name}
                           </span>
                           <span className="mt-0.5 block text-[11px] text-[var(--vc-text-subtle)]">
-                            {skill.description}
+                            {truncateSlashDescription(command.description)}
                           </span>
                         </span>
                       </button>
@@ -514,6 +502,43 @@ export function Composer({
       </div>
     </div>
   );
+}
+
+function truncateSlashDescription(description: string): string {
+  const normalized = description.trim();
+  if (normalized.length <= 72) return normalized;
+  return `${normalized.slice(0, 69).trimEnd()}...`;
+}
+
+function rankSlashCommands(
+  commands: CommandSummary[],
+  query: string,
+): CommandSummary[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return commands;
+
+  return commands
+    .map((command) => {
+      const normalizedName = command.name.toLowerCase();
+      const startsWith = normalizedName.startsWith(normalizedQuery);
+      const includes = normalizedName.includes(normalizedQuery);
+      if (!includes) return null;
+      return {
+        command,
+        score: startsWith ? 0 : 1,
+      };
+    })
+    .filter(
+      (entry): entry is { command: CommandSummary; score: number } =>
+        entry !== null,
+    )
+    .sort(
+      (a, b) =>
+        a.score - b.score ||
+        a.command.name.length - b.command.name.length ||
+        a.command.name.localeCompare(b.command.name),
+    )
+    .map((entry) => entry.command);
 }
 
 function displayModelName(model: string, providerName: string | null): string {

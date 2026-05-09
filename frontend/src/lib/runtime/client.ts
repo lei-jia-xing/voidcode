@@ -1,5 +1,6 @@
 import {
   AgentSummary,
+  CommandSummary,
   SkillSummary,
   BackgroundTaskOutput,
   BackgroundTaskState,
@@ -126,6 +127,12 @@ export class RuntimeClient {
   static async listSkills(): Promise<SkillSummary[]> {
     const res = await fetch(`/api/skills`);
     await expectOk(res, "Failed to load skills");
+    return res.json();
+  }
+
+  static async listCommands(): Promise<CommandSummary[]> {
+    const res = await fetch(`/api/commands`);
+    await expectOk(res, "Failed to load commands");
     return res.json();
   }
 

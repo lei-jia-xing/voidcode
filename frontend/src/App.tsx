@@ -7,21 +7,16 @@ import { Composer, type SessionContextUsage } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
-import { RuntimeOpsPanel } from "./components/RuntimeOpsPanel";
 import { TodoPanel } from "./components/TodoPanel";
 import { deriveLatestTodoSnapshot } from "./components/todoPanelModel";
 import { ControlButton } from "./components/ui";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
-import { RuntimeClient } from "./lib/runtime/client";
 import {
-  CheckCircle2,
   FolderTree,
   GitCompare,
   Loader2,
   MoveLeft,
   PanelLeft,
-  Server,
-  XCircle,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
@@ -49,13 +44,14 @@ function App() {
     providerValidationStatus,
     providerValidationError,
     agentPresets,
-    skills,
+    commands,
     loadWorkspaces,
     switchWorkspace,
     loadProviders,
     validateProviderCredentials,
     loadAgents,
     loadSkills,
+    loadCommands,
     statusSnapshot,
     statusStatus,
     statusError,
@@ -95,25 +91,11 @@ function App() {
     questionStatus,
     questionError,
     answerQuestion,
-    notifications,
-    notificationsStatus,
-    notificationsError,
-    loadNotifications,
-    acknowledgeNotification,
     backgroundTasks,
-    backgroundTasksStatus,
-    backgroundTasksError,
     selectedBackgroundTaskOutputId,
     backgroundTaskOutput,
-    backgroundTaskOutputStatus,
-    backgroundTaskOutputError,
     loadBackgroundTasks,
     loadBackgroundTaskOutput,
-    cancelBackgroundTask,
-    sessionDebug,
-    sessionDebugStatus,
-    sessionDebugError,
-    loadSessionDebug,
     settings,
     settingsStatus,
     settingsError,
@@ -126,12 +108,8 @@ function App() {
   const [showProjects, setShowProjects] = useState(false);
   const [showFileTree, setShowFileTree] = useState(false);
   const [showCodeReview, setShowCodeReview] = useState(false);
-  const [showRuntimeOps, setShowRuntimeOps] = useState(false);
   const [isSessionSidebarExpanded, setIsSessionSidebarExpanded] =
     useState(true);
-  const [runtimeTestStatus, setRuntimeTestStatus] = useState<
-    "idle" | "testing" | "success" | "error"
-  >("idle");
   const hydratedInitialSessionRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
@@ -304,19 +282,19 @@ function App() {
     void loadProviders?.();
     void loadAgents?.();
     void loadSkills?.();
+    void loadCommands?.();
     void loadSettings?.();
     void loadStatus?.();
-    void loadNotifications?.();
     void loadBackgroundTasks?.();
   }, [
     loadAgents,
     loadSkills,
+    loadCommands,
     loadProviders,
     loadBackgroundTasks,
     loadSettings,
     loadStatus,
     loadWorkspaces,
-    loadNotifications,
   ]);
 
   useEffect(() => {
@@ -358,19 +336,6 @@ function App() {
     });
   };
 
-  const testRuntime = async () => {
-    setRuntimeTestStatus("testing");
-    try {
-      await RuntimeClient.listSessions();
-      setRuntimeTestStatus("success");
-      setTimeout(() => setRuntimeTestStatus("idle"), 3000);
-    } catch (e) {
-      console.error("Runtime test failed:", e);
-      setRuntimeTestStatus("error");
-      setTimeout(() => setRuntimeTestStatus("idle"), 3000);
-    }
-  };
-
   const currentSessionSummary = useMemo(
     () => sessions.find((s) => s.session.id === currentSessionId),
     [sessions, currentSessionId],
@@ -397,10 +362,6 @@ function App() {
     void resolveApproval(decision);
   };
 
-  const handleLoadSessionDebug = () => {
-    void loadSessionDebug(currentSessionId);
-  };
-
   const handleFileTreePathSelect = (path: string) => {
     void selectReviewPath(path);
     setShowCodeReview(true);
@@ -413,6 +374,10 @@ function App() {
     isApprovalSubmitting ||
     isQuestionSubmitting;
   const hasCurrentWorkspace = Boolean(workspaces?.current);
+  const isWorkspaceBootLoading =
+    !hasCurrentWorkspace &&
+    (workspacesStatus === "idle" || workspacesStatus === "loading");
+  const currentBranch = statusSnapshot?.git.branch?.trim() || null;
 
   return (
     <div className="flex h-screen bg-[var(--vc-bg)] text-[var(--vc-text-muted)] font-sans overflow-hidden selection:bg-[var(--vc-border-strong)] selection:text-[var(--vc-text-primary)]">
@@ -467,8 +432,15 @@ function App() {
                 )}
                 {currentSessionId ? (
                   <div className="flex flex-col min-w-0">
-                    <span className="text-sm font-medium text-[var(--vc-text-primary)] truncate">
-                      {currentSessionTitle}
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-medium text-[var(--vc-text-primary)] truncate">
+                        {currentSessionTitle}
+                      </span>
+                      {currentBranch ? (
+                        <span className="shrink-0 rounded-md border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--vc-text-subtle)]">
+                          {currentBranch}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="text-[11px] text-[var(--vc-text-subtle)] font-mono truncate">
                       {currentSessionId}
@@ -515,36 +487,6 @@ function App() {
                 >
                   <GitCompare className="w-4 h-4" />
                   <span>{t("review.codeReview")}</span>
-                </ControlButton>
-
-                <ControlButton
-                  compact
-                  icon
-                  variant={showRuntimeOps ? "secondary" : "ghost"}
-                  onClick={() => setShowRuntimeOps((value) => !value)}
-                  aria-label={t("runtimeOps.title")}
-                  aria-expanded={showRuntimeOps}
-                >
-                  <Server className="w-4 h-4" />
-                </ControlButton>
-
-                <ControlButton
-                  compact
-                  icon
-                  variant="ghost"
-                  onClick={testRuntime}
-                  disabled={runtimeTestStatus === "testing"}
-                  aria-label={t("debug.testRuntime")}
-                >
-                  {runtimeTestStatus === "testing" ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)]" />
-                  ) : runtimeTestStatus === "success" ? (
-                    <CheckCircle2 className="w-4 h-4 text-[var(--vc-confirm-text)]" />
-                  ) : runtimeTestStatus === "error" ? (
-                    <XCircle className="w-4 h-4 text-[var(--vc-danger-text)]" />
-                  ) : (
-                    <Server className="w-4 h-4" />
-                  )}
                 </ControlButton>
               </div>
             </header>
@@ -619,36 +561,20 @@ function App() {
               providerModels={providerModels}
               sessionContextUsage={composerContextUsage}
               agentPresets={agentPresets}
-              skills={skills}
+              commands={commands}
               onProviderModelChange={setProviderModel}
               onReasoningEffortChange={setReasoningEffort}
             />
           </>
+        ) : isWorkspaceBootLoading ? (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <div className="flex items-center gap-3 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-3 text-sm text-[var(--vc-text-muted)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t("project.loading")}
+            </div>
+          </div>
         ) : (
           <div className="flex flex-1 flex-col relative">
-            <header className="h-14 flex items-center justify-end px-4 border-b border-transparent flex-shrink-0 absolute top-0 left-0 right-0 z-10">
-              <div className="flex items-center gap-2">
-                <ControlButton
-                  compact
-                  icon
-                  variant="ghost"
-                  onClick={testRuntime}
-                  disabled={runtimeTestStatus === "testing"}
-                  aria-label={t("debug.testRuntime")}
-                >
-                  {runtimeTestStatus === "testing" ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)]" />
-                  ) : runtimeTestStatus === "success" ? (
-                    <CheckCircle2 className="w-4 h-4 text-[var(--vc-confirm-text)]" />
-                  ) : runtimeTestStatus === "error" ? (
-                    <XCircle className="w-4 h-4 text-[var(--vc-danger-text)]" />
-                  ) : (
-                    <Server className="w-4 h-4" />
-                  )}
-                </ControlButton>
-              </div>
-            </header>
-
             <div className="flex flex-1 items-center justify-center p-6 pt-14">
               <div className="w-full max-w-md rounded-2xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-6 text-center shadow-[0_0_30px_rgba(0,0,0,0.25)]">
                 <div className="text-lg font-semibold text-[var(--vc-text-primary)]">
@@ -699,43 +625,6 @@ function App() {
         onRefresh={loadReview}
         onSelectPath={(path) => {
           void selectReviewPath(path);
-        }}
-      />
-
-      <RuntimeOpsPanel
-        isOpen={showRuntimeOps}
-        currentSessionId={currentSessionId}
-        debugSnapshot={sessionDebug}
-        debugStatus={sessionDebugStatus}
-        debugError={sessionDebugError}
-        notifications={notifications}
-        notificationsStatus={notificationsStatus}
-        notificationsError={notificationsError}
-        backgroundTasks={backgroundTasks}
-        backgroundTasksStatus={backgroundTasksStatus}
-        backgroundTasksError={backgroundTasksError}
-        selectedBackgroundTaskOutputId={selectedBackgroundTaskOutputId}
-        backgroundTaskOutput={backgroundTaskOutput}
-        backgroundTaskOutputStatus={backgroundTaskOutputStatus}
-        backgroundTaskOutputError={backgroundTaskOutputError}
-        onClose={() => setShowRuntimeOps(false)}
-        onRefreshNotifications={loadNotifications}
-        onAcknowledgeNotification={(notificationId) => {
-          void acknowledgeNotification(notificationId);
-        }}
-        onRefreshTasks={loadBackgroundTasks}
-        onLoadTaskOutput={(taskId) => {
-          void loadBackgroundTaskOutput(taskId);
-        }}
-        onOpenSubsession={(taskId) => {
-          void loadBackgroundTaskOutput(taskId);
-        }}
-        onCancelTask={(taskId) => {
-          void cancelBackgroundTask(taskId);
-        }}
-        onRefreshDebug={handleLoadSessionDebug}
-        onSelectSession={(sessionId) => {
-          void selectSession(sessionId);
         }}
       />
 

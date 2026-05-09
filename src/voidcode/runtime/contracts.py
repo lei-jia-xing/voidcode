@@ -882,9 +882,23 @@ class SkillSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandSummary:
+    name: str
+    description: str
+    source: str
+    enabled: bool = True
+    hidden: bool = False
+    agent: str | None = None
+    model: str | None = None
+    subtask: bool = False
+    path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class GitStatusSnapshot:
     state: GitStatusState
     root: str | None = None
+    branch: str | None = None
     error: str | None = None
 
 

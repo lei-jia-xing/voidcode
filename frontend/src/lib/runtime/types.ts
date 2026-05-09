@@ -104,9 +104,34 @@ export interface SkillSummary {
   source_path?: string | null;
 }
 
+export interface CommandSummary {
+  name: string;
+  description: string;
+  source: string;
+  enabled: boolean;
+  hidden: boolean;
+  agent?: string | null;
+  model?: string | null;
+  subtask?: boolean;
+  path?: string | null;
+}
+
+export interface CommandSummary {
+  name: string;
+  description: string;
+  source: string;
+  enabled: boolean;
+  hidden: boolean;
+  agent?: string | null;
+  model?: string | null;
+  subtask?: boolean;
+  path?: string | null;
+}
+
 export interface GitStatusSnapshot {
   state: GitStatusState;
   root?: string | null;
+  branch?: string | null;
   error?: string | null;
 }
 

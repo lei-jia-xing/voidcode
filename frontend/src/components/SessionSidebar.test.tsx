@@ -176,44 +176,24 @@ describe("SessionSidebar resizing", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not render runtime sequence counters as ancient relative dates", () => {
+  it("shows only the derived session name in the list item", () => {
     renderSidebar({
       sessions: [
         {
-          session: { id: "session-sequence-1" },
+          session: { id: "session-name-only-1" },
           status: "completed",
-          turn: 1,
-          prompt: "sequence-backed session",
+          turn: 3,
+          prompt: "implement session name only list item",
           updated_at: 1000,
         },
       ],
     });
 
-    expect(screen.getByText("update #1000")).toBeInTheDocument();
-    expect(screen.queryByText(/d ago/)).not.toBeInTheDocument();
-  });
-
-  it("keeps real epoch seconds as relative session times", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-04-16T06:00:00Z"));
-    try {
-      renderSidebar({
-        sessions: [
-          {
-            session: { id: "session-epoch-1" },
-            status: "completed",
-            turn: 1,
-            prompt: "epoch-backed session",
-            updated_at: Math.floor(
-              new Date("2026-04-16T05:58:00Z").getTime() / 1000,
-            ),
-          },
-        ],
-      });
-
-      expect(screen.getByText("2m ago")).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(
+      screen.getByText("implement session name only list item"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("update #1000")).not.toBeInTheDocument();
+    expect(screen.queryByText("T3")).not.toBeInTheDocument();
+    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
   });
 });
