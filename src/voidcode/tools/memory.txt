@@ -1,0 +1,7 @@
+Use memory_search when durable user preferences, project facts, prior decisions, or reusable feedback may affect the task.
+
+Use memory_add only when the user asks to remember something or explicitly confirms a stable fact, preference, decision, or reusable lesson should persist.
+
+Use memory_list only when browsing recent memories is more appropriate than a focused search. Use memory_delete only when the user clearly asks to remove a saved memory.
+
+Store concise, durable information that will remain useful across future sessions. Do not store temporary task state, speculative conclusions, secrets, credentials, sensitive data, or anything the user did not intend to persist.

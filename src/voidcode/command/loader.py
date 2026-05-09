@@ -179,6 +179,20 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         ),
         source="builtin",
     ),
+    CommandDefinition(
+        name="memory",
+        description="Use workspace memory tools deliberately for recall or explicit persistence.",
+        template=(
+            "Workflow: use the existing runtime memory tools; do not create another persistence "
+            "path. Request or focus: $ARGUMENTS. If prior durable context may matter, call "
+            "memory_search with a focused query before answering. If the user explicitly asks to "
+            "remember a stable preference, project fact, decision, or reusable lesson, call "
+            "memory_add with concise content. Do not persist temporary task state, speculative "
+            "conclusions, secrets, credentials, sensitive data, or anything the user did not "
+            "intend to save."
+        ),
+        source="builtin",
+    ),
 )
 
 _SOURCE_PRECEDENCE: tuple[CommandSource, ...] = ("builtin", "user", "project", "skill", "mcp")

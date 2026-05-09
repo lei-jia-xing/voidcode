@@ -280,6 +280,12 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
         "formatter": {"enabled": True},
         "lsp": {"enabled": True},
         "mcp": {"enabled": True},
+        "memory": {
+            "enabled": True,
+            "recall": {"enabled": False},
+            "semantic_search": "auto",
+            "sqlite_vec": {"enabled": "auto"},
+        },
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }

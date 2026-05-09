@@ -549,6 +549,7 @@ class RuntimeRunLoopCoordinator:
                         read_paths=read_paths,
                         abort_signal=abort_signal,
                         emit_tool_progress=emit_tool_progress,
+                        memory=self._runtime,
                     )
                 ):
                     if tool_timeout is None:
@@ -791,6 +792,7 @@ class RuntimeRunLoopCoordinator:
                         ),
                         read_paths=read_paths,
                         abort_signal=abort_signal,
+                        memory=runtime,
                     )
                 ):
                     if tool_timeout is None:
@@ -2190,6 +2192,7 @@ class RuntimeRunLoopCoordinator:
                             ),
                             read_paths=read_paths,
                             abort_signal=active_graph_request.abort_signal,
+                            memory=runtime,
                         )
                     ):
                         if tool_timeout is None:

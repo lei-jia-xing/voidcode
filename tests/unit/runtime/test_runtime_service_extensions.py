@@ -236,6 +236,11 @@ def _assert_context_window_recomputed(
     assert context_window.original_tool_result_count == 1
 
 
+def _legacy_context_window_policy(**overrides: object) -> ContextWindowPolicy:
+    resolved = {"tokenizer_model": None, **overrides}
+    return ContextWindowPolicy(**cast(Any, resolved))
+
+
 class _NoopMcpManager:
     @property
     def configuration(self) -> McpConfigState:
@@ -14366,7 +14371,7 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
             ToolResult(tool_name="read_file", status="ok", content="content-5", data={"index": 5}),
         ),
         session_metadata={},
-        policy=ContextWindowPolicy(
+        policy=_legacy_context_window_policy(
             max_tool_result_tokens=100,
             continuity_distillation_enabled=True,
             default_tool_result_tokens=None,
@@ -14459,8 +14464,9 @@ def test_runtime_distillation_is_skipped_when_no_compaction_needed(tmp_path: Pat
         config=RuntimeConfig(
             model="opencode/gpt-5.4",
             context_window=RuntimeContextWindowConfig(
-                max_tool_result_tokens=600,
+                max_tool_result_tokens=None,
                 continuity_distillation_enabled=True,
+                tokenizer_model=None,
             ),
         ),
         model_provider_registry=registry,

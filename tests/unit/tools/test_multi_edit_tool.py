@@ -198,6 +198,96 @@ def test_multi_edit_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> N
     assert target.read_text(encoding="utf-8") == "value = 'A'\nother = 'B'\n"
 
 
+def test_multi_edit_keeps_edits_successful_when_formatter_is_missing(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")
+    tool = MultiEditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="multi_edit",
+            arguments={
+                "path": "sample.py",
+                "edits": [
+                    {"oldString": "'a'", "newString": "'A'"},
+                    {"oldString": "'b'", "newString": "'B'"},
+                ],
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "value = 'A'\nother = 'B'\n"
+    assert "Formatter warning:" in (result.content or "")
+    formatter = cast(dict[str, object], result.data["formatter"])
+    assert formatter["status"] == "missing_executable"
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert "No formatter executable was available" in str(diagnostics[0])
+
+
+def test_multi_edit_skips_formatter_when_formatter_is_disabled_by_hooks_config(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "sample.py"
+    target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")
+    formatter_marker = tmp_path / "formatter-ran.txt"
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            f"""
+            import pathlib
+
+            pathlib.Path({str(formatter_marker)!r}).write_text("ran", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = MultiEditTool(
+        hooks_config=RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="multi_edit",
+            arguments={
+                "path": "sample.py",
+                "edits": [
+                    {"oldString": "'a'", "newString": "'A'"},
+                    {"oldString": "'b'", "newString": "'B'"},
+                ],
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert not formatter_marker.exists()
+    assert "formatter" not in result.data
+    assert "diagnostics" not in result.data
+    assert target.read_text(encoding="utf-8") == "value = 'A'\nother = 'B'\n"
+
+
 def test_multi_edit_keeps_edits_successful_when_formatter_times_out(tmp_path: Path) -> None:
     target = tmp_path / "sample.py"
     target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")

@@ -183,6 +183,7 @@ def build_prompt_assembly_plan(
     context_transform_result: RuntimeContextTransformResult | None = None,
     pending_state_section: PromptAssemblySection | None = None,
     todo_prompt_context: str = "",
+    workspace_memory_context: str = "",
     continuity_summary: str = "",
     artifact_reference_sections: Iterable[PromptAssemblySection] = (),
     prompt_profile_name: str | None = None,
@@ -307,6 +308,12 @@ def build_prompt_assembly_plan(
             sections.append(pending_state_section)
 
     append_system(todo_prompt_context, source="runtime_todo_state", tier="task")
+    append_system(
+        workspace_memory_context,
+        source="runtime_workspace_memory",
+        tier="workspace",
+        metadata={"section": "Workspace Memory"},
+    )
     append_system(continuity_summary, source="continuity_summary", tier="recent")
 
     for artifact_reference in artifact_reference_sections:

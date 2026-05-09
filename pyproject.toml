@@ -43,6 +43,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+memory-vector = [
+  "sqlite-vec",
+]
 dev = [
   "hypothesis",
   "pre-commit",

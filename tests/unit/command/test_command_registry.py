@@ -115,6 +115,7 @@ class TestBuiltinCommandDiscovery:
         "cancel-continuation",
         "review",
         "test",
+        "memory",
     )
 
     def test_expected_builtins_present(self) -> None:
@@ -165,6 +166,16 @@ class TestBuiltinCommandDiscovery:
         assert "intensive=true" in commands["intensive-loop"].template
         assert "verification_status" in commands["intensive-loop"].template
         assert "latest active loop" in commands["cancel-continuation"].template
+
+    def test_memory_command_guides_runtime_memory_tools_without_subcommands(self) -> None:
+        commands = {c.name: c for c in builtin_commands()}
+
+        assert commands["memory"].workflow_mode is None
+        assert "memory/search" not in commands
+        assert "memory/add" not in commands
+        assert "memory_search" in commands["memory"].template
+        assert "memory_add" in commands["memory"].template
+        assert "do not create another persistence path" in commands["memory"].template
 
     def test_builtin_registry_can_read_workflow_modes_by_name(self) -> None:
         registry = CommandRegistry(builtin_commands())
@@ -354,6 +365,21 @@ class TestBuiltinCommandRendering:
         assert "severity" in rendered
         assert "Read-only by default" in rendered
         assert "unreadable" in rendered
+
+    def test_memory_renders_tool_guidance_without_storage_plumbing(self) -> None:
+        cmd = [c for c in builtin_commands() if c.name == "memory"][0]
+        rendered = render_command_template(
+            cmd.template,
+            raw_arguments="remember my preference for concise answers",
+            arguments=split_command_arguments("remember my preference for concise answers"),
+        )
+
+        assert "remember my preference for concise answers" in rendered
+        assert "memory_search" in rendered
+        assert "memory_add" in rendered
+        assert "do not create another persistence path" in rendered
+        assert "secrets" in rendered
+        assert "$ARGUMENTS" not in rendered
 
     def test_dollar_placeholder_substitution_uses_shlex_splitting(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "fix"][0]
