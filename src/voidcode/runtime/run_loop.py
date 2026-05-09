@@ -2629,6 +2629,7 @@ class RuntimeRunLoopCoordinator:
         if pending is not None:
             result_data["approval_request_id"] = pending.request_id
             result_data["approval_decision"] = "deny"
+            result_data["denied_by"] = "user"
             if pending.path_scope is not None:
                 result_data["path_scope"] = pending.path_scope
             if pending.operation_class is not None:
@@ -2652,7 +2653,7 @@ class RuntimeRunLoopCoordinator:
                 tool_name=tool_call.tool_name,
                 error=error,
                 error_kind="permission_denied",
-                extra={"permission_denied": True},
+                extra={"permission_denied": True, "denied_by": "user"},
             ),
             retry_guidance="Adjust the request or approval settings, then retry.",
         )

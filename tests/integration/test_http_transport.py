@@ -1763,13 +1763,16 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
 
     assert response.status == 200
     assert cast(dict[str, object], payload["session"])["session"] == {"id": "deny-session"}
-    assert cast(dict[str, object], payload["session"])["status"] == "running"
+    assert cast(dict[str, object], payload["session"])["status"] == "completed"
     assert cast(dict[str, object], payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert payload["output"] is None
+    assert payload["output"] == (
+        "write_file failed: permission denied for tool: write_file. "
+        "Please correct the tool arguments and retry."
+    )
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
         "runtime.request_received",
         "runtime.skills_loaded",
@@ -1780,11 +1783,14 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.response_ready",
     ]
     events = cast(list[dict[str, object]], payload["events"])
-    feedback_payload = cast(dict[str, object], events[-1]["payload"])
+    feedback_payload = cast(dict[str, object], events[8]["payload"])
     assert feedback_payload["status"] == "error"
     assert feedback_payload["permission_denied"] is True
+    assert feedback_payload["denied_by"] == "user"
     assert (tmp_path / "danger.txt").exists() is False
 
 
