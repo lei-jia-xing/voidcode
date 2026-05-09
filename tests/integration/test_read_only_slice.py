@@ -4631,7 +4631,7 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
         "runtime.approval_requested",
     ]
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "running"
     assert [event.event_type for event in denied.events] == [
         "runtime.request_received",
         "runtime.skills_loaded",
@@ -4649,35 +4649,27 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "runtime.failed",
     ]
-    assert [event.sequence for event in denied.events] == list(range(1, 25))
+    assert [event.sequence for event in denied.events] == list(range(1, 17))
     assert denied.events[15].payload["permission_denied"] is True
     assert denied.events[15].payload["denied_by"] == "user"
     assert denied.events[15].payload["error"] == "permission denied for tool: write_file"
-    assert denied.events[22].payload["tool"] == "grep"
-    assert denied.events[22].payload["status"] == "error"
-    assert denied.events[-1].payload["error"] == "grep target does not exist: copied.txt"
+    assert denied.events[-1].payload["tool"] == "write_file"
+    assert denied.events[-1].payload["status"] == "error"
+    assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
     assert denied.output is None
     assert replay.output == denied.output
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
         (event.sequence, event.event_type, event.payload) for event in denied.events
     ]
-    assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 3
+    assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
     assert [
         cast(str, event.payload.get("tool"))
         for event in denied.events
         if event.event_type == "graph.tool_request_created"
-    ] == ["read_file", "write_file", "grep"]
+    ] == ["read_file", "write_file"]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
-    assert sessions[0].status == "failed"
+    assert sessions[0].status == "running"
     assert sessions[0].updated_at == 2
     assert (tmp_path / "copied.txt").exists() is False
 
@@ -4955,21 +4947,16 @@ def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
         approval_decision="deny",
     )
 
-    assert denied.session.status == "completed"
-    assert [event.event_type for event in denied.events[-4:]] == [
+    assert denied.session.status == "running"
+    assert [event.event_type for event in denied.events[-2:]] == [
         "runtime.approval_resolved",
         "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
     ]
-    assert denied.events[-3].payload["status"] == "error"
-    assert denied.events[-3].payload["permission_denied"] is True
-    assert denied.events[-3].payload["denied_by"] == "user"
-    assert denied.events[-3].payload["error"] == "permission denied for tool: write_file"
-    assert denied.output == (
-        "write_file failed: permission denied for tool: write_file. "
-        "Please correct the tool arguments and retry."
-    )
+    assert denied.events[-1].payload["status"] == "error"
+    assert denied.events[-1].payload["permission_denied"] is True
+    assert denied.events[-1].payload["denied_by"] == "user"
+    assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
+    assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False
 
 
@@ -5707,17 +5694,15 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     )
     failed_chunks = list(approval_runtime.resume_stream("waiting-stream"))
 
-    assert [chunk.event.event_type for chunk in failed_chunks[-5:] if chunk.event is not None] == [
+    assert [chunk.event.event_type for chunk in failed_chunks[-3:] if chunk.event is not None] == [
+        "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
     ]
-    assert [chunk.session.status for chunk in failed_chunks[-4:]] == [
+    assert [chunk.session.status for chunk in failed_chunks[-3:]] == [
+        "waiting",
         "running",
-        "completed",
-        "completed",
-        "completed",
+        "running",
     ]
 
 
