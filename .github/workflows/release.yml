@@ -1,104 +1,104 @@
 name: Release
 
 on:
-  release:
-    types:
-      - published
+    release:
+        types:
+            - published
 
 jobs:
-  verify:
-    name: Verify (lint, typecheck, tests)
-    if: github.event.release.prerelease == false
-    runs-on: ubuntu-latest
+    verify:
+        name: Verify (lint, typecheck, tests)
+        if: github.event.release.prerelease == false
+        runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+            - name: Setup uv
+              uses: astral-sh/setup-uv@v7
 
-      - name: Install Python
-        run: uv python install 3.13
+            - name: Install Python
+              run: uv python install 3.13
 
-      - name: Install dependencies
-        run: uv sync --extra dev
+            - name: Install dependencies
+              run: uv sync --extra dev
 
-      - name: Lint with Ruff
-        run: uv run ruff check .
+            - name: Lint with Ruff
+              run: uv run ruff check .
 
-      - name: Check formatting with Ruff
-        run: uv run ruff format --check .
+            - name: Check formatting with Ruff
+              run: uv run ruff format --check .
 
-      - name: Type-check with ty
-        run: uv run ty check src
+            - name: Type-check with ty
+              run: uv run ty check src
 
-      - name: Run tests
-        run: uv run pytest -n auto -m 'not slow and not fuzz'
+            - name: Run tests
+              run: uv run pytest -n auto -m 'not slow and not fuzz'
 
-  publish:
-    name: Publish to PyPI and attach artifacts to GitHub Release
-    needs: verify
-    if: github.event.release.prerelease == false
-    runs-on: ubuntu-latest
+    publish:
+        name: Publish to PyPI and attach artifacts to GitHub Release
+        needs: verify
+        if: github.event.release.prerelease == false
+        runs-on: ubuntu-latest
 
-    environment:
-      name: pypi
-      url: https://pypi.org/p/voidcode
+        environment:
+            name: pypi
+            url: https://pypi.org/p/voidcode
 
-    permissions:
-      contents: write
-      id-token: write
+        permissions:
+            contents: write
+            id-token: write
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
+            - name: Setup uv
+              uses: astral-sh/setup-uv@v7
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
+            - name: Setup Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: "3.13"
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
 
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: bun install --frozen-lockfile
+            - name: Install frontend dependencies
+              working-directory: frontend
+              run: bun install --frozen-lockfile
 
-      - name: Build frontend bundle
-        working-directory: frontend
-        run: bun run build
+            - name: Build frontend bundle
+              working-directory: frontend
+              run: bun run build
 
-      - name: Stage frontend bundle into package tree
-        run: uv run python scripts/stage_frontend_bundle.py
+            - name: Stage frontend bundle into package tree
+              run: uv run python scripts/stage_frontend_bundle.py
 
-      - name: Build package
-        run: uv build
+            - name: Build package
+              run: uv build
 
-      - name: Verify packaged web bundle
-        run: uv run python scripts/verify_packaged_web_bundle.py dist/*.whl
+            - name: Verify packaged web bundle
+              run: uv run python scripts/verify_packaged_web_bundle.py dist/*.whl
 
-      - name: Verify package version matches release tag
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
-          expected="${tag#v}"
-          actual="$(uv run python -c 'from importlib.metadata import version; print(version("voidcode"))')"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::package version $actual does not match release tag $tag (expected $expected)"
-            exit 1
-          fi
+            - name: Verify package version matches release tag
+              run: |
+                  set -euo pipefail
+                  tag="${GITHUB_REF#refs/tags/}"
+                  expected="${tag#v}"
+                  actual="$(uv run python -c 'from importlib.metadata import version; print(version("voidcode"))')"
+                  if [ "$actual" != "$expected" ]; then
+                    echo "::error::package version $actual does not match release tag $tag (expected $expected)"
+                    exit 1
+                  fi
 
-      - name: Upload distributions to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.whl
-            dist/*.tar.gz
+            - name: Upload distributions to GitHub Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: |
+                      dist/*.whl
+                      dist/*.tar.gz
 
-      - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+            # - name: Publish package distributions to PyPI
+            #   uses: pypa/gh-action-pypi-publish@release/v1
