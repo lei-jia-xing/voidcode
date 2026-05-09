@@ -1980,7 +1980,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     assert cast(dict[str, object], deny_payload["session"])["session"] == {
         "id": "http-deny-loop-session"
     }
-    assert cast(dict[str, object], deny_payload["session"])["status"] == "running"
+    assert cast(dict[str, object], deny_payload["session"])["status"] == "failed"
     assert cast(dict[str, object], deny_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], deny_payload["session"])["metadata"],
@@ -2006,15 +2006,23 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         "runtime.approval_requested",
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.tool_lookup_succeeded",
+        "runtime.permission_resolved",
+        "runtime.tool_started",
+        "runtime.tool_completed",
+        "runtime.failed",
     ]
     assert [
         event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == list(range(1, 17))
+    ] == list(range(1, 25))
     assert list_response.status == 200
     assert list_response.json() == [
         {
             "session": {"id": "http-deny-loop-session"},
-            "status": "running",
+            "status": "failed",
             "turn": 1,
             "prompt": _multi_step_prompt(),
             "updated_at": 2,

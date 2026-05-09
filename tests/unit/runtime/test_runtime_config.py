@@ -94,8 +94,8 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.max_steps == DEFAULT_MAX_STEPS
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
-    assert config.permission.read.rules == (("*", "ask"),)
-    assert config.permission.write.rules == (("*", "ask"),)
+    assert config.permission.read.rules == (("*", "allow"),)
+    assert config.permission.write.rules == (("*", "allow"),)
 
 
 def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path) -> None:

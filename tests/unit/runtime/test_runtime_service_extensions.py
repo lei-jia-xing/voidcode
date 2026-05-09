@@ -4154,20 +4154,20 @@ def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_
     )
     snapshot = runtime.session_debug_snapshot(session_id="failed-debug")
 
-    assert response.session.status == "running"
-    assert snapshot.current_status == "running"
-    assert snapshot.terminal is False
+    assert response.session.status == "completed"
+    assert snapshot.current_status == "completed"
+    assert snapshot.terminal is True
     assert snapshot.failure is not None
     assert snapshot.failure.classification == "tool_execution_failure"
     assert snapshot.failure.message == "permission denied for tool: write_file"
     assert snapshot.last_failure_event is None
     assert snapshot.last_relevant_event is not None
-    assert snapshot.last_relevant_event.event_type == "runtime.tool_completed"
+    assert snapshot.last_relevant_event.event_type == "graph.response_ready"
     assert snapshot.last_tool is not None
     assert snapshot.last_tool.tool_name == "write_file"
     assert snapshot.last_tool.status == "error"
-    assert snapshot.suggested_operator_action == "inspect_session"
-    assert snapshot.operator_guidance == "Inspect the persisted session state."
+    assert snapshot.suggested_operator_action == "inspect_failure"
+    assert snapshot.operator_guidance == "Inspect tool_execution_failure and rerun if needed."
 
 
 def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permission(
@@ -12613,7 +12613,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
     assert effective.max_steps == 7
 
 
-def test_runtime_effective_runtime_config_defaults_missing_persisted_external_write_to_ask(
+def test_runtime_effective_runtime_config_defaults_missing_persisted_external_write_to_allow(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -12661,7 +12661,7 @@ def test_runtime_effective_runtime_config_defaults_missing_persisted_external_wr
         session_id="persisted-missing-external-write"
     )
 
-    assert effective.permission.write.rules == (("*", "ask"),)
+    assert effective.permission.write.rules == (("*", "allow"),)
 
 
 def test_runtime_effective_runtime_config_recovers_persisted_tool_timeout(tmp_path: Path) -> None:

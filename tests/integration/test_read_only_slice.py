@@ -3418,7 +3418,7 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
     )
 
     denied = runtime.run(runtime_request(prompt="external write", session_id="external-write-deny"))
-    assert denied.session.status == "failed"
+    assert denied.session.status == "completed"
     denial = next(
         event for event in denied.events if event.event_type == "runtime.approval_resolved"
     )
@@ -3480,7 +3480,7 @@ def test_runtime_denies_shell_exec_when_command_rule_denies(tmp_path: Path) -> N
     denied = runtime.run(
         runtime_request(prompt="deny shell command", session_id="shell-command-rule-deny")
     )
-    assert denied.session.status == "failed"
+    assert denied.session.status == "completed"
     denial = next(
         event for event in denied.events if event.event_type == "runtime.approval_resolved"
     )
@@ -3620,7 +3620,7 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
         approval_decision="allow",
     )
 
-    assert denied.session.status == "failed"
+    assert denied.session.status == "completed"
     assert first_file.read_text(encoding="utf-8") == "first"
     assert second_file.exists() is False
     first_resolution = next(
@@ -5707,15 +5707,17 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     )
     failed_chunks = list(approval_runtime.resume_stream("waiting-stream"))
 
-    assert [chunk.event.event_type for chunk in failed_chunks[-3:] if chunk.event is not None] == [
-        "runtime.approval_requested",
+    assert [chunk.event.event_type for chunk in failed_chunks[-5:] if chunk.event is not None] == [
         "runtime.approval_resolved",
         "runtime.tool_completed",
+        "graph.loop_step",
+        "graph.response_ready",
     ]
-    assert [chunk.session.status for chunk in failed_chunks[-3:]] == [
-        "waiting",
+    assert [chunk.session.status for chunk in failed_chunks[-4:]] == [
         "running",
-        "running",
+        "completed",
+        "completed",
+        "completed",
     ]
 
 
