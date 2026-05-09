@@ -137,11 +137,14 @@ class _KeywordMemoryManager:
                 keyword_search_available=False,
             )
         capability = self.sqlite_vec_capability or _capability_for_config(self.config)
+        semantic_search_available = False
         return MemoryManagerState(
             mode="enabled",
             sqlite_vec=capability,
-            semantic_search_available=False,
-            keyword_search_available=True,
+            semantic_search_available=semantic_search_available,
+            keyword_search_available=not (
+                _semantic_search_required(self.config) and not semantic_search_available
+            ),
         )
 
     def remember(self, text: str, *, source: str | None = None) -> None:
@@ -195,6 +198,10 @@ def _memory_sqlite_vec_config_from_value(
     if isinstance(value, MemorySqliteVecConfig):
         return value
     return MemorySqliteVecConfig(enabled=cast(MemorySqliteVecMode, value.get("enabled", "auto")))
+
+
+def _semantic_search_required(config: MemoryConfig) -> bool:
+    return config.semantic_search == "required" or config.sqlite_vec.enabled == "required"
 
 
 def _keyword_terms(text: str) -> tuple[str, ...]:

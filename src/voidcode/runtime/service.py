@@ -3340,6 +3340,15 @@ class VoidCodeRuntime:
 
     def search_memories(self, *, query: str) -> tuple[MemorySearchResult, ...]:
         self._require_memory_enabled()
+        manager_state = build_memory_manager(
+            self._config.memory,
+            workspace=self._workspace,
+        ).current_state()
+        if not (manager_state.semantic_search_available or manager_state.keyword_search_available):
+            raise RuntimeError(
+                "workspace memory search requires semantic search, "
+                "but semantic search is unavailable"
+            )
         return self._session_store.search_memories(workspace=self._workspace, query=query)
 
     def workspace_memory_prompt_context(self, memory_config: MemoryConfig | None = None) -> str:

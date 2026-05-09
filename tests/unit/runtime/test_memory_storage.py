@@ -601,6 +601,71 @@ def test_runtime_memory_status_uses_injected_sqlite_vec_capability(
     assert status.sqlite_vec_detail == "sqlite_vec missing"
 
 
+def test_runtime_required_semantic_search_refuses_keyword_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_module = importlib.import_module("voidcode.runtime.memory")
+    monkeypatch.setattr(
+        memory_module,
+        "detect_sqlite_vec_capability",
+        lambda: SqliteVecCapability(status="not_installed", detail="sqlite_vec missing"),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path / "workspace",
+        config=RuntimeConfig(
+            memory=MemoryConfig(
+                semantic_search="required",
+                sqlite_vec={"enabled": "auto"},
+            )
+        ),
+        session_store=SqliteSessionStore(database_path=tmp_path / "state.sqlite3"),
+    )
+    runtime.add_memory(content="Required semantic search must not use keywords.")
+
+    status = runtime.memory_status()
+
+    assert status.enabled is True
+    assert status.semantic_search == "required"
+    assert status.keyword_search_available is False
+    assert status.semantic_search_available is False
+    assert status.sqlite_vec_status == "not_installed"
+    with pytest.raises(RuntimeError, match="requires semantic search"):
+        runtime.search_memories(query="semantic")
+
+
+def test_runtime_required_sqlite_vec_refuses_keyword_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_module = importlib.import_module("voidcode.runtime.memory")
+    monkeypatch.setattr(
+        memory_module,
+        "detect_sqlite_vec_capability",
+        lambda: SqliteVecCapability(status="not_installed", detail="sqlite_vec missing"),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path / "workspace",
+        config=RuntimeConfig(
+            memory=MemoryConfig(
+                semantic_search="auto",
+                sqlite_vec={"enabled": "required"},
+            )
+        ),
+        session_store=SqliteSessionStore(database_path=tmp_path / "state.sqlite3"),
+    )
+    runtime.add_memory(content="Required sqlite-vec search must not use keywords.")
+
+    status = runtime.memory_status()
+
+    assert status.sqlite_vec == "required"
+    assert status.keyword_search_available is False
+    assert status.semantic_search_available is False
+    assert status.sqlite_vec_status == "not_installed"
+    with pytest.raises(RuntimeError, match="requires semantic search"):
+        runtime.search_memories(query="sqlite-vec")
+
+
 def test_runtime_memory_event_boundaries_are_explicit_and_payloads_are_stable(
     tmp_path: Path,
 ) -> None:

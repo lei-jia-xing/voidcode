@@ -269,6 +269,76 @@ def test_semantic_search_does_not_appear_available_without_embeddings(tmp_path: 
     assert state.keyword_search_available is True
 
 
+def test_required_semantic_search_disables_keyword_fallback_without_embeddings(
+    tmp_path: Path,
+) -> None:
+    manager = _build_memory_manager()(
+        _memory_config()(
+            enabled=True,
+            scope="workspace",
+            semantic_search="required",
+            sqlite_vec={"enabled": "auto"},
+        ),
+        sqlite_vec_capability=_sqlite_vec_capability()(
+            status="not_installed", detail="sqlite_vec is not installed"
+        ),
+        workspace=tmp_path,
+    )
+    manager.remember("alpha required semantic memory", source="test")
+
+    state = manager.current_state()
+
+    assert state.semantic_search_available is False
+    assert state.keyword_search_available is False
+    assert manager.search(_memory_search_query()(text="alpha", limit=5)) == ()
+
+
+def test_required_sqlite_vec_disables_keyword_fallback_without_embeddings(
+    tmp_path: Path,
+) -> None:
+    manager = _build_memory_manager()(
+        _memory_config()(
+            enabled=True,
+            scope="workspace",
+            semantic_search="auto",
+            sqlite_vec={"enabled": "required"},
+        ),
+        sqlite_vec_capability=_sqlite_vec_capability()(
+            status="extension_loading_unavailable", detail="extensions disabled"
+        ),
+        workspace=tmp_path,
+    )
+    manager.remember("alpha required sqlite-vec memory", source="test")
+
+    state = manager.current_state()
+
+    assert state.sqlite_vec.status == "extension_loading_unavailable"
+    assert state.semantic_search_available is False
+    assert state.keyword_search_available is False
+    assert manager.search(_memory_search_query()(text="alpha", limit=5)) == ()
+
+
+def test_off_semantic_search_keeps_keyword_search_available(tmp_path: Path) -> None:
+    manager = _build_memory_manager()(
+        _memory_config()(
+            enabled=True,
+            scope="workspace",
+            semantic_search="off",
+            sqlite_vec={"enabled": "off"},
+        ),
+        workspace=tmp_path,
+    )
+    manager.remember("alpha keyword memory", source="test")
+
+    state = manager.current_state()
+    results = manager.search(_memory_search_query()(text="alpha", limit=5))
+
+    assert state.sqlite_vec.status == "disabled"
+    assert state.semantic_search_available is False
+    assert state.keyword_search_available is True
+    assert [result.text for result in results] == ["alpha keyword memory"]
+
+
 def test_base_voidcode_import_does_not_import_sqlite_vec(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
