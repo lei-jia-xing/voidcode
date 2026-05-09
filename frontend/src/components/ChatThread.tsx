@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  Database,
   Diff,
   FileSearch,
   FileText,
@@ -168,16 +169,23 @@ function toolDisplayTitle(tool: ChatTool, fallback: string) {
 }
 
 function toolDisplayTitleFallback(tool: ChatTool): string {
-  if (tool.display?.title) return tool.display.title;
-  if (tool.legacy?.label) return tool.legacy.label;
   // Map known tool names to a friendlier title than raw snake_case
   const friendly: Record<string, string> = {
+    read_file: "Read",
+    read: "Read",
+    write_file: "Write",
+    write: "Write",
+    edit: "Edit",
+    multi_edit: "Multi-edit",
+    grep: "Search",
+    glob: "Find files",
     web_fetch: "Fetch URL",
     web_search: "Web search",
     apply_patch: "Apply patch",
-    multi_edit: "Multi-edit",
     format_file: "Format file",
     todo_write: "Update todos",
+    shell_exec: "Shell",
+    bash: "Shell",
     interactive_shell: "Interactive shell",
     background_process_start: "Start process",
     background_process_stop: "Stop process",
@@ -185,11 +193,22 @@ function toolDisplayTitleFallback(tool: ChatTool): string {
     background_output: "Background output",
     background_cancel: "Cancel task",
     background_retry: "Retry task",
+    memory_add: "Store memory",
+    memory_delete: "Delete memory",
+    memory_list: "List memories",
+    memory_search: "Search memories",
     ast_grep_search: "AST search",
     ast_grep_preview: "AST preview",
     ast_grep_replace: "AST replace",
   };
+  if (friendly[tool.name]) return friendly[tool.name];
+  if (tool.display?.title) return tool.display.title;
+  if (tool.legacy?.label) return tool.legacy.label;
   return friendly[tool.name] ?? tool.name;
+}
+
+function toolDisplayName(tool: ChatTool): string {
+  return toolDisplayTitleFallback(tool);
 }
 
 function toolDisplaySubtitle(tool: ChatTool, fallback?: string) {
@@ -540,19 +559,23 @@ function ToolDisclosureRow({
   const statusLabel =
     tool.status === "completed" ? null : t(`tool.status.${tool.status}`);
   const trailing = [delta, statusLabel, ...args].filter(Boolean).join(" · ");
+  const titleText = title.trim();
+  const detailParts = [
+    subtitle?.trim() && subtitle.trim() !== titleText ? subtitle.trim() : null,
+  ].filter(Boolean) as string[];
 
   const summary = (
-    <span className="flex min-w-0 flex-1 items-baseline gap-2 text-left">
-      <span className="shrink-0 text-sm font-semibold text-[var(--vc-text-primary)]">
+    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-left">
+      <span className="shrink-0 font-mono text-[11px] font-semibold text-[var(--vc-text-primary)]">
         {title}
       </span>
-      {subtitle && (
+      {detailParts.length > 0 && (
         <span className="min-w-0 truncate text-xs text-[var(--vc-text-muted)]">
-          {subtitle}
+          {detailParts.join(" · ")}
         </span>
       )}
       {trailing && (
-        <span className="hidden shrink-0 text-[11px] text-[var(--vc-text-subtle)] md:inline">
+        <span className="min-w-0 break-all text-[11px] text-[var(--vc-text-subtle)]">
           {trailing}
         </span>
       )}
@@ -610,15 +633,6 @@ function ToolDisclosureRow({
   );
 }
 
-const READ_TOOL_TITLES: Record<string, string> = {
-  read_file: "Read",
-  read: "Read",
-  glob: "Glob",
-  grep: "Grep",
-  ast_grep_search: "AST search",
-  ast_grep_preview: "AST preview",
-};
-
 function toolIcon(tool: ChatTool) {
   const className = "h-3.5 w-3.5";
   if (tool.name === "read_file" || tool.name === "read") {
@@ -660,6 +674,9 @@ function toolIcon(tool: ChatTool) {
   }
   if (tool.name === "todo_write") {
     return <ListTodo className={className} />;
+  }
+  if (isMemoryTool(tool)) {
+    return <Database className={className} />;
   }
   if (tool.name === "skill") {
     return <Sparkles className={className} />;
@@ -715,22 +732,106 @@ function isReadonlyTool(tool: ChatTool) {
   );
 }
 
-function readToolTitle(tool: ChatTool): string {
-  return READ_TOOL_TITLES[tool.name] ?? "Read";
+function isMemoryTool(tool: ChatTool) {
+  return (
+    tool.name === "memory_add" ||
+    tool.name === "memory_delete" ||
+    tool.name === "memory_list" ||
+    tool.name === "memory_search"
+  );
+}
+
+function memoryRecords(tool: ChatTool): Record<string, unknown>[] {
+  const data = resultData(tool);
+  const source = Array.isArray(data?.results)
+    ? data.results
+    : Array.isArray(data?.memories)
+      ? data.memories
+      : data && typeof data === "object" && toolValue(data.id)
+        ? [data]
+        : [];
+  return source.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === "object" && !Array.isArray(item),
+  );
+}
+
+function memoryRecordLabel(record: Record<string, unknown>) {
+  const id = toolValue(record.id);
+  const kind = toolValue(record.kind);
+  return [id, kind ? `[${kind}]` : null].filter(Boolean).join(" ");
+}
+
+function memoryRecordPreview(record: Record<string, unknown>) {
+  const content = record.content;
+  if (typeof content === "string") return content;
+  if (content === undefined || content === null) return null;
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
+}
+
+function MemoryRecordsBlock({
+  records,
+  emptyLabel,
+}: {
+  records: Record<string, unknown>[];
+  emptyLabel: string;
+}) {
+  if (records.length === 0) {
+    return <div className="mt-2 text-[var(--vc-text-muted)]">{emptyLabel}</div>;
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      {records.map((record, index) => {
+        const label = memoryRecordLabel(record) || `#${index + 1}`;
+        const preview = memoryRecordPreview(record);
+        const key = toolValue(record.id) ?? `${label}-${preview ?? "record"}`;
+        const tags = Array.isArray(record.tags)
+          ? record.tags
+              .map((tag) => String(tag))
+              .filter(Boolean)
+              .join(", ")
+          : null;
+        return (
+          <div
+            key={key}
+            className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--vc-text-subtle)]">
+              <code className="text-[var(--vc-text-primary)]">{label}</code>
+              {tags && <span>tags: {tags}</span>}
+            </div>
+            {preview && (
+              <div className="mt-1 text-xs text-[var(--vc-text-muted)]">
+                {preview}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function ReadToolActivity({ tool }: { tool: ChatTool }) {
-  const path = primaryPath(tool) ?? toolDisplaySubtitle(tool) ?? undefined;
-  const subtitle =
-    tool.display?.kind === "context"
-      ? toolDisplaySubtitle(tool, path ?? undefined)
-      : path;
+  const path = primaryPath(tool);
+  const args: string[] = [];
+  if (path) args.unshift(`path=${path}`);
+  const data = resultData(tool);
+  const offset = toolValue(tool.arguments?.offset) ?? toolValue(data?.offset);
+  const limit = toolValue(tool.arguments?.limit) ?? toolValue(data?.limit);
+  if (offset) args.push(`offset=${offset}`);
+  if (limit) args.push(`limit=${limit}`);
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, readToolTitle(tool))}
-      subtitle={subtitle}
-      args={curatedArgs(tool, { omit: ["path", "filePath"] })}
+      title={toolDisplayName(tool)}
+      subtitle={undefined}
+      args={args}
       icon={toolIcon(tool)}
     >
       {tool.error ? (
@@ -756,12 +857,16 @@ function WriteToolActivity({
   const path = primaryPath(tool) ?? toolDisplayTitle(tool, tool.name);
   const diff = toolValue(data?.diff);
   const bytes = toolValue(data?.byte_count);
+  const args = [
+    path ? `path=${path}` : null,
+    ...curatedArgs(tool, { omit: ["path", "filePath"] }),
+  ].filter(Boolean) as string[];
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, "Write")}
-      subtitle={bytes ? `${path} · ${bytes} bytes` : path}
-      args={curatedArgs(tool, { omit: ["path", "filePath"] })}
+      title={toolDisplayName(tool)}
+      subtitle={bytes ? `${bytes} bytes` : undefined}
+      args={args}
       icon={toolIcon(tool)}
       delta={formatLineDelta(lineDelta(tool))}
       defaultExpanded={!forceCollapsed}
@@ -813,7 +918,7 @@ function ShellToolActivity({
   const error = tool.error ?? toolValue(data?.error);
   const failed =
     tool.status === "failed" || (exitCode !== null && exitCode !== "0");
-  const title = t("tool.shell.title");
+  const title = toolDisplayName(tool);
   const summary = toolDisplayTitle(tool, command);
   const subtitle =
     failed && exitCode
@@ -942,7 +1047,7 @@ function SkillToolActivity({
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, "Loaded skill")}
+      title={toolDisplayName(tool)}
       subtitle={name}
       args={curatedArgs(tool, { omit: ["name", "user_message"] })}
       icon={toolIcon(tool)}
@@ -1112,7 +1217,7 @@ function TaskToolActivity({
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, "Started subagent")}
+      title={toolDisplayName(tool)}
       subtitle={subtitle}
       args={curatedArgs(tool, {
         omit: ["category", "subagent_type", "description"],
@@ -1222,7 +1327,7 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, "Updated todos")}
+      title={toolDisplayName(tool)}
       subtitle={summaryText}
       icon={toolIcon(tool)}
       defaultExpanded={false}
@@ -1256,6 +1361,61 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
   );
 }
 
+function MemoryToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
+  const data = resultData(tool);
+  const records = memoryRecords(tool);
+  const query = toolValue(tool.arguments?.query);
+  const id = toolValue(tool.arguments?.id) ?? toolValue(data?.id);
+  const kind = toolValue(tool.arguments?.kind) ?? toolValue(data?.kind);
+  const count =
+    toolValue(data?.count) ??
+    (tool.name === "memory_add" || tool.name === "memory_delete"
+      ? null
+      : String(records.length));
+  const subtitleParts = [
+    query,
+    id,
+    kind,
+    count ? t("tool.memory.count", { count }) : null,
+  ].filter(Boolean) as string[];
+
+  return (
+    <ToolDisclosureRow
+      tool={tool}
+      title={toolDisplayName(tool)}
+      subtitle={
+        subtitleParts.join(" · ") || toolOutputSummary(tool) || undefined
+      }
+      args={curatedArgs(tool, { omit: ["content", "query", "id", "kind"] })}
+      icon={toolIcon(tool)}
+      defaultExpanded={
+        tool.name === "memory_add" || tool.name === "memory_delete"
+      }
+    >
+      {tool.error ? (
+        <ToolDetailBlock
+          label="Error"
+          value={tool.error}
+          copyValue={tool.error}
+          tone="error"
+        />
+      ) : tool.name === "memory_delete" ? (
+        <ToolDetailBlock
+          label={t("tool.memory.result")}
+          value={toolOutputSummary(tool)}
+          copyValue={toolOutputSummary(tool)}
+        />
+      ) : (
+        <MemoryRecordsBlock
+          records={records}
+          emptyLabel={t("tool.memory.empty")}
+        />
+      )}
+    </ToolDisclosureRow>
+  );
+}
+
 function WebFetchToolActivity({ tool }: { tool: ChatTool }) {
   const { t } = useTranslation();
   const data = resultData(tool);
@@ -1277,7 +1437,7 @@ function WebFetchToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, t("tool.web.fetchTitle"))}
+      title={toolDisplayName(tool)}
       subtitle={
         trailingBits.length > 0
           ? `${subtitle} · ${trailingBits.join(" · ")}`
@@ -1318,7 +1478,7 @@ function WebSearchToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, t("tool.web.searchTitle"))}
+      title={toolDisplayName(tool)}
       subtitle={trailing ? `${subtitle} · ${trailing}` : subtitle}
       args={curatedArgs(tool, { omit: ["query"] })}
       icon={toolIcon(tool)}
@@ -1342,7 +1502,6 @@ function WebSearchToolActivity({ tool }: { tool: ChatTool }) {
 }
 
 function LspToolActivity({ tool }: { tool: ChatTool }) {
-  const { t } = useTranslation();
   const data = resultData(tool);
   const method =
     toolValue(tool.arguments?.method) ?? toolValue(data?.method) ?? null;
@@ -1357,7 +1516,7 @@ function LspToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, t("tool.lsp.title"))}
+      title={toolDisplayName(tool)}
       subtitle={subtitleParts.join(" · ") || undefined}
       args={curatedArgs(tool, {
         omit: ["method", "server", "path", "filePath"],
@@ -1383,7 +1542,6 @@ function LspToolActivity({ tool }: { tool: ChatTool }) {
 }
 
 function McpToolActivity({ tool }: { tool: ChatTool }) {
-  const { t } = useTranslation();
   const data = resultData(tool);
   const server =
     toolValue(tool.arguments?.server) ?? toolValue(data?.server) ?? null;
@@ -1393,7 +1551,7 @@ function McpToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, t("tool.mcp.title"))}
+      title={toolDisplayName(tool)}
       subtitle={subtitleParts.join(" / ") || undefined}
       args={curatedArgs(tool, { omit: ["server", "tool"] })}
       icon={toolIcon(tool)}
@@ -1435,7 +1593,7 @@ function BackgroundProcessToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(tool, action)}
+      title={toolDisplayName(tool)}
       subtitle={processId && command ? `${command} · #${processId}` : subtitle}
       args={curatedArgs(tool, { omit: ["command", "process_id"] })}
       icon={toolIcon(tool)}
@@ -1463,10 +1621,7 @@ function GenericToolActivity({ tool }: { tool: ChatTool }) {
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayTitle(
-        tool,
-        tool.display?.title ?? toolDisplayTitleFallback(tool),
-      )}
+      title={toolDisplayName(tool)}
       subtitle={toolDisplaySubtitle(tool, tool.summary)}
       args={curatedArgs(tool)}
       icon={toolIcon(tool)}
@@ -1483,6 +1638,20 @@ function GenericToolActivity({ tool }: { tool: ChatTool }) {
         <ToolDetailBlock label="Output" value={output} copyValue={output} />
       )}
     </ToolDisclosureRow>
+  );
+}
+
+function ThinkingBlock({ thinking }: { thinking: string[] }) {
+  const content = thinking.join("").trim();
+  if (!content) return null;
+
+  return (
+    <div className="vc-thinking-block text-sm leading-relaxed text-[var(--vc-text-muted)]">
+      <span className="font-medium text-[var(--vc-text-subtle)]">
+        Thinking:
+      </span>{" "}
+      <span className="whitespace-pre-wrap break-words">{content}</span>
+    </div>
   );
 }
 
@@ -1693,6 +1862,7 @@ function ToolActivity({
       />
     );
   if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
+  if (isMemoryTool(tool)) return <MemoryToolActivity tool={tool} />;
   if (tool.name === "web_fetch") return <WebFetchToolActivity tool={tool} />;
   if (tool.name === "web_search") return <WebSearchToolActivity tool={tool} />;
   if (tool.name === "lsp") return <LspToolActivity tool={tool} />;
@@ -1836,7 +2006,7 @@ export function ChatThread({
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-6">
-      <div className="max-w-3xl mx-auto space-y-6">
+      <div className="mx-auto max-w-[var(--vc-chat-content-width)] space-y-6">
         {!hasMessages && (
           <div className="flex flex-col items-center justify-center py-20 text-[var(--vc-text-subtle)]">
             <p className="text-lg font-medium text-[var(--vc-text-muted)] mb-1">
@@ -1883,6 +2053,9 @@ export function ChatThread({
                     backgroundTasksById={backgroundTasksById}
                     selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
                   />
+                  {message.thinking.length > 0 && (
+                    <ThinkingBlock thinking={message.thinking} />
+                  )}
                   {assistantContent && (
                     <StreamingMarkdown
                       content={assistantContent}

@@ -259,7 +259,7 @@ describe("ChatThread", () => {
     ]);
   });
 
-  it("does not render message-level thinking block when reasoning exists", () => {
+  it("renders a lightweight thinking block when reasoning exists", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -280,16 +280,12 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
-    expect(screen.queryByText("(1.6s)")).not.toBeInTheDocument();
-    expect(screen.queryByText(/step 1/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/step 2/)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/internal chain-of-thought is hidden for safety/i),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(/^Thinking:$/)).toBeInTheDocument();
+    expect(screen.getByText(/step 1/)).toBeInTheDocument();
+    expect(screen.getByText(/step 2/)).toBeInTheDocument();
   });
 
-  it("suppresses raw code-like provider reasoning without a Thinking disclosure", () => {
+  it("renders provider reasoning as visible thinking text", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "session-1",
@@ -315,15 +311,9 @@ describe("ChatThread", () => {
       <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
     );
 
-    expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /thinking/i }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/process\.env\.SECRET/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/return token/)).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/internal chain-of-thought is hidden for safety/i),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(/^Thinking:$/)).toBeInTheDocument();
+    expect(screen.getByText(/process\.env\.SECRET/)).toBeInTheDocument();
+    expect(screen.getByText(/return token/)).toBeInTheDocument();
   });
 
   it("renders structured tool activities", () => {
@@ -371,7 +361,11 @@ describe("ChatThread", () => {
     );
 
     expect(screen.getByText("Read")).toBeInTheDocument();
-    expect(screen.getByText("src/app.ts")).toBeInTheDocument();
+    const readRow = screen
+      .getByText("Read")
+      .closest('[data-tool-row="read_file"]');
+    expect(readRow).not.toBeNull();
+    expect(readRow).toHaveTextContent("path=src/app.ts");
     expect(screen.getByText(/offset=10/)).toBeInTheDocument();
     expect(screen.getByText(/limit=20/)).toBeInTheDocument();
     expect(
@@ -379,8 +373,13 @@ describe("ChatThread", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Output")).not.toBeInTheDocument();
     expect(screen.getByText("Write")).toBeInTheDocument();
-    expect(screen.getByText("src/app.ts · 3 bytes")).toBeInTheDocument();
-    expect(screen.getByText("+1/-0")).toBeInTheDocument();
+    expect(screen.getByText(/3 bytes/)).toBeInTheDocument();
+    const writeRow = screen
+      .getByText("Write")
+      .closest('[data-tool-row="write_file"]');
+    expect(writeRow).not.toBeNull();
+    expect(writeRow).toHaveTextContent("path=src/app.ts");
+    expect(writeRow).toHaveTextContent("+1/-0");
     expect(screen.getByText("--- a/src/app.ts").parentElement).toHaveAttribute(
       "data-diff-line",
       "header",
@@ -398,7 +397,9 @@ describe("ChatThread", () => {
     );
     expect(screen.getByText("+new").previousSibling).toHaveTextContent("+");
     expect(screen.getByText("Shell")).toBeInTheDocument();
-    expect(screen.getByText("pytest tests/unit")).toBeInTheDocument();
+    expect(
+      screen.getByText("Shell").closest('[data-tool-row="shell_exec"]'),
+    ).toHaveTextContent("pytest tests/unit");
     expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
     expect(screen.queryByText("1 passed")).not.toBeInTheDocument();
     fireEvent.click(
@@ -475,14 +476,92 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Loaded skill")).toBeInTheDocument();
-    expect(screen.getByText("review-work")).toBeInTheDocument();
+    expect(screen.getByText("skill")).toBeInTheDocument();
+    expect(
+      screen.getByText("skill").closest('[data-tool-row="skill"]'),
+    ).toHaveTextContent("review-work");
     expect(
       screen.getByText("Review completed implementation work"),
     ).toBeInTheDocument();
     expect(screen.getByText(/SKILL\.md/)).toBeInTheDocument();
     expect(screen.getByText("User request")).toBeInTheDocument();
     expect(screen.getByText("check changes")).toBeInTheDocument();
+  });
+
+  it("renders memory tools as first-class activities", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "memory-add-1",
+                name: "memory_add",
+                status: "completed",
+                arguments: {
+                  content: "Prefer concise frontend QA notes",
+                  kind: "preference",
+                  tags: ["qa", "frontend"],
+                },
+                result: {
+                  data: {
+                    id: "mem_1",
+                    content: "Prefer concise frontend QA notes",
+                    kind: "preference",
+                    tags: ["qa", "frontend"],
+                  },
+                  count: 1,
+                },
+              },
+              {
+                id: "memory-search-1",
+                name: "memory_search",
+                status: "completed",
+                arguments: { query: "frontend QA", limit: 5 },
+                result: {
+                  data: {
+                    results: [
+                      {
+                        id: "mem_2",
+                        content: "Run browser QA before release",
+                        kind: "project",
+                        tags: ["qa"],
+                      },
+                    ],
+                    count: 1,
+                  },
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Store memory")).toBeInTheDocument();
+    expect(screen.getByText(/mem_1 · preference/)).toBeInTheDocument();
+    expect(screen.getByText("mem_1 [preference]")).toBeInTheDocument();
+    expect(
+      screen.getByText("Prefer concise frontend QA notes"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("tags: qa, frontend")).toBeInTheDocument();
+    expect(screen.getByText("Search memories")).toBeInTheDocument();
+    expect(screen.getByText(/frontend QA · 1 memories/)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /show details for search memories/i }),
+    );
+    expect(screen.getByText("mem_2 [project]")).toBeInTheDocument();
+    expect(
+      screen.getByText("Run browser QA before release"),
+    ).toBeInTheDocument();
   });
 
   it("renders unknown tools as curated summaries without raw results", () => {
@@ -558,9 +637,9 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Started subagent")).toBeInTheDocument();
+    expect(screen.getByText("task")).toBeInTheDocument();
     expect(
-      screen.getByText("visual-engineering · background"),
+      screen.getByText(/visual-engineering · background/),
     ).toBeInTheDocument();
     expect(screen.getByText("Inspect UI")).toBeInTheDocument();
     expect(screen.getByText("bg_123")).toBeInTheDocument();
@@ -600,8 +679,8 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Write")).toBeInTheDocument();
-    expect(screen.getByText("+1/-1")).toBeInTheDocument();
+    expect(screen.getByText("Apply patch")).toBeInTheDocument();
+    expect(screen.getByText(/\+1\/-1 · path=apply_patch/)).toBeInTheDocument();
     expect(screen.getByText("--- a/src/app.ts").parentElement).toHaveAttribute(
       "data-diff-line",
       "header",
@@ -786,10 +865,13 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Updated todos")).toBeInTheDocument();
+    expect(screen.getByText("Update todos")).toBeInTheDocument();
+    expect(
+      screen.getByText(/in_progress=1, pending=0, completed=1, cancelled=0/),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Audit tool UI")).not.toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: /show details for updated todos/i }),
+      screen.getByRole("button", { name: /show details for update todos/i }),
     );
     expect(screen.getByText("Audit tool UI")).toBeInTheDocument();
     expect(screen.getByText("Ship observability")).toBeInTheDocument();
@@ -883,7 +965,9 @@ describe("Tool Card Display Contract", () => {
       />,
     );
 
-    expect(screen.getByText("Run unit tests")).toBeInTheDocument();
+    expect(
+      screen.getByText("Shell").closest('[data-tool-row="shell_exec"]'),
+    ).toHaveTextContent("Run unit tests");
     expect(screen.queryByText("pytest tests/unit")).not.toBeInTheDocument();
     expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
     expect(screen.queryByText("ALL PASSED")).not.toBeInTheDocument();
@@ -925,7 +1009,6 @@ describe("Tool Card Display Contract", () => {
       name: /show details for shell/i,
     });
     expect(toggle).toBeVisible();
-    expect(screen.getByText("Shell")).toBeInTheDocument();
     expect(screen.getByText("Run lint")).toBeInTheDocument();
     expect(toggle.closest('[data-tool-row="shell_exec"]')).not.toBeNull();
     expect(screen.queryByText("All checks passed!")).not.toBeInTheDocument();
@@ -1156,15 +1239,25 @@ describe("Tool Card Display Contract", () => {
       container.querySelector('[data-tool-row="read_file"]'),
     ).not.toBeNull();
     expect(container.querySelector('[data-tool-row="grep"]')).not.toBeNull();
-    expect(screen.getByText("Read src/app.ts")).toBeInTheDocument();
-    expect(screen.getByText("Search TODO")).toBeInTheDocument();
+    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("Search")).toBeInTheDocument();
+    const groupedReadRow = screen
+      .getByText("Read")
+      .closest('[data-tool-row="read_file"]');
+    const groupedGrepRow = screen
+      .getByText("Search")
+      .closest('[data-tool-row="grep"]');
+    expect(groupedReadRow).not.toBeNull();
+    expect(groupedGrepRow).not.toBeNull();
+    expect(groupedReadRow).toHaveTextContent("path=src/app.ts");
+    expect(groupedGrepRow).toHaveTextContent("path=src");
     expect(
       screen.queryByRole("button", {
-        name: /show details for read src\/app\.ts/i,
+        name: /show details for read/i,
       }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /show details for search todo/i }),
+      screen.queryByRole("button", { name: /show details for grep/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
   });
@@ -1342,8 +1435,8 @@ describe("Tool Card Display Contract", () => {
       <ChatThread {...baseProps} messages={messages} />,
     );
 
-    expect(screen.getByText("Read README.md")).toBeInTheDocument();
-    expect(screen.getByText("Search TODO")).toBeInTheDocument();
+    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("Search")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", {
         name: /show details for read readme\.md/i,
@@ -1354,9 +1447,7 @@ describe("Tool Card Display Contract", () => {
     ).not.toBeInTheDocument();
 
     expect(screen.getByText("Shell")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Run failing tests · failed with exit 2/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/failed with exit 2/)).toBeInTheDocument();
     expect(screen.queryByText("stderr boom")).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: /show details for shell/i }),
@@ -1368,7 +1459,11 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText(/stderr boom/)).not.toBeInTheDocument();
     expect(screen.getByText(/process failed/)).toBeInTheDocument();
 
-    expect(screen.getByText("Inspect custom MCP tool")).toBeInTheDocument();
+    const mcpRow = screen
+      .getByText("mcp_custom_tool")
+      .closest("[data-tool-row]");
+    expect(mcpRow).not.toBeNull();
+    expect(mcpRow).toHaveTextContent("mcp_custom_tool");
     expect(screen.getByText(/action=inspect/)).toBeInTheDocument();
     expect(
       screen.getByText("mcp_legacy_tool: Legacy inspect"),

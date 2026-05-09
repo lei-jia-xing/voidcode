@@ -20,6 +20,7 @@
   --vc-control-height-compact: 30px;
   --vc-control-padding-x: var(--vc-space-3);
   --vc-control-padding-x-compact: 10px;
+  --vc-chat-content-width: 64rem;
   --vc-focus-ring: var(--vc-text-primary);
   --vc-focus-shadow: 0 0 0 var(--vc-space-1) var(--vc-bg);
   --vc-danger-text: #ffb4b4;
@@ -337,4 +338,40 @@ body {
   text-decoration-line: underline;
   text-decoration-color: var(--vc-border-strong);
   text-underline-offset: 2px;
+}
+
+.markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  border-spacing: 0;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.markdown-body thead {
+  background: var(--vc-surface-2);
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--vc-border-subtle);
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  font-weight: 600;
+  color: var(--vc-text-primary);
+}
+
+.markdown-body tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.vc-thinking-block {
+  margin-top: -0.25rem;
 }

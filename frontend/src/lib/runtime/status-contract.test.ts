@@ -410,9 +410,7 @@ describe("Tool Status Contract", () => {
 
     expect(assistantMessage?.thinkingStartedAt).toBe(1000);
     expect(assistantMessage?.thinkingUpdatedAt).toBe(2500);
-    expect(assistantMessage?.thinking).not.toContain("first");
-    expect(assistantMessage?.thinking).not.toContain("second");
-    expect(assistantMessage?.thinking).toHaveLength(0);
+    expect(assistantMessage?.thinking).toEqual(["first", "second"]);
   });
 });
 
