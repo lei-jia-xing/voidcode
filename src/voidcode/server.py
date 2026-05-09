@@ -144,7 +144,6 @@ def web(
             selected_port = cast(int, port)
         url = f"http://{host}:{selected_port}"
         with _frontend_dist_context() as frontend_dist:
-            print("VoidCode")
             print(_BANNER)
             print(f"  Local server running at: {url}")
             print()

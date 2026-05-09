@@ -30,7 +30,7 @@ from ..hook.config import RuntimeHooksConfig
 from ..hook.presets import validate_hook_preset_refs
 from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
-from ..mcp.builtin import get_builtin_mcp_descriptor
+from ..mcp.builtin import get_builtin_mcp_descriptor, list_builtin_mcp_descriptors
 from ..provider import config as provider_config
 from ..skills import SkillRegistry, list_builtin_skills
 from .context_transforms import validate_runtime_context_transform_refs
@@ -413,6 +413,24 @@ class RuntimeMcpConfig:
     request_timeout_seconds: float | None = None
 
 
+def _default_runtime_mcp_servers() -> dict[str, RuntimeMcpServerConfig]:
+    servers: dict[str, RuntimeMcpServerConfig] = {}
+    for descriptor in list_builtin_mcp_descriptors():
+        if descriptor.skill_scoped:
+            continue
+        servers[descriptor.name] = RuntimeMcpServerConfig(
+            transport=cast(McpTransport, descriptor.transport),
+            command=descriptor.command,
+            scope=cast(RuntimeMcpServerScope, descriptor.scope),
+            url=descriptor.url,
+        )
+    return servers
+
+
+def _default_runtime_mcp_config() -> RuntimeMcpConfig:
+    return RuntimeMcpConfig(enabled=True, servers=_default_runtime_mcp_servers())
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeTuiConfig:
     leader_key: str | None = None
@@ -498,7 +516,7 @@ class RuntimeConfig:
     background_task: RuntimeBackgroundTaskConfig = field(
         default_factory=RuntimeBackgroundTaskConfig
     )
-    mcp: RuntimeMcpConfig | None = None
+    mcp: RuntimeMcpConfig | None = field(default_factory=_default_runtime_mcp_config)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
@@ -639,7 +657,7 @@ def load_runtime_config(
     )
     resolved_tui = _resolve_tui_config(global_config.tui, repo_local.tui)
     resolved_lsp = repo_local.lsp or _derive_workspace_lsp_config(resolved_workspace)
-    resolved_mcp = repo_local.mcp
+    resolved_mcp = repo_local.mcp or _default_runtime_mcp_config()
     resolved_agent = _resolve_agent_config(repo_local.agent, agent_registry=agent_registry)
 
     env_providers = provider_configs_from_env(environment)
@@ -2524,7 +2542,7 @@ def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
 
     mcp_payload = cast(dict[str, object], raw_mcp)
     _reject_unknown_config_keys(mcp_payload, allowed_keys=_MCP_CONFIG_KEYS, field_path="mcp")
-    return cast(
+    parsed = cast(
         RuntimeMcpConfig | None,
         _parse_runtime_config_section(
             mcp_payload,
@@ -2532,6 +2550,15 @@ def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
             model_type=_RuntimeMcpValidationModel,
         ),
     )
+    if parsed is None:
+        return None
+    if parsed.enabled is True and parsed.servers is None:
+        return RuntimeMcpConfig(
+            enabled=True,
+            servers=_default_runtime_mcp_servers(),
+            request_timeout_seconds=parsed.request_timeout_seconds,
+        )
+    return parsed
 
 
 def _parse_tui_config(raw_tui: object) -> RuntimeTuiConfig | None:

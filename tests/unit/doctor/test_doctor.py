@@ -101,9 +101,13 @@ class TestCreateDoctorForConfig:
 
         # Should not raise and should have at least ast-grep
         assert len(doctor.results) >= 1
-        mcp_result = next(result for result in doctor.results if result.name == "mcp")
-        assert mcp_result.status == CapabilityCheckStatus.NOT_CONFIGURED
-        assert mcp_result.details["configured_enabled"] is False
+        mcp_results = [result for result in doctor.results if result.name.startswith("mcp:")]
+        assert {result.name for result in mcp_results} == {
+            "mcp:context7",
+            "mcp:websearch",
+            "mcp:grep_app",
+        }
+        assert all(result.status == CapabilityCheckStatus.READY for result in mcp_results)
 
     def test_reports_remote_http_mcp_server_as_ready(self) -> None:
         config = RuntimeConfig(
