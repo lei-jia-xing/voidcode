@@ -25,8 +25,8 @@ from voidcode.runtime.paths import sessions_db_path
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 _DEFAULT_PERMISSION_METADATA = {
-    "external_directory_read": {"*": "ask"},
-    "external_directory_write": {"*": "ask"},
+    "external_directory_read": {"*": "allow"},
+    "external_directory_write": {"*": "allow"},
 }
 _LEADER_HOOK_PRESET_SNAPSHOT = {
     "refs": [
@@ -3226,6 +3226,104 @@ def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: 
     assert approval_event.payload["matched_rule"] == "*"
     assert approval_event.payload["policy_surface"] == "external_directory_read"
     assert approval_event.payload["canonical_path"] == str(outside_file.resolve())
+
+
+def test_runtime_allows_external_read_by_default_without_approval(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+
+    outside_root = tmp_path.parent / "external-read-default-fixture"
+    outside_root.mkdir(parents=True, exist_ok=True)
+    outside_file = outside_root / "ref.txt"
+    outside_file.write_text("external default read\n", encoding="utf-8")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(approval_mode="allow"),
+                graph=_SingleToolGraph("read_file", {"filePath": str(outside_file)}),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    completed = runtime.run(
+        runtime_request(prompt="external read default", session_id="external-read-default")
+    )
+    event_types = [event.event_type for event in completed.events]
+    resolution = next(
+        event for event in completed.events if event.event_type == "runtime.approval_resolved"
+    )
+    tool_completed = next(
+        event for event in completed.events if event.event_type == "runtime.tool_completed"
+    )
+
+    assert completed.session.status == "completed"
+    assert "runtime.approval_requested" not in event_types
+    assert resolution.payload["decision"] == "allow"
+    assert resolution.payload["path_scope"] == "external"
+    assert resolution.payload["operation_class"] == "read"
+    assert resolution.payload["matched_rule"] == "*"
+    assert resolution.payload["policy_surface"] == "external_directory_read"
+    assert tool_completed.payload["status"] == "ok"
+    assert tool_completed.payload["path"] == str(outside_file.resolve())
+
+
+def test_runtime_allows_external_write_by_default_without_approval(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+
+    outside_root = tmp_path.parent / "external-write-default-fixture"
+    outside_root.mkdir(parents=True, exist_ok=True)
+    outside_file = outside_root / "written.txt"
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(approval_mode="allow"),
+                graph=_SingleToolGraph(
+                    "write_file",
+                    {"path": str(outside_file), "content": "external default write"},
+                ),
+                permission_policy=policy,
+            ),
+        ),
+    )
+
+    completed = runtime.run(
+        runtime_request(prompt="external write default", session_id="external-write-default")
+    )
+    event_types = [event.event_type for event in completed.events]
+    resolution = next(
+        event for event in completed.events if event.event_type == "runtime.approval_resolved"
+    )
+    tool_completed = next(
+        event for event in completed.events if event.event_type == "runtime.tool_completed"
+    )
+
+    assert completed.session.status == "completed"
+    assert "runtime.approval_requested" not in event_types
+    assert resolution.payload["decision"] == "allow"
+    assert resolution.payload["path_scope"] == "external"
+    assert resolution.payload["operation_class"] == "write"
+    assert resolution.payload["matched_rule"] == "*"
+    assert resolution.payload["policy_surface"] == "external_directory_write"
+    assert tool_completed.payload["status"] == "ok"
+    assert outside_file.read_text(encoding="utf-8") == "external default write"
 
 
 def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(

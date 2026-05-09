@@ -923,12 +923,12 @@ def _parse_permission_config(raw_permission: object) -> ExternalDirectoryPermiss
     read_rules = _parse_permission_rules(
         permission_payload.get("external_directory_read"),
         field_path="permission.external_directory_read",
-        default=(("*", "ask"),),
+        default=(("*", "allow"),),
     )
     write_rules = _parse_permission_rules(
         permission_payload.get("external_directory_write"),
         field_path="permission.external_directory_write",
-        default=(("*", "ask"),),
+        default=(("*", "allow"),),
     )
     pattern_rules = _parse_pattern_permission_rules(permission_payload.get("rules"))
     return ExternalDirectoryPermissionConfig(

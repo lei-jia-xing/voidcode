@@ -159,8 +159,8 @@ from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import current_runtime_tool_context
 
 _DEFAULT_PERMISSION_METADATA = {
-    "external_directory_read": {"*": "ask"},
-    "external_directory_write": {"*": "ask"},
+    "external_directory_read": {"*": "allow"},
+    "external_directory_write": {"*": "allow"},
 }
 
 
