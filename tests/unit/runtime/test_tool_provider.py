@@ -450,6 +450,11 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     agent = cast(dict[str, object], agent_raw)
 
     assert agent["preset"] == "leader"
+    effective_config = runtime._effective_runtime_config_from_metadata(response.session.metadata)
+    scoped_registry = runtime._tool_registry_for_effective_config(effective_config)
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.issubset(
+        scoped_registry.tools
+    )
     assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
     assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
 
@@ -544,6 +549,10 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
     )
     assert definitions["web_fetch"].description.startswith("- Fetches content from a specified URL")
     assert "http or https URL" in definitions["web_fetch"].description
+    assert definitions["memory_search"].description.startswith("Use memory_search")
+    assert "memory_add" in definitions["memory_search"].description
+    assert "temporary task state" in definitions["memory_add"].description
+    assert "secrets" in definitions["memory_add"].description
 
 
 def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
@@ -559,6 +568,10 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "glob",
         "grep",
         "lsp",
+        "memory_add",
+        "memory_delete",
+        "memory_list",
+        "memory_search",
         "multi_edit",
         "question",
         "read_file",

@@ -427,6 +427,36 @@ def test_init_command_renders_agents_md_generation_prompt(tmp_path: Path) -> Non
     assert "focus on runtime boundaries" in response.output
 
 
+def test_memory_command_resolves_through_runtime_prompt_pipeline(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    response = runtime.run(RuntimeRequest(prompt="/memory remember preferred test command"))
+
+    assert response.session.metadata.get("command") == {
+        "name": "memory",
+        "source": "builtin",
+        "arguments": ["remember", "preferred", "test", "command"],
+        "raw_arguments": "remember preferred test command",
+        "original_prompt": "/memory remember preferred test command",
+    }
+    assert response.output is not None
+    assert "memory_search" in response.output
+    assert "memory_add" in response.output
+    assert "do not create another persistence path" in response.output
+
+
+def test_memory_subcommands_are_not_builtin_prompt_commands(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
+
+    for prompt in ("/memory/search coding style", "/memory/add prefers short summaries"):
+        try:
+            _ = runtime.run(RuntimeRequest(prompt=prompt))
+        except RuntimeRequestError as exc:
+            assert "unknown command" in str(exc)
+        else:
+            raise AssertionError(f"{prompt} should not resolve as a builtin command")
+
+
 def test_continuation_loop_command_creates_runtime_owned_loop(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
 

@@ -37,6 +37,10 @@ _LEADER_TOOL_ALLOWLIST = (
     "ast_grep_replace",
     "web_search",
     "web_fetch",
+    "memory_add",
+    "memory_delete",
+    "memory_list",
+    "memory_search",
     "mcp/*",
 )
 
