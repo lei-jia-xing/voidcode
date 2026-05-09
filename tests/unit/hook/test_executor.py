@@ -50,6 +50,30 @@ def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
     }
 
 
+def test_run_tool_hooks_treats_default_hooks_config_as_enabled(tmp_path: Path) -> None:
+    hooks = RuntimeHooksConfig(
+        pre_tool=((sys.executable, "-c", "print('pre ok')"),),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="write_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.last_sequence == 8
+    assert len(outcome.events) == 1
+    assert outcome.events[0].event_type == "runtime.tool_hook_pre"
+
+
 def test_run_tool_hooks_reads_cancel_action_from_stdout(tmp_path: Path) -> None:
     hooks = RuntimeHooksConfig(
         enabled=True,

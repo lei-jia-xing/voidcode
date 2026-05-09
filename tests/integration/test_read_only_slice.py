@@ -2627,6 +2627,42 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
     }
 
 
+def test_runtime_emits_hook_events_when_hooks_block_omits_enabled_flag(tmp_path: Path) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    hooks_config = cast(Callable[..., object], config_module.RuntimeHooksConfig)
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                permission_policy=policy,
+                config=runtime_config(
+                    approval_mode="allow",
+                    execution_engine="deterministic",
+                    hooks=hooks_config(
+                        pre_tool=((sys.executable, "-c", "print('pre ok')"),),
+                        post_tool=((sys.executable, "-c", "print('post ok')"),),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    command = _cwd_command()
+    prompt = f"run {command}"
+    result = runtime.run(runtime_request(prompt=prompt, session_id="hook-default-enabled"))
+
+    event_types = [event.event_type for event in result.events]
+    assert "runtime.tool_hook_pre" in event_types
+    assert "runtime.tool_hook_post" in event_types
+
+
 def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
