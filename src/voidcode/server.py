@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.resources as importlib_resources
+import os
 import socket
 import webbrowser
 from collections.abc import Iterator
@@ -37,6 +38,11 @@ def _run_runtime_server(
     app = create_runtime_app(workspace=workspace, config=config, frontend_dist=frontend_dist)
     uvicorn = cast(UvicornModule, importlib.import_module("uvicorn"))
     if listener_socket is None:
+        uvicorn.run(app, host=host, port=port, lifespan="off")
+        return
+    if os.name == "nt":
+        with closing(listener_socket):
+            pass
         uvicorn.run(app, host=host, port=port, lifespan="off")
         return
     with closing(listener_socket):

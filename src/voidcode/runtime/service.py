@@ -5044,19 +5044,30 @@ class VoidCodeRuntime:
         result = subprocess.run(
             ["git", "-C", str(self._workspace), "rev-parse", "--show-toplevel"],
             capture_output=True,
-            text=True,
             check=False,
         )
+        stdout = self._decode_subprocess_text_output(result.stdout)
+        stderr = self._decode_subprocess_text_output(result.stderr)
         if result.returncode == 0:
-            return GitStatusSnapshot(
-                state="git_ready", root=result.stdout.strip() or str(self._workspace)
-            )
-        stderr = result.stderr.strip()
+            return GitStatusSnapshot(state="git_ready", root=stdout.strip() or str(self._workspace))
         if "not a git repository" in stderr.lower():
             return GitStatusSnapshot(state="not_git_repo", root=None, error=stderr or None)
         return GitStatusSnapshot(
-            state="git_error", root=None, error=stderr or result.stdout.strip() or None
+            state="git_error",
+            root=None,
+            error=stderr or stdout.strip() or None,
         )
+
+    @staticmethod
+    def _decode_subprocess_text_output(value: object) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8", errors="replace")
+            except Exception:
+                return value.decode(errors="replace")
+        return ""
 
     def _current_provider_name(self) -> str | None:
         active_target = self._resolved_provider_config.active_target

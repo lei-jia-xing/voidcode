@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,7 +28,7 @@ from .events import (
     EventSource,
 )
 from .memory import MemoryKind, MemoryRecord, MemorySearchResult, MemoryStatus
-from .paths import sessions_db_path
+from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
@@ -519,18 +520,60 @@ class SqliteSessionStore:
         _ = workspace
         database_path = self._resolve_database_path()
         database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(
-            database_path,
-            timeout=self._sqlite_policy.busy_timeout_ms / 1_000,
-            isolation_level=None,
-        )
+        connection: sqlite3.Connection | None = None
+        for attempt in range(2):
+            connection = sqlite3.connect(
+                database_path,
+                timeout=self._sqlite_policy.busy_timeout_ms / 1_000,
+                isolation_level=None,
+            )
+            try:
+                connection.row_factory = sqlite3.Row
+                self._configure_connection(connection=connection)
+                self._ensure_schema(connection=connection, database_path=database_path)
+                break
+            except RuntimeError as exc:
+                should_reset = (
+                    attempt == 0
+                    and self._database_path is None
+                    and not os.environ.get(DB_PATH_ENV)
+                    and self._is_schema_mismatch_runtime_error(exc)
+                )
+                if should_reset:
+                    if connection is not None:
+                        self._reset_storage_in_place(connection=connection)
+                        connection.close()
+                        connection = None
+                    continue
+                if connection is not None:
+                    connection.close()
+                    connection = None
+                raise
+        if connection is None:
+            msg = "failed to establish sqlite runtime storage connection"
+            raise RuntimeError(msg)
         try:
-            connection.row_factory = sqlite3.Row
-            self._configure_connection(connection=connection)
-            self._ensure_schema(connection=connection, database_path=database_path)
             yield connection
         finally:
             connection.close()
+
+    @staticmethod
+    def _is_schema_mismatch_runtime_error(exc: RuntimeError) -> bool:
+        return str(exc).startswith("sqlite runtime schema mismatch:")
+
+    @staticmethod
+    def _reset_storage_in_place(*, connection: sqlite3.Connection) -> None:
+        table_rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall(),
+        )
+        for row in table_rows:
+            table_name = cast(str, row["name"])
+            _ = connection.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        _ = connection.execute("PRAGMA user_version = 0")
+        connection.commit()
 
     def _configure_connection(self, *, connection: sqlite3.Connection) -> None:
         deadline = time() + (self._sqlite_policy.busy_timeout_ms / 1_000)
@@ -4397,13 +4440,24 @@ class SqliteSessionStore:
             database_path.with_name(f"{database_path.name}-shm"),
         ):
             if path.exists():
-                path.unlink()
+                self._unlink_with_retries(path)
                 removed.append(str(path))
         return {
             "database_path": str(database_path),
             "removed": removed,
             "reset": bool(removed),
         }
+
+    @staticmethod
+    def _unlink_with_retries(path: Path, *, attempts: int = 5, delay_seconds: float = 0.05) -> None:
+        for attempt in range(attempts):
+            try:
+                path.unlink()
+                return
+            except PermissionError:
+                if attempt == attempts - 1:
+                    raise
+                sleep(delay_seconds)
 
     @staticmethod
     def _pragma_scalar(*, connection: sqlite3.Connection, name: str) -> object:
