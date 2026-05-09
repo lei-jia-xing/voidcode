@@ -20,6 +20,15 @@ from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 
+MEMORY_TOOL_NAMES = frozenset(
+    {
+        "memory_add",
+        "memory_delete",
+        "memory_list",
+        "memory_search",
+    }
+)
+
 BUILTIN_TOOL_NAMES = frozenset(
     {
         "apply_patch",
@@ -37,10 +46,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "glob",
         "grep",
         "lsp",
-        "memory_add",
-        "memory_delete",
-        "memory_list",
-        "memory_search",
+        *MEMORY_TOOL_NAMES,
         "multi_edit",
         "read_file",
         "question",

@@ -266,19 +266,26 @@ def test_memory_search_finds_current_workspace_memory_and_honors_limit_kind_tags
     ]
 
 
-def test_memory_list_defaults_to_recent_project_memories_and_honors_filters(tmp_path: Path) -> None:
+def test_memory_list_defaults_to_all_kinds_and_honors_explicit_filters(tmp_path: Path) -> None:
     first = _add_memory(workspace=tmp_path, content="first", kind="project", tags=["runtime"])
-    _add_memory(workspace=tmp_path, content="second", kind="feedback", tags=["runtime"])
+    feedback = _add_memory(workspace=tmp_path, content="second", kind="feedback", tags=["runtime"])
     second = _add_memory(workspace=tmp_path, content="third", kind="project", tags=["runtime"])
 
-    result = _invoke(
+    unfiltered_result = _invoke(_memory_tools()["memory_list"], {"limit": 20}, tmp_path)
+    filtered_result = _invoke(
         _memory_tools()["memory_list"],
         {"limit": 20, "kind": "project", "tags": ["runtime"]},
         tmp_path,
     )
 
-    assert result.status == "ok"
-    memories = _read_result_items(result, "memories")
+    assert unfiltered_result.status == "ok"
+    unfiltered_memories = _read_result_items(unfiltered_result, "memories")
+    assert [memory["id"] for memory in unfiltered_memories] == [
+        second["id"],
+        feedback["id"],
+        first["id"],
+    ]
+    memories = _read_result_items(filtered_result, "memories")
     assert [memory["id"] for memory in memories] == [second["id"], first["id"]]
 
 

@@ -27,6 +27,7 @@ from voidcode.runtime.mcp import (
     McpToolCallResult,
     McpToolDescriptor,
 )
+from voidcode.runtime.memory import MemoryConfig
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,
@@ -457,6 +458,26 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     )
     assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
     assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
+
+
+def test_disabled_memory_runtime_does_not_expose_memory_tools(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode-go/glm-5.1",
+            memory=MemoryConfig(enabled=False),
+        ),
+        graph=_StubGraph(),
+    )
+    effective_config = runtime._effective_runtime_config_from_metadata(None)
+
+    registry = runtime._tool_registry_for_effective_config(effective_config)
+
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(
+        registry.tools
+    )
+    assert runtime.memory_status().total_count == 0
 
 
 def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(

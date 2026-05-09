@@ -119,7 +119,7 @@ class _MemorySearchArgs(_MemoryArgsBase):
 
 class _MemoryListArgs(_MemoryArgsBase):
     limit: StrictInt = _DEFAULT_LIMIT
-    kind: MemoryKind | None = "project"
+    kind: MemoryKind | None = None
     tags: tuple[str, ...] = ()
 
     @field_validator("limit", mode="after")

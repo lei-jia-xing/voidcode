@@ -375,6 +375,7 @@ from .task import (
 )
 from .tool_provider import (
     BUILTIN_TOOL_NAMES,
+    MEMORY_TOOL_NAMES,
     LocalCustomToolProvider,
     scoped_tool_registry_for_agent,
     tool_name_matches_patterns,
@@ -1818,6 +1819,8 @@ class VoidCodeRuntime:
         metadata: dict[str, object] | None = None,
     ) -> ToolRegistry:
         registry = self._tool_registry_with_effective_local_tools(effective_config)
+        if not self._config.memory.enabled:
+            registry = registry.excluding(MEMORY_TOOL_NAMES)
         scoped = scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
         return self._tool_registry_with_workflow_policy(scoped, metadata)
 
