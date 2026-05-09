@@ -1853,6 +1853,28 @@ def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
     )
 
 
+def test_runtime_config_defaults_hooks_enabled_when_block_present_without_flag(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "pre_tool": [["python", "scripts/pre.py"]],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks == RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=(("python", "scripts/pre.py"),),
+    )
+
+
 def test_runtime_config_parses_hook_timeout_seconds(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"hooks": {"enabled": True, "timeout_seconds": 12.5}}),
@@ -1889,6 +1911,7 @@ def test_runtime_config_parses_formatter_preset_hooks(tmp_path: Path) -> None:
 
 
 def test_runtime_hooks_config_defaults_formatter_presets_to_common_language_builtins() -> None:
+    assert RuntimeHooksConfig().enabled is True
     assert RuntimeHooksConfig().formatter_presets == DEFAULT_FORMATTER_PRESETS
 
 
