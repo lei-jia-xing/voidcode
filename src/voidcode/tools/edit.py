@@ -15,6 +15,7 @@ from ..formatter import (
 )
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
+from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import (
     bounded_block_preview,
     bounded_candidate_diff,
@@ -657,6 +658,14 @@ class EditTool:
             data["formatter"] = formatter_payload(formatter_result)
         if diagnostics:
             data["diagnostics"] = diagnostics
+        lsp_diagnostics = post_edit_lsp_diagnostics(
+            workspace=workspace_root,
+            paths=[display_path],
+        )
+        if lsp_diagnostics:
+            current_diagnostics = data.get("diagnostics")
+            existing = current_diagnostics if isinstance(current_diagnostics, list) else []
+            data["diagnostics"] = [*existing, *lsp_diagnostics]
 
         return ToolResult(
             tool_name=self.definition.name,

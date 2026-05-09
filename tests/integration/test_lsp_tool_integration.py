@@ -131,10 +131,8 @@ class _LspGraph:
                 tool_call=ToolCall(
                     tool_name="lsp",
                     arguments={
-                        "operation": "textDocument/definition",
+                        "operation": "documentSymbol",
                         "filePath": "sample.py",
-                        "line": 1,
-                        "character": 1,
                     },
                 )
             )
@@ -171,7 +169,7 @@ def test_runtime_managed_lsp_tool_starts_server_and_returns_response(tmp_path: P
         event for event in result.events if event.event_type == "runtime.lsp_server_started"
     )
     response = cast(dict[str, object], tool_completed.payload["lsp_response"])
-    assert response["result"] == {"ok": True, "method": "textDocument/definition"}
+    assert response["result"] == {"ok": True, "method": "textDocument/documentSymbol"}
     assert started_event.payload["workspace_root"] == str(tmp_path)
     assert runtime.current_lsp_state().servers["pyright"].status == "running"
 
@@ -191,10 +189,8 @@ def test_runtime_managed_lsp_tool_rejects_disabled_manager(tmp_path: Path) -> No
             ToolCall(
                 tool_name="lsp",
                 arguments={
-                    "operation": "textDocument/definition",
+                    "operation": "documentSymbol",
                     "filePath": "sample.py",
-                    "line": 1,
-                    "character": 1,
                 },
             ),
             workspace=tmp_path,
@@ -220,10 +216,8 @@ def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(
             ToolCall(
                 tool_name="lsp",
                 arguments={
-                    "operation": "textDocument/definition",
+                    "operation": "documentSymbol",
                     "filePath": "sample.py",
-                    "line": 1,
-                    "character": 1,
                 },
             ),
             workspace=tmp_path,
@@ -261,10 +255,8 @@ def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_select
                     tool_call=ToolCall(
                         tool_name="lsp",
                         arguments={
-                            "operation": "textDocument/definition",
+                            "operation": "documentSymbol",
                             "filePath": "apps/demo/src/sample.py",
-                            "line": 1,
-                            "character": 1,
                         },
                     )
                 )
@@ -352,10 +344,8 @@ def test_runtime_managed_lsp_tool_surfaces_protocol_failure_from_server(tmp_path
             ToolCall(
                 tool_name="lsp",
                 arguments={
-                    "operation": "textDocument/definition",
+                    "operation": "documentSymbol",
                     "filePath": "sample.py",
-                    "line": 1,
-                    "character": 1,
                 },
             ),
             workspace=tmp_path,
