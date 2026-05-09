@@ -1887,6 +1887,7 @@ def assemble_provider_context(
     preserved_system_segments: tuple[str, ...] = (),
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: RuntimeContinuityState | None = None,
+    workspace_memory_context: str = "",
     workspace: Path | None = None,
     replay_retained_tool_messages: bool = True,
 ) -> RuntimeAssembledContext:
@@ -1979,6 +1980,7 @@ def assemble_provider_context(
             else None
         ),
         todo_prompt_context=todo_prompt_context or "",
+        workspace_memory_context=workspace_memory_context,
         continuity_summary=continuity_summary,
         artifact_reference_sections=artifact_reference_sections,
         prompt_profile_name=prompt_profile_name,

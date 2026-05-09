@@ -13,6 +13,7 @@ from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import EditTool, ToolCall
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def test_edit_tool_replaces_exact_text(tmp_path: Path) -> None:
@@ -387,6 +388,99 @@ def test_edit_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> No
     assert "diagnostics" not in result.data
     assert "formatter" not in result.data
     assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
+
+
+def test_edit_tool_rejects_without_prior_read_before_formatter_execution(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+    formatter_marker = tmp_path / "formatter-ran.txt"
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            f"""
+            import pathlib
+            import sys
+
+            pathlib.Path({str(formatter_marker)!r}).write_text("ran", encoding="utf-8")
+            pathlib.Path(sys.argv[-1]).write_text("print( 'formatted' )\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
+        with pytest.raises(
+            ValueError, match="requires reading the current file before modifying it"
+        ):
+            tool.invoke(
+                ToolCall(
+                    tool_name="edit",
+                    arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+                ),
+                workspace=tmp_path,
+            )
+
+    assert not formatter_marker.exists()
+    assert file_path.read_text(encoding="utf-8") == "print('hi')\n"
+
+
+def test_edit_tool_runs_formatter_after_prior_read_and_write(tmp_path: Path) -> None:
+    file_path = tmp_path / "main.py"
+    file_path.write_text("print('hi')\n", encoding="utf-8")
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            """
+            import pathlib
+            import sys
+
+            path = pathlib.Path(sys.argv[-1])
+            observed = path.read_text(encoding="utf-8")
+            if observed != "print('bye')\\n":
+                raise SystemExit(f"formatter saw unexpected content: {observed!r}")
+            path.write_text("print( 'bye' )\\n", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    read_paths = frozenset({file_path.resolve().as_posix()})
+    tool = EditTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(session_id="test", read_paths=read_paths)
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == "print( 'bye' )\n"
+    assert cast(dict[str, object], result.data["formatter"])["status"] == "formatted"
 
 
 def test_edit_tool_surfaces_warning_when_formatter_executable_is_missing(tmp_path: Path) -> None:

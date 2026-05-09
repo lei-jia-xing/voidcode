@@ -15,6 +15,7 @@ from .interactive_shell import InteractiveShellTool
 from .local_custom import LocalCustomTool
 from .lsp import LspTool
 from .mcp import McpTool
+from .memory import MemoryAddTool, MemoryDeleteTool, MemoryListTool, MemorySearchTool
 from .multi_edit import MultiEditTool
 from .output import (
     MAX_MODEL_FIELD_CHARS,
@@ -65,6 +66,10 @@ __all__ = [
     "WriteFileTool",
     "LspTool",
     "McpTool",
+    "MemoryAddTool",
+    "MemoryDeleteTool",
+    "MemoryListTool",
+    "MemorySearchTool",
     "MultiEditTool",
     "ApplyPatchTool",
     "AstGrepSearchTool",

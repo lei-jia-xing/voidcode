@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.runtime.config import load_runtime_config
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WriteFileTool
 
@@ -190,6 +193,130 @@ def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
         "attempted_commands": [[sys.executable, str(formatter_script), str(tmp_path / "main.py")]],
     }
     assert result.data["byte_count"] == len(b"print( 'formatted' )\n")
+
+
+def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
+    tmp_path: Path,
+) -> None:
+    tool = WriteFileTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "main.py", "content": "print('raw')\n"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
+    assert "Formatter warning:" in (result.content or "")
+    formatter = cast(dict[str, object], result.data["formatter"])
+    assert formatter["status"] == "missing_executable"
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert "No formatter executable was available" in str(diagnostics[0])
+
+
+def test_write_file_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
+    formatter_marker = tmp_path / "formatter-ran.txt"
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            f"""
+            import pathlib
+
+            pathlib.Path({str(formatter_marker)!r}).write_text("ran", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = WriteFileTool(
+        hooks_config=RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "main.py", "content": "print('raw')\n"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert not formatter_marker.exists()
+    assert "formatter" not in result.data
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
+
+
+def test_write_file_tool_skips_formatter_when_formatter_is_disabled_in_runtime_config(
+    tmp_path: Path,
+) -> None:
+    formatter_marker = tmp_path / "formatter-ran.txt"
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            f"""
+            import pathlib
+
+            pathlib.Path({str(formatter_marker)!r}).write_text("ran", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".voidcode.json").write_text(
+        textwrap.dedent(
+            f"""
+            {{
+              "formatter": {{
+                "enabled": false,
+                "languages": {{
+                  "python": {{
+                    "command": {json.dumps([sys.executable, str(formatter_script)])},
+                    "extensions": [".py"]
+                  }}
+                }}
+              }}
+            }}
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_runtime_config(
+        tmp_path,
+        env={"XDG_CONFIG_HOME": str(tmp_path / "xdg-config")},
+    )
+    tool = WriteFileTool(hooks_config=config.hooks)
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "main.py", "content": "print('raw')\n"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert not formatter_marker.exists()
+    assert "formatter" not in result.data
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
 
 
 def test_tools_package_and_default_registry_export_write_file_tool() -> None:

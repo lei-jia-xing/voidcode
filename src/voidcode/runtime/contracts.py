@@ -908,12 +908,31 @@ class RuntimeBackgroundTaskStatusSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeMemoryStatusSnapshot:
+    workspace_id: str
+    database_path: str
+    enabled: bool
+    scope: str
+    active_count: int
+    deleted_count: int
+    total_count: int
+    recall_enabled: bool
+    semantic_search: str
+    sqlite_vec: str
+    keyword_search_available: bool
+    semantic_search_available: bool
+    sqlite_vec_status: str
+    sqlite_vec_detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeStatusSnapshot:
     git: GitStatusSnapshot
     lsp: CapabilityStatusSnapshot
     mcp: CapabilityStatusSnapshot
     acp: CapabilityStatusSnapshot
     background_tasks: RuntimeBackgroundTaskStatusSnapshot
+    memory: RuntimeMemoryStatusSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)

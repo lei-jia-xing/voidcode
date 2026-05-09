@@ -112,6 +112,23 @@ def _save_background_task_with_secrets(tmp_path: Path) -> None:
     )
 
 
+def _save_sample_memory_records(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    store.add_memory(
+        workspace=tmp_path,
+        content="private deployment memory must stay outside support bundles",
+        kind="project",
+        tags=("bundle-private", "memory-record"),
+        source_session_id="bundle-session",
+    )
+    store.add_memory(
+        workspace=tmp_path,
+        content="semantic vector seed must not become bundle payload",
+        kind="reference",
+        tags=("vector-index-cache",),
+    )
+
+
 def _save_session_with_tool_artifact(tmp_path: Path) -> dict[str, object]:
     store = SqliteSessionStore()
     content = "".join(f"artifact-line-{index}\n" for index in range(8))
@@ -254,6 +271,116 @@ def test_session_bundle_export_redacts_background_task_prompt_and_error(
     background_tasks = cast(list[dict[str, object]], payload["background_tasks"])
     assert background_tasks[0]["prompt"] == "delegate with <redacted>"
     assert background_tasks[0]["error"] == "failed with <redacted>"
+
+
+def test_session_bundle_export_excludes_workspace_memory_records(tmp_path: Path) -> None:
+    _save_sample_session(tmp_path)
+    _save_sample_memory_records(tmp_path)
+    store = SqliteSessionStore()
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="bundle-session",
+    )
+    payload = bundle.to_payload()
+    encoded = json.dumps(payload, sort_keys=True)
+
+    assert store.list_memories(workspace=tmp_path)
+    assert set(payload) == {
+        "schema",
+        "manifest",
+        "sessions",
+        "background_tasks",
+        "diagnostics",
+        "artifacts",
+    }
+    assert "memories" not in payload
+    assert "memory_records" not in payload
+    assert "private deployment memory" not in encoded
+    assert "semantic vector seed" not in encoded
+    assert "bundle-private" not in encoded
+    assert "memory-record" not in encoded
+    assert "vector-index-cache" not in encoded
+
+
+def test_session_bundle_export_excludes_vector_index_and_cache_payloads(tmp_path: Path) -> None:
+    _save_sample_session(tmp_path)
+    _save_sample_memory_records(tmp_path)
+    store = SqliteSessionStore()
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="bundle-session",
+        options=SessionBundleOptions.support_artifact(),
+        storage_diagnostics={
+            "database_tables": ["sessions", "memories", "memory_vectors", "vector_cache"],
+            "vector_index_path": str(tmp_path / "sqlite-vec" / "private-index.bin"),
+            "embedding_cache": {
+                "cached_text": "semantic vector seed must not become bundle payload"
+            },
+        },
+        config_summary={
+            "memory": {"semantic_search": "auto", "sqlite_vec": {"enabled": "auto"}},
+            "memory_index_cache": "private vector cache status",
+        },
+    )
+    payload = bundle.to_payload()
+    encoded = json.dumps(payload, sort_keys=True)
+
+    assert bundle.manifest.support_mode is True
+    assert payload["artifacts"] == []
+    assert "memory_vectors" not in encoded
+    assert "vector_cache" not in encoded
+    assert "vector_index_path" not in encoded
+    assert "embedding_cache" not in encoded
+    assert "memory_index_cache" not in encoded
+    assert "private-index.bin" not in encoded
+    assert "private vector cache status" not in encoded
+    assert "semantic vector seed" not in encoded
+
+
+def test_session_bundle_preserves_unrelated_deferred_word_diagnostics(
+    tmp_path: Path,
+) -> None:
+    _save_sample_session(tmp_path)
+    store = SqliteSessionStore()
+
+    bundle = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="bundle-session",
+        options=SessionBundleOptions.support_artifact(),
+        storage_diagnostics={
+            "database_tables": ["sessions", "session_memory_notes"],
+            "ordinary_cache_note": "provider cache was warm during diagnostics",
+            "search_index_notice": "plain index counter is not bundle payload",
+        },
+        config_summary={
+            "memory": {
+                "recall_note": "memory recall remains disabled for this session",
+                "vector_mode_note": "vector wording in prose is not vector data",
+            },
+        },
+        provider_summary={
+            "cache_status_text": "cache mention without deferred cache payload",
+        },
+    )
+    payload = bundle.to_payload()
+    encoded = json.dumps(payload, sort_keys=True)
+
+    diagnostics = cast(dict[str, object], payload["diagnostics"])
+    storage = cast(dict[str, object], diagnostics["storage"])
+    config = cast(dict[str, object], diagnostics["config_summary"])
+    provider = cast(dict[str, object], diagnostics["provider_summary"])
+    assert storage["database_tables"] == ["sessions", "session_memory_notes"]
+    assert "provider cache was warm during diagnostics" in encoded
+    assert "plain index counter is not bundle payload" in encoded
+    assert cast(dict[str, object], config["memory"])["recall_note"] == (
+        "memory recall remains disabled for this session"
+    )
+    assert provider["cache_status_text"] == "cache mention without deferred cache payload"
 
 
 def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:

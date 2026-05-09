@@ -4,6 +4,7 @@ import difflib
 import sys
 import textwrap
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -663,6 +664,90 @@ def test_apply_patch_runs_formatter_for_structured_changed_files(tmp_path: Path)
             "path": "main.py",
         }
     ]
+
+
+def test_apply_patch_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
+    formatter_marker = tmp_path / "formatter-ran.txt"
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            f"""
+            import pathlib
+
+            pathlib.Path({str(formatter_marker)!r}).write_text("ran", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: main.py",
+            "+print('raw')",
+            "*** End Patch",
+        ]
+    )
+    tool = ApplyPatchTool(
+        hooks_config=RuntimeHooksConfig(
+            enabled=False,
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert not formatter_marker.exists()
+    assert "formatters" not in result.data
+    assert "diagnostics" not in result.data
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')"
+
+
+def test_apply_patch_keeps_write_successful_when_formatter_is_missing(
+    tmp_path: Path,
+) -> None:
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: main.py",
+            "+print('raw')",
+            "*** End Patch",
+        ]
+    )
+    tool = ApplyPatchTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            }
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')"
+    assert "Formatter warning:" in (result.content or "")
+    formatters = result.data["formatters"]
+    assert isinstance(formatters, list)
+    formatter = cast(dict[str, object], formatters[0])
+    assert formatter["status"] == "missing_executable"
+    diagnostics = result.data["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert "No formatter executable was available" in str(diagnostics[0])
 
 
 def test_apply_patch_raises_on_invalid_patch(tmp_path: Path) -> None:

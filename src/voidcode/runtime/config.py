@@ -34,6 +34,14 @@ from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..provider import config as provider_config
 from ..skills import SkillRegistry, list_builtin_skills
 from .context_transforms import validate_runtime_context_transform_refs
+from .memory import (
+    MemoryConfig,
+    MemoryRecallConfig,
+    MemoryScope,
+    MemorySemanticSearchMode,
+    MemorySqliteVecConfig,
+    MemorySqliteVecMode,
+)
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,
@@ -104,6 +112,7 @@ _REPO_CONFIG_KEYS = frozenset(
         "lsp",
         "background_task",
         "mcp",
+        "memory",
         "tui",
         "providers",
         "agent",
@@ -188,6 +197,9 @@ _BACKGROUND_TASK_CONFIG_KEYS = frozenset(
 )
 _MCP_CONFIG_KEYS = frozenset({"enabled", "servers", "request_timeout_seconds"})
 _MCP_SERVER_CONFIG_KEYS = frozenset({"transport", "command", "env", "scope", "url"})
+_MEMORY_CONFIG_KEYS = frozenset({"enabled", "scope", "recall", "semantic_search", "sqlite_vec"})
+_MEMORY_RECALL_CONFIG_KEYS = frozenset({"enabled", "limit", "max_chars"})
+_MEMORY_SQLITE_VEC_CONFIG_KEYS = frozenset({"enabled"})
 _TUI_CONFIG_KEYS = frozenset({"leader_key", "keymap", "preferences"})
 _TUI_PREFERENCES_CONFIG_KEYS = frozenset({"theme", "reading"})
 _TUI_THEME_CONFIG_KEYS = frozenset({"name", "mode"})
@@ -487,6 +499,7 @@ class RuntimeConfig:
         default_factory=RuntimeBackgroundTaskConfig
     )
     mcp: RuntimeMcpConfig | None = None
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
@@ -515,6 +528,7 @@ class RuntimeConfigOverrides:
     acp: RuntimeAcpConfig | None = None
     background_task: RuntimeBackgroundTaskConfig | None = None
     mcp: RuntimeMcpConfig | None = None
+    memory: MemoryConfig | None = None
     tui: RuntimeTuiConfig | None = None
     provider_fallback: RuntimeProviderFallbackConfig | None = None
     providers: RuntimeProvidersConfig | None = None
@@ -675,6 +689,7 @@ def load_runtime_config(
         lsp=resolved_lsp,
         background_task=repo_local.background_task or RuntimeBackgroundTaskConfig(),
         mcp=resolved_mcp,
+        memory=repo_local.memory or MemoryConfig(),
         tui=resolved_tui,
         provider_fallback=repo_local.provider_fallback,
         providers=resolved_providers,
@@ -797,6 +812,9 @@ def _load_repo_local_config(
     raw_mcp = payload.get("mcp")
     mcp = _parse_mcp_config(raw_mcp)
 
+    raw_memory = payload.get("memory")
+    memory = _parse_memory_config(raw_memory)
+
     raw_background_task = payload.get("background_task")
     background_task = _parse_background_task_config(raw_background_task)
 
@@ -860,6 +878,7 @@ def _load_repo_local_config(
         lsp=lsp,
         background_task=background_task,
         mcp=mcp,
+        memory=memory,
         tui=tui,
         provider_fallback=provider_fallback,
         providers=providers,
@@ -1334,6 +1353,34 @@ def _parse_runtime_mcp_server_scope(value: object, *, field_path: str) -> Runtim
     raise ValueError(f"runtime config field '{field_path}.scope' must be one of: runtime, session")
 
 
+def _parse_memory_scope(value: object, *, field_path: str) -> MemoryScope:
+    if value is None or value == "workspace":
+        return "workspace"
+    raise ValueError(f"runtime config field '{field_path}' must be one of: workspace")
+
+
+def _parse_memory_semantic_search_mode(
+    value: object, *, field_path: str
+) -> MemorySemanticSearchMode:
+    if value is None or value == "auto":
+        return "auto"
+    if value == "off":
+        return "off"
+    if value == "required":
+        return "required"
+    raise ValueError(f"runtime config field '{field_path}' must be one of: off, auto, required")
+
+
+def _parse_memory_sqlite_vec_mode(value: object, *, field_path: str) -> MemorySqliteVecMode:
+    if value is None or value == "auto":
+        return "auto"
+    if value == "off":
+        return "off"
+    if value == "required":
+        return "required"
+    raise ValueError(f"runtime config field '{field_path}' must be one of: auto, off, required")
+
+
 def _parse_runtime_tui_theme_mode(value: object) -> RuntimeTuiThemeMode | None:
     if value is None:
         return None
@@ -1591,6 +1638,83 @@ def _parse_background_task_config(raw_value: object) -> RuntimeBackgroundTaskCon
         delegated_reminders_enabled=delegated_reminders_enabled,
         delegated_reminder_cooldown_seconds=delegated_reminder_cooldown_seconds,
     )
+
+
+def _parse_memory_config(raw_memory: object) -> MemoryConfig | None:
+    if raw_memory is None:
+        return None
+    if not isinstance(raw_memory, dict):
+        raise ValueError("runtime config field 'memory' must be an object when provided")
+    payload = cast(dict[str, object], raw_memory)
+    _reject_unknown_config_keys(
+        payload,
+        allowed_keys=_MEMORY_CONFIG_KEYS,
+        field_path="memory",
+    )
+
+    raw_recall = payload.get("recall")
+    if raw_recall is not None and not isinstance(raw_recall, dict):
+        raise ValueError("runtime config field 'memory.recall' must be an object when provided")
+    recall_payload = cast(dict[str, object], raw_recall or {})
+    _reject_unknown_config_keys(
+        recall_payload,
+        allowed_keys=_MEMORY_RECALL_CONFIG_KEYS,
+        field_path="memory.recall",
+    )
+
+    raw_sqlite_vec = payload.get("sqlite_vec")
+    if raw_sqlite_vec is not None and not isinstance(raw_sqlite_vec, dict):
+        raise ValueError("runtime config field 'memory.sqlite_vec' must be an object when provided")
+    sqlite_vec_payload = cast(dict[str, object], raw_sqlite_vec or {})
+    _reject_unknown_config_keys(
+        sqlite_vec_payload,
+        allowed_keys=_MEMORY_SQLITE_VEC_CONFIG_KEYS,
+        field_path="memory.sqlite_vec",
+    )
+
+    enabled = True
+    if "enabled" in payload:
+        parsed_enabled = _parse_optional_bool(payload.get("enabled"), field_path="memory.enabled")
+        enabled = True if parsed_enabled is None else parsed_enabled
+
+    recall_enabled = False
+    if "enabled" in recall_payload:
+        parsed_recall_enabled = _parse_optional_bool(
+            recall_payload.get("enabled"), field_path="memory.recall.enabled"
+        )
+        recall_enabled = False if parsed_recall_enabled is None else parsed_recall_enabled
+
+    return MemoryConfig(
+        enabled=enabled,
+        scope=_parse_memory_scope(payload.get("scope"), field_path="memory.scope"),
+        recall=MemoryRecallConfig(
+            enabled=recall_enabled,
+            limit=_parse_memory_positive_int(
+                recall_payload.get("limit"), field_path="memory.recall.limit", default=5
+            ),
+            max_chars=_parse_memory_positive_int(
+                recall_payload.get("max_chars"), field_path="memory.recall.max_chars", default=2000
+            ),
+        ),
+        semantic_search=_parse_memory_semantic_search_mode(
+            payload.get("semantic_search"), field_path="memory.semantic_search"
+        ),
+        sqlite_vec=MemorySqliteVecConfig(
+            enabled=_parse_memory_sqlite_vec_mode(
+                sqlite_vec_payload.get("enabled"), field_path="memory.sqlite_vec.enabled"
+            )
+        ),
+    )
+
+
+def _parse_memory_positive_int(value: object, *, field_path: str, default: int) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"runtime config field '{field_path}' must be an integer when provided")
+    if value < 1:
+        raise ValueError(f"runtime config field '{field_path}' must be greater than or equal to 1")
+    return value
 
 
 class _RuntimeContextWindowValidationModel(BaseModel):

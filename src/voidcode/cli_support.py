@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .command.models import CommandDefinition
 from .runtime.events import EventEnvelope, redact_reasoning_payload
+from .runtime.memory import MemoryRecord
 from .runtime.session import SessionState, StoredSessionSummary
 
 EXIT_SUCCESS = 0
@@ -81,6 +82,17 @@ def serialize_stored_session_summary(session: StoredSessionSummary) -> dict[str,
         "turn": session.turn,
         "updated_at": session.updated_at,
         "prompt": session.prompt,
+    }
+
+
+def serialize_memory_record(memory: MemoryRecord) -> dict[str, object]:
+    return {
+        "id": memory.id,
+        "workspace_id": memory.workspace_id,
+        "kind": memory.kind,
+        "content": memory.content,
+        "tags": list(memory.tags),
+        "created_at": memory.created_at,
     }
 
 

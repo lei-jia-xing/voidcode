@@ -49,6 +49,10 @@ type ExistingEventType = Literal[
 ]
 type PrototypeAdditiveEventType = Literal[
     "runtime.memory_refreshed",
+    "runtime.memory_added",
+    "runtime.memory_deleted",
+    "runtime.memory_searched",
+    "runtime.memory_status_checked",
     "runtime.context_pressure",
     "runtime.context_transform_applied",
     "runtime.session_started",
@@ -162,6 +166,10 @@ RUNTIME_QUESTION_ANSWERED: Final[ExistingEventType] = "runtime.question_answered
 RUNTIME_FAILED: Final[ExistingEventType] = "runtime.failed"
 
 RUNTIME_MEMORY_REFRESHED: Final[PrototypeAdditiveEventType] = "runtime.memory_refreshed"
+RUNTIME_MEMORY_ADDED: Final[PrototypeAdditiveEventType] = "runtime.memory_added"
+RUNTIME_MEMORY_DELETED: Final[PrototypeAdditiveEventType] = "runtime.memory_deleted"
+RUNTIME_MEMORY_SEARCHED: Final[PrototypeAdditiveEventType] = "runtime.memory_searched"
+RUNTIME_MEMORY_STATUS_CHECKED: Final[PrototypeAdditiveEventType] = "runtime.memory_status_checked"
 RUNTIME_CONTEXT_PRESSURE: Final[PrototypeAdditiveEventType] = "runtime.context_pressure"
 RUNTIME_CONTEXT_TRANSFORM_APPLIED: Final[PrototypeAdditiveEventType] = (
     "runtime.context_transform_applied"
@@ -259,6 +267,10 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
 )
 PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = (
     RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_MEMORY_ADDED,
+    RUNTIME_MEMORY_DELETED,
+    RUNTIME_MEMORY_SEARCHED,
+    RUNTIME_MEMORY_STATUS_CHECKED,
     RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_SESSION_STARTED,

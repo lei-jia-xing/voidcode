@@ -9,6 +9,8 @@ The bundle is intentionally an inert artifact:
   knows the destination is private.
 - The schema is versioned (``voidcode.session.bundle.v1``); incompatible
   schemas fail fast on import with a clear migration message.
+- Workspace memory records and vector/index/cache data are intentionally
+  outside the canonical MVP bundle; memory import/export is deferred.
 
 The on-disk format is either a JSON file or a zip archive containing a
 single ``bundle.json`` entry. The zip wrapper exists so future revisions can
@@ -104,6 +106,42 @@ _TOOL_OUTPUT_KEYS: Final[frozenset[str]] = frozenset(
         "stdout",
         "stderr",
         "result_text",
+    }
+)
+
+
+_DEFERRED_BUNDLE_DIAGNOSTIC_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "embedding_cache",
+        "embeddings",
+        "memory_index_cache",
+        "memory_records",
+        "memory_vector_cache",
+        "memory_vectors",
+        "memories",
+        "sqlite_vec",
+        "sqlite-vec",
+        "vector_cache",
+        "vector_index",
+        "vector_index_path",
+        "vector_indexes",
+        "vectors",
+    }
+)
+
+
+_DEFERRED_BUNDLE_DIAGNOSTIC_VALUES: Final[frozenset[str]] = frozenset(
+    {
+        "memory_index_status",
+        "memory_recall_log",
+        "memory_tags",
+        "memory_vectors",
+        "memories",
+        "sqlite_vec",
+        "sqlite-vec",
+        "vector_cache",
+        "vector_index",
+        "vector_indexes",
     }
 )
 
@@ -360,6 +398,43 @@ def _redact_dict(value: dict[str, object]) -> dict[str, object]:
     return cast(dict[str, object], _redact_object(value))
 
 
+def _is_deferred_bundle_diagnostic_key(value: str) -> bool:
+    return value.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS
+
+
+def _is_deferred_bundle_diagnostic_value(value: str) -> bool:
+    return value.casefold() in _DEFERRED_BUNDLE_DIAGNOSTIC_VALUES
+
+
+def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
+    if isinstance(value, dict):
+        cleaned: dict[str, object] = {}
+        for raw_key, raw_item in cast(Mapping[object, object], value).items():
+            key = str(raw_key)
+            if _is_deferred_bundle_diagnostic_key(key):
+                continue
+            cleaned_item = _strip_deferred_bundle_diagnostics(raw_item)
+            if cleaned_item is not None:
+                cleaned[key] = cleaned_item
+        return cleaned
+    if isinstance(value, list):
+        cleaned_items: list[object] = []
+        for item in cast(list[object], value):
+            cleaned_item = _strip_deferred_bundle_diagnostics(item)
+            if cleaned_item is not None:
+                cleaned_items.append(cleaned_item)
+        return cleaned_items
+    if isinstance(value, tuple):
+        return tuple(
+            cleaned_item
+            for item in value
+            if (cleaned_item := _strip_deferred_bundle_diagnostics(item)) is not None
+        )
+    if isinstance(value, str) and _is_deferred_bundle_diagnostic_value(value):
+        return None
+    return value
+
+
 def _truncate_string(value: str, *, limit: int) -> str:
     if limit <= 0 or len(value) <= limit:
         return value
@@ -608,9 +683,13 @@ class _SessionBundleBuilder:
     ) -> dict[str, object] | None:
         if payload is None:
             return None
+        cleaned = _strip_deferred_bundle_diagnostics(payload)
+        if not isinstance(cleaned, dict):
+            return {}
+        diagnostics = cast(dict[str, object], cleaned)
         if not self._options.redact:
-            return dict(payload)
-        return _redact_dict(payload)
+            return dict(diagnostics)
+        return _redact_dict(diagnostics)
 
     def _collect_sessions(
         self, *, session_id: str

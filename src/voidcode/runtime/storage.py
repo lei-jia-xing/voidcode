@@ -26,6 +26,7 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
+from .memory import MemoryKind, MemoryRecord, MemorySearchResult, MemoryStatus
 from .paths import sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
@@ -294,6 +295,26 @@ class SessionStore(Protocol):
 
     def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]: ...
 
+    def add_memory(
+        self,
+        *,
+        workspace: Path,
+        content: str,
+        kind: MemoryKind = "project",
+        tags: tuple[str, ...] = (),
+        source_session_id: str | None = None,
+    ) -> MemoryRecord: ...
+
+    def list_memories(
+        self, *, workspace: Path, include_deleted: bool = False
+    ) -> tuple[MemoryRecord, ...]: ...
+
+    def search_memories(self, *, workspace: Path, query: str) -> tuple[MemorySearchResult, ...]: ...
+
+    def get_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord | None: ...
+
+    def delete_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord: ...
+
 
 @runtime_checkable
 class SessionEventAppender(Protocol):
@@ -320,7 +341,10 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 5
+    _SCHEMA_VERSION = 6
+    _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(
+        ("project", "preference", "feedback", "reference", "decision")
+    )
     _RESUME_CHECKPOINT_KINDS = frozenset(
         {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
     )
@@ -409,6 +433,40 @@ class SqliteSessionStore:
             ("cancel_requested_at", "INTEGER", 0, None, 0),
             ("error", "TEXT", 0, None, 0),
         ),
+        "memories": (
+            ("memory_id", "TEXT", 1, None, 2),
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("kind", "TEXT", 1, None, 0),
+            ("content", "TEXT", 1, None, 0),
+            ("tags_json", "TEXT", 1, None, 0),
+            ("scope", "TEXT", 1, "'workspace'", 0),
+            ("status", "TEXT", 1, "'active'", 0),
+            ("source_session_id", "TEXT", 0, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("updated_at", "INTEGER", 1, None, 0),
+            ("deleted_at", "INTEGER", 0, None, 0),
+        ),
+        "memory_tags": (
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("memory_id", "TEXT", 1, None, 2),
+            ("tag", "TEXT", 1, None, 3),
+            ("created_at", "INTEGER", 1, None, 0),
+        ),
+        "memory_recall_log": (
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("recall_id", "TEXT", 1, None, 2),
+            ("session_id", "TEXT", 0, None, 0),
+            ("query", "TEXT", 0, None, 0),
+            ("result_count", "INTEGER", 1, "0", 0),
+            ("created_at", "INTEGER", 1, None, 0),
+        ),
+        "memory_index_status": (
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("index_name", "TEXT", 1, None, 2),
+            ("status", "TEXT", 1, None, 0),
+            ("detail_json", "TEXT", 1, "'{}'", 0),
+            ("updated_at", "INTEGER", 1, None, 0),
+        ),
         "session_notifications": (
             ("notification_id", "TEXT", 0, None, 1),
             ("workspace_id", "TEXT", 1, None, 0),
@@ -439,6 +497,10 @@ class SqliteSessionStore:
         "session_todos": frozenset(),
         "background_tasks": frozenset(),
         "continuation_loops": frozenset(),
+        "memories": frozenset(),
+        "memory_tags": frozenset(),
+        "memory_recall_log": frozenset(),
+        "memory_index_status": frozenset(),
         "session_notifications": frozenset({("workspace_id", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
         "storage_sequences": frozenset(),
@@ -454,6 +516,7 @@ class SqliteSessionStore:
 
     @contextmanager
     def _connect(self, workspace: Path) -> Iterator[sqlite3.Connection]:
+        _ = workspace
         database_path = self._resolve_database_path()
         database_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(
@@ -610,6 +673,60 @@ class SqliteSessionStore:
         )
         _ = connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS memories (
+                memory_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'workspace',
+                status TEXT NOT NULL DEFAULT 'active',
+                source_session_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                deleted_at INTEGER,
+                PRIMARY KEY (workspace_id, memory_id)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_tags (
+                workspace_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, memory_id, tag)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_recall_log (
+                workspace_id TEXT NOT NULL,
+                recall_id TEXT NOT NULL,
+                session_id TEXT,
+                query TEXT,
+                result_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, recall_id)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_index_status (
+                workspace_id TEXT NOT NULL,
+                index_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, index_name)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS session_notifications (
                 notification_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -674,6 +791,17 @@ class SqliteSessionStore:
             "ON continuation_loops(workspace_id, status, updated_at DESC)"
         )
         _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS memories_workspace_idx "
+            "ON memories(workspace_id, status, updated_at)"
+        )
+        _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS memory_tags_tag_idx ON memory_tags(workspace_id, tag)"
+        )
+        _ = connection.execute(
+            "CREATE INDEX IF NOT EXISTS memory_recall_log_workspace_idx "
+            "ON memory_recall_log(workspace_id, created_at DESC)"
+        )
+        _ = connection.execute(
             "CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx "
             "ON session_notifications(workspace_id, session_id)"
         )
@@ -689,6 +817,9 @@ class SqliteSessionStore:
         _ = connection.execute(
             "INSERT OR IGNORE INTO storage_sequences (scope, value) "
             "VALUES ('continuation_loops', 0)"
+        )
+        _ = connection.execute(
+            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('memories', 0)"
         )
         _ = connection.execute(
             "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)"
@@ -729,6 +860,15 @@ class SqliteSessionStore:
                     "finished_at",
                     "cancel_requested_at",
                 ),
+            ),
+        )
+        SqliteSessionStore._bump_sequence_floor(
+            connection=connection,
+            scope="memories",
+            floor=SqliteSessionStore._max_existing_timestamp(
+                connection=connection,
+                table="memories",
+                columns=("created_at", "updated_at", "deleted_at"),
             ),
         )
         SqliteSessionStore._bump_sequence_floor(
@@ -997,6 +1137,20 @@ class SqliteSessionStore:
         if value == "exhausted":
             return "exhausted"
         raise ValueError(f"invalid continuation loop status: {value}")
+
+    @classmethod
+    def _parse_memory_kind(cls, value: str) -> MemoryKind:
+        if value in cls._MEMORY_KINDS:
+            return cast(MemoryKind, value)
+        raise ValueError(f"invalid memory kind: {value}")
+
+    @staticmethod
+    def _parse_memory_status(value: str) -> MemoryStatus:
+        if value == "active":
+            return "active"
+        if value == "deleted":
+            return "deleted"
+        raise ValueError(f"invalid memory status: {value}")
 
     @staticmethod
     def _session_last_event_sequence(events: tuple[EventEnvelope, ...]) -> int:
@@ -1532,6 +1686,221 @@ class SqliteSessionStore:
                 updated_at=cast(int, row["updated_at"]),
             )
             for row in rows
+        )
+
+    @staticmethod
+    def _validate_memory_content(content: str) -> str:
+        if not content.strip():
+            raise ValueError("memory content must not be empty")
+        return content
+
+    @classmethod
+    def _validate_memory_kind(cls, kind: str) -> MemoryKind:
+        if kind not in cls._MEMORY_KINDS:
+            raise ValueError(f"invalid memory kind: {kind}")
+        return cast(MemoryKind, kind)
+
+    @staticmethod
+    def _validate_memory_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
+        for tag in tags:
+            if not tag.strip():
+                raise ValueError("memory tags must not be empty")
+        if len(set(tags)) != len(tags):
+            raise ValueError("memory tags must be unique")
+        return tags
+
+    @classmethod
+    def _memory_record_from_row(cls, row: sqlite3.Row) -> MemoryRecord:
+        tags_payload = cast(str, row["tags_json"])
+        try:
+            decoded_tags = json.loads(tags_payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError("persisted memory tags JSON is malformed") from exc
+        if not isinstance(decoded_tags, list) or not all(
+            isinstance(tag, str) for tag in decoded_tags
+        ):
+            raise ValueError("persisted memory tags payload must decode to a string list")
+        scope = cast(str, row["scope"])
+        if scope != "workspace":
+            raise ValueError(f"invalid memory scope: {scope}")
+        return MemoryRecord(
+            id=cast(str, row["memory_id"]),
+            workspace_id=cast(str, row["workspace_id"]),
+            kind=cls._parse_memory_kind(cast(str, row["kind"])),
+            content=cast(str, row["content"]),
+            tags=tuple(decoded_tags),
+            status=cls._parse_memory_status(cast(str, row["status"])),
+            scope="workspace",
+            created_at=cast(int, row["created_at"]),
+            updated_at=cast(int, row["updated_at"]),
+            deleted_at=cast(int | None, row["deleted_at"]),
+            source_session_id=cast(str | None, row["source_session_id"]),
+        )
+
+    def add_memory(
+        self,
+        *,
+        workspace: Path,
+        content: str,
+        kind: MemoryKind = "project",
+        tags: tuple[str, ...] = (),
+        source_session_id: str | None = None,
+    ) -> MemoryRecord:
+        validated_content = self._validate_memory_content(content)
+        validated_kind = self._validate_memory_kind(kind)
+        validated_tags = self._validate_memory_tags(tags)
+        with self._write_connect(workspace) as connection:
+            timestamp = self._next_memory_timestamp(connection=connection)
+            memory_id = f"mem_{timestamp}"
+            _ = connection.execute(
+                """
+                INSERT INTO memories (
+                    memory_id, workspace_id, kind, content, tags_json, scope, status,
+                    source_session_id, created_at, updated_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, 'workspace', 'active', ?, ?, ?, NULL)
+                """,
+                (
+                    memory_id,
+                    str(workspace),
+                    validated_kind,
+                    validated_content,
+                    json.dumps(list(validated_tags), sort_keys=True),
+                    source_session_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            connection.commit()
+        record = self.get_memory(workspace=workspace, memory_id=memory_id)
+        if record is None:
+            raise RuntimeError(f"memory was not persisted: {memory_id}")
+        return record
+
+    def list_memories(
+        self, *, workspace: Path, include_deleted: bool = False
+    ) -> tuple[MemoryRecord, ...]:
+        status_clause = "" if include_deleted else "AND status = 'active'"
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    f"""
+                    SELECT memory_id, workspace_id, kind, content, tags_json, scope, status,
+                           source_session_id, created_at, updated_at, deleted_at
+                    FROM memories
+                    WHERE workspace_id = ? {status_clause}
+                    ORDER BY updated_at DESC, memory_id ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(self._memory_record_from_row(row) for row in rows)
+
+    @staticmethod
+    def _memory_search_terms(query: str) -> tuple[str, ...]:
+        terms: list[str] = []
+        seen: set[str] = set()
+        for raw_term in query.casefold().split():
+            term = raw_term.strip()
+            if term and term not in seen:
+                terms.append(term)
+                seen.add(term)
+        return tuple(terms)
+
+    @staticmethod
+    def _score_memory(record: MemoryRecord, terms: tuple[str, ...]) -> tuple[int, tuple[str, ...]]:
+        haystacks = (record.content.casefold(), *(tag.casefold() for tag in record.tags))
+        matched_terms = tuple(
+            term for term in terms if any(term in haystack for haystack in haystacks)
+        )
+        score = sum(haystack.count(term) for term in terms for haystack in haystacks)
+        return score, matched_terms
+
+    def search_memories(self, *, workspace: Path, query: str) -> tuple[MemorySearchResult, ...]:
+        terms = self._memory_search_terms(query)
+        if not terms:
+            return ()
+        results: list[MemorySearchResult] = []
+        for record in self.list_memories(workspace=workspace):
+            score, matched_terms = self._score_memory(record, terms)
+            if score == 0:
+                continue
+            results.append(
+                MemorySearchResult(record=record, score=score, matched_terms=matched_terms)
+            )
+        return tuple(
+            sorted(
+                results,
+                key=lambda result: (-result.score, -result.record.updated_at, result.record.id),
+            )
+        )
+
+    def get_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord | None:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT memory_id, workspace_id, kind, content, tags_json, scope, status,
+                           source_session_id, created_at, updated_at, deleted_at
+                    FROM memories
+                    WHERE workspace_id = ? AND memory_id = ? AND status = 'active'
+                    """,
+                    (str(workspace), memory_id),
+                ).fetchone(),
+            )
+        return None if row is None else self._memory_record_from_row(row)
+
+    def delete_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord:
+        with self._write_connect(workspace) as connection:
+            existing = self._memory_row(
+                connection=connection,
+                workspace=workspace,
+                memory_id=memory_id,
+                include_deleted=False,
+            )
+            if existing is None:
+                raise ValueError(f"unknown memory: {memory_id}")
+            timestamp = self._next_memory_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE memories
+                SET status = 'deleted', updated_at = ?, deleted_at = ?
+                WHERE workspace_id = ? AND memory_id = ? AND status = 'active'
+                """,
+                (timestamp, timestamp, str(workspace), memory_id),
+            )
+            deleted = self._memory_row(
+                connection=connection,
+                workspace=workspace,
+                memory_id=memory_id,
+                include_deleted=True,
+            )
+            connection.commit()
+        if deleted is None:
+            raise RuntimeError(f"memory was not tombstoned: {memory_id}")
+        return self._memory_record_from_row(deleted)
+
+    @staticmethod
+    def _memory_row(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        memory_id: str,
+        include_deleted: bool,
+    ) -> sqlite3.Row | None:
+        status_clause = "" if include_deleted else "AND status = 'active'"
+        return cast(
+            sqlite3.Row | None,
+            connection.execute(
+                f"""
+                SELECT memory_id, workspace_id, kind, content, tags_json, scope, status,
+                       source_session_id, created_at, updated_at, deleted_at
+                FROM memories
+                WHERE workspace_id = ? AND memory_id = ? {status_clause}
+                """,
+                (str(workspace), memory_id),
+            ).fetchone(),
         )
 
     def save_pending_approval(
@@ -3821,6 +4190,9 @@ class SqliteSessionStore:
     def _next_continuation_loop_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="continuation_loops")
 
+    def _next_memory_timestamp(self, *, connection: sqlite3.Connection) -> int:
+        return self._next_sequence_value(connection=connection, scope="memories")
+
     def _next_auxiliary_timestamp(self, *, connection: sqlite3.Connection) -> int:
         return self._next_sequence_value(connection=connection, scope="auxiliary")
 
@@ -4016,6 +4388,7 @@ class SqliteSessionStore:
         return counts
 
     def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]:
+        _ = workspace
         database_path = self._resolve_database_path()
         removed: list[str] = []
         for path in (

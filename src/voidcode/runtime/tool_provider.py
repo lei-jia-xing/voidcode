@@ -12,6 +12,7 @@ from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
 from ..tools.local_custom import discover_local_custom_tools
+from ..tools.memory import MemoryAddTool, MemoryDeleteTool, MemoryListTool, MemorySearchTool
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
 from ..tools.web_fetch import WebFetchTool
@@ -36,6 +37,10 @@ BUILTIN_TOOL_NAMES = frozenset(
         "glob",
         "grep",
         "lsp",
+        "memory_add",
+        "memory_delete",
+        "memory_list",
+        "memory_search",
         "multi_edit",
         "read_file",
         "question",
@@ -234,6 +239,10 @@ class BuiltinToolProvider:
             edit_tool,
             GlobTool(),
             GrepTool(),
+            MemoryAddTool(),
+            MemoryDeleteTool(),
+            MemoryListTool(),
+            MemorySearchTool(),
             ReadFileTool(),
             ShellExecTool(),
             WebFetchTool(),

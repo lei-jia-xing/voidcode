@@ -4,12 +4,27 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from ..provider.protocol import ProviderAbortSignal
-else:
-    ProviderAbortSignal = object
+from ..provider.protocol import ProviderAbortSignal
+from ..runtime.memory import MemoryKind, MemoryRecord, MemorySearchResult
+
+
+class RuntimeMemoryToolFacade(Protocol):
+    def add_memory(
+        self,
+        *,
+        content: str,
+        kind: MemoryKind = "project",
+        tags: tuple[str, ...] = (),
+        source_session_id: str | None = None,
+    ) -> MemoryRecord: ...
+
+    def list_memories(self, *, include_deleted: bool = False) -> tuple[MemoryRecord, ...]: ...
+
+    def search_memories(self, *, query: str) -> tuple[MemorySearchResult, ...]: ...
+
+    def delete_memory(self, memory_id: str) -> MemoryRecord: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +36,7 @@ class RuntimeToolInvocationContext:
     read_paths: frozenset[str] = frozenset()
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
+    memory: RuntimeMemoryToolFacade | None = None
 
 
 _CURRENT_RUNTIME_TOOL_CONTEXT: ContextVar[RuntimeToolInvocationContext | None] = ContextVar(

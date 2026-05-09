@@ -284,6 +284,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     },
                 },
             },
+            "memory": {"$ref": "#/$defs/memoryConfig"},
             "agent": {"$ref": "#/$defs/agentConfig"},
             "agents": {
                 "type": "object",
@@ -493,6 +494,84 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "minLength": 1,
                         "description": (
                             "Workspace-relative directory containing *.json tool manifests."
+                        ),
+                    },
+                },
+            },
+            "memoryConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": (
+                    "Workspace-local explicit memory storage. Prompt recall and semantic search "
+                    "remain opt-in. "
+                ),
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Enable workspace memory storage.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["workspace"],
+                        "description": "MVP scope is workspace only.",
+                    },
+                    "recall": {
+                        "$ref": "#/$defs/memoryRecallConfig",
+                        "description": "Optional recent-memory recall used for prompt context.",
+                    },
+                    "semantic_search": {
+                        "type": "string",
+                        "enum": ["off", "auto", "required"],
+                        "default": "auto",
+                        "description": (
+                            "Semantic search mode for memory lookup. auto defers until "
+                            "embeddings are available."
+                        ),
+                    },
+                    "sqlite_vec": {
+                        "$ref": "#/$defs/memorySqliteVecConfig",
+                        "description": (
+                            "Optional sqlite-vec integration used for embeddings-backed lookup."
+                        ),
+                    },
+                },
+            },
+            "memoryRecallConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "Recent-memory recall for prompt context. Disabled by default.",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Enable prompt recall from recent memories.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 5,
+                        "description": "Maximum recalled memories.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 2000,
+                        "description": "Character cap applied after recall is selected.",
+                    },
+                },
+            },
+            "memorySqliteVecConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "description": "sqlite-vec integration for embeddings-backed memory lookup.",
+                "properties": {
+                    "enabled": {
+                        "type": "string",
+                        "enum": ["auto", "off", "required"],
+                        "default": "auto",
+                        "description": (
+                            "Auto keeps sqlite-vec optional until embeddings are needed."
                         ),
                     },
                 },
@@ -734,6 +813,12 @@ def generate_starter_runtime_config(
         payload["formatter"] = {"enabled": True}
         payload["lsp"] = {"enabled": True}
         payload["mcp"] = {"enabled": True}
+        payload["memory"] = {
+            "enabled": True,
+            "recall": {"enabled": False},
+            "semantic_search": "auto",
+            "sqlite_vec": {"enabled": "auto"},
+        }
         payload["tools"] = {"builtin": {"enabled": True}}
         payload["skills"] = {"enabled": True}
     return payload
