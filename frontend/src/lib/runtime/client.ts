@@ -3,6 +3,7 @@ import {
   CommandSummary,
   SkillSummary,
   BackgroundTaskOutput,
+  ChildSessionContextResult,
   BackgroundTaskState,
   BackgroundTaskSummary,
   RuntimeRequest,
@@ -294,6 +295,16 @@ export class RuntimeClient {
   ): Promise<BackgroundTaskOutput> {
     const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/output`);
     await expectOk(res, "Failed to load background task output");
+    return res.json();
+  }
+
+  static async getChildSessionContext(
+    sessionId: string,
+  ): Promise<ChildSessionContextResult> {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/delegated-context`,
+    );
+    await expectOk(res, "Failed to load delegated child session context");
     return res.json();
   }
 

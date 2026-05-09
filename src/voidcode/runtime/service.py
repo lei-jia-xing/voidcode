@@ -3481,6 +3481,28 @@ class VoidCodeRuntime:
             emit_result_read_hook=emit_result_read_hook,
         )
 
+    def load_background_task_result_by_child_session(
+        self,
+        *,
+        child_session_id: str,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult | None:
+        self._reconcile_background_tasks_if_needed()
+        validated_child_session_id = validate_session_reference_id(
+            child_session_id,
+            field_name="child_session_id",
+        )
+        task = self._session_store.load_background_task_by_child_session(
+            workspace=self._workspace,
+            child_session_id=validated_child_session_id,
+        )
+        if task is None:
+            return None
+        return self._background_task_supervisor.load_background_task_result(
+            task.task.id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
+
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         return self._background_task_supervisor.summaries_with_observability(
@@ -5117,7 +5139,6 @@ class VoidCodeRuntime:
             root=None,
             error=stderr or stdout.strip() or None,
             branch=None,
-            error=stderr or stdout.strip() or None,
         )
 
     @staticmethod

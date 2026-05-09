@@ -1174,6 +1174,7 @@ class BackgroundTaskResult:
     child_session_id: str | None
     status: BackgroundTaskStatus
     requested_child_session_id: str | None = None
+    delegated_prompt: str | None = None
     routing: SubagentRoutingIdentity | None = None
     approval_request_id: str | None = None
     question_request_id: str | None = None
@@ -1185,6 +1186,7 @@ class BackgroundTaskResult:
     duration_seconds: float | None = None
     tool_call_count: int = 0
     observability: BackgroundTaskObservability | None = None
+    hook_reminder: dict[str, object] | None = None
 
     @property
     def subagent_execution(self) -> SubagentExecutionContract:
@@ -1391,6 +1393,13 @@ class BackgroundTaskRuntimeEntrypoint(Protocol):
         *,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult: ...
+
+    def load_background_task_result_by_child_session(
+        self,
+        *,
+        child_session_id: str,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult | None: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 

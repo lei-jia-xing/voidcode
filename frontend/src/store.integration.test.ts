@@ -1343,6 +1343,7 @@ describe("useAppStore integration flow", () => {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
         child_session_id: "child-session",
         approval_request_id: null,
         question_request_id: null,

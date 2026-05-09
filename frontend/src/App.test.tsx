@@ -475,23 +475,35 @@ describe("App", () => {
       backgroundTaskOutput: {
         task: {
           task_id: "task-child-1",
-          status: "completed",
+          status: "running",
           parent_session_id: "parent-session",
           requested_child_session_id: "requested-child-1",
+          delegated_prompt: "你好",
           child_session_id: "child-session-1",
-          approval_request_id: null,
+          approval_request_id: "approval-1",
           question_request_id: null,
-          approval_blocked: false,
+          approval_blocked: true,
           summary_output: "child summary",
           error: null,
           result_available: true,
           cancellation_cause: null,
+          hook_reminder: {
+            active: true,
+            task_status: "running",
+            child_status: "waiting",
+            lifecycle_status: "waiting_approval",
+            approval_blocked: true,
+            result_available: true,
+            approval_request_id: "approval-1",
+            message: "Child session is waiting on approval.",
+          },
           routing: { mode: "subagent", subagent_type: "explore" },
+          delegation: { lifecycle_status: "running" },
         },
         session_result: {
           session: {
             session: { id: "child-session-1", parent_id: "parent-session" },
-            status: "completed" as const,
+            status: "running" as const,
             turn: 1,
             metadata: {},
           },
@@ -525,8 +537,25 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByText("child prompt")).toBeInTheDocument();
+    expect(screen.getByText("Subsession Context")).toBeInTheDocument();
+    expect(screen.getAllByText("Parent prompt").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("parent prompt").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Delegated prompt").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("你好").length).toBeGreaterThan(0);
     expect(screen.getByText("child output")).toBeInTheDocument();
+    expect(screen.getByText("Leader -> Subagent Handoff")).toBeInTheDocument();
+    expect(screen.getByText("Subsession timeline")).toBeInTheDocument();
+    expect(
+      screen.getByText("Subagent is still working..."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Hook reminder")).toBeInTheDocument();
+    expect(
+      screen.getByText("Child session is waiting on approval."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/subagent: explore/)).toBeInTheDocument();
+    expect(screen.getByText(/status: running/)).toBeInTheDocument();
+    expect(screen.getByText("summary:")).toBeInTheDocument();
+    expect(screen.getByText("child summary")).toBeInTheDocument();
     expect(screen.queryByText("parent output")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Parent session"));
@@ -534,7 +563,7 @@ describe("App", () => {
     expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
   });
 
-  it("supports left/right sibling child-session navigation and Alt+Up back to parent", () => {
+  it("supports OpenCode-style Alt+arrow child-session navigation", () => {
     const loadBackgroundTaskOutput = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
@@ -584,6 +613,7 @@ describe("App", () => {
           status: "completed",
           parent_session_id: "parent-session",
           requested_child_session_id: "requested-child-1",
+          delegated_prompt: "child prompt 1",
           child_session_id: "child-session-1",
           approval_request_id: null,
           question_request_id: null,
@@ -631,10 +661,13 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.keyDown(window, { key: "ArrowRight" });
+    fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
+    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-child-1");
+
+    fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
     expect(loadBackgroundTaskOutput).toHaveBeenCalledWith("task-child-2");
 
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    fireEvent.keyDown(window, { key: "ArrowLeft", altKey: true });
     expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith("task-child-0");
 
     fireEvent.keyDown(window, { key: "ArrowUp", altKey: true });

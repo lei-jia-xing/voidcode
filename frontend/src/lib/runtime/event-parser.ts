@@ -38,6 +38,11 @@ export interface ChatMessage {
     result?: Record<string, unknown>;
     content?: string | null;
     error?: string | null;
+    hooks?: {
+      phase: string;
+      status?: string;
+      sessionId?: string;
+    }[];
   }[];
   approval: {
     requestId: string;
@@ -231,7 +236,42 @@ function upsertTool(
   existing.result = tool.result ?? existing.result;
   if (tool.content !== undefined) existing.content = tool.content;
   if (tool.error !== undefined) existing.error = tool.error;
+  existing.hooks = tool.hooks ?? existing.hooks;
   return existing;
+}
+
+function appendHookToTool(
+  currentAssistant: ChatMessage | null,
+  event: EventEnvelope,
+) {
+  if (!currentAssistant) return;
+  const toolName =
+    typeof event.payload?.tool_name === "string"
+      ? event.payload.tool_name
+      : typeof event.payload?.tool === "string"
+        ? event.payload.tool
+        : null;
+  const phase =
+    typeof event.payload?.phase === "string" ? event.payload.phase : null;
+  if (!toolName || !phase) return;
+  const matchingTool = [...currentAssistant.tools]
+    .reverse()
+    .find((tool) => tool.name === toolName);
+  if (!matchingTool) return;
+  matchingTool.hooks = [
+    ...(matchingTool.hooks ?? []),
+    {
+      phase,
+      status:
+        typeof event.payload?.status === "string"
+          ? event.payload.status
+          : undefined,
+      sessionId:
+        typeof event.payload?.session_id === "string"
+          ? event.payload.session_id
+          : undefined,
+    },
+  ];
 }
 
 function parseQuestionPrompts(value: unknown): QuestionPrompt[] {
@@ -715,6 +755,11 @@ export function deriveChatMessages(
       if (currentAssistant) {
         currentAssistant.status = "failed";
       }
+    } else if (
+      event.event_type === "runtime.tool_hook_pre" ||
+      event.event_type === "runtime.tool_hook_post"
+    ) {
+      appendHookToTool(currentAssistant, event);
     } else if (toolStatus) {
       applyToolStatus(currentAssistant, toolStatus, event.payload);
     }

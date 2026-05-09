@@ -16,10 +16,196 @@ import {
   GitCompare,
   Loader2,
   MoveLeft,
+  Sparkles,
   PanelLeft,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
+
+function SubsessionBanner({
+  parentPrompt,
+  childPrompt,
+  taskStatus,
+  subagentType,
+  summaryOutput,
+  approvalBlocked,
+  questionRequestId,
+  approvalRequestId,
+  hookReminder,
+}: {
+  parentPrompt: string | null;
+  childPrompt: string | null;
+  taskStatus: string | null;
+  subagentType: string | null;
+  summaryOutput: string | null;
+  approvalBlocked: boolean;
+  questionRequestId: string | null;
+  approvalRequestId: string | null;
+  hookReminder?: {
+    active?: boolean;
+    task_status?: string;
+    child_status?: string;
+    lifecycle_status?: string;
+    approval_blocked?: boolean;
+    result_available?: boolean;
+    approval_request_id?: string;
+    question_request_id?: string;
+    message?: string;
+  } | null;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-3 text-sm">
+      <div className="mx-auto max-w-[var(--vc-chat-content-width)] space-y-2">
+        <div className="flex items-center gap-2 text-[var(--vc-text-primary)]">
+          <Sparkles className="h-4 w-4" />
+          <span className="font-medium">{t("subsession.bannerTitle")}</span>
+        </div>
+        {parentPrompt ? (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+              {t("subsession.parentPrompt")}
+            </div>
+            <div className="mt-1 text-[var(--vc-text-muted)]">
+              {parentPrompt}
+            </div>
+          </div>
+        ) : null}
+        {childPrompt ? (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+              {t("subsession.childPrompt")}
+            </div>
+            <div className="mt-1 text-[var(--vc-text-primary)]">
+              {childPrompt}
+            </div>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--vc-text-subtle)]">
+          {subagentType ? (
+            <span>{t("subsession.subagent", { value: subagentType })}</span>
+          ) : null}
+          {taskStatus ? (
+            <span>{t("subsession.status", { value: taskStatus })}</span>
+          ) : null}
+          {approvalBlocked ? (
+            <span>{t("subsession.approvalBlocked")}</span>
+          ) : null}
+          {approvalRequestId ? (
+            <span>{t("subsession.approvalPending")}</span>
+          ) : null}
+          {questionRequestId ? (
+            <span>{t("subsession.questionPending")}</span>
+          ) : null}
+        </div>
+        {summaryOutput ? (
+          <div className="text-xs text-[var(--vc-text-muted)]">
+            <span className="text-[var(--vc-text-subtle)]">
+              {t("subsession.summary")}:{" "}
+            </span>
+            {summaryOutput}
+          </div>
+        ) : null}
+        {hookReminder?.message ? (
+          <div className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-3 py-2 text-xs text-[var(--vc-text-muted)]">
+            <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+              {t("subsession.hookReminder")}
+            </div>
+            <div className="mt-1">{hookReminder.message}</div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SubsessionHandoffCard({
+  parentPrompt,
+  childPrompt,
+}: {
+  parentPrompt: string | null;
+  childPrompt: string | null;
+}) {
+  const { t } = useTranslation();
+  if (!parentPrompt && !childPrompt) return null;
+
+  return (
+    <div className="mx-auto mt-4 max-w-[var(--vc-chat-content-width)] px-4">
+      <div className="rounded-2xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-4">
+        <div className="text-sm font-medium text-[var(--vc-text-primary)]">
+          {t("subsession.commandCardTitle")}
+        </div>
+        {parentPrompt ? (
+          <div className="mt-3">
+            <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+              {t("subsession.parentPrompt")}
+            </div>
+            <div className="mt-1 text-sm text-[var(--vc-text-muted)]">
+              {parentPrompt}
+            </div>
+          </div>
+        ) : null}
+        {childPrompt ? (
+          <div className="mt-3 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-3 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+              {t("subsession.childPrompt")}
+            </div>
+            <div className="mt-1 text-sm text-[var(--vc-text-primary)]">
+              {childPrompt}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SubsessionTimelineHeader({
+  childPrompt,
+}: {
+  childPrompt: string | null;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="mx-auto max-w-[var(--vc-chat-content-width)] px-4 pt-4">
+      <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+        {t("subsession.timelineTitle")}
+      </div>
+      {childPrompt ? (
+        <div className="mt-1 text-sm text-[var(--vc-text-muted)]">
+          {childPrompt}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SubsessionLiveStatus({
+  taskStatus,
+  childStatus,
+  lifecycleStatus,
+}: {
+  taskStatus: string | null;
+  childStatus: string | null;
+  lifecycleStatus?: string | null;
+}) {
+  const { t } = useTranslation();
+  const active =
+    taskStatus === "queued" ||
+    taskStatus === "running" ||
+    childStatus === "running" ||
+    lifecycleStatus === "running";
+  if (!active) return null;
+
+  return (
+    <div className="mx-auto mt-4 max-w-[var(--vc-chat-content-width)] px-4">
+      <div className="flex items-center gap-2 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-2 text-sm text-[var(--vc-text-primary)]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span>{t("subsession.liveWorking")}</span>
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const {
@@ -180,6 +366,14 @@ function App() {
       toolCallCount: backgroundTaskOutput.task.tool_call_count ?? null,
     };
   }, [backgroundTaskOutput, selectedBackgroundTaskOutputId]);
+  const selectedChildTaskSummary = useMemo(() => {
+    if (!selectedBackgroundTaskOutputId) return null;
+    return (
+      backgroundTasks.find(
+        (task) => task.task.id === selectedBackgroundTaskOutputId,
+      ) ?? null
+    );
+  }, [backgroundTasks, selectedBackgroundTaskOutputId]);
   const childSessionTaskIds = useMemo(
     () =>
       backgroundTasks
@@ -200,7 +394,7 @@ function App() {
     loadSessions();
   }, [loadSessions]);
 
-  // While browsing a delegated child session, allow Alt+Up to jump back.
+  // While browsing a delegated child session, use OpenCode-style Alt+arrow navigation.
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!displayedIsChildSession) return;
@@ -216,7 +410,18 @@ function App() {
         void loadBackgroundTaskOutput(null);
         return;
       }
-      if (event.key === "ArrowLeft" && selectedChildTaskIndex > 0) {
+      if (event.altKey && event.key === "ArrowDown") {
+        event.preventDefault();
+        if (childSessionTaskIds.length > 0) {
+          void loadBackgroundTaskOutput(childSessionTaskIds[0]);
+        }
+        return;
+      }
+      if (
+        event.altKey &&
+        event.key === "ArrowLeft" &&
+        selectedChildTaskIndex > 0
+      ) {
         event.preventDefault();
         void loadBackgroundTaskOutput(
           childSessionTaskIds[selectedChildTaskIndex - 1],
@@ -224,6 +429,7 @@ function App() {
         return;
       }
       if (
+        event.altKey &&
         event.key === "ArrowRight" &&
         selectedChildTaskIndex >= 0 &&
         selectedChildTaskIndex < childSessionTaskIds.length - 1
@@ -340,6 +546,43 @@ function App() {
     () => sessions.find((s) => s.session.id === currentSessionId),
     [sessions, currentSessionId],
   );
+  const latestParentRequestPrompt = useMemo(() => {
+    const latestReq = [...currentSessionEvents]
+      .reverse()
+      .find((e) => e.event_type === "runtime.request_received");
+    return typeof latestReq?.payload?.prompt === "string"
+      ? latestReq.payload.prompt
+      : null;
+  }, [currentSessionEvents]);
+  const selectedChildContext = useMemo(() => {
+    if (!displayedIsChildSession || !backgroundTaskOutput) return null;
+    return {
+      parentPrompt: currentSessionSummary?.prompt ?? latestParentRequestPrompt,
+      childPrompt: backgroundTaskOutput.task.delegated_prompt ?? null,
+      taskStatus:
+        backgroundTaskOutput.task.status ??
+        selectedChildTaskSummary?.status ??
+        null,
+      subagentType: backgroundTaskOutput.task.routing?.subagent_type ?? null,
+      summaryOutput: backgroundTaskOutput.task.summary_output ?? null,
+      approvalBlocked: backgroundTaskOutput.task.approval_blocked === true,
+      questionRequestId: backgroundTaskOutput.task.question_request_id ?? null,
+      approvalRequestId: backgroundTaskOutput.task.approval_request_id ?? null,
+      hookReminder: backgroundTaskOutput.task.hook_reminder ?? null,
+      childStatus: backgroundTaskOutput.session_result?.status ?? null,
+      lifecycleStatus:
+        typeof backgroundTaskOutput.task.delegation?.lifecycle_status ===
+        "string"
+          ? backgroundTaskOutput.task.delegation.lifecycle_status
+          : null,
+    };
+  }, [
+    backgroundTaskOutput,
+    currentSessionSummary,
+    displayedIsChildSession,
+    latestParentRequestPrompt,
+    selectedChildTaskSummary,
+  ]);
 
   const currentSessionTitle = useMemo(() => {
     if (!currentSessionId) return null;
@@ -509,6 +752,24 @@ function App() {
                 {t("common.errorWithMessage", { message: runError })}
               </div>
             )}
+
+            {selectedChildContext ? (
+              <>
+                <SubsessionBanner {...selectedChildContext} />
+                <SubsessionHandoffCard
+                  parentPrompt={selectedChildContext.parentPrompt}
+                  childPrompt={selectedChildContext.childPrompt}
+                />
+                <SubsessionLiveStatus
+                  taskStatus={selectedChildContext.taskStatus}
+                  childStatus={selectedChildContext.childStatus}
+                  lifecycleStatus={selectedChildContext.lifecycleStatus}
+                />
+                <SubsessionTimelineHeader
+                  childPrompt={selectedChildContext.childPrompt}
+                />
+              </>
+            ) : null}
 
             <div className="flex min-h-0 flex-1">
               <div

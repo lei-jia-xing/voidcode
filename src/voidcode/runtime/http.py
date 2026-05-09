@@ -76,6 +76,10 @@ class RuntimeTransport(Protocol):
 
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
 
+    def load_background_task_result_by_child_session(
+        self, *, child_session_id: str
+    ) -> BackgroundTaskResult | None: ...
+
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def list_background_tasks_by_parent_session(
@@ -704,6 +708,7 @@ class RuntimeTransportApp:
             is_task_list_route = session_path.endswith("/tasks")
             is_approval_route = session_path.endswith("/approval")
             is_question_route = session_path.endswith("/question")
+            is_delegated_context_route = session_path.endswith("/delegated-context")
             is_result_route = session_path.endswith("/result")
             is_debug_route = session_path.endswith("/debug")
             is_undo_route = session_path.endswith("/undo")
@@ -719,6 +724,8 @@ class RuntimeTransportApp:
                 if is_approval_route
                 else session_path.removesuffix("/question")
                 if is_question_route
+                else session_path.removesuffix("/delegated-context")
+                if is_delegated_context_route
                 else session_path.removesuffix("/result")
                 if is_result_route
                 else session_path.removesuffix("/debug")
@@ -755,6 +762,20 @@ class RuntimeTransportApp:
                 await self._handle_list_background_tasks_by_parent_session(
                     parent_session_id=session_id,
                     send=send,
+                )
+                return
+            if is_delegated_context_route:
+                if method != "GET":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_child_session_context(
+                    session_id=session_id,
+                    send=send,
+                    show_thinking=show_thinking,
                 )
                 return
             session_id = (
@@ -1238,6 +1259,59 @@ class RuntimeTransportApp:
                 return
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        resolved_output = (
+            child_session_result.output
+            if child_session_result is not None and child_session_result.output is not None
+            else task_result.summary_output
+            if task_result.summary_output is not None
+            else task_result.error
+        )
+        await self._json_response(
+            send,
+            status=200,
+            payload={
+                "task": self._serialize_background_task_result(task_result),
+                "session_result": self._serialize_session_result(
+                    child_session_result,
+                    show_thinking=show_thinking,
+                )
+                if child_session_result is not None
+                else None,
+                "output": resolved_output,
+            },
+        )
+
+    async def _handle_child_session_context(
+        self,
+        *,
+        session_id: str,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task_result = runtime.load_background_task_result_by_child_session(
+                    child_session_id=session_id,
+                )
+                if task_result is None:
+                    await self._json_response(
+                        send,
+                        status=404,
+                        payload={"error": f"no delegated child context for session: {session_id}"},
+                    )
+                    return
+                child_session_result: RuntimeSessionResult | None = None
+                if task_result.child_session_id is not None:
+                    try:
+                        child_session_result = runtime.session_result(
+                            session_id=task_result.child_session_id,
+                        )
+                    except ValueError:
+                        child_session_result = None
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+
         resolved_output = (
             child_session_result.output
             if child_session_result is not None and child_session_result.output is not None
@@ -2222,6 +2296,7 @@ class RuntimeTransportApp:
             "status": result.status,
             "parent_session_id": result.parent_session_id,
             "requested_child_session_id": result.requested_child_session_id,
+            "delegated_prompt": result.delegated_prompt,
             "child_session_id": result.child_session_id,
             "approval_request_id": result.approval_request_id,
             "question_request_id": result.question_request_id,
@@ -2236,6 +2311,7 @@ class RuntimeTransportApp:
             "observability": (
                 None if result.observability is None else result.observability.as_payload()
             ),
+            "hook_reminder": result.hook_reminder,
             "delegation": result.delegated_execution.as_payload(),
             "message": result.delegated_message.as_payload(),
         }

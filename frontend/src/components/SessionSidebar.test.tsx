@@ -196,4 +196,28 @@ describe("SessionSidebar resizing", () => {
     expect(screen.queryByText("T3")).not.toBeInTheDocument();
     expect(screen.queryByText("Completed")).not.toBeInTheDocument();
   });
+
+  it("hides child sessions from the flat session list", () => {
+    renderSidebar({
+      sessions: [
+        {
+          session: { id: "session-parent-1" },
+          status: "completed",
+          turn: 1,
+          prompt: "parent session",
+          updated_at: 2000,
+        },
+        {
+          session: { id: "session-child-1", parent_id: "session-parent-1" },
+          status: "completed",
+          turn: 1,
+          prompt: "child session",
+          updated_at: 3000,
+        },
+      ],
+    });
+
+    expect(screen.getByText("parent session")).toBeInTheDocument();
+    expect(screen.queryByText("child session")).not.toBeInTheDocument();
+  });
 });

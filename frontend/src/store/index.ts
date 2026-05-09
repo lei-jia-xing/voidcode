@@ -909,6 +909,36 @@ export const useAppStore = create<AppState>()(
         });
 
         try {
+          try {
+            const childContext =
+              await RuntimeClient.getChildSessionContext(sessionId);
+            if (
+              get().replayRequestId !== requestId ||
+              get().currentSessionId !== sessionId
+            ) {
+              return;
+            }
+            set({
+              backgroundTaskOutput: childContext,
+              backgroundTaskOutputStatus: "success",
+              backgroundTaskOutputError: null,
+              selectedBackgroundTaskOutputId: childContext.task.task_id,
+              currentSessionState:
+                childContext.session_result?.session ??
+                get().currentSessionState,
+              currentSessionEvents:
+                childContext.session_result?.transcript ??
+                get().currentSessionEvents,
+              currentSessionOutput:
+                childContext.session_result?.output ?? childContext.output,
+              replayStatus: "success",
+            });
+            await get().loadBackgroundTasks();
+            return;
+          } catch {
+            // Fall through to plain replay when this session is not a delegated child.
+          }
+
           const replay = await RuntimeClient.getSessionReplay(sessionId);
           if (
             get().replayRequestId !== requestId ||

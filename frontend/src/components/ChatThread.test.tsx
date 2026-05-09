@@ -35,6 +35,10 @@ const baseProps = {
   onAnswerQuestion: vi.fn(),
 };
 
+function getDisclosureToggle(name: RegExp | string) {
+  return screen.getAllByRole("button", { name })[0];
+}
+
 describe("ChatThread", () => {
   it("renders welcome state without avatar graphics", () => {
     render(<ChatThread {...baseProps} />);
@@ -360,9 +364,9 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("read_file")).toBeInTheDocument();
     const readRow = screen
-      .getByText("Read")
+      .getByText("read_file")
       .closest('[data-tool-row="read_file"]');
     expect(readRow).not.toBeNull();
     expect(readRow).toHaveTextContent("path=src/app.ts");
@@ -372,10 +376,10 @@ describe("ChatThread", () => {
       screen.queryByRole("button", { name: /show details for read/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Output")).not.toBeInTheDocument();
-    expect(screen.getByText("Write")).toBeInTheDocument();
+    expect(screen.getByText("write_file")).toBeInTheDocument();
     expect(screen.getByText(/3 bytes/)).toBeInTheDocument();
     const writeRow = screen
-      .getByText("Write")
+      .getByText("write_file")
       .closest('[data-tool-row="write_file"]');
     expect(writeRow).not.toBeNull();
     expect(writeRow).toHaveTextContent("path=src/app.ts");
@@ -396,15 +400,13 @@ describe("ChatThread", () => {
       "data-diff-marker",
     );
     expect(screen.getByText("+new").previousSibling).toHaveTextContent("+");
-    expect(screen.getByText("Shell")).toBeInTheDocument();
+    expect(screen.getByText("shell_exec")).toBeInTheDocument();
     expect(
-      screen.getByText("Shell").closest('[data-tool-row="shell_exec"]'),
+      screen.getByText("shell_exec").closest('[data-tool-row="shell_exec"]'),
     ).toHaveTextContent("pytest tests/unit");
     expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
     expect(screen.queryByText("1 passed")).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show details for shell/i }),
-    );
+    fireEvent.click(getDisclosureToggle(/show details for shell/i));
     expect(screen.getByText(/\$ pytest tests\/unit/)).toBeInTheDocument();
     expect(screen.getByText(/1 passed/)).toBeInTheDocument();
     expect(screen.getByText("Done")).toBeInTheDocument();
@@ -546,18 +548,16 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Store memory")).toBeInTheDocument();
+    expect(screen.getByText("memory_add")).toBeInTheDocument();
     expect(screen.getByText(/mem_1 · preference/)).toBeInTheDocument();
     expect(screen.getByText("mem_1 [preference]")).toBeInTheDocument();
     expect(
       screen.getByText("Prefer concise frontend QA notes"),
     ).toBeInTheDocument();
     expect(screen.getByText("tags: qa, frontend")).toBeInTheDocument();
-    expect(screen.getByText("Search memories")).toBeInTheDocument();
+    expect(screen.getByText("memory_search")).toBeInTheDocument();
     expect(screen.getByText(/frontend QA · 1 memories/)).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show details for search memories/i }),
-    );
+    fireEvent.click(getDisclosureToggle(/show details for memory_search/i));
     expect(screen.getByText("mem_2 [project]")).toBeInTheDocument();
     expect(
       screen.getByText("Run browser QA before release"),
@@ -614,6 +614,7 @@ describe("ChatThread", () => {
                 id: "task-1",
                 name: "task",
                 status: "completed",
+                hooks: [{ phase: "pre", status: "ok", sessionId: "ses_child" }],
                 arguments: {
                   category: "visual-engineering",
                   run_in_background: true,
@@ -637,14 +638,16 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("task")).toBeInTheDocument();
+    expect(screen.getByText("Inspect UI")).toBeInTheDocument();
     expect(
       screen.getByText(/visual-engineering · background/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Inspect UI")).toBeInTheDocument();
     expect(screen.getByText("bg_123")).toBeInTheDocument();
-    expect(screen.getByText("ses_child")).toBeInTheDocument();
+    expect(screen.getAllByText("ses_child")).toHaveLength(2);
     expect(screen.getByText("frontend-ui-ux")).toBeInTheDocument();
+    expect(screen.getByText("Hooks")).toBeInTheDocument();
+    expect(screen.getByText(/pre/)).toBeInTheDocument();
+    expect(screen.getByText(/· ok/)).toBeInTheDocument();
   });
 
   it("renders apply_patch as its own card with visible diff", () => {
@@ -679,7 +682,7 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Apply patch")).toBeInTheDocument();
+    expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getByText(/\+1\/-1 · path=apply_patch/)).toBeInTheDocument();
     expect(screen.getByText("--- a/src/app.ts").parentElement).toHaveAttribute(
       "data-diff-line",
@@ -809,6 +812,53 @@ describe("ChatThread", () => {
     expect(onSelectSession).toHaveBeenCalledWith("ses_child");
   });
 
+  it("navigates to the child session when the delegated task card is clicked", () => {
+    const onSelectSession = vi.fn();
+    render(
+      <ChatThread
+        {...baseProps}
+        onSelectSession={onSelectSession}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "task-1",
+                name: "task",
+                status: "completed",
+                arguments: {
+                  subagent_type: "explore",
+                  run_in_background: true,
+                  load_skills: [],
+                  description: "Inspect child session",
+                },
+                result: {
+                  task_id: "bg_123",
+                  child_session_id: "ses_child",
+                  status: "completed",
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open subagent session ses_child",
+      }),
+    );
+
+    expect(onSelectSession).toHaveBeenCalledWith("ses_child");
+  });
+
   it("renders todo updates as a progress list", () => {
     render(
       <ChatThread
@@ -865,14 +915,12 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("Update todos")).toBeInTheDocument();
+    expect(screen.getByText("todo_write")).toBeInTheDocument();
     expect(
       screen.getByText(/in_progress=1, pending=0, completed=1, cancelled=0/),
     ).toBeInTheDocument();
     expect(screen.queryByText("Audit tool UI")).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show details for update todos/i }),
-    );
+    fireEvent.click(getDisclosureToggle(/show details for todo_write/i));
     expect(screen.getByText("Audit tool UI")).toBeInTheDocument();
     expect(screen.getByText("Ship observability")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
@@ -966,7 +1014,7 @@ describe("Tool Card Display Contract", () => {
     );
 
     expect(
-      screen.getByText("Shell").closest('[data-tool-row="shell_exec"]'),
+      screen.getByText("shell_exec").closest('[data-tool-row="shell_exec"]'),
     ).toHaveTextContent("Run unit tests");
     expect(screen.queryByText("pytest tests/unit")).not.toBeInTheDocument();
     expect(screen.queryByText("$ pytest tests/unit")).not.toBeInTheDocument();
@@ -1005,9 +1053,7 @@ describe("Tool Card Display Contract", () => {
       />,
     );
 
-    const toggle = screen.getByRole("button", {
-      name: /show details for shell/i,
-    });
+    const toggle = getDisclosureToggle(/show details for shell/i);
     expect(toggle).toBeVisible();
     expect(screen.getByText("Run lint")).toBeInTheDocument();
     expect(toggle.closest('[data-tool-row="shell_exec"]')).not.toBeNull();
@@ -1021,9 +1067,7 @@ describe("Tool Card Display Contract", () => {
     ).toHaveLength(1);
     expect(screen.getByText(/\$ ruff check \./)).toBeInTheDocument();
     expect(screen.getByText(/All checks passed!/)).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /hide details for shell/i }),
-    );
+    fireEvent.click(getDisclosureToggle(/hide details for shell/i));
     expect(screen.queryByText("All checks passed!")).not.toBeInTheDocument();
   });
 
@@ -1057,9 +1101,7 @@ describe("Tool Card Display Contract", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /show details for shell/i }),
-    );
+    fireEvent.click(getDisclosureToggle(/show details for shell/i));
     fireEvent.click(screen.getByRole("button", { name: /copy command/i }));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith("pytest tests/unit"),
@@ -1100,11 +1142,7 @@ describe("Tool Card Display Contract", () => {
 
     expect(screen.getByText(/failed with exit 2/)).toBeInTheDocument();
     expect(screen.queryByText("stderr boom")).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /show details for shell/i,
-      }),
-    );
+    fireEvent.click(getDisclosureToggle(/show details for shell/i));
     expect(screen.getAllByText(/exit 2/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/stderr boom/)).not.toBeInTheDocument();
     expect(screen.getByText(/process failed/)).toBeInTheDocument();
@@ -1220,7 +1258,7 @@ describe("Tool Card Display Contract", () => {
                 status: "completed",
                 display: {
                   kind: "context",
-                  title: "Search",
+                  title: "grep",
                   summary: "Search TODO",
                   args: ["TODO"],
                 },
@@ -1240,12 +1278,12 @@ describe("Tool Card Display Contract", () => {
     ).not.toBeNull();
     expect(container.querySelector('[data-tool-row="grep"]')).not.toBeNull();
     expect(screen.getByText("Read")).toBeInTheDocument();
-    expect(screen.getByText("Search")).toBeInTheDocument();
+    expect(screen.getByText("grep")).toBeInTheDocument();
     const groupedReadRow = screen
       .getByText("Read")
       .closest('[data-tool-row="read_file"]');
     const groupedGrepRow = screen
-      .getByText("Search")
+      .getByText("grep")
       .closest('[data-tool-row="grep"]');
     expect(groupedReadRow).not.toBeNull();
     expect(groupedGrepRow).not.toBeNull();
@@ -1351,7 +1389,7 @@ describe("Tool Card Display Contract", () => {
             status: "completed",
             display: {
               kind: "context",
-              title: "Search",
+              title: "grep",
               summary: "Search TODO",
               args: ["TODO", "."],
             },
@@ -1436,7 +1474,7 @@ describe("Tool Card Display Contract", () => {
     );
 
     expect(screen.getByText("Read")).toBeInTheDocument();
-    expect(screen.getByText("Search")).toBeInTheDocument();
+    expect(screen.getByText("grep")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", {
         name: /show details for read readme\.md/i,
@@ -1446,12 +1484,10 @@ describe("Tool Card Display Contract", () => {
       screen.queryByRole("button", { name: /show details for search todo/i }),
     ).not.toBeInTheDocument();
 
-    expect(screen.getByText("Shell")).toBeInTheDocument();
+    expect(screen.getByText("shell_exec")).toBeInTheDocument();
     expect(screen.getByText(/failed with exit 2/)).toBeInTheDocument();
     expect(screen.queryByText("stderr boom")).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /show details for shell/i }),
-    );
+    fireEvent.click(getDisclosureToggle(/show details for shell/i));
     expect(
       container.querySelectorAll('[data-terminal-block="shell"]'),
     ).toHaveLength(1);

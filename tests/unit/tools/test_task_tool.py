@@ -232,8 +232,7 @@ def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
         "force_load_skills": [],
         "delegation": {"mode": "sync", "subagent_type": "explore"},
     }
-    assert runtime.requests[0].prompt.startswith("Delegated runtime task.\nRequested mode: sync")
-    assert "Requested subagent_type: explore" in runtime.requests[0].prompt
+    assert runtime.requests[0].prompt == "Do it now"
 
 
 @pytest.mark.parametrize("subagent_type", ("worker", "advisor", "explore", "researcher"))

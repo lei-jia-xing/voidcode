@@ -91,6 +91,10 @@ export function SessionSidebar({
     () => [...sessions].sort((a, b) => b.updated_at - a.updated_at),
     [sessions],
   );
+  const rootSessions = useMemo(
+    () => sortedSessions.filter((session) => !session.session.parent_id),
+    [sortedSessions],
+  );
 
   const currentWorkspace = workspaces?.current ?? null;
   const maxSidebarWidth = getMaxSessionSidebarWidth(viewportWidth);
@@ -270,7 +274,7 @@ export function SessionSidebar({
                     {t("session.newSession")}
                   </span>
                 </button>
-                {sortedSessions.map((s) => (
+                {rootSessions.map((s) => (
                   <SessionListItem
                     key={s.session.id}
                     sessionSummary={s}

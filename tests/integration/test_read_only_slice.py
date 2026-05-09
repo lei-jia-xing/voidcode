@@ -1885,7 +1885,7 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
     parent_requests = [
         request
         for request in requests
-        if not _assembled_context(request).prompt.startswith("Delegated runtime task.")
+        if _assembled_context(request).prompt != "child transcript sentinel"
     ]
     after_task_request = next(
         request for request in parent_requests if len(_assembled_context(request).tool_results) == 1

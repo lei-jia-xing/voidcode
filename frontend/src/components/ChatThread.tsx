@@ -169,42 +169,28 @@ function toolDisplayTitle(tool: ChatTool, fallback: string) {
 }
 
 function toolDisplayTitleFallback(tool: ChatTool): string {
-  // Map known tool names to a friendlier title than raw snake_case
-  const friendly: Record<string, string> = {
-    read_file: "Read",
-    read: "Read",
-    write_file: "Write",
-    write: "Write",
-    edit: "Edit",
-    multi_edit: "Multi-edit",
-    grep: "Search",
-    glob: "Find files",
-    web_fetch: "Fetch URL",
-    web_search: "Web search",
-    apply_patch: "Apply patch",
-    format_file: "Format file",
-    todo_write: "Update todos",
-    shell_exec: "Shell",
-    bash: "Shell",
-    interactive_shell: "Interactive shell",
-    background_process_start: "Start process",
-    background_process_stop: "Stop process",
-    background_process_logs: "Process logs",
-    background_output: "Background output",
-    background_cancel: "Cancel task",
-    background_retry: "Retry task",
-    memory_add: "Store memory",
-    memory_delete: "Delete memory",
-    memory_list: "List memories",
-    memory_search: "Search memories",
-    ast_grep_search: "AST search",
-    ast_grep_preview: "AST preview",
-    ast_grep_replace: "AST replace",
+  const precise: Record<string, string> = {
+    bash: "bash",
+    shell_exec: "shell_exec",
+    interactive_shell: "interactive_shell",
+    web_fetch: "web_fetch",
+    web_search: "web_search",
+    todo_write: "todo_write",
+    background_process_start: "background_process_start",
+    background_process_stop: "background_process_stop",
+    background_process_logs: "background_process_logs",
+    background_output: "background_output",
+    background_cancel: "background_cancel",
+    background_retry: "background_retry",
+    memory_add: "memory_add",
+    memory_delete: "memory_delete",
+    memory_list: "memory_list",
+    memory_search: "memory_search",
   };
-  if (friendly[tool.name]) return friendly[tool.name];
+  if (precise[tool.name]) return precise[tool.name];
   if (tool.display?.title) return tool.display.title;
   if (tool.legacy?.label) return tool.legacy.label;
-  return friendly[tool.name] ?? tool.name;
+  return tool.name;
 }
 
 function toolDisplayName(tool: ChatTool): string {
@@ -541,6 +527,8 @@ function ToolDisclosureRow({
   icon,
   delta,
   defaultExpanded = false,
+  primaryAction,
+  primaryActionLabel,
   children,
 }: {
   tool: ChatTool;
@@ -550,12 +538,15 @@ function ToolDisclosureRow({
   icon: ReactNode;
   delta?: string | null;
   defaultExpanded?: boolean;
+  primaryAction?: (() => void) | null;
+  primaryActionLabel?: string;
   children?: ReactNode;
 }) {
   const { t } = useTranslation();
   const panelId = useId();
   const [expanded, setExpanded] = useState(defaultExpanded);
   const canExpand = Boolean(children);
+  const hasPrimaryAction = typeof primaryAction === "function";
   const statusLabel =
     tool.status === "completed" ? null : t(`tool.status.${tool.status}`);
   const trailing = [delta, statusLabel, ...args].filter(Boolean).join(" · ");
@@ -592,29 +583,48 @@ function ToolDisclosureRow({
       data-tool-row={tool.name}
     >
       {canExpand ? (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="group flex w-full items-center gap-2 py-1.5 text-left transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
-          aria-expanded={expanded}
-          aria-controls={panelId}
-          aria-label={t(
-            expanded ? "tool.hideDetailsFor" : "tool.showDetailsFor",
-            {
-              title,
-            },
-          )}
-        >
-          {expanded ? (
-            <ChevronDown className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
-          ) : (
-            <ChevronRight className="h-3 w-3 shrink-0 text-[var(--vc-text-subtle)]" />
-          )}
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--vc-text-subtle)]">
-            {icon}
-          </span>
-          {summary}
-        </button>
+        <div className="flex w-full items-center gap-2 py-1.5 text-left">
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="group shrink-0 rounded-[var(--vc-radius-control)] text-[var(--vc-text-subtle)] transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+            aria-expanded={expanded}
+            aria-controls={panelId}
+            aria-label={t(
+              expanded ? "tool.hideDetailsFor" : "tool.showDetailsFor",
+              {
+                title,
+              },
+            )}
+          >
+            {expanded ? (
+              <ChevronDown className="h-3 w-3 shrink-0" />
+            ) : (
+              <ChevronRight className="h-3 w-3 shrink-0" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={
+              hasPrimaryAction
+                ? primaryAction
+                : () => setExpanded((value) => !value)
+            }
+            className="group flex min-w-0 flex-1 items-center gap-2 rounded-[var(--vc-radius-control)] transition-colors hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
+            aria-label={
+              hasPrimaryAction
+                ? (primaryActionLabel ?? title)
+                : t(expanded ? "tool.hideDetailsFor" : "tool.showDetailsFor", {
+                    title,
+                  })
+            }
+          >
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--vc-text-subtle)]">
+              {icon}
+            </span>
+            {summary}
+          </button>
+        </div>
       ) : (
         <div className="flex items-center gap-2 py-1.5">
           <span className="h-3 w-3 shrink-0" />
@@ -1114,10 +1124,51 @@ function SessionLinkRow({
       <button
         type="button"
         onClick={() => onSelectSession(sessionId)}
-        className="font-mono text-[var(--vc-text-primary)] underline underline-offset-2 hover:text-[var(--vc-focus-ring)]"
+        className="inline-flex items-center gap-1 font-mono text-[var(--vc-link-text)] underline decoration-[color:var(--vc-link-decoration)] underline-offset-2 hover:text-[var(--vc-link-hover)]"
       >
+        <Sparkles className="h-3 w-3" />
         {sessionId}
       </button>
+    </div>
+  );
+}
+
+function HookRows({
+  hooks,
+  onSelectSession,
+}: {
+  hooks: NonNullable<ChatTool["hooks"]>;
+  onSelectSession?: (sessionId: string) => void;
+}) {
+  const { t } = useTranslation();
+  if (hooks.length === 0) return null;
+
+  return (
+    <div className="mt-3 border-t border-[color:var(--vc-border-subtle)] pt-2 text-[11px] text-[var(--vc-text-subtle)]">
+      <div className="mb-1 font-medium uppercase tracking-wide text-[var(--vc-text-muted)]">
+        {t("chat.subagentHooks")}
+      </div>
+      <div className="space-y-1">
+        {hooks.map((hook, index) => (
+          <div
+            key={`${hook.phase}-${hook.status ?? "unknown"}-${index}`}
+            className="flex flex-wrap items-center gap-1"
+          >
+            <span className="text-[var(--vc-text-muted)]">{hook.phase}</span>
+            {hook.status ? <span>{` · ${hook.status}`}</span> : null}
+            {hook.sessionId ? (
+              <>
+                <span>·</span>
+                <SessionLinkRow
+                  label={t("chat.sessionLabel")}
+                  sessionId={hook.sessionId}
+                  onSelectSession={onSelectSession}
+                />
+              </>
+            ) : null}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1180,6 +1231,7 @@ function TaskToolActivity({
   const skills =
     formatList(tool.arguments?.load_skills) ?? formatList(data?.load_skills);
   const description = toolValue(tool.arguments?.description);
+  const hooks = tool.hooks ?? [];
 
   const summary = taskId ? backgroundTasksById?.[taskId] : undefined;
   const summaryStatus = summary?.status ?? null;
@@ -1213,21 +1265,24 @@ function TaskToolActivity({
     stats.push(t("task.toolCalls", { count: toolCallCount }));
   }
   const subtitle = `${route} · ${mode}${stats.length ? ` · ${stats.join(" · ")}` : ""}`;
+  const openChildSession =
+    sessionId && onSelectSession ? () => onSelectSession(sessionId) : null;
 
   return (
     <ToolDisclosureRow
       tool={tool}
-      title={toolDisplayName(tool)}
+      title={description ?? toolDisplayName(tool)}
       subtitle={subtitle}
       args={curatedArgs(tool, {
         omit: ["category", "subagent_type", "description"],
       })}
       icon={toolIcon(tool)}
       defaultExpanded={!forceCollapsed}
+      primaryAction={openChildSession}
+      primaryActionLabel={
+        sessionId ? t("chat.openSubagentSession", { sessionId }) : undefined
+      }
     >
-      {description && (
-        <div className="mt-2 text-[var(--vc-text-muted)]">{description}</div>
-      )}
       {tool.error ? (
         <ToolDetailBlock
           label="Error"
@@ -1245,7 +1300,7 @@ function TaskToolActivity({
             )}
             {sessionId && (
               <SessionLinkRow
-                label="Session"
+                label={t("chat.subagentSessionLabel")}
                 sessionId={sessionId}
                 onSelectSession={onSelectSession}
               />
@@ -1275,6 +1330,7 @@ function TaskToolActivity({
               </div>
             )}
           </div>
+          <HookRows hooks={hooks} onSelectSession={onSelectSession} />
           {tool.content && (
             <ToolDetailBlock
               label="Output"
