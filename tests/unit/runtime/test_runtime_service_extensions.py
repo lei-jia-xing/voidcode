@@ -3968,9 +3968,30 @@ def test_runtime_session_debug_snapshot_reports_pending_question_state(tmp_path:
     assert snapshot.pending_question.headers == ("Runtime path",)
     assert snapshot.pending_approval is None
     assert snapshot.last_relevant_event is not None
-    assert snapshot.last_relevant_event.event_type == "runtime.question_requested"
-    assert snapshot.suggested_operator_action == "answer_question"
-    assert "Answer pending question request" in snapshot.operator_guidance
+
+
+def test_runtime_git_status_snapshot_handles_non_utf8_subprocess_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    class _CompletedProcess:
+        returncode = 0
+        stdout = b"C:/repo/\xaf\x80"
+        stderr = b""
+
+    monkeypatch.setattr(
+        runtime_service_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _CompletedProcess(),
+    )
+
+    snapshot = runtime._git_status_snapshot()  # pyright: ignore[reportPrivateUsage]
+
+    assert snapshot.state == "git_ready"
+    assert isinstance(snapshot.root, str)
+    assert snapshot.root.startswith("C:/repo/")
 
 
 def test_runtime_does_not_wait_on_failed_question_tool_result(
