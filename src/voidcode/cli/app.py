@@ -1016,7 +1016,10 @@ def _handle_memory_add_command(args: argparse.Namespace) -> int:
     tags = tuple(cast(tuple[str, ...], getattr(args, "tag", ())))
     runtime = _memory_runtime(workspace)
     try:
-        memory = runtime.add_memory(content=content, kind=kind, tags=tags)
+        try:
+            memory = runtime.add_memory(content=content, kind=kind, tags=tags)
+        except ValueError as exc:
+            raise _CliUsageError(str(exc)) from None
     finally:
         _close_runtime(runtime)
     if cast(bool, args.json):
