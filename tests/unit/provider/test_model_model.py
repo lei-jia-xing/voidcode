@@ -143,16 +143,25 @@ def test_resolve_provider_config_normalizes_preferred_fallback_model_as_active_t
     ]
 
 
-def test_resolve_provider_config_rejects_mismatched_model_and_preferred_fallback() -> None:
-    with pytest.raises(ValueError, match="preferred_model"):
-        _ = resolve_provider_config(
-            model="opencode/gpt-5.4",
-            provider_fallback=RuntimeProviderFallbackConfig(
-                preferred_model="custom/demo",
-                fallback_models=("backup/model",),
-            ),
-            registry=ModelProviderRegistry.with_defaults(),
-        )
+def test_resolve_provider_config_rewrites_preferred_fallback_to_match_explicit_model() -> None:
+    resolved = resolve_provider_config(
+        model="opencode/gpt-5.4",
+        provider_fallback=RuntimeProviderFallbackConfig(
+            preferred_model="custom/demo",
+            fallback_models=("backup/model", "opencode/gpt-5.4"),
+        ),
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+
+    assert resolved.model == "opencode/gpt-5.4"
+    assert resolved.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("backup/model",),
+    )
+    assert [target.selection.raw_model for target in resolved.target_chain.all_targets] == [
+        "opencode/gpt-5.4",
+        "backup/model",
+    ]
 
 
 def test_resolve_provider_chain_rejects_duplicate_targets_even_without_parser() -> None:
