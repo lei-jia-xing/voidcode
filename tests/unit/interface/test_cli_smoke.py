@@ -2091,6 +2091,114 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
     assert captured.err == ""
 
 
+def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
+    capsys: Any,
+) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    config = SimpleNamespace(approval_mode="ask")
+    first_stream = (
+        _make_chunk(
+            session_id="demo-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="write then shell"),
+        ),
+        _make_chunk(
+            session_id="demo-session",
+            status="waiting",
+            event=_approval_requested_event(request_id="req-1", target_summary="sample.txt"),
+        ),
+    )
+    stderr = _StubTtyStderr()
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.run_stream.return_value = iter(first_stream)
+            _configure_resume_stream(
+                runtime,
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=3,
+                            request_id="req-1",
+                            decision="deny",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=4,
+                            source="tool",
+                            tool="write_file",
+                            status="error",
+                            permission_denied=True,
+                            error="permission denied for tool: write_file",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="waiting",
+                        event=_approval_requested_event(
+                            sequence=5,
+                            request_id="req-2",
+                            tool="shell_exec",
+                            target_summary="build.sh",
+                        ),
+                    ),
+                ),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=6,
+                            request_id="req-2",
+                            decision="allow",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=7,
+                            source="tool",
+                            tool="shell_exec",
+                        ),
+                    ),
+                    _make_chunk(session_id="demo-session", status="completed", output="done\n"),
+                ),
+            )
+            with patch.object(cli.sys, "stdin", _StubTtyInput("no\n", "yes\n")):
+                with patch.object(cli.sys, "stderr", stderr):
+                    result = cli.main(
+                        ["run", "write then shell", "--workspace", "/tmp/demo-workspace"]
+                    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert runtime.resume_stream.call_count == 2
+    assert stderr.writes == [
+        "Approve write_file for sample.txt? [y/N]: ",
+        "Approve shell_exec for build.sh? [y/N]: ",
+    ]
+    assert (
+        captured.out.count("EVENT runtime.tool_completed source=tool error=permission denied") == 1
+    )
+    assert (
+        captured.out.count("EVENT runtime.approval_requested source=runtime request_id=req-2") == 1
+    )
+    assert captured.out.rstrip().endswith("done")
+    assert captured.err == ""
+
+
 def test_run_command_interactively_handles_repeated_approval_requests(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     config = SimpleNamespace(approval_mode="ask")

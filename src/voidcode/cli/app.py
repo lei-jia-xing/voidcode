@@ -365,20 +365,6 @@ def _run_with_inline_approval(
             session=resumed_result.session,
             events=merged_events,
         )
-        denied_tool_event = next(
-            (
-                event
-                for event in reversed(resumed_result.events)
-                if _last_event_is_permission_denied_tool_result(event)
-            ),
-            None,
-        )
-        if denied_tool_event is not None:
-            result = RuntimeStreamResult(
-                output=result.output,
-                session=result.session,
-                events=(*merged_events, denied_tool_event),
-            )
 
     if interactive and (not emit_events or trace_events):
         return result

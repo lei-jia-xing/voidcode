@@ -541,25 +541,25 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByText("Subsession Context")).toBeInTheDocument();
-    expect(screen.getAllByText("Parent prompt").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("parent prompt").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Delegated prompt").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("你好").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Subsession Context")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Leader -> Subagent Handoff"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Parent prompt")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hook reminder")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Child session is waiting on approval."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/subagent: explore/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/status: running/)).not.toBeInTheDocument();
+    expect(screen.queryByText("summary:")).not.toBeInTheDocument();
+    expect(screen.queryByText("child summary")).not.toBeInTheDocument();
     expect(screen.getByText("child output")).toBeInTheDocument();
-    expect(screen.getByText("Leader -> Subagent Handoff")).toBeInTheDocument();
     expect(screen.getByText("Subsession timeline")).toBeInTheDocument();
+    expect(screen.getByText("你好")).toBeInTheDocument();
     expect(
       screen.getByText("Subagent is still working..."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Hook reminder")).toBeInTheDocument();
-    expect(
-      screen.getByText("Child session is waiting on approval."),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/subagent: explore/)).toBeInTheDocument();
-    expect(screen.getByText(/status: running/)).toBeInTheDocument();
-    expect(screen.getByText("summary:")).toBeInTheDocument();
-    expect(screen.getByText("child summary")).toBeInTheDocument();
     expect(screen.queryByText("parent output")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Parent session"));

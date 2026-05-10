@@ -316,6 +316,30 @@ class _NoopMcpManager:
         return ()
 
 
+class _DefaultConfiguredMcpManager(_NoopMcpManager):
+    def current_state(self) -> object:
+        mcp_module = importlib.import_module("voidcode.runtime.mcp")
+        return mcp_module.McpManagerState(
+            mode="managed",
+            configuration=mcp_module.McpConfigState(
+                configured_enabled=True,
+                servers={"context7": object(), "websearch": object(), "grep_app": object()},
+            ),
+        )
+
+    def list_tools(self, **_: object) -> tuple[object, ...]:
+        mcp_types = importlib.import_module("voidcode.mcp.types")
+        return (
+            mcp_types.McpToolDescriptor(
+                server_name="context7",
+                tool_name="query-docs",
+                description="Query docs",
+                input_schema={"type": "object"},
+                safety=mcp_types.McpToolSafety(read_only=True),
+            ),
+        )
+
+
 class _AstGrepPreviewGraph:
     def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
@@ -4039,6 +4063,55 @@ def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) ->
     assert waiting.events[-1].event_type == "runtime.approval_requested"
     assert resumed.session.status == "completed"
     assert resumed.output == "Wrote file successfully: danger.txt"
+    assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
+
+
+def test_provider_resume_preserves_default_mcp_tools_after_approval(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_ProviderRuntimeParityGraph(),
+                config=runtime_config(
+                    approval_mode="ask",
+                    execution_engine="provider",
+                    model="opencode/gpt-5.4",
+                ),
+                mcp_manager=_DefaultConfiguredMcpManager(),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
+                    mode="ask"
+                ),
+            ),
+        ),
+    )
+
+    waiting = runtime.run(
+        runtime_request(
+            prompt="write danger.txt approved later",
+            session_id="default-mcp-resume-approval",
+        )
+    )
+    approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.resume(
+        "default-mcp-resume-approval",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+
+    tool_registry = runtime._tool_registry
+
+    assert resumed.session.status == "completed"
+    assert "mcp/context7/query-docs" in tool_registry.tools
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
