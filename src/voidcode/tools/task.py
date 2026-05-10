@@ -108,26 +108,6 @@ def _delegation_metadata(args: _TaskArgs) -> dict[str, str]:
     return metadata
 
 
-def _delegated_prompt(args: _TaskArgs) -> str:
-    routing = [
-        "Delegated runtime task.",
-        f"Requested mode: {'background' if args.run_in_background else 'sync'}",
-        f"Requested category: {args.category}" if args.category else None,
-        f"Requested subagent_type: {args.subagent_type}" if args.subagent_type else None,
-        f"Short description: {args.description}" if args.description else None,
-        f"Requested command: {args.command}" if args.command else None,
-        (
-            "Requested load_skills: " + ", ".join(args.load_skills)
-            if args.load_skills
-            else "Requested load_skills: (none)"
-        ),
-        "",
-        "Task:",
-        args.prompt,
-    ]
-    return "\n".join(line for line in routing if line is not None).strip()
-
-
 class TaskTool:
     definition = ToolDefinition(
         name="task",
@@ -246,7 +226,7 @@ class TaskTool:
         delegation_payload = validated_metadata.get("delegation")
         assert isinstance(delegation_payload, dict)
         request = RuntimeRequest(
-            prompt=_delegated_prompt(args),
+            prompt=args.prompt,
             session_id=args.session_id,
             parent_session_id=context.session_id,
             metadata=validated_metadata,

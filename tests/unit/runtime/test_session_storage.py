@@ -460,6 +460,77 @@ def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> N
     ] == [1, 2]
 
 
+def test_session_storage_preserves_prior_events_when_same_session_continues(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    first_request = RuntimeRequest(prompt="first", session_id="continued-session")
+    first_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="continued-session"), status="completed", turn=1
+        ),
+        events=(
+            EventEnvelope(
+                session_id="continued-session",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "first"},
+            ),
+            EventEnvelope(
+                session_id="continued-session",
+                sequence=2,
+                event_type="graph.response_ready",
+                source="graph",
+                payload={"output": "first output"},
+            ),
+        ),
+        output="first output",
+    )
+    second_request = RuntimeRequest(prompt="second", session_id="continued-session")
+    second_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="continued-session"), status="completed", turn=1
+        ),
+        events=(
+            EventEnvelope(
+                session_id="continued-session",
+                sequence=3,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "second"},
+            ),
+            EventEnvelope(
+                session_id="continued-session",
+                sequence=4,
+                event_type="graph.response_ready",
+                source="graph",
+                payload={"output": "second output"},
+            ),
+        ),
+        output="second output",
+    )
+
+    store.save_run(workspace=tmp_path, request=first_request, response=first_response)
+    store.save_run(workspace=tmp_path, request=second_request, response=second_response)
+
+    replay = store.load_session(workspace=tmp_path, session_id="continued-session")
+    result = store.load_session_result(workspace=tmp_path, session_id="continued-session")
+
+    assert [event.sequence for event in replay.events] == [1, 2, 3, 4]
+    request_prompts = [
+        event.payload.get("prompt")
+        for event in replay.events
+        if event.event_type == "runtime.request_received"
+    ]
+    assert request_prompts == [
+        "first",
+        "second",
+    ]
+    assert result.last_event_sequence == 4
+    assert result.output == "second output"
+
+
 def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path: Path) -> None:
     database_path = tmp_path / "fresh-sessions.sqlite3"
     store = SqliteSessionStore(database_path=database_path)

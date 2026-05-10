@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
     RuntimeProviderContextSegmentSnapshot,
     RuntimeRequest,
@@ -215,6 +215,7 @@ def _make_runtime(
 ) -> VoidCodeRuntime:
     registry = ToolRegistry.from_tools([tool])
     config = RuntimeConfig(
+        mcp=RuntimeMcpConfig(enabled=False),
         execution_engine="deterministic",
         tool_timeout_seconds=tool_timeout_seconds,
     )
@@ -311,6 +312,7 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
             }
         ),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=timeout,
@@ -346,7 +348,11 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 5}),
-        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            approval_mode="allow",
+            execution_engine="deterministic",
+        ),
     )
 
     chunks: list[Any] = []
@@ -399,6 +405,7 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
             }
         ),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
@@ -437,6 +444,7 @@ def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:
             }
         ),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
@@ -591,7 +599,7 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
     store = SqliteSessionStore()
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="deterministic"),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
         session_store=store,
     )
     store.save_run(
@@ -670,7 +678,7 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
         workspace=tmp_path,
         tool_registry=ToolRegistry.from_tools([tool]),
         graph=graph,
-        config=RuntimeConfig(execution_engine="deterministic"),
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
@@ -741,6 +749,7 @@ def test_session_status_is_failed_after_timeout(tmp_path: Path) -> None:
             }
         ),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
@@ -761,6 +770,7 @@ def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command}),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=None,
@@ -792,6 +802,7 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 1}),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=10,
@@ -819,6 +830,7 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 10}),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
@@ -856,6 +868,7 @@ def test_runtime_timeout_prevents_delayed_shell_exec_side_effect(tmp_path: Path)
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph({"command": command, "timeout": 10}),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
@@ -982,6 +995,7 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
             }
         ),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,
@@ -1137,6 +1151,7 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
             }
         ),
         config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
             approval_mode="allow",
             execution_engine="deterministic",
             tool_timeout_seconds=1,

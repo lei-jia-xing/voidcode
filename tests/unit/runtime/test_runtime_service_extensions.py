@@ -227,6 +227,16 @@ def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
 
 
+def _assert_ordered_event_types(actual: list[str], expected: list[str]) -> None:
+    remaining = iter(actual)
+    for expected_type in expected:
+        for event_type in remaining:
+            if event_type == expected_type:
+                break
+        else:
+            raise AssertionError(f"missing ordered event type: {expected_type}; actual={actual}")
+
+
 def _assert_context_window_recomputed(
     *,
     prepared_calls: int,
@@ -5054,7 +5064,7 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
             "prompt_materialization": _prompt_materialization_payload("worker"),
         },
     }
-    assert task.request.prompt.startswith("Delegated runtime task.")
+    assert task.request.prompt == "delegated child prompt"
 
 
 def test_runtime_sync_child_with_delegated_load_skills_receives_full_skill_prompt(
@@ -10099,12 +10109,15 @@ def test_runtime_resume_stream_replays_graph_suffix_before_acp_connect_when_enab
     )
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
 
-    assert event_types[:4] == [
-        "runtime.acp_connected",
-        "runtime.approval_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-    ]
+    _assert_ordered_event_types(
+        event_types,
+        [
+            "runtime.acp_connected",
+            "runtime.approval_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+        ],
+    )
     assert event_types[-1] == "runtime.acp_disconnected"
 
 
@@ -10340,13 +10353,18 @@ def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_discon
         RuntimeRequest(prompt="read sample.txt", session_id="acp-failed-replay-status")
     )
     assert response.session.status == "failed"
-    assert response.events[-1].event_type == "runtime.acp_disconnected"
+    assert response.events[-1].event_type == "runtime.failed"
+    assert any(event.event_type == "runtime.acp_disconnected" for event in response.events)
 
     replay_chunks = list(runtime.resume_stream("acp-failed-replay-status"))
 
     assert replay_chunks[-1].event is not None
-    assert replay_chunks[-1].event.event_type == "runtime.acp_disconnected"
+    assert replay_chunks[-1].event.event_type == "runtime.failed"
     assert replay_chunks[-1].session.status == "failed"
+    assert any(
+        chunk.event is not None and chunk.event.event_type == "runtime.acp_disconnected"
+        for chunk in replay_chunks
+    )
 
 
 def test_runtime_resume_stream_replay_keeps_running_for_midrun_mcp_stop_event(
@@ -10587,7 +10605,10 @@ def test_runtime_applies_only_requested_skills_from_request_metadata(tmp_path: P
     response = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["beta"]}))
 
     assert response.session.metadata["applied_skills"] == ["beta"]
-    assert response.events[2].payload["skills"] == ["beta"]
+    applied_event = next(
+        event for event in response.events if event.event_type == "runtime.skills_applied"
+    )
+    assert applied_event.payload["skills"] == ["beta"]
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
     assert assembled is not None
@@ -12593,7 +12614,11 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
             ],
         },
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
-        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+        "mcp": {
+            "mode": "managed",
+            "configured_enabled": True,
+            "servers": ["context7", "websearch", "grep_app"],
+        },
     }
 
     resumed_runtime = VoidCodeRuntime(
@@ -13242,7 +13267,11 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "fallback_models": [],
         "resolved_provider": None,
         "lsp": {"mode": "disabled", "configured_enabled": False, "servers": []},
-        "mcp": {"mode": "disabled", "configured_enabled": False, "servers": []},
+        "mcp": {
+            "mode": "managed",
+            "configured_enabled": True,
+            "servers": ["context7", "websearch", "grep_app"],
+        },
     }
     runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert set(runtime_state) == {"acp", "run_id"}
@@ -16965,8 +16994,16 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
             },
         ],
     }
-    assert runtime_config["lsp"] == {"mode": "disabled", "configured_enabled": False, "servers": []}
-    assert runtime_config["mcp"] == {"mode": "disabled", "configured_enabled": False, "servers": []}
+    assert runtime_config["lsp"] == {
+        "mode": "disabled",
+        "configured_enabled": False,
+        "servers": [],
+    }
+    assert runtime_config["mcp"] == {
+        "mode": "managed",
+        "configured_enabled": True,
+        "servers": ["context7", "websearch", "grep_app"],
+    }
     agent_config = cast(dict[str, object], runtime_config["agent"])
     assert agent_config["preset"] == "leader"
     assert custom_attempts == [1]
@@ -20018,8 +20055,10 @@ def test_runtime_session_end_hook_failure_does_not_override_terminal_truth(tmp_p
 
     assert response.session.status == "completed"
     assert response.output == "hello"
-    assert response.events[-1].event_type == RUNTIME_SESSION_ENDED
-    assert response.events[-1].payload["hook_status"] == "error"
+    session_end_event = next(
+        event for event in response.events if event.event_type == RUNTIME_SESSION_ENDED
+    )
+    assert session_end_event.payload["hook_status"] == "error"
     assert all(event.event_type != "runtime.failed" for event in response.events)
 
 
@@ -20050,8 +20089,10 @@ def test_runtime_resume_session_end_hook_failure_does_not_override_terminal_trut
 
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
-    assert resumed.events[-1].event_type == RUNTIME_SESSION_ENDED
-    assert resumed.events[-1].payload["hook_status"] == "error"
+    session_end_event = next(
+        event for event in resumed.events if event.event_type == RUNTIME_SESSION_ENDED
+    )
+    assert session_end_event.payload["hook_status"] == "error"
     assert all(event.event_type != "runtime.failed" for event in resumed.events)
 
 

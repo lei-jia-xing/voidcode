@@ -1,6 +1,11 @@
 Interact with Language Server Protocol (LSP) servers to get code intelligence features.
 
+Use this tool in two modes:
+- Position-based lookups: use when you know the exact file and cursor position.
+- Symbol/search lookups: use when you need document outline, workspace symbol search, or diagnostics.
+
 Supported operations:
+- diagnostics: Read document diagnostics for a file
 - goToDefinition: Find where a symbol is defined
 - findReferences: Find all references to a symbol
 - hover: Get hover information for a symbol
@@ -13,7 +18,18 @@ Supported operations:
 
 All operations require:
 - filePath: The workspace-relative file to operate on
-- line: The line number (1-based)
-- character: The character offset (1-based)
+
+Additional requirements:
+- goToDefinition / findReferences / hover / goToImplementation / prepareCallHierarchy / incomingCalls / outgoingCalls require line and character (1-based)
+- documentSymbol and diagnostics do not require line or character
+- workspaceSymbol accepts query; use it when you know a symbol name but not a cursor position
+- server is optional; provide it only when you need to force a specific LSP server in a multi-server workspace
+
+Guidance:
+- Prefer workspaceSymbol first when you know a symbol name but do not know its location yet.
+- Prefer documentSymbol when you want a file outline or need to discover functions/classes before a position-based lookup.
+- Use goToDefinition / findReferences / hover / goToImplementation only when you already have a precise file position.
+- incomingCalls and outgoingCalls depend on call hierarchy preparation internally; you only need to pass the symbol position.
+- Do not use LSP for plain text search; use grep or AST search instead.
 
 Note: LSP servers must be configured for the file type. If no server is available, an error will be returned.

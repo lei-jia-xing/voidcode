@@ -43,7 +43,8 @@ describe("ReviewPanel", () => {
     const diff = screen.getByText(/const value = 'new'/);
     expect(diff).toHaveClass("whitespace-pre-wrap");
     expect(diff).toHaveClass("break-words");
-    expect(diff).toHaveClass("overflow-x-hidden");
+    expect(diff.parentElement?.parentElement).toHaveClass("max-h-[32rem]");
+    expect(diff.parentElement?.parentElement).toHaveClass("overflow-auto");
   });
 
   it("allows resizing the review panel from the left edge", () => {
@@ -144,7 +145,11 @@ describe("ReviewPanel", () => {
     expect(
       screen.getByRole("button", { name: "M src/app.ts" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("M")).toHaveClass("text-sky-300");
     expect(screen.getByText(/const value = 'new'/)).toBeInTheDocument();
+    expect(screen.getByText("@@")).toBeInTheDocument();
+    expect(screen.getByText("+")).toBeInTheDocument();
+    expect(screen.getByText("-")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "app.ts" }),
     ).not.toBeInTheDocument();

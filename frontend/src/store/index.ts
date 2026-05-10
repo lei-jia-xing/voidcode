@@ -7,6 +7,7 @@ import {
   AsyncStatus,
   BackgroundTaskOutput,
   BackgroundTaskSummary,
+  CommandSummary,
   StoredSessionSummary,
   SessionState,
   EventEnvelope,
@@ -52,6 +53,9 @@ interface AppState {
   skills: SkillSummary[];
   skillsStatus: AsyncStatus;
   skillsError: string | null;
+  commands: CommandSummary[];
+  commandsStatus: AsyncStatus;
+  commandsError: string | null;
   statusSnapshot: RuntimeStatusSnapshot | null;
   statusStatus: AsyncStatus;
   statusError: string | null;
@@ -72,6 +76,7 @@ interface AppState {
   currentSessionState: SessionState | null;
   currentSessionEvents: EventEnvelope[];
   currentSessionOutput: string | null;
+  childSessionParentId: string | null;
 
   sessionsStatus: "idle" | "loading" | "success" | "error";
   sessionsError: string | null;
@@ -112,6 +117,7 @@ interface AppState {
   validateProviderCredentials: (providerName: string) => Promise<void>;
   loadAgents: () => Promise<void>;
   loadSkills: () => Promise<void>;
+  loadCommands: () => Promise<void>;
   loadStatus: () => Promise<void>;
   retryMcpConnections: () => Promise<void>;
   loadReview: () => Promise<void>;
@@ -378,6 +384,9 @@ export const useAppStore = create<AppState>()(
       skills: [],
       skillsStatus: "idle",
       skillsError: null,
+      commands: [],
+      commandsStatus: "idle",
+      commandsError: null,
       statusSnapshot: null,
       statusStatus: "idle",
       statusError: null,
@@ -398,6 +407,7 @@ export const useAppStore = create<AppState>()(
       currentSessionState: null,
       currentSessionEvents: [],
       currentSessionOutput: null,
+      childSessionParentId: null,
 
       sessionsStatus: "idle",
       sessionsError: null,
@@ -488,10 +498,14 @@ export const useAppStore = create<AppState>()(
             skills: [],
             skillsStatus: "idle",
             skillsError: null,
+            commands: [],
+            commandsStatus: "idle",
+            commandsError: null,
             currentSessionId: null,
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
+            childSessionParentId: null,
             replayStatus: "idle",
             replayError: null,
             runStatus: "idle",
@@ -534,6 +548,7 @@ export const useAppStore = create<AppState>()(
             get().loadProviders(),
             get().loadAgents(),
             get().loadSkills(),
+            get().loadCommands(),
             get().loadStatus(),
             get().loadReview(),
             get().loadNotifications(),
@@ -621,6 +636,23 @@ export const useAppStore = create<AppState>()(
           set({
             skillsStatus: "error",
             skillsError: (err as Error).message,
+          });
+        }
+      },
+
+      loadCommands: async () => {
+        set({ commandsStatus: "loading", commandsError: null });
+        try {
+          const commands = await RuntimeClient.listCommands();
+          set({
+            commands,
+            commandsStatus: "success",
+            commandsError: null,
+          });
+        } catch (err) {
+          set({
+            commandsStatus: "error",
+            commandsError: (err as Error).message,
           });
         }
       },
@@ -835,6 +867,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
+            childSessionParentId: null,
             replayStatus: "idle",
             replayError: null,
             runStatus: "idle",
@@ -856,6 +889,7 @@ export const useAppStore = create<AppState>()(
         }
 
         const requestId = get().replayRequestId + 1;
+        const previousSessionId = get().currentSessionId;
         set({
           currentSessionId: sessionId,
           currentSessionState: null,
@@ -877,9 +911,45 @@ export const useAppStore = create<AppState>()(
           backgroundTaskOutput: null,
           backgroundTaskOutputStatus: "idle",
           backgroundTaskOutputError: null,
+          childSessionParentId: null,
         });
 
         try {
+          try {
+            const childContext =
+              await RuntimeClient.getChildSessionContext(sessionId);
+            if (
+              get().replayRequestId !== requestId ||
+              get().currentSessionId !== sessionId
+            ) {
+              return;
+            }
+            const parentSessionId =
+              childContext.task.parent_session_id ??
+              childContext.session_result?.session.session.parent_id ??
+              previousSessionId;
+            set({
+              backgroundTaskOutput: childContext,
+              backgroundTaskOutputStatus: "success",
+              backgroundTaskOutputError: null,
+              selectedBackgroundTaskOutputId: childContext.task.task_id,
+              childSessionParentId: parentSessionId,
+              currentSessionState:
+                childContext.session_result?.session ??
+                get().currentSessionState,
+              currentSessionEvents:
+                childContext.session_result?.transcript ??
+                get().currentSessionEvents,
+              currentSessionOutput:
+                childContext.session_result?.output ?? childContext.output,
+              replayStatus: "success",
+            });
+            await get().loadBackgroundTasks();
+            return;
+          } catch {
+            // Fall through to plain replay when this session is not a delegated child.
+          }
+
           const replay = await RuntimeClient.getSessionReplay(sessionId);
           if (
             get().replayRequestId !== requestId ||
@@ -892,6 +962,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: replay.session,
             currentSessionEvents: replay.events,
             currentSessionOutput: replay.output,
+            childSessionParentId: null,
             replayStatus: "success",
           });
           await get().loadBackgroundTasks();
@@ -908,6 +979,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
+            childSessionParentId: null,
             replayStatus: "idle",
             replayError: null,
           });
@@ -1269,7 +1341,10 @@ export const useAppStore = create<AppState>()(
         const {
           currentSessionId,
           currentSessionEvents,
+          currentSessionState,
+          currentSessionOutput,
           replayStatus,
+          replayError,
           runStatus,
           questionStatus,
         } = get();
@@ -1292,7 +1367,51 @@ export const useAppStore = create<AppState>()(
           return;
         }
 
+        let shouldPollReplay = true;
+        const preOptimisticState = {
+          currentSessionEvents,
+          currentSessionState,
+          currentSessionOutput,
+          replayStatus,
+          replayError,
+          runStatus,
+        };
         set({ questionStatus: "submitting", questionError: null });
+
+        const pollReplayWhileAnswering = async () => {
+          while (shouldPollReplay) {
+            await delay(APPROVAL_REPLAY_POLL_DELAY_MS);
+            if (
+              !shouldPollReplay ||
+              get().currentSessionId !== currentSessionId
+            ) {
+              return;
+            }
+
+            try {
+              const replay =
+                await RuntimeClient.getSessionReplay(currentSessionId);
+              if (
+                get().currentSessionId !== currentSessionId ||
+                getPendingQuestionRequestId(replay.events) === requestId
+              ) {
+                continue;
+              }
+              set({
+                currentSessionId: replay.session.session.id,
+                currentSessionState: replay.session,
+                currentSessionEvents: replay.events,
+                currentSessionOutput: replay.output,
+                replayStatus: "success",
+                replayError: null,
+                runStatus: runStatusForReplay(replay.session),
+              });
+            } catch {
+              // Best-effort refresh while the answer POST is still running.
+            }
+          }
+        };
+        void pollReplayWhileAnswering();
 
         try {
           const response = await RuntimeClient.answerQuestion(
@@ -1300,6 +1419,7 @@ export const useAppStore = create<AppState>()(
             requestId,
             answers,
           );
+          shouldPollReplay = false;
           set({
             currentSessionId: response.session.session.id,
             currentSessionState: response.session,
@@ -1307,9 +1427,9 @@ export const useAppStore = create<AppState>()(
             currentSessionOutput: response.output,
             replayStatus: "success",
             replayError: null,
-            runStatus: "idle",
+            runStatus: runStatusForReplay(response.session),
             runError: null,
-            questionStatus: "success",
+            questionStatus: "idle",
             questionError: null,
           });
           await Promise.all([
@@ -1320,12 +1440,44 @@ export const useAppStore = create<AppState>()(
             get().loadBackgroundTasks(),
             get().loadSessionDebug(response.session.session.id),
           ]);
-          set({ questionStatus: "idle" });
         } catch (err) {
+          shouldPollReplay = false;
           set({
             questionStatus: "error",
             questionError: (err as Error).message,
           });
+          try {
+            const replay =
+              await RuntimeClient.getSessionReplay(currentSessionId);
+            if (get().currentSessionId === currentSessionId) {
+              set({
+                currentSessionState: replay.session,
+                currentSessionEvents: replay.events,
+                currentSessionOutput: replay.output,
+                replayStatus: "success",
+                replayError: null,
+                runStatus: runStatusForReplay(replay.session),
+              });
+            }
+          } catch {
+            if (get().currentSessionId === currentSessionId) {
+              set({
+                currentSessionState: preOptimisticState.currentSessionState,
+                currentSessionEvents: preOptimisticState.currentSessionEvents,
+                currentSessionOutput: preOptimisticState.currentSessionOutput,
+                replayStatus: preOptimisticState.replayStatus,
+                replayError: preOptimisticState.replayError,
+                runStatus: preOptimisticState.runStatus,
+              });
+            }
+          }
+          await Promise.all([
+            get().loadSessions(),
+            get().loadStatus(),
+            get().loadReview(),
+            get().loadNotifications(),
+            get().loadBackgroundTasks(),
+          ]);
         }
       },
 
@@ -1362,13 +1514,17 @@ export const useAppStore = create<AppState>()(
       },
 
       loadBackgroundTasks: async () => {
-        const scopedSessionId = get().currentSessionId;
+        const scopedSessionId =
+          get().childSessionParentId ?? get().currentSessionId;
         set({ backgroundTasksStatus: "loading", backgroundTasksError: null });
         try {
           const backgroundTasks = scopedSessionId
             ? await RuntimeClient.listSessionBackgroundTasks(scopedSessionId)
             : await RuntimeClient.listBackgroundTasks();
-          if (get().currentSessionId !== scopedSessionId) {
+          if (
+            (get().childSessionParentId ?? get().currentSessionId) !==
+            scopedSessionId
+          ) {
             return;
           }
           set({
@@ -1404,6 +1560,7 @@ export const useAppStore = create<AppState>()(
             backgroundTaskOutput: null,
             backgroundTaskOutputStatus: "idle",
             backgroundTaskOutputError: null,
+            childSessionParentId: null,
           });
           return;
         }
@@ -1479,7 +1636,7 @@ export const useAppStore = create<AppState>()(
         try {
           const settings = await RuntimeClient.getSettings();
           set({ settings, settingsStatus: "success" });
-          if (settings.model) {
+          if (settings.model && !get().providerModel.trim()) {
             set({ providerModel: settings.model });
           }
         } catch (err) {
@@ -1501,7 +1658,7 @@ export const useAppStore = create<AppState>()(
             providerValidationStatus: {},
             providerValidationError: {},
           });
-          if (updated.model) {
+          if (updated.model && !get().providerModel.trim()) {
             set({ providerModel: updated.model });
           }
           await get().loadProviders();

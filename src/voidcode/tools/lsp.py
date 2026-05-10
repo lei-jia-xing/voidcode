@@ -26,6 +26,7 @@ class LspRequester(Protocol):
 
 @enum.unique
 class LspOperation(enum.Enum):
+    DIAGNOSTICS = "textDocument/diagnostic"
     GO_TO_DEFINITION = "textDocument/definition"
     FIND_REFERENCES = "textDocument/references"
     HOVER = "textDocument/hover"
@@ -38,6 +39,8 @@ class LspOperation(enum.Enum):
 
 
 _LSP_OPERATION_ALIASES: dict[str, LspOperation] = {
+    "diagnostics": LspOperation.DIAGNOSTICS,
+    "diagnostic": LspOperation.DIAGNOSTICS,
     "gotodefinition": LspOperation.GO_TO_DEFINITION,
     "definition": LspOperation.GO_TO_DEFINITION,
     "findreferences": LspOperation.FIND_REFERENCES,
@@ -61,7 +64,7 @@ class LspTool:
             "operation": {
                 "type": "string",
                 "description": (
-                    "LSP operation. Preferred names include goToDefinition, "
+                    "LSP operation. Preferred names include diagnostics, goToDefinition, "
                     "findReferences, hover, documentSymbol, workspaceSymbol, "
                     "goToImplementation, incomingCalls, and outgoingCalls. "
                     "Protocol method strings like textDocument/definition "
@@ -169,12 +172,12 @@ class LspTool:
             character_value = int(character)
         else:
             character_value = None
-
         if op_value is None:
             raise ValueError("lsp invocation requires 'operation' argument")
 
         operation = self._parse_operation(op_value)
         position_required = operation not in (
+            LspOperation.DIAGNOSTICS,
             LspOperation.DOCUMENT_SYMBOL,
             LspOperation.WORKSPACE_SYMBOL,
         )
@@ -200,7 +203,15 @@ class LspTool:
         )
         text_document = lsp_types.TextDocumentIdentifier(uri=candidate.as_uri())
         params: dict[str, object]
-        if operation == LspOperation.DOCUMENT_SYMBOL:
+        if operation == LspOperation.DIAGNOSTICS:
+            params = cast(
+                dict[str, object],
+                self._converter.unstructure(
+                    lsp_types.DocumentDiagnosticParams(text_document=text_document),
+                    unstructure_as=lsp_types.DocumentDiagnosticParams,
+                ),
+            )
+        elif operation == LspOperation.DOCUMENT_SYMBOL:
             params = cast(
                 dict[str, object],
                 self._converter.unstructure(

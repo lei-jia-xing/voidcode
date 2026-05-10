@@ -20,6 +20,7 @@ from ..command import (
     load_command_registry,
     resolve_prompt_command,
 )
+from ..command.models import CommandDefinition
 from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import (
@@ -181,6 +182,7 @@ from .contracts import (
     AgentSummary,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
+    CommandSummary,
     GitStatusSnapshot,
     ProviderInspectResult,
     ProviderModelMetadata,
@@ -1792,6 +1794,30 @@ class VoidCodeRuntime:
             return emitted, session, last_sequence, None
         return (), session, sequence, None
 
+    @staticmethod
+    def _is_background_child_mcp_deferred(
+        *,
+        request_metadata: Mapping[str, object],
+        effective_config: EffectiveRuntimeConfig,
+        workflow_snapshot: dict[str, object] | None,
+    ) -> bool:
+        if request_metadata.get("background_run") is not True:
+            return False
+        agent_binding = (
+            effective_config.agent.mcp_binding if effective_config.agent is not None else None
+        )
+        if agent_binding is not None:
+            return False
+        if workflow_snapshot is not None:
+            raw_intents = workflow_snapshot.get("mcp_binding_intents")
+            if isinstance(raw_intents, list):
+                for raw_intent in raw_intents:
+                    if not isinstance(raw_intent, dict):
+                        continue
+                    if cast(dict[str, object], raw_intent).get("required") is True:
+                        return False
+        return True
+
     def _build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":
             return ()
@@ -1921,6 +1947,25 @@ class VoidCodeRuntime:
                 workspace=workspace,
             )
         )
+
+    def request_diagnostics(
+        self,
+        *,
+        file_path: str,
+        workspace: str,
+    ) -> dict[str, object]:
+        _ = workspace
+        result = self.request_lsp(
+            server_name=None,
+            method="textDocument/diagnostic",
+            params={
+                "textDocument": {
+                    "uri": (self._workspace / file_path).resolve().as_uri(),
+                }
+            },
+            workspace=self._workspace,
+        )
+        return {"lsp_response": result.response}
 
     def request_mcp_tool(
         self,
@@ -2405,8 +2450,15 @@ class VoidCodeRuntime:
             }
         else:
             workflow_snapshot_for_session = workflow_snapshot
+        existing_session = (
+            self._load_existing_session_if_present(
+                session_id=request.session_id,
+            )
+            if request.session_id is not None
+            else None
+        )
         rehydrated_tool_results = self._rehydrated_tool_results_for_existing_session(
-            session_id=request.session_id,
+            stored=existing_session,
             parent_session_id=request.parent_session_id,
         )
         if run_id is not None:
@@ -2452,7 +2504,10 @@ class VoidCodeRuntime:
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
-        sequence = 1
+        sequence = self._next_sequence_for_existing_session(
+            stored=existing_session,
+            parent_session_id=request.parent_session_id,
+        )
 
         yield RuntimeStreamChunk(
             kind="event",
@@ -2523,22 +2578,29 @@ class VoidCodeRuntime:
                 ),
             )
 
-        (
-            mcp_startup_chunks,
-            session,
-            sequence,
-            mcp_failed_chunk,
-        ) = self._refresh_mcp_tools_for_session(
-            session=session,
-            sequence=sequence,
-            failure_kind="mcp_startup_failed",
-        )
-        for chunk in mcp_startup_chunks:
-            sequence = cast(EventEnvelope, chunk.event).sequence
-            yield chunk
-        if mcp_failed_chunk is not None:
-            yield mcp_failed_chunk
-            return
+        if self._is_background_child_mcp_deferred(
+            request_metadata=request_metadata,
+            effective_config=effective_config,
+            workflow_snapshot=workflow_snapshot_for_session,
+        ):
+            self._tool_registry = self._base_tool_registry
+        else:
+            (
+                mcp_startup_chunks,
+                session,
+                sequence,
+                mcp_failed_chunk,
+            ) = self._refresh_mcp_tools_for_session(
+                session=session,
+                sequence=sequence,
+                failure_kind="mcp_startup_failed",
+            )
+            for chunk in mcp_startup_chunks:
+                sequence = cast(EventEnvelope, chunk.event).sequence
+                yield chunk
+            if mcp_failed_chunk is not None:
+                yield mcp_failed_chunk
+                return
 
         session = self._session_with_agent_capability_snapshot(
             session=session,
@@ -2704,21 +2766,91 @@ class VoidCodeRuntime:
 
         last_chunk: RuntimeStreamChunk | None = None
         last_sequence = sequence
-        for chunk in self._execute_graph_loop(
-            graph=graph,
-            tool_registry=tool_registry,
-            session=session,
-            sequence=sequence,
-            graph_request=graph_request,
-            tool_results=tool_results,
-            permission_policy=self._permission_policy,
-        ):
-            last_chunk = chunk
-            if chunk.event is not None:
-                last_sequence = chunk.event.sequence
-            yield chunk
+        deferred_failed_chunk: RuntimeStreamChunk | None = None
+        graph_loop_error: Exception | None = None
+        try:
+            for chunk in self._execute_graph_loop(
+                graph=graph,
+                tool_registry=tool_registry,
+                session=session,
+                sequence=sequence,
+                graph_request=graph_request,
+                tool_results=tool_results,
+                permission_policy=self._permission_policy,
+            ):
+                last_chunk = chunk
+                if chunk.event is not None:
+                    last_sequence = chunk.event.sequence
+                    if chunk.event.event_type == "runtime.failed":
+                        deferred_failed_chunk = chunk
+                        continue
+                yield chunk
+        except Exception as exc:
+            graph_loop_error = exc
 
         if last_chunk is None:
+            if graph_loop_error is not None:
+                raise graph_loop_error
+            return
+
+        if deferred_failed_chunk is not None:
+            failed_event = cast(EventEnvelope, deferred_failed_chunk.event)
+            cleanup_sequence = failed_event.sequence - 1
+            final_chunks, finalized_session, final_sequence = self._finalize_run_acp(
+                session=deferred_failed_chunk.session,
+                sequence=cleanup_sequence,
+            )
+            for chunk in final_chunks:
+                yield chunk
+            end_hook_outcome = self._run_lifecycle_hooks(
+                session=finalized_session,
+                sequence=final_sequence,
+                surface="session_end",
+                payload={"session_status": finalized_session.status},
+            )
+            yield from end_hook_outcome.chunks
+            release_sequence = end_hook_outcome.last_sequence
+            if end_hook_outcome.failed_error is not None:
+                hook_failed_chunk = self._lifecycle_hook_failure_chunk(
+                    session=finalized_session,
+                    sequence=end_hook_outcome.last_sequence,
+                    surface="session_end",
+                    error=end_hook_outcome.failed_error,
+                )
+                if hook_failed_chunk is not None:
+                    yield hook_failed_chunk
+                    release_sequence = (
+                        hook_failed_chunk.event.sequence
+                        if hook_failed_chunk.event is not None
+                        else release_sequence
+                    )
+            for release_event in self._release_mcp_session_events(
+                session_id=finalized_session.session.id,
+                start_sequence=release_sequence + 1,
+            ):
+                release_sequence = release_event.sequence
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=finalized_session,
+                    event=release_event,
+                )
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=deferred_failed_chunk.session,
+                event=self._resequence_event(failed_event, sequence=release_sequence + 1),
+            )
+            if graph_loop_error is not None:
+                raise graph_loop_error
+            return
+
+        if graph_loop_error is not None:
+            raise graph_loop_error
+
+        if (
+            last_chunk.event is not None
+            and last_chunk.event.event_type == "runtime.tool_completed"
+            and last_chunk.event.payload.get("permission_denied") is True
+        ):
             return
 
         if last_chunk.session.status == "waiting":
@@ -3457,6 +3589,28 @@ class VoidCodeRuntime:
         self._reconcile_background_tasks_if_needed()
         return self._background_task_supervisor.load_background_task_result(
             task_id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
+
+    def load_background_task_result_by_child_session(
+        self,
+        *,
+        child_session_id: str,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult | None:
+        self._reconcile_background_tasks_if_needed()
+        validated_child_session_id = validate_session_reference_id(
+            child_session_id,
+            field_name="child_session_id",
+        )
+        task = self._session_store.load_background_task_by_child_session(
+            workspace=self._workspace,
+            child_session_id=validated_child_session_id,
+        )
+        if task is None:
+            return None
+        return self._background_task_supervisor.load_background_task_result(
+            task.task.id,
             emit_result_read_hook=emit_result_read_hook,
         )
 
@@ -4845,6 +4999,28 @@ class VoidCodeRuntime:
             )
         return tuple(summaries)
 
+    def list_command_summaries(self) -> tuple[CommandSummary, ...]:
+        registry = load_command_registry(workspace=self._workspace)
+        commands = registry.list()
+        summaries: list[CommandSummary] = []
+        for command in commands:
+            summaries.append(self._command_summary(command))
+        return tuple(summaries)
+
+    @staticmethod
+    def _command_summary(command: CommandDefinition) -> CommandSummary:
+        return CommandSummary(
+            name=command.name,
+            description=command.description,
+            source=command.source,
+            enabled=command.enabled,
+            hidden=command.hidden,
+            agent=command.agent,
+            model=command.model,
+            subtask=command.subtask,
+            path=(str(command.path) if command.path is not None else None),
+        )
+
     def current_status(self) -> RuntimeStatusSnapshot:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         git = self._git_status_snapshot()
@@ -5049,13 +5225,31 @@ class VoidCodeRuntime:
         stdout = self._decode_subprocess_text_output(result.stdout)
         stderr = self._decode_subprocess_text_output(result.stderr)
         if result.returncode == 0:
-            return GitStatusSnapshot(state="git_ready", root=stdout.strip() or str(self._workspace))
+            branch_result = subprocess.run(
+                ["git", "-C", str(self._workspace), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return GitStatusSnapshot(
+                state="git_ready",
+                root=stdout.strip() or str(self._workspace),
+                branch=branch_result.stdout.strip() or None
+                if branch_result.returncode == 0
+                else None,
+            )
         if "not a git repository" in stderr.lower():
-            return GitStatusSnapshot(state="not_git_repo", root=None, error=stderr or None)
+            return GitStatusSnapshot(
+                state="not_git_repo",
+                root=None,
+                branch=None,
+                error=stderr or None,
+            )
         return GitStatusSnapshot(
             state="git_error",
             root=None,
             error=stderr or stdout.strip() or None,
+            branch=None,
         )
 
     @staticmethod
@@ -6591,12 +6785,12 @@ class VoidCodeRuntime:
     def _rehydrated_tool_results_for_existing_session(
         self,
         *,
-        session_id: str | None,
+        stored: RuntimeResponse | None = None,
+        session_id: str | None = None,
         parent_session_id: str | None,
     ) -> tuple[ToolResult, ...]:
-        if session_id is None:
-            return ()
-        stored = self._load_existing_session_if_present(session_id=session_id)
+        if stored is None and session_id is not None:
+            stored = self._load_existing_session_if_present(session_id=session_id)
         if stored is None:
             return ()
         stored_parent_session_id = stored.session.session.parent_id
@@ -6604,6 +6798,18 @@ class VoidCodeRuntime:
             return ()
         _prompt, tool_results = self._prompt_and_tool_results_from_debug_events(stored.events)
         return tuple(self._eligible_rehydrated_tool_results(tool_results))
+
+    @staticmethod
+    def _next_sequence_for_existing_session(
+        *,
+        stored: RuntimeResponse | None,
+        parent_session_id: str | None,
+    ) -> int:
+        if stored is None:
+            return 1
+        if parent_session_id is not None and stored.session.session.parent_id != parent_session_id:
+            return 1
+        return (stored.events[-1].sequence + 1) if stored.events else 1
 
     @staticmethod
     def _eligible_rehydrated_tool_results(
@@ -6859,7 +7065,7 @@ class VoidCodeRuntime:
             else "warn",
             registry=self._context_transform_registry_for_agent(effective_config.agent),
         )
-        return assemble_provider_context(
+        assembled_context = assemble_provider_context(
             prompt=prompt,
             tool_results=tool_results,
             session_metadata=session_metadata,
@@ -6880,6 +7086,17 @@ class VoidCodeRuntime:
             workspace_memory_context=workspace_memory_context,
             workspace=self._workspace,
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
+        )
+        delegation = session_metadata.get("delegation")
+        if not isinstance(delegation, dict):
+            return assembled_context
+        return RuntimeAssembledContext(
+            prompt=assembled_context.prompt,
+            tool_results=assembled_context.tool_results,
+            continuity_state=assembled_context.continuity_state,
+            segments=assembled_context.segments,
+            metadata={**assembled_context.metadata, "delegation": dict(delegation)},
+            loaded_skills=assembled_context.loaded_skills,
         )
 
     @staticmethod

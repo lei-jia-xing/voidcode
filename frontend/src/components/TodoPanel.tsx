@@ -41,7 +41,7 @@ export function TodoPanel({
 
   return (
     <section className="flex-shrink-0 border-t border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] px-4 py-2">
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-[var(--vc-chat-content-width)]">
         <button
           type="button"
           aria-expanded={expanded}

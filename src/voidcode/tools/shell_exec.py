@@ -88,6 +88,32 @@ def _read_pipe_incrementally(
         errors.append(exc)
 
 
+def _wait_after_process_kill(process: subprocess.Popen[Any], *, timeout: float = 1.0) -> None:
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return
+
+
+def _join_reader_thread(thread: threading.Thread, pipe: BinaryIO, *, timeout: float = 1.0) -> None:
+    thread.join(timeout=timeout)
+    if not thread.is_alive():
+        return
+    try:
+        pipe.close()
+    except OSError:
+        pass
+    thread.join(timeout=timeout)
+
+
 def kill_timed_out_process(process: subprocess.Popen[Any]) -> None:
     taskkill = _taskkill_command()
     if taskkill is not None:
@@ -259,18 +285,18 @@ class ShellExecTool:
         while True:
             if reader_errors:
                 kill_timed_out_process(process)
-                process.wait()
+                _wait_after_process_kill(process)
                 break
             if abort_signal is not None and abort_signal.cancelled:
                 aborted = True
                 kill_timed_out_process(process)
-                process.wait()
+                _wait_after_process_kill(process)
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 kill_timed_out_process(process)
-                process.wait()
+                _wait_after_process_kill(process)
                 break
             try:
                 process.wait(timeout=min(0.05, remaining))
@@ -278,8 +304,8 @@ class ShellExecTool:
             except subprocess.TimeoutExpired:
                 continue
 
-        stdout_reader.join()
-        stderr_reader.join()
+        _join_reader_thread(stdout_reader, stdout_pipe)
+        _join_reader_thread(stderr_reader, stderr_pipe)
 
         stdout_bytes = b"".join(stdout_chunks)
         stderr_bytes = b"".join(stderr_chunks)

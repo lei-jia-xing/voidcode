@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .config import ProviderFallbackConfig
-from .errors import format_invalid_provider_config_error
 from .models import (
     ProviderModelSelection,
     ProviderResolutionMetadata,
@@ -10,6 +9,20 @@ from .models import (
     ResolvedProviderModel,
 )
 from .registry import ModelProviderRegistry
+
+
+def _provider_fallback_with_preferred_model(
+    provider_fallback: ProviderFallbackConfig,
+    preferred_model: str,
+) -> ProviderFallbackConfig:
+    return ProviderFallbackConfig(
+        preferred_model=preferred_model,
+        fallback_models=tuple(
+            fallback_model
+            for fallback_model in provider_fallback.fallback_models
+            if fallback_model != preferred_model
+        ),
+    )
 
 
 def resolve_provider_model(
@@ -68,11 +81,9 @@ def resolve_provider_config(
 ) -> ResolvedProviderConfig:
     if provider_fallback is not None:
         if model is not None and model != provider_fallback.preferred_model:
-            raise ValueError(
-                format_invalid_provider_config_error(
-                    "provider_fallback.preferred_model",
-                    "must match model when both are configured",
-                )
+            provider_fallback = _provider_fallback_with_preferred_model(
+                provider_fallback,
+                model,
             )
         target_chain = resolve_provider_chain(provider_fallback, registry=registry)
         return ResolvedProviderConfig(

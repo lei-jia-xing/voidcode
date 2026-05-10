@@ -772,9 +772,11 @@ class RuntimeBackgroundTaskSupervisor:
                     continue
                 worker_start_gate = threading.Event()
 
+                background_task_id = running_task.task.id
+
                 def run_worker_after_started_hook(
                     *,
-                    background_task_id: str = task.task.id,
+                    background_task_id: str = background_task_id,
                     reserved_identity: _BackgroundTaskConcurrencyIdentity = identity,
                     start_gate: threading.Event = worker_start_gate,
                 ) -> None:
@@ -796,10 +798,10 @@ class RuntimeBackgroundTaskSupervisor:
 
                 worker = threading.Thread(
                     target=run_worker_after_started_hook,
-                    name=f"voidcode-background-task-{task.task.id}",
+                    name=f"voidcode-background-task-{background_task_id}",
                     daemon=True,
                 )
-                self._threads[task.task.id] = worker
+                self._threads[background_task_id] = worker
                 started_tasks.append((running_task, worker, identity, worker_start_gate))
         for started_task, worker, identity, worker_start_gate in started_tasks:
             try:
@@ -1036,12 +1038,14 @@ class RuntimeBackgroundTaskSupervisor:
             routing_error = str(exc)
         duration_seconds = self._duration_seconds(task=task)
         tool_call_count = self._tool_call_count(child_result=child_result)
+        hook_reminder = self._hook_reminder_payload(task=task, child_result=child_result)
         return BackgroundTaskResult(
             task_id=task.task.id,
             parent_session_id=task.parent_session_id,
             child_session_id=task.session_id,
             status=task.status,
             requested_child_session_id=task.request.session_id or task.session_id,
+            delegated_prompt=task.request.prompt,
             routing=routing,
             approval_request_id=task.approval_request_id,
             question_request_id=task.question_request_id,
@@ -1053,7 +1057,45 @@ class RuntimeBackgroundTaskSupervisor:
             duration_seconds=duration_seconds,
             tool_call_count=tool_call_count,
             observability=self.task_observability(task),
+            hook_reminder=hook_reminder,
         )
+
+    @staticmethod
+    def _hook_reminder_payload(
+        *,
+        task: BackgroundTaskState,
+        child_result: RuntimeSessionResult | None,
+    ) -> dict[str, object] | None:
+        if child_result is None:
+            return None
+        delegated_events = child_result.delegated_events
+        if (
+            not delegated_events
+            and task.approval_request_id is None
+            and task.question_request_id is None
+        ):
+            return None
+        latest_event = delegated_events[-1] if delegated_events else None
+        reminder: dict[str, object] = {
+            "active": True,
+            "task_status": task.status,
+            "child_status": child_result.status,
+        }
+        if latest_event is not None:
+            reminder["lifecycle_status"] = latest_event.delegation.lifecycle_status
+            reminder["approval_blocked"] = latest_event.message.approval_blocked
+            reminder["result_available"] = latest_event.message.result_available
+        if task.approval_request_id is not None:
+            reminder["approval_request_id"] = task.approval_request_id
+            reminder["message"] = "Child session is waiting on approval."
+        elif task.question_request_id is not None:
+            reminder["question_request_id"] = task.question_request_id
+            reminder["message"] = "Child session is waiting on a question response."
+        elif latest_event is not None:
+            reminder["message"] = (
+                f"Delegated lifecycle status: {latest_event.delegation.lifecycle_status}."
+            )
+        return reminder
 
     @staticmethod
     def _duration_seconds(*, task: BackgroundTaskState) -> float | None:

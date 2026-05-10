@@ -20,6 +20,7 @@
   --vc-control-height-compact: 30px;
   --vc-control-padding-x: var(--vc-space-3);
   --vc-control-padding-x-compact: 10px;
+  --vc-chat-content-width: 64rem;
   --vc-focus-ring: var(--vc-text-primary);
   --vc-focus-shadow: 0 0 0 var(--vc-space-1) var(--vc-bg);
   --vc-danger-text: #ffb4b4;
@@ -29,6 +30,20 @@
   --vc-confirm-bg: rgba(185, 246, 202, 0.1);
   --vc-confirm-border: rgba(185, 246, 202, 0.24);
   --vc-overlay-bg: rgba(0, 0, 0, 0.6);
+  --vc-link-text: #8ec5ff;
+  --vc-link-hover: #b7daff;
+  --vc-link-decoration: rgba(142, 197, 255, 0.42);
+  --vc-markdown-heading-1: #f5f7fb;
+  --vc-markdown-heading-2: #dbe7ff;
+  --vc-markdown-heading-3: #c7f0d8;
+  --vc-markdown-heading-4: #f4d6a0;
+  --vc-markdown-heading-5: #c7ced9;
+  --vc-markdown-heading-6: #8f98a7;
+  --vc-markdown-code-text: #ffd892;
+  --vc-markdown-code-bg: rgba(255, 216, 146, 0.08);
+  --vc-markdown-quote-text: #cfd7e6;
+  --vc-markdown-quote-border: rgba(142, 197, 255, 0.28);
+  --vc-markdown-quote-bg: rgba(142, 197, 255, 0.06);
 
   --background: 0 0% 4%;
   --foreground: 0 0% 93.3%;
@@ -228,6 +243,7 @@ body {
 }
 
 .markdown-body h1 {
+  color: var(--vc-markdown-heading-1);
   margin-top: 1.75rem;
   margin-bottom: 0.875rem;
   padding-bottom: 0.35rem;
@@ -237,6 +253,7 @@ body {
 }
 
 .markdown-body h2 {
+  color: var(--vc-markdown-heading-2);
   margin-top: 1.5rem;
   margin-bottom: 0.75rem;
   padding-bottom: 0.25rem;
@@ -246,12 +263,14 @@ body {
 }
 
 .markdown-body h3 {
+  color: var(--vc-markdown-heading-3);
   margin-top: 1.25rem;
   margin-bottom: 0.625rem;
   font-size: 1.1rem;
 }
 
 .markdown-body h4 {
+  color: var(--vc-markdown-heading-4);
   margin-top: 1rem;
   margin-bottom: 0.5rem;
   font-size: 1rem;
@@ -260,14 +279,14 @@ body {
 .markdown-body h5 {
   margin-top: 0.875rem;
   margin-bottom: 0.45rem;
-  color: var(--vc-text-muted);
+  color: var(--vc-markdown-heading-5);
   font-size: 0.925rem;
 }
 
 .markdown-body h6 {
   margin-top: 0.75rem;
   margin-bottom: 0.4rem;
-  color: var(--vc-text-subtle);
+  color: var(--vc-markdown-heading-6);
   font-size: 0.8rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -337,4 +356,40 @@ body {
   text-decoration-line: underline;
   text-decoration-color: var(--vc-border-strong);
   text-underline-offset: 2px;
+}
+
+.markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  border-spacing: 0;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.markdown-body thead {
+  background: var(--vc-surface-2);
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--vc-border-subtle);
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  font-weight: 600;
+  color: var(--vc-text-primary);
+}
+
+.markdown-body tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.vc-thinking-block {
+  margin-top: -0.25rem;
 }

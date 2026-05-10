@@ -14,6 +14,7 @@ from unidiff.errors import UnidiffParseError
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
+from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_read_before_write
@@ -654,6 +655,17 @@ def _with_formatter_feedback(
         data["formatters"] = formatter_results
     if diagnostics:
         data["diagnostics"] = diagnostics
+    changed_paths = [
+        cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)
+    ]
+    lsp_diagnostics = post_edit_lsp_diagnostics(
+        workspace=workspace,
+        paths=changed_paths,
+    )
+    if lsp_diagnostics:
+        current_diagnostics = data.get("diagnostics")
+        existing = current_diagnostics if isinstance(current_diagnostics, list) else []
+        data["diagnostics"] = [*existing, *lsp_diagnostics]
 
     content = result.content
     if content is not None and diagnostics:

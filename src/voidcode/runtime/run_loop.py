@@ -550,6 +550,7 @@ class RuntimeRunLoopCoordinator:
                         abort_signal=abort_signal,
                         emit_tool_progress=emit_tool_progress,
                         memory=self._runtime,
+                        lsp=self._runtime,
                     )
                 ):
                     if tool_timeout is None:
@@ -575,13 +576,38 @@ class RuntimeRunLoopCoordinator:
 
         sequence = start_sequence - 1
         terminal_item: _ToolResultItem | _ToolExceptionItem | None = None
+        deadline = (
+            time.monotonic() + tool_timeout
+            if tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
+            else None
+        )
         while terminal_item is None:
             try:
-                item = progress_queue.get(timeout=_TOOL_PROGRESS_POLL_SECONDS)
+                poll_timeout = _TOOL_PROGRESS_POLL_SECONDS
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        terminal_item = _ToolExceptionItem(
+                            RuntimeToolTimeoutError(
+                                f"tool '{tool_call.tool_name}' exceeded runtime timeout of "
+                                f"{tool_timeout}s"
+                            )
+                        )
+                        break
+                    poll_timeout = min(poll_timeout, remaining)
+                item = progress_queue.get(timeout=poll_timeout)
             except queue.Empty:
                 if _is_abort_signal_requested(abort_signal):
                     terminal_item = _ToolExceptionItem(
                         RuntimeError(_abort_signal_reason(abort_signal) or "run interrupted")
+                    )
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    terminal_item = _ToolExceptionItem(
+                        RuntimeToolTimeoutError(
+                            f"tool '{tool_call.tool_name}' exceeded runtime timeout of "
+                            f"{tool_timeout}s"
+                        )
                     )
                     break
                 continue
@@ -620,7 +646,11 @@ class RuntimeRunLoopCoordinator:
                     ),
                 )
 
-        worker.join(timeout=1)
+        if not (
+            isinstance(terminal_item, _ToolExceptionItem)
+            and isinstance(terminal_item.exception, RuntimeToolTimeoutError)
+        ):
+            worker.join(timeout=1)
         if isinstance(terminal_item, _ToolExceptionItem):
             return terminal_item.exception, sequence
         return terminal_item.result, sequence
@@ -754,7 +784,9 @@ class RuntimeRunLoopCoordinator:
             == "provider"
         )
         try:
-            if self._is_progress_capable_tool(tool_call.tool_name):
+            if self._is_progress_capable_tool(tool_call.tool_name) or (
+                tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
+            ):
                 tool_outcome, sequence = yield from self._invoke_tool_with_progress_events(
                     tool=tool,
                     tool_call=tool_call,
@@ -793,6 +825,7 @@ class RuntimeRunLoopCoordinator:
                         read_paths=read_paths,
                         abort_signal=abort_signal,
                         memory=runtime,
+                        lsp=runtime,
                     )
                 ):
                     if tool_timeout is None:
@@ -2152,7 +2185,9 @@ class RuntimeRunLoopCoordinator:
                 )
                 return
             try:
-                if self._is_progress_capable_tool(plan_tool_call.tool_name):
+                if self._is_progress_capable_tool(plan_tool_call.tool_name) or (
+                    tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
+                ):
                     tool_outcome, sequence = yield from self._invoke_tool_with_progress_events(
                         tool=tool,
                         tool_call=plan_tool_call,
@@ -2193,6 +2228,7 @@ class RuntimeRunLoopCoordinator:
                             read_paths=read_paths,
                             abort_signal=active_graph_request.abort_signal,
                             memory=runtime,
+                            lsp=runtime,
                         )
                     ):
                         if tool_timeout is None:

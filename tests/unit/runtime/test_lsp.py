@@ -973,6 +973,7 @@ def test_lsp_operation_strings_match_protocol_method_names() -> None:
     tool_module = import_module("voidcode.tools.lsp")
     operation_enum = tool_module.LspOperation
 
+    assert operation_enum.DIAGNOSTICS.value == "textDocument/diagnostic"
     assert operation_enum.PREPARE_CALL_HIERARCHY.value == "textDocument/prepareCallHierarchy"
     assert operation_enum.INCOMING_CALLS.value == "callHierarchy/incomingCalls"
     assert operation_enum.OUTGOING_CALLS.value == "callHierarchy/outgoingCalls"
@@ -1176,6 +1177,50 @@ def test_lsp_tool_accepts_document_symbol_without_position(tmp_path: Path) -> No
 
     assert result.status == "ok"
     assert captured["method"] == "textDocument/documentSymbol"
+    assert captured["params"] == {
+        "textDocument": {"uri": sample_file.resolve().as_uri()},
+    }
+
+
+def test_lsp_tool_accepts_document_diagnostics_without_position(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.py"
+    sample_file.write_text("x = 1\n", encoding="utf-8")
+
+    class _StubResponse:
+        def __init__(self, response: dict[str, object]) -> None:
+            self.response = response
+
+    captured: dict[str, object] = {}
+
+    def _requester(
+        *,
+        server_name: str | None,
+        method: str,
+        params: dict[str, object],
+        workspace: Path,
+    ) -> _StubResponse:
+        captured["method"] = method
+        captured["params"] = params
+        captured["workspace"] = workspace
+        return _StubResponse({"result": {"items": []}})
+
+    tool_module = import_module("voidcode.tools.lsp")
+    tool = tool_module.LspTool(requester=_requester)
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="lsp",
+            arguments={
+                "operation": "diagnostics",
+                "filePath": "sample.py",
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert captured["method"] == "textDocument/diagnostic"
+    assert captured["workspace"] == tmp_path.resolve()
     assert captured["params"] == {
         "textDocument": {"uri": sample_file.resolve().as_uri()},
     }

@@ -21,6 +21,7 @@ type PersistedState = {
   state: {
     language: "en" | "zh-CN";
     currentSessionId: string | null;
+    childSessionParentId?: string | null;
     agentPreset?: "leader";
     providerModel?: string;
     sessionSidebarWidth?: number;
@@ -176,6 +177,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
       () => Promise<{ provider: string; configured: boolean; models: [] }>
     >(),
   listAgentsMock: vi.fn<() => Promise<[]>>(),
+  listCommandsMock: vi.fn<() => Promise<[]>>(),
   listSessionsMock: vi.fn<() => Promise<StoredSessionSummary[]>>(),
   getSessionReplayMock:
     vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
@@ -216,6 +218,8 @@ const runtimeClientMocks = vi.hoisted(() => ({
   cancelBackgroundTaskMock: vi.fn<(taskId: string) => Promise<unknown>>(),
   getBackgroundTaskOutputMock:
     vi.fn<(taskId: string) => Promise<BackgroundTaskOutput>>(),
+  getChildSessionContextMock:
+    vi.fn<(sessionId: string) => Promise<BackgroundTaskOutput>>(),
   getSessionDebugMock:
     vi.fn<(sessionId: string) => Promise<RuntimeSessionDebugSnapshot>>(),
   getSettingsMock: vi.fn<() => Promise<RuntimeSettings>>(),
@@ -246,6 +250,7 @@ vi.mock("./lib/runtime/client", () => ({
     listProviders: runtimeClientMocks.listProvidersMock,
     listProviderModels: runtimeClientMocks.listProviderModelsMock,
     listAgents: runtimeClientMocks.listAgentsMock,
+    listCommands: runtimeClientMocks.listCommandsMock,
     listSessions: runtimeClientMocks.listSessionsMock,
     getSessionReplay: runtimeClientMocks.getSessionReplayMock,
     getStatus: runtimeClientMocks.getStatusMock,
@@ -262,6 +267,7 @@ vi.mock("./lib/runtime/client", () => ({
     cancelSession: runtimeClientMocks.cancelSessionMock,
     cancelBackgroundTask: runtimeClientMocks.cancelBackgroundTaskMock,
     getBackgroundTaskOutput: runtimeClientMocks.getBackgroundTaskOutputMock,
+    getChildSessionContext: runtimeClientMocks.getChildSessionContextMock,
     getSessionDebug: runtimeClientMocks.getSessionDebugMock,
     getSettings: runtimeClientMocks.getSettingsMock,
     updateSettings: runtimeClientMocks.updateSettingsMock,
@@ -298,6 +304,7 @@ describe("useAppStore integration flow", () => {
       agentsError: null,
       sessions: [],
       currentSessionId: null,
+      childSessionParentId: null,
       sessionSidebarWidth: 344,
       currentSessionState: null,
       currentSessionEvents: [],
@@ -355,6 +362,7 @@ describe("useAppStore integration flow", () => {
       models: [],
     });
     runtimeClientMocks.listAgentsMock.mockResolvedValue([]);
+    runtimeClientMocks.listCommandsMock.mockResolvedValue([]);
     runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
     runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
     runtimeClientMocks.retryMcpConnectionsMock.mockResolvedValue(
@@ -952,6 +960,7 @@ describe("useAppStore integration flow", () => {
       requestId,
       [{ header: "Direction", answers: ["left"] }],
     );
+    expect(state.questionStatus).toBe("idle");
     expect(state.currentSessionState?.status).toBe("completed");
     expect(state.currentSessionOutput).toBe("continued");
   });
@@ -1339,6 +1348,7 @@ describe("useAppStore integration flow", () => {
         status: "completed",
         parent_session_id: "session-parent",
         requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
         child_session_id: "child-session",
         approval_request_id: null,
         question_request_id: null,
@@ -1396,6 +1406,85 @@ describe("useAppStore integration flow", () => {
     expect(
       runtimeClientMocks.listSessionBackgroundTasksMock,
     ).toHaveBeenCalledWith("session-parent");
+  });
+
+  it("restores the delegated child parent session on parent return", async () => {
+    const parentEvents = [
+      makeEvent(1, "runtime.request_received", { prompt: "parent prompt" }),
+    ];
+    const childOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-child",
+        status: "completed",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "child summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: {
+          ...makeSessionState("child-session", "completed"),
+          session: { id: "child-session", parent_id: "session-parent" },
+        },
+        prompt: "child prompt",
+        status: "completed",
+        summary: "child summary",
+        output: "child output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "child prompt" },
+            "runtime",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    };
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce(
+      childOutput,
+    );
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
+      makeRuntimeResponse(
+        "session-parent",
+        "completed",
+        parentEvents,
+        "parent output",
+      ),
+    );
+
+    await useAppStore.getState().selectSession("child-session");
+
+    expect(useAppStore.getState().currentSessionId).toBe("child-session");
+    expect(useAppStore.getState().childSessionParentId).toBe("session-parent");
+    expect(
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    ).toHaveBeenCalledWith("session-parent");
+
+    await useAppStore
+      .getState()
+      .selectSession(useAppStore.getState().childSessionParentId ?? "");
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
+      "session-parent",
+    );
+    expect(state.currentSessionId).toBe("session-parent");
+    expect(state.childSessionParentId).toBeNull();
+    expect(state.currentSessionOutput).toBe("parent output");
+    expect(state.selectedBackgroundTaskOutputId).toBeNull();
   });
 
   it("surfaces approval lookup failure when no pending request exists", async () => {
@@ -2277,7 +2366,7 @@ describe("useAppStore integration flow", () => {
     });
   });
 
-  it("loads runtime-owned settings and syncs providerModel from returned model", async () => {
+  it("loads runtime-owned settings without overriding an existing live providerModel", async () => {
     runtimeClientMocks.getSettingsMock.mockResolvedValue({
       provider: "glm",
       provider_api_key_present: true,
@@ -2293,10 +2382,29 @@ describe("useAppStore integration flow", () => {
       provider_api_key_present: true,
       model: "glm/glm-5",
     });
-    expect(state.providerModel).toBe("glm/glm-5");
+    expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
   });
 
-  it("uses the hydrated qualified settings model when providers still expose only a bare alias", async () => {
+  it("keeps an explicit live providerModel when loading runtime-owned settings", async () => {
+    useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
+    runtimeClientMocks.getSettingsMock.mockResolvedValue({
+      provider: "glm",
+      provider_api_key_present: true,
+      model: "glm/glm-5",
+    });
+
+    await useAppStore.getState().loadSettings();
+
+    const state = useAppStore.getState();
+    expect(state.settings).toEqual({
+      provider: "glm",
+      provider_api_key_present: true,
+      model: "glm/glm-5",
+    });
+    expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
+  });
+
+  it("keeps the live providerModel when settings load after hydration", async () => {
     const sessionId = "session-hydrated-qualified-model";
     const requestReceived = makeEvent(
       1,
@@ -2346,14 +2454,14 @@ describe("useAppStore integration flow", () => {
     await useAppStore.getState().loadSettings();
     await useAppStore.getState().runTask("hydrated qualified model");
 
-    expect(useAppStore.getState().providerModel).toBe("opencode-go/kimi-k2.6");
+    expect(useAppStore.getState().providerModel).toBe("kimi-k2.6");
     expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
       prompt: "hydrated qualified model",
       session_id: null,
       metadata: {
         agent: {
           preset: "leader",
-          model: "opencode-go/kimi-k2.6",
+          model: "kimi-k2.6",
         },
       },
     });
@@ -2436,6 +2544,28 @@ describe("useAppStore integration flow", () => {
       model: "deepseek/deepseek-v4-pro",
     });
     expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("keeps an explicit live providerModel when saving runtime-owned settings", async () => {
+    useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
+    runtimeClientMocks.updateSettingsMock.mockResolvedValue({
+      provider: "deepseek",
+      provider_api_key_present: true,
+      model: "deepseek/deepseek-v4-pro",
+    });
+
+    await useAppStore.getState().updateSettings({
+      provider: "deepseek",
+      model: "deepseek/deepseek-v4-pro",
+    });
+
+    const state = useAppStore.getState();
+    expect(state.settings).toEqual({
+      provider: "deepseek",
+      provider_api_key_present: true,
+      model: "deepseek/deepseek-v4-pro",
+    });
+    expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
   });
 
   it("records provider credential validation results by provider", async () => {

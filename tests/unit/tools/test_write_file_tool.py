@@ -13,6 +13,7 @@ from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.runtime.config import load_runtime_config
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WriteFileTool
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) -> None:
@@ -218,13 +219,56 @@ def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
     )
 
     assert result.status == "ok"
+
+
+def test_write_file_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path: Path) -> None:
+    tool = WriteFileTool()
+
+    class _FakeLspFacade:
+        def request_diagnostics(self, *, file_path: str, workspace: str) -> dict[str, object]:
+            assert file_path == "main.py"
+            assert workspace == str(tmp_path.resolve())
+            return {
+                "lsp_response": {
+                    "result": {
+                        "items": [
+                            {
+                                "message": "Example type error",
+                                "severity": 1,
+                                "code": "example",
+                                "range": {
+                                    "start": {"line": 0, "character": 4},
+                                    "end": {"line": 0, "character": 9},
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="session-1",
+            lsp=_FakeLspFacade(),
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="write_file",
+                arguments={"path": "main.py", "content": "print('raw')\n"},
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostics = cast(list[dict[str, object]], result.data["diagnostics"])
+    lsp_diagnostic = diagnostics[-1]
+    assert lsp_diagnostic["source"] == "lsp"
+    assert lsp_diagnostic["path"] == "main.py"
+    assert lsp_diagnostic["message"] == "Example type error"
+    assert lsp_diagnostic["line"] == 1
+    assert lsp_diagnostic["character"] == 5
     assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
-    assert "Formatter warning:" in (result.content or "")
-    formatter = cast(dict[str, object], result.data["formatter"])
-    assert formatter["status"] == "missing_executable"
-    diagnostics = result.data["diagnostics"]
-    assert isinstance(diagnostics, list)
-    assert "No formatter executable was available" in str(diagnostics[0])
+    assert result.content == "Wrote file successfully: main.py"
 
 
 def test_write_file_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:

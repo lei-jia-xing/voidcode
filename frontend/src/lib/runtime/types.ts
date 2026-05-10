@@ -104,9 +104,34 @@ export interface SkillSummary {
   source_path?: string | null;
 }
 
+export interface CommandSummary {
+  name: string;
+  description: string;
+  source: string;
+  enabled: boolean;
+  hidden: boolean;
+  agent?: string | null;
+  model?: string | null;
+  subtask?: boolean;
+  path?: string | null;
+}
+
+export interface CommandSummary {
+  name: string;
+  description: string;
+  source: string;
+  enabled: boolean;
+  hidden: boolean;
+  agent?: string | null;
+  model?: string | null;
+  subtask?: boolean;
+  path?: string | null;
+}
+
 export interface GitStatusSnapshot {
   state: GitStatusState;
   root?: string | null;
+  branch?: string | null;
   error?: string | null;
 }
 
@@ -335,6 +360,7 @@ export interface BackgroundTaskResultPayload {
   status: string;
   parent_session_id?: string | null;
   requested_child_session_id?: string | null;
+  delegated_prompt?: string | null;
   child_session_id?: string | null;
   approval_request_id?: string | null;
   question_request_id?: string | null;
@@ -345,12 +371,29 @@ export interface BackgroundTaskResultPayload {
   cancellation_cause?: string | null;
   duration_seconds?: number | null;
   tool_call_count?: number;
+  hook_reminder?: {
+    active?: boolean;
+    task_status?: string;
+    child_status?: string;
+    lifecycle_status?: string;
+    approval_blocked?: boolean;
+    result_available?: boolean;
+    approval_request_id?: string;
+    question_request_id?: string;
+    message?: string;
+  } | null;
   routing?: BackgroundTaskRouting | null;
   delegation?: Record<string, unknown>;
   message?: Record<string, unknown>;
 }
 
 export interface BackgroundTaskOutput {
+  task: BackgroundTaskResultPayload;
+  session_result: RuntimeSessionResult | null;
+  output: string | null;
+}
+
+export interface ChildSessionContextResult {
   task: BackgroundTaskResultPayload;
   session_result: RuntimeSessionResult | null;
   output: string | null;

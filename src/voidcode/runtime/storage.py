@@ -1235,6 +1235,39 @@ class SqliteSessionStore:
             ((str(workspace), *payload) for payload in self._session_events_payload(events)),
         )
 
+    def _merged_session_events(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+        events: tuple[EventEnvelope, ...],
+    ) -> tuple[EventEnvelope, ...]:
+        existing_rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT sequence, event_type, source, payload_json
+                FROM session_events
+                WHERE workspace_id = ? AND session_id = ?
+                ORDER BY sequence ASC
+                """,
+                (str(workspace), session_id),
+            ).fetchall(),
+        )
+        merged = {
+            cast(int, row["sequence"]): EventEnvelope(
+                session_id=session_id,
+                sequence=cast(int, row["sequence"]),
+                event_type=cast(str, row["event_type"]),
+                source=self._parse_event_source(cast(str, row["source"])),
+                payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+            )
+            for row in existing_rows
+        }
+        merged.update({event.sequence: event for event in events})
+        return tuple(merged[sequence] for sequence in sorted(merged))
+
     @staticmethod
     def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
         raw_runtime_state = metadata.get("runtime_state")
@@ -1363,6 +1396,12 @@ class SqliteSessionStore:
         resume_checkpoint: dict[str, object],
     ) -> int:
         session_id = response.session.session.id
+        events = self._merged_session_events(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+            events=response.events,
+        )
         created_at = self._read_created_at(
             connection=connection,
             workspace=workspace,
@@ -1392,14 +1431,14 @@ class SqliteSessionStore:
                 json.dumps(resume_checkpoint, sort_keys=True),
                 created_at,
                 updated_at,
-                self._session_last_event_sequence(response.events),
+                self._session_last_event_sequence(events),
             ),
         )
         self._replace_session_events(
             connection=connection,
             workspace=workspace,
             session_id=session_id,
-            events=response.events,
+            events=events,
         )
         self._replace_session_todos(
             connection=connection,

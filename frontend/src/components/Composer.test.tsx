@@ -38,6 +38,23 @@ const baseProps = {
       origin: "builtin",
     },
   ],
+  commands: [
+    {
+      name: "review",
+      description: "Review the requested code or change set.",
+      source: "builtin",
+      enabled: true,
+      hidden: false,
+    },
+    {
+      name: "start-work",
+      description:
+        "Start implementation from a previously accepted plan or handoff.",
+      source: "builtin",
+      enabled: true,
+      hidden: false,
+    },
+  ],
 };
 
 describe("Composer", () => {
@@ -438,13 +455,52 @@ describe("Composer", () => {
       "Ask VoidCode to do something...",
     );
     fireEvent.change(textarea, {
-      target: { value: "/researcher summarize this" },
+      target: { value: "/review summarize this" },
     });
     fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
-    expect(onSubmit).toHaveBeenCalledWith("summarize this", {
-      skills: ["researcher"],
-    });
+    expect(onSubmit).toHaveBeenCalledWith("/review summarize this");
+  });
+
+  it("shows slash suggestions from commands, not just skills", () => {
+    render(<Composer {...baseProps} />);
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    fireEvent.change(textarea, { target: { value: "/st" } });
+
+    expect(screen.getByText("/start-work")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Start implementation from a previously accepted plan/),
+    ).toBeInTheDocument();
+  });
+
+  it("selects the active slash command with arrow keys and Enter", () => {
+    render(<Composer {...baseProps} />);
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "/" } });
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+
+    expect(textarea.value).toBe("/start-work ");
+  });
+
+  it("filters slash suggestions by command name instead of description text", () => {
+    render(<Composer {...baseProps} />);
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    fireEvent.change(textarea, { target: { value: "/accepted" } });
+
+    expect(screen.queryByText("/start-work")).not.toBeInTheDocument();
+    expect(
+      screen.getByText('No slash commands match "accepted".'),
+    ).toBeInTheDocument();
   });
 
   it("keeps the send action enabled while treating empty input as a no-op", () => {

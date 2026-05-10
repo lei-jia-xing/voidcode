@@ -109,20 +109,54 @@ def _expected_agent_models(global_model: str | None) -> dict[str, dict[str, obje
     }
 
 
-def _expected_unconfigured_mcp_status() -> dict[str, object]:
+def _expected_default_mcp_status() -> dict[str, object]:
     return {
-        "state": "unconfigured",
+        "state": "stopped",
         "error": None,
         "details": {
-            "mode": "disabled",
-            "configured": False,
-            "configured_enabled": False,
-            "configured_server_count": 0,
-            "active_server_count": 0,
+            "mode": "managed",
+            "configured": True,
+            "configured_enabled": True,
+            "configured_server_count": 3,
+            "active_server_count": 3,
             "running_server_count": 0,
             "failed_server_count": 0,
             "retry_available": False,
-            "servers": [],
+            "servers": [
+                {
+                    "server": "context7",
+                    "status": "stopped",
+                    "scope": "runtime",
+                    "transport": "remote-http",
+                    "workspace_root": None,
+                    "stage": None,
+                    "error": None,
+                    "command": [],
+                    "retry_available": False,
+                },
+                {
+                    "server": "grep_app",
+                    "status": "stopped",
+                    "scope": "runtime",
+                    "transport": "remote-http",
+                    "workspace_root": None,
+                    "stage": None,
+                    "error": None,
+                    "command": [],
+                    "retry_available": False,
+                },
+                {
+                    "server": "websearch",
+                    "status": "stopped",
+                    "scope": "runtime",
+                    "transport": "remote-http",
+                    "workspace_root": None,
+                    "stage": None,
+                    "error": None,
+                    "command": [],
+                    "retry_available": False,
+                },
+            ],
         },
     }
 
@@ -2057,6 +2091,114 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
     assert captured.err == ""
 
 
+def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
+    capsys: Any,
+) -> None:
+    cli = importlib.import_module("voidcode.cli")
+    config = SimpleNamespace(approval_mode="ask")
+    first_stream = (
+        _make_chunk(
+            session_id="demo-session",
+            status="running",
+            event=_runtime_event("runtime.request_received", prompt="write then shell"),
+        ),
+        _make_chunk(
+            session_id="demo-session",
+            status="waiting",
+            event=_approval_requested_event(request_id="req-1", target_summary="sample.txt"),
+        ),
+    )
+    stderr = _StubTtyStderr()
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime = runtime_class.return_value
+            runtime.run_stream.return_value = iter(first_stream)
+            _configure_resume_stream(
+                runtime,
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=3,
+                            request_id="req-1",
+                            decision="deny",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=4,
+                            source="tool",
+                            tool="write_file",
+                            status="error",
+                            permission_denied=True,
+                            error="permission denied for tool: write_file",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="waiting",
+                        event=_approval_requested_event(
+                            sequence=5,
+                            request_id="req-2",
+                            tool="shell_exec",
+                            target_summary="build.sh",
+                        ),
+                    ),
+                ),
+                (
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="running",
+                        event=_runtime_event(
+                            "runtime.approval_resolved",
+                            sequence=6,
+                            request_id="req-2",
+                            decision="allow",
+                        ),
+                    ),
+                    _make_chunk(
+                        session_id="demo-session",
+                        status="completed",
+                        event=_runtime_event(
+                            "runtime.tool_completed",
+                            sequence=7,
+                            source="tool",
+                            tool="shell_exec",
+                        ),
+                    ),
+                    _make_chunk(session_id="demo-session", status="completed", output="done\n"),
+                ),
+            )
+            with patch.object(cli.sys, "stdin", _StubTtyInput("no\n", "yes\n")):
+                with patch.object(cli.sys, "stderr", stderr):
+                    result = cli.main(
+                        ["run", "write then shell", "--workspace", "/tmp/demo-workspace"]
+                    )
+
+    captured = capsys.readouterr()
+
+    assert result == 0
+    assert runtime.resume_stream.call_count == 2
+    assert stderr.writes == [
+        "Approve write_file for sample.txt? [y/N]: ",
+        "Approve shell_exec for build.sh? [y/N]: ",
+    ]
+    assert (
+        captured.out.count("EVENT runtime.tool_completed source=tool error=permission denied") == 1
+    )
+    assert (
+        captured.out.count("EVENT runtime.approval_requested source=runtime request_id=req-2") == 1
+    )
+    assert captured.out.rstrip().endswith("done")
+    assert captured.err == ""
+
+
 def test_run_command_interactively_handles_repeated_approval_requests(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     config = SimpleNamespace(approval_mode="ask")
@@ -2481,7 +2623,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
             },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
-        "mcp": _expected_unconfigured_mcp_status(),
+        "mcp": _expected_default_mcp_status(),
     }
     assert "Traceback" not in result.stderr
 
@@ -2708,7 +2850,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
             },
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
-        "mcp": _expected_unconfigured_mcp_status(),
+        "mcp": _expected_default_mcp_status(),
     }
     assert "Traceback" not in result.stderr
 
@@ -2755,7 +2897,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
             )
             runtime_class.return_value.provider_readiness.return_value = readiness
             runtime_class.return_value.current_status.return_value = SimpleNamespace(
-                mcp=SimpleNamespace(**_expected_unconfigured_mcp_status())
+                mcp=SimpleNamespace(**_expected_default_mcp_status())
             )
             result = cli.main(
                 [
@@ -2823,7 +2965,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
             "reasoning_controls": {},
         },
         "context_budget": {"context_window": None, "max_output_tokens": None},
-        "mcp": _expected_unconfigured_mcp_status(),
+        "mcp": _expected_default_mcp_status(),
     }
 
 

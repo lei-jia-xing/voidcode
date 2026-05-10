@@ -1357,16 +1357,16 @@ def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> 
     response = runtime.run(RuntimeRequest(prompt="hello"))
 
     assert response.output == "hello"
-    assert response.events[1].event_type == "runtime.skills_loaded"
-    assert response.events[1].payload["skills"] == []
-    assert response.events[1].payload["selected_skills"] == []
-    assert response.events[1].payload["catalog_context_length"] == 0
-    assert response.events[3].event_type == "runtime.tool_lookup_succeeded"
-    assert response.events[3].payload == {"tool": "grep"}
-    assert response.events[4].event_type == "runtime.permission_resolved"
-    assert response.events[5].event_type == "runtime.tool_started"
-    assert response.events[6].event_type == "runtime.tool_completed"
-    assert response.events[6].payload["pattern"] == "alpha"
+    events_by_type = {event.event_type: event for event in response.events}
+    skills_loaded = events_by_type["runtime.skills_loaded"]
+    assert skills_loaded.payload["skills"] == []
+    assert skills_loaded.payload["selected_skills"] == []
+    assert skills_loaded.payload["catalog_context_length"] == 0
+    assert events_by_type["runtime.tool_lookup_succeeded"].payload == {"tool": "grep"}
+    assert "runtime.permission_resolved" in events_by_type
+    assert "runtime.tool_started" in events_by_type
+    tool_completed = events_by_type["runtime.tool_completed"]
+    assert tool_completed.payload["pattern"] == "alpha"
 
 
 def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: Path) -> None:

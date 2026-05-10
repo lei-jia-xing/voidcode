@@ -48,17 +48,18 @@ _MUTATING_TOOL_PATTERNS = frozenset(
 _PROMPT_BOUNDARY_PHRASES = {
     "leader": (
         "primary user-facing runtime agent",
+        "Prefer direct, low-filler answers",
         "You own the final user-facing outcome",
         "Child agents provide bounded assistance",
-        "Route work to the right specialist, supervise execution, verify results yourself",
+        "verify results yourself, and return one cohesive answer",
         "Runtime tool allowlists, approval checks, and background task state remain authoritative",
     ),
     "worker": (
         "focused delegated executor",
         "You execute, not orchestrate",
         "Do not redelegate",
-        "Finish the assigned scope yourself",
         "Worker is a focused executor, not an orchestrator",
+        "No filler",
     ),
     "advisor": (
         "read-heavy preset for architecture, risk, and review guidance",
@@ -69,7 +70,6 @@ _PROMPT_BOUNDARY_PHRASES = {
     "explore": (
         "workspace-bound preset for local code discovery",
         "Address the caller's actual need",
-        "caller can proceed without another discovery round",
         "Use absolute paths for every file reference",
         "Stay read only",
         "do not edit or write files",
@@ -87,7 +87,7 @@ _PROMPT_BOUNDARY_PHRASES = {
         "You are not an executor; you are a planning partner",
         "Do not write, edit, or execute code",
         "Do not claim code execution, implementation ownership, or verification of changes",
-        "without re-discovering the problem statement, non-goals, or definition of done",
+        "surface the ambiguity explicitly rather than guessing",
     ),
 }
 
@@ -136,7 +136,7 @@ def test_leader_prompt_distinguishes_product_from_delegated_worker_roles() -> No
 
     assert prompt is not None
     assert "Use category when you know the kind of work" in prompt
-    assert "Use subagent_type when you already know the specialist you need" in prompt
+    assert "Use subagent_type when you know the exact specialist" in prompt
     assert "Product is a separate top-level planning preset" in prompt
     assert "do not call `task` with product" in prompt
     assert "give the user a concise product handoff" in prompt
@@ -331,6 +331,15 @@ def test_product_prompt_and_manifest_remain_planning_only() -> None:
     assert "planning preset" in prompt
     assert "not an executor" in prompt
     assert "Do not claim code execution" in prompt
+
+
+def test_leader_prompt_enforces_concise_low_filler_output() -> None:
+    prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
+
+    assert prompt is not None
+    assert "Prefer direct, low-filler answers" in prompt
+    assert "Skip praise, padding, and routine narration" in prompt
+    assert "Keep default answers short unless the user asks for detail" in prompt
 
 
 @pytest.mark.parametrize(

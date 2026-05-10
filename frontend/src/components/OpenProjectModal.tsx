@@ -12,6 +12,8 @@ import {
 import { WorkspaceSummary } from "../lib/runtime/types";
 import { ControlButton } from "./ui";
 
+const RECENT_WORKSPACE_UI_LIMIT = 5;
+
 interface OpenProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -43,6 +45,7 @@ export function OpenProjectModal({
 }: OpenProjectModalProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [manualPath, setManualPath] = useState("");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [didInitiateSwitch, setDidInitiateSwitch] = useState(false);
 
@@ -58,13 +61,15 @@ export function OpenProjectModal({
   }, [didInitiateSwitch, workspaceSwitchStatus, onClose]);
 
   const filteredRecent = useMemo(() => {
-    if (!query) return recentWorkspaces;
+    if (!query) return recentWorkspaces.slice(0, RECENT_WORKSPACE_UI_LIMIT);
     const q = normalizeWorkspaceQuery(query);
-    return recentWorkspaces.filter(
-      (w) =>
-        normalizeWorkspaceQuery(w.label).includes(q) ||
-        normalizeWorkspaceQuery(w.path).includes(q),
-    );
+    return recentWorkspaces
+      .filter(
+        (w) =>
+          normalizeWorkspaceQuery(w.label).includes(q) ||
+          normalizeWorkspaceQuery(w.path).includes(q),
+      )
+      .slice(0, RECENT_WORKSPACE_UI_LIMIT);
   }, [recentWorkspaces, query]);
 
   const filteredCandidates = useMemo(() => {
@@ -93,6 +98,12 @@ export function OpenProjectModal({
     } finally {
       setSelectedPath(null);
     }
+  };
+
+  const handleOpenManualPath = async () => {
+    const nextPath = manualPath.trim();
+    if (!nextPath) return;
+    await handleSelect(nextPath);
   };
 
   if (!isOpen) return null;
@@ -132,6 +143,24 @@ export function OpenProjectModal({
               placeholder={t("project.searchPlaceholder")}
               className="w-full bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg pl-9 pr-3 py-2 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors"
             />
+          </div>
+          <div className="mt-3 flex gap-2">
+            <input
+              type="text"
+              value={manualPath}
+              onChange={(e) => setManualPath(e.target.value)}
+              placeholder={t("project.pathPlaceholder")}
+              className="flex-1 bg-[var(--vc-surface-1)] border border-[color:var(--vc-border-subtle)] rounded-lg px-3 py-2 text-sm text-[var(--vc-text-primary)] placeholder:text-[var(--vc-text-subtle)] focus:outline-none focus:border-[color:var(--vc-border-strong)] focus:ring-1 focus:ring-[color:var(--vc-border-strong)] transition-colors"
+            />
+            <ControlButton
+              variant="secondary"
+              onClick={() => {
+                void handleOpenManualPath();
+              }}
+              disabled={isSwitching || manualPath.trim().length === 0}
+            >
+              {t("project.openFolder")}
+            </ControlButton>
           </div>
         </div>
 

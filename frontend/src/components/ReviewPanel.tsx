@@ -62,6 +62,55 @@ function changeLabel(changeType: ReviewChangedFile["change_type"]): string {
   }
 }
 
+function changeTone(changeType: ReviewChangedFile["change_type"]): string {
+  switch (changeType) {
+    case "added":
+      return "text-[var(--vc-confirm-text)]";
+    case "modified":
+      return "text-sky-300";
+    case "deleted":
+      return "text-[var(--vc-danger-text)]";
+    case "renamed":
+      return "text-amber-300";
+    case "untracked":
+      return "text-violet-300";
+    case "copied":
+      return "text-teal-300";
+    case "type_changed":
+      return "text-orange-300";
+    default:
+      return "text-[var(--vc-text-muted)]";
+  }
+}
+
+type DiffToken = {
+  kind: "header" | "hunk" | "context" | "addition" | "deletion";
+  text: string;
+};
+
+function tokenizeReviewDiff(diff: string): DiffToken[] {
+  return diff.split("\n").map((line) => {
+    if (
+      line.startsWith("diff --git") ||
+      line.startsWith("index ") ||
+      line.startsWith("+++") ||
+      line.startsWith("---")
+    ) {
+      return { kind: "header", text: line };
+    }
+    if (line.startsWith("@@")) {
+      return { kind: "hunk", text: line };
+    }
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      return { kind: "addition", text: line };
+    }
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      return { kind: "deletion", text: line };
+    }
+    return { kind: "context", text: line };
+  });
+}
+
 function TreeList({
   nodes,
   depth,
@@ -361,7 +410,9 @@ export function ReviewPanel({
                         }`}
                       >
                         <div className="flex items-center gap-2 text-xs">
-                          <span className="w-4 font-semibold text-[var(--vc-text-muted)]">
+                          <span
+                            className={`w-4 font-semibold ${changeTone(item.change_type)}`}
+                          >
                             {changeLabel(item.change_type)}
                           </span>
                           <GitBranch className="h-3.5 w-3.5 text-[var(--vc-text-subtle)]" />
@@ -425,9 +476,44 @@ export function ReviewPanel({
                 )}
 
                 {diffStatus === "success" && diff?.diff && (
-                  <pre className="overflow-x-hidden rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 text-[11px] leading-relaxed text-[var(--vc-text-muted)] whitespace-pre-wrap break-words font-mono">
-                    {diff.diff}
-                  </pre>
+                  <div className="overflow-hidden rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)]">
+                    <div className="border-b border-[color:var(--vc-border-subtle)] px-3 py-2 text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+                      Diff
+                    </div>
+                    <div className="max-h-[32rem] overflow-auto font-mono text-[11px] leading-relaxed">
+                      {tokenizeReviewDiff(diff.diff).map((line, index) => (
+                        <div
+                          key={`${line.kind}-${index}`}
+                          className={`grid grid-cols-[2rem_minmax(0,1fr)] gap-0 border-b border-[color:var(--vc-border-subtle)]/40 px-3 py-1.5 last:border-b-0 ${
+                            line.kind === "addition"
+                              ? "bg-[color:var(--vc-confirm-bg)]/40 text-[var(--vc-confirm-text)]"
+                              : line.kind === "deletion"
+                                ? "bg-[var(--vc-danger-bg)]/40 text-[var(--vc-danger-text)]"
+                                : line.kind === "hunk"
+                                  ? "bg-[var(--vc-surface-2)] text-amber-200"
+                                  : line.kind === "header"
+                                    ? "bg-[var(--vc-surface-2)] text-[var(--vc-text-subtle)]"
+                                    : "text-[var(--vc-text-muted)]"
+                          }`}
+                        >
+                          <span className="select-none text-center text-[10px] opacity-80">
+                            {line.kind === "addition"
+                              ? "+"
+                              : line.kind === "deletion"
+                                ? "-"
+                                : line.kind === "hunk"
+                                  ? "@@"
+                                  : line.kind === "header"
+                                    ? "#"
+                                    : "·"}
+                          </span>
+                          <span className="whitespace-pre-wrap break-words">
+                            {line.text}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </>
             )}
