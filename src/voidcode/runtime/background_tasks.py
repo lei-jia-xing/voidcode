@@ -772,9 +772,11 @@ class RuntimeBackgroundTaskSupervisor:
                     continue
                 worker_start_gate = threading.Event()
 
+                background_task_id = running_task.task.id
+
                 def run_worker_after_started_hook(
                     *,
-                    background_task_id: str = task.task.id,
+                    background_task_id: str = background_task_id,
                     reserved_identity: _BackgroundTaskConcurrencyIdentity = identity,
                     start_gate: threading.Event = worker_start_gate,
                 ) -> None:
@@ -796,10 +798,10 @@ class RuntimeBackgroundTaskSupervisor:
 
                 worker = threading.Thread(
                     target=run_worker_after_started_hook,
-                    name=f"voidcode-background-task-{task.task.id}",
+                    name=f"voidcode-background-task-{background_task_id}",
                     daemon=True,
                 )
-                self._threads[task.task.id] = worker
+                self._threads[background_task_id] = worker
                 started_tasks.append((running_task, worker, identity, worker_start_gate))
         for started_task, worker, identity, worker_start_gate in started_tasks:
             try:

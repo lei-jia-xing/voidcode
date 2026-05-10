@@ -62,6 +62,7 @@ describe("App", () => {
     setReviewMode: vi.fn(),
     sessions: [],
     currentSessionId: null,
+    childSessionParentId: null,
     sessionSidebarWidth: 344,
     setSessionSidebarWidth: vi.fn(),
     currentSessionState: null,
@@ -422,6 +423,7 @@ describe("App", () => {
 
   it("shows delegated child session transcript and switches back to the parent session", () => {
     const loadBackgroundTaskOutput = vi.fn();
+    const selectSession = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -532,7 +534,9 @@ describe("App", () => {
         },
         output: "child output",
       },
+      childSessionParentId: "parent-session",
       loadBackgroundTaskOutput,
+      selectSession,
     });
 
     render(<App />);
@@ -560,11 +564,13 @@ describe("App", () => {
 
     fireEvent.click(screen.getByText("Parent session"));
 
-    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
+    expect(selectSession).toHaveBeenCalledWith("parent-session");
+    expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
   });
 
   it("supports OpenCode-style Alt+arrow child-session navigation", () => {
     const loadBackgroundTaskOutput = vi.fn();
+    const selectSession = vi.fn();
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -656,7 +662,9 @@ describe("App", () => {
         },
         output: "child output 1",
       },
+      childSessionParentId: "parent-session",
       loadBackgroundTaskOutput,
+      selectSession,
     });
 
     render(<App />);
@@ -671,7 +679,8 @@ describe("App", () => {
     expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith("task-child-0");
 
     fireEvent.keyDown(window, { key: "ArrowUp", altKey: true });
-    expect(loadBackgroundTaskOutput).toHaveBeenCalledWith(null);
+    expect(selectSession).toHaveBeenCalledWith("parent-session");
+    expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
   });
 
   it("renders a workspace loading state before showing the empty project page", () => {

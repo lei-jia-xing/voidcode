@@ -630,12 +630,26 @@ class RuntimeResumeCoordinator:
         )
         runtime._validate_session_workspace(session, session_id=stored.session.session.id)
         session = runtime._session_with_current_acp_metadata(session)
-        mcp_startup_chunks, session, _, mcp_failed_chunk = runtime._refresh_mcp_tools_for_session(
-            session=session,
-            sequence=max_stored_sequence,
-            failure_kind="mcp_startup_failed",
-        )
         effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
+        mcp_state = runtime._mcp_manager.current_state()
+        mcp_server_names = set(mcp_state.configuration.servers)
+        default_remote_mcp_servers = {"context7", "websearch", "grep_app"}
+        should_refresh_mcp_on_resume = bool(mcp_server_names) and not (
+            mcp_server_names <= default_remote_mcp_servers
+        )
+        if mcp_state.configuration.configured_enabled is True and should_refresh_mcp_on_resume:
+            mcp_startup_chunks, session, _, mcp_failed_chunk = (
+                runtime._refresh_mcp_tools_for_session(
+                    session=session,
+                    sequence=max_stored_sequence,
+                    failure_kind="mcp_startup_failed",
+                )
+            )
+            effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
+        else:
+            mcp_startup_chunks = ()
+            mcp_failed_chunk = None
+            runtime._tool_registry = runtime._base_tool_registry
         try:
             runtime._validate_reasoning_effort_capability(effective_config)
         except ValueError as exc:

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "./store";
 import { SessionSidebar } from "./components/SessionSidebar";
@@ -256,6 +256,7 @@ function App() {
     selectReviewPath,
     sessions,
     currentSessionId,
+    childSessionParentId,
     sessionSidebarWidth,
     setSessionSidebarWidth,
     currentSessionEvents,
@@ -394,6 +395,14 @@ function App() {
     loadSessions();
   }, [loadSessions]);
 
+  const returnToParentSession = useCallback(() => {
+    if (childSessionParentId) {
+      void selectSession(childSessionParentId);
+      return;
+    }
+    void loadBackgroundTaskOutput(null);
+  }, [childSessionParentId, loadBackgroundTaskOutput, selectSession]);
+
   // While browsing a delegated child session, use OpenCode-style Alt+arrow navigation.
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -407,7 +416,7 @@ function App() {
       }
       if (event.altKey && event.key === "ArrowUp") {
         event.preventDefault();
-        void loadBackgroundTaskOutput(null);
+        returnToParentSession();
         return;
       }
       if (event.altKey && event.key === "ArrowDown") {
@@ -446,6 +455,7 @@ function App() {
     childSessionTaskIds,
     displayedIsChildSession,
     loadBackgroundTaskOutput,
+    returnToParentSession,
     selectedChildTaskIndex,
   ]);
 
@@ -663,9 +673,7 @@ function App() {
                   <ControlButton
                     compact
                     variant="ghost"
-                    onClick={() => {
-                      void loadBackgroundTaskOutput(null);
-                    }}
+                    onClick={returnToParentSession}
                     aria-label={t("childSessions.parent")}
                     title="Alt+Up"
                   >

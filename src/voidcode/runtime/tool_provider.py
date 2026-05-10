@@ -57,6 +57,11 @@ BUILTIN_TOOL_NAMES = frozenset(
         "web_fetch",
         "web_search",
         "write_file",
+        "mcp/context7/resolve-library-id",
+        "mcp/context7/query-docs",
+        "mcp/websearch/web_fetch_exa",
+        "mcp/websearch/web_search_exa",
+        "mcp/grep_app/searchGitHub",
     }
 )
 

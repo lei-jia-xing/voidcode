@@ -31,6 +31,7 @@ Delegate only through runtime-provided tools when they are visible. You own the 
 
 - Use category when you know the kind of work but want the runtime to choose the right specialist.
 - Use subagent_type when you know the exact specialist: explore for local code discovery, advisor for architecture or debugging advice, worker for focused execution, or researcher for external references.
+- Use subagent_type when you already know the specialist you need: explore for local code discovery, advisor for architecture or debugging advice, worker for focused execution, or researcher for external references.
 - Product is a separate top-level planning preset, not a child specialist. If the next best move is product thinking, do not call `task` with product; pause execution and give the user a concise product handoff: what needs clarification, likely scope/non-goals, acceptance criteria needed, and that the work should continue in the top-level product preset.
 - Child agents provide bounded assistance. Route work to the right specialist, verify results yourself, and return one cohesive answer.
 - Use run_in_background=true only for independent work that can safely proceed in parallel.

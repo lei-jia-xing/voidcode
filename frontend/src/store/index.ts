@@ -76,6 +76,7 @@ interface AppState {
   currentSessionState: SessionState | null;
   currentSessionEvents: EventEnvelope[];
   currentSessionOutput: string | null;
+  childSessionParentId: string | null;
 
   sessionsStatus: "idle" | "loading" | "success" | "error";
   sessionsError: string | null;
@@ -406,6 +407,7 @@ export const useAppStore = create<AppState>()(
       currentSessionState: null,
       currentSessionEvents: [],
       currentSessionOutput: null,
+      childSessionParentId: null,
 
       sessionsStatus: "idle",
       sessionsError: null,
@@ -503,6 +505,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
+            childSessionParentId: null,
             replayStatus: "idle",
             replayError: null,
             runStatus: "idle",
@@ -864,6 +867,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
+            childSessionParentId: null,
             replayStatus: "idle",
             replayError: null,
             runStatus: "idle",
@@ -885,6 +889,7 @@ export const useAppStore = create<AppState>()(
         }
 
         const requestId = get().replayRequestId + 1;
+        const previousSessionId = get().currentSessionId;
         set({
           currentSessionId: sessionId,
           currentSessionState: null,
@@ -906,6 +911,7 @@ export const useAppStore = create<AppState>()(
           backgroundTaskOutput: null,
           backgroundTaskOutputStatus: "idle",
           backgroundTaskOutputError: null,
+          childSessionParentId: null,
         });
 
         try {
@@ -918,11 +924,16 @@ export const useAppStore = create<AppState>()(
             ) {
               return;
             }
+            const parentSessionId =
+              childContext.task.parent_session_id ??
+              childContext.session_result?.session.session.parent_id ??
+              previousSessionId;
             set({
               backgroundTaskOutput: childContext,
               backgroundTaskOutputStatus: "success",
               backgroundTaskOutputError: null,
               selectedBackgroundTaskOutputId: childContext.task.task_id,
+              childSessionParentId: parentSessionId,
               currentSessionState:
                 childContext.session_result?.session ??
                 get().currentSessionState,
@@ -951,6 +962,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: replay.session,
             currentSessionEvents: replay.events,
             currentSessionOutput: replay.output,
+            childSessionParentId: null,
             replayStatus: "success",
           });
           await get().loadBackgroundTasks();
@@ -967,6 +979,7 @@ export const useAppStore = create<AppState>()(
             currentSessionState: null,
             currentSessionEvents: [],
             currentSessionOutput: null,
+            childSessionParentId: null,
             replayStatus: "idle",
             replayError: null,
           });
@@ -1501,13 +1514,17 @@ export const useAppStore = create<AppState>()(
       },
 
       loadBackgroundTasks: async () => {
-        const scopedSessionId = get().currentSessionId;
+        const scopedSessionId =
+          get().childSessionParentId ?? get().currentSessionId;
         set({ backgroundTasksStatus: "loading", backgroundTasksError: null });
         try {
           const backgroundTasks = scopedSessionId
             ? await RuntimeClient.listSessionBackgroundTasks(scopedSessionId)
             : await RuntimeClient.listBackgroundTasks();
-          if (get().currentSessionId !== scopedSessionId) {
+          if (
+            (get().childSessionParentId ?? get().currentSessionId) !==
+            scopedSessionId
+          ) {
             return;
           }
           set({
@@ -1543,6 +1560,7 @@ export const useAppStore = create<AppState>()(
             backgroundTaskOutput: null,
             backgroundTaskOutputStatus: "idle",
             backgroundTaskOutputError: null,
+            childSessionParentId: null,
           });
           return;
         }

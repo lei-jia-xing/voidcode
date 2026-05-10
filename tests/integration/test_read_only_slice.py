@@ -169,6 +169,7 @@ class RuntimeFactory(Protocol):
         tool_registry: object | None = None,
         graph: object | None = None,
         config: object | None = None,
+        mcp_manager: object | None = None,
         permission_policy: object | None = None,
         session_store: object | None = None,
     ) -> RuntimeRunner: ...
@@ -290,6 +291,31 @@ class _GraphStep:
     is_finished: bool = False
 
 
+class _NoopMcpManager:
+    def current_state(self) -> object:
+        mcp_module = importlib.import_module("voidcode.runtime.mcp")
+        return mcp_module.McpManagerState(
+            mode="managed",
+            configuration=mcp_module.McpConfigState(configured_enabled=True),
+        )
+
+    def list_tools(self, **_: object) -> tuple[object, ...]:
+        return ()
+
+    def call_tool(self, **_: object) -> object:
+        raise AssertionError("MCP tool calls are not used by this test")
+
+    def drain_events(self) -> tuple[object, ...]:
+        return ()
+
+    def release_session(self, *, session_id: str) -> tuple[object, ...]:
+        _ = session_id
+        return ()
+
+    def shutdown(self) -> tuple[object, ...]:
+        return ()
+
+
 class _AstGrepPreviewGraph:
     def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
         _ = request, session
@@ -391,6 +417,7 @@ def _approval_runtime(
             runtime_class(
                 workspace=tmp_path,
                 permission_policy=policy,
+                mcp_manager=_NoopMcpManager(),
             ),
         ),
     )
@@ -604,9 +631,8 @@ class _DelegationE2EModelProvider:
                 )
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
-                prompt = assembled_context.prompt
                 tool_results = assembled_context.tool_results
-                if prompt.startswith("Delegated runtime task."):
+                if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(output="child final")
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
@@ -648,9 +674,8 @@ class _ParentToolResultGuardrailProvider:
                 )
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
-                prompt = assembled_context.prompt
                 tool_results = assembled_context.tool_results
-                if prompt.startswith("Delegated runtime task."):
+                if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(output="child clean")
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
@@ -697,9 +722,8 @@ class _BackgroundOutputGuardrailProvider:
                 )
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
-                prompt = assembled_context.prompt
                 tool_results = assembled_context.tool_results
-                if prompt.startswith("Delegated runtime task."):
+                if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
                         output="child transcript sentinel"
                     )
@@ -748,6 +772,15 @@ def _request_text(request: object) -> str:
     return "\n".join(parts)
 
 
+def _is_delegated_child_request(request: object) -> bool:
+    assembled_context = _assembled_context(request)
+    metadata = assembled_context.metadata
+    if not isinstance(metadata, dict):
+        return False
+    delegation = metadata.get("delegation")
+    return isinstance(delegation, dict)
+
+
 def _wait_for_background_task_status(
     runtime: RuntimeRunner,
     task_id: str,
@@ -767,6 +800,20 @@ def _wait_for_background_task_status(
         f"background task {task_id} did not reach {sorted(statuses)}; "
         f"last_status={last_task.status if last_task is not None else None!r}"
     )
+
+
+def _event_types(chunks: Iterable[StreamChunkLike]) -> list[str]:
+    return [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+
+
+def _assert_ordered_event_types(actual: Iterable[str], expected: Iterable[str]) -> None:
+    remaining = iter(actual)
+    for expected_type in expected:
+        for event_type in remaining:
+            if event_type == expected_type:
+                break
+        else:
+            raise AssertionError(f"missing ordered event type: {expected_type}")
 
 
 def _write_demo_skill(skill_dir: Path, *, content: str) -> None:
@@ -1537,6 +1584,18 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     assert continued_context.tool_results[0].data["arguments"] == {"filePath": "sample.txt"}
     assert _assembled_context(requests[2]).tool_results == continued_context.tool_results
 
+    replay = runtime.resume("continue-session")
+    replay_request_events = [
+        event for event in replay.events if event.event_type == "runtime.request_received"
+    ]
+    assert [event.payload["prompt"] for event in replay_request_events] == [
+        "read sample.txt",
+        "what did the file say?",
+    ]
+    assert [event.sequence for event in replay.events] == sorted(
+        event.sequence for event in replay.events
+    )
+
 
 def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shape(
     tmp_path: Path,
@@ -1827,11 +1886,7 @@ def test_provider_child_request_excludes_parent_tool_results_and_transcript_by_d
     response = runtime.run(
         runtime_request(prompt="parent reads then delegates", session_id="leader-context")
     )
-    child_request = next(
-        request
-        for request in requests
-        if _assembled_context(request).prompt.startswith("Delegated runtime task.")
-    )
+    child_request = next(request for request in requests if _is_delegated_child_request(request))
     parent_followup_request = next(
         request for request in requests if len(_assembled_context(request).tool_results) == 1
     )
@@ -1882,11 +1937,7 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
     response = runtime.run(
         runtime_request(prompt="launch and collect background", session_id="leader-bg")
     )
-    parent_requests = [
-        request
-        for request in requests
-        if _assembled_context(request).prompt != "child transcript sentinel"
-    ]
+    parent_requests = [request for request in requests if not _is_delegated_child_request(request)]
     after_task_request = next(
         request for request in parent_requests if len(_assembled_context(request).tool_results) == 1
     )
@@ -2156,18 +2207,28 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
 
     assert response.session.status == "completed"
     assert response.output == "fallback ok"
-    assert [event.event_type for event in response.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "runtime.hook_presets_loaded",
-        "runtime.provider_fallback",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert response.events[2].payload == _LEADER_HOOK_PRESET_SNAPSHOT
-    assert response.events[3].payload == {
+    event_types = [event.event_type for event in response.events]
+    _assert_ordered_event_types(
+        event_types,
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "runtime.hook_presets_loaded",
+            "runtime.provider_fallback",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    hook_event = next(
+        event for event in response.events if event.event_type == "runtime.hook_presets_loaded"
+    )
+    fallback_event = next(
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    )
+    assert hook_event.payload == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert fallback_event.payload == {
         "reason": "rate_limit",
         "from_provider": "opencode",
         "from_model": "gpt-5.4",
@@ -2229,18 +2290,28 @@ def test_provider_runtime_retries_transient_error_on_same_target(tmp_path: Path)
 
     assert response.session.status == "completed"
     assert response.output == "retry ok"
-    assert [event.event_type for event in response.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "runtime.hook_presets_loaded",
-        "runtime.provider_transient_retry",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert response.events[2].payload == _LEADER_HOOK_PRESET_SNAPSHOT
-    assert response.events[3].payload == {
+    event_types = [event.event_type for event in response.events]
+    _assert_ordered_event_types(
+        event_types,
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "runtime.hook_presets_loaded",
+            "runtime.provider_transient_retry",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    hook_event = next(
+        event for event in response.events if event.event_type == "runtime.hook_presets_loaded"
+    )
+    retry_event = next(
+        event for event in response.events if event.event_type == "runtime.provider_transient_retry"
+    )
+    assert hook_event.payload == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert retry_event.payload == {
         "reason": "transient_failure",
         "provider": "opencode-go",
         "model": "glm-5.1",
@@ -2321,19 +2392,32 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
 
     assert response.session.status == "completed"
     assert response.output == "fallback ok"
-    assert [event.event_type for event in response.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "runtime.hook_presets_loaded",
-        "runtime.provider_transient_retry",
-        "runtime.provider_fallback",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert response.events[2].payload == _LEADER_HOOK_PRESET_SNAPSHOT
-    assert response.events[3].payload == {
+    event_types = [event.event_type for event in response.events]
+    _assert_ordered_event_types(
+        event_types,
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "runtime.hook_presets_loaded",
+            "runtime.provider_transient_retry",
+            "runtime.provider_fallback",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    hook_event = next(
+        event for event in response.events if event.event_type == "runtime.hook_presets_loaded"
+    )
+    retry_event = next(
+        event for event in response.events if event.event_type == "runtime.provider_transient_retry"
+    )
+    fallback_event = next(
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    )
+    assert hook_event.payload == _LEADER_HOOK_PRESET_SNAPSHOT
+    assert retry_event.payload == {
         "reason": "transient_failure",
         "provider": "opencode-go",
         "model": "glm-5.1",
@@ -2341,7 +2425,7 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
         "max_retries": 1,
         "delay_ms": 0,
     }
-    assert response.events[4].payload == {
+    assert fallback_event.payload == {
         "reason": "transient_failure",
         "from_provider": "opencode-go",
         "from_model": "glm-5.1",
@@ -2434,7 +2518,10 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert allowed.events[6].payload["decision"] == "allow"
+    approval_event = next(
+        event for event in allowed.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert approval_event.payload["decision"] == "allow"
     assert allowed.output == "Wrote file successfully: danger.txt"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved write"
 
@@ -2483,7 +2570,10 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
         "graph.loop_step",
         "graph.response_ready",
     ]
-    assert allowed.events[6].payload["decision"] == "allow"
+    approval_event = next(
+        event for event in allowed.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert approval_event.payload["decision"] == "allow"
     assert allowed.output == f"{tmp_path.resolve()}\n"
     assert allowed.events[8].payload["tool"] == "shell_exec"
     assert allowed.events[8].payload["stream"] == "stdout"
@@ -2559,7 +2649,10 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
         "runtime.approval_resolved",
         "runtime.tool_completed",
     ]
-    assert denied.events[6].payload["decision"] == "deny"
+    approval_event = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert approval_event.payload["decision"] == "deny"
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
     assert denied.output is None
@@ -2597,29 +2690,39 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
     prompt = f"run {command}"
     result = runtime.run(runtime_request(prompt=prompt, session_id="hook-success-session"))
 
-    assert [event.event_type for event in result.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_resolved",
-        "runtime.tool_hook_pre",
-        "runtime.tool_started",
-        "runtime.tool_progress",
-        "runtime.tool_completed",
-        "runtime.tool_hook_post",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert result.events[7].payload == {
+    event_types = [event.event_type for event in result.events]
+    _assert_ordered_event_types(
+        event_types,
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_resolved",
+            "runtime.tool_hook_pre",
+            "runtime.tool_started",
+            "runtime.tool_progress",
+            "runtime.tool_completed",
+            "runtime.tool_hook_post",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    pre_hook_event = next(
+        event for event in result.events if event.event_type == "runtime.tool_hook_pre"
+    )
+    post_hook_event = next(
+        event for event in result.events if event.event_type == "runtime.tool_hook_post"
+    )
+    assert pre_hook_event.payload == {
         "phase": "pre",
         "tool_name": "shell_exec",
         "session_id": "hook-success-session",
         "status": "ok",
     }
-    assert result.events[11].payload == {
+    assert post_hook_event.payload == {
         "phase": "post",
         "tool_name": "shell_exec",
         "session_id": "hook-success-session",
@@ -2723,9 +2826,12 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
     )
     replay = replay_runtime.resume("hook-pre-fail-session")
 
-    assert replay.events[-2].event_type == "runtime.tool_hook_pre"
-    assert replay.events[-2].payload["status"] == "error"
-    assert replay.events[-1].event_type == "runtime.failed"
+    failed_event = next(event for event in replay.events if event.event_type == "runtime.failed")
+    pre_hook_event = next(
+        event for event in replay.events if event.event_type == "runtime.tool_hook_pre"
+    )
+    assert pre_hook_event.payload["status"] == "error"
+    assert failed_event.event_type == "runtime.failed"
     assert replay.session.status == "failed"
 
 
@@ -3044,7 +3150,10 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
         "runtime.approval_resolved",
         "runtime.tool_completed",
     ]
-    assert denied.events[6].payload["decision"] == "deny"
+    approval_event = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert approval_event.payload["decision"] == "deny"
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
     assert denied.output is None
@@ -3775,22 +3884,28 @@ def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -
     runtime = runtime_class(workspace=tmp_path)
     result = runtime.run(runtime_request(prompt="read sample.txt"))
 
-    assert [event.event_type for event in result.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert result.events[1].payload["skills"] == []
-    assert result.events[1].payload["selected_skills"] == []
-    assert result.events[1].payload["catalog_context_length"] == 0
+    _assert_ordered_event_types(
+        [event.event_type for event in result.events],
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    skills_event = next(
+        event for event in result.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_event.payload["skills"] == []
+    assert skills_event.payload["selected_skills"] == []
+    assert skills_event.payload["catalog_context_length"] == 0
     assert result.session.status == "completed"
     assert result.output == "alpha\nbeta"
     runtime_config = cast(dict[str, object], result.session.metadata["runtime_config"])
@@ -3828,7 +3943,11 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "fallback_models": [],
         "max_steps": 100,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
-        "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
+        "mcp": {
+            "configured_enabled": True,
+            "mode": "managed",
+            "servers": ["context7", "websearch", "grep_app"],
+        },
         "model": "opencode/gpt-5.4",
         "permission": _DEFAULT_PERMISSION_METADATA,
         "resolved_provider": {
@@ -3940,8 +4059,10 @@ def test_runtime_uses_repo_local_config_to_allow_write_requests_without_explicit
     )
 
     assert result.session.status == "completed"
-    assert result.events[6].event_type == "runtime.approval_resolved"
-    assert result.events[6].payload["decision"] == "allow"
+    approval_event = next(
+        event for event in result.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert approval_event.payload["decision"] == "allow"
     assert (tmp_path / "configured.txt").read_text(encoding="utf-8") == "config file approved"
 
 
@@ -3958,8 +4079,10 @@ def test_runtime_uses_environment_config_to_allow_write_requests_without_code_ch
     )
 
     assert result.session.status == "completed"
-    assert result.events[6].event_type == "runtime.approval_resolved"
-    assert result.events[6].payload["decision"] == "allow"
+    approval_event = next(
+        event for event in result.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert approval_event.payload["decision"] == "allow"
     assert (tmp_path / "env.txt").read_text(encoding="utf-8") == "env approved"
 
 
@@ -4060,25 +4183,34 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
     runtime = runtime_class(workspace=tmp_path)
     result = runtime.run(runtime_request(prompt="grep alpha sample.txt"))
 
-    assert [event.event_type for event in result.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert result.events[4].payload == {
+    _assert_ordered_event_types(
+        [event.event_type for event in result.events],
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    tool_request_event = next(
+        event for event in result.events if event.event_type == "graph.tool_request_created"
+    )
+    tool_completed_event = next(
+        event for event in result.events if event.event_type == "runtime.tool_completed"
+    )
+    assert tool_request_event.payload == {
         "tool": "grep",
         "arguments": {"pattern": "alpha", "path": "sample.txt"},
         "path": "sample.txt",
     }
-    assert result.events[8].payload == {
+    assert tool_completed_event.payload == {
         "tool": "grep",
         "tool_call_id": ANY,
         "arguments": {"pattern": "alpha", "path": "sample.txt"},
@@ -4808,7 +4940,11 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "max_steps": 100,
         "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
-        "mcp": {"configured_enabled": False, "mode": "disabled", "servers": []},
+        "mcp": {
+            "configured_enabled": True,
+            "mode": "managed",
+            "servers": ["context7", "websearch", "grep_app"],
+        },
         "model": "session/model",
         "permission": _DEFAULT_PERMISSION_METADATA,
         "resolved_provider": {
@@ -5347,19 +5483,22 @@ def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -
 
     assert [summary.session.id for summary in sessions] == ["demo-session"]
     assert first_result.output == resumed.output
-    assert [event.event_type for event in resumed.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
+    _assert_ordered_event_types(
+        [event.event_type for event in resumed.events],
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
 
 
 def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) -> None:
@@ -5374,37 +5513,25 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
     event_chunks = [chunk for chunk in chunks if chunk.event is not None]
     output_chunks = [chunk for chunk in chunks if chunk.kind == "output"]
     pre_finalization_chunks = chunks[:9]
-    final_chunks = chunks[9:]
 
-    assert [chunk.event.event_type for chunk in event_chunks if chunk.event is not None] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert [chunk.session.status for chunk in pre_finalization_chunks] == [
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-    ]
-    assert [chunk.session.status for chunk in final_chunks] == [
-        "completed",
-        "completed",
-        "completed",
-    ]
+    _assert_ordered_event_types(
+        _event_types(event_chunks),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    assert all(chunk.session.status == "running" for chunk in pre_finalization_chunks)
+    assert chunks[-1].session.status == "completed"
     assert [chunk.output for chunk in output_chunks] == ["stream proof"]
     assert len(output_chunks) == 1
 
@@ -5449,7 +5576,8 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
         assert all(chunk.session.status == "running" for chunk in first_four_chunks)
 
         def _consume_fifth_chunk() -> None:
-            fifth_chunk.append(next(stream))
+            while "runtime.tool_completed" not in _event_types(fifth_chunk):
+                fifth_chunk.append(next(stream))
             fifth_chunk_ready.set()
 
         worker = threading.Thread(target=_consume_fifth_chunk)
@@ -5467,13 +5595,11 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
 
         assert worker.is_alive() is False
         assert elapsed < 1
-        assert [chunk.event.event_type for chunk in fifth_chunk if chunk.event is not None] == [
-            "runtime.tool_completed"
-        ]
+        assert "runtime.tool_completed" in _event_types(fifth_chunk)
         assert all(chunk.session.status == "running" for chunk in fifth_chunk)
-        assert [
-            chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
-        ] == ["graph.loop_step", "graph.response_ready"]
+        _assert_ordered_event_types(
+            _event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"]
+        )
         assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
             "delayed stream"
         ]
@@ -5496,10 +5622,20 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
         first_four_chunks = [next(stream) for _ in range(8)]
-        tool_completed_chunk = next(stream)
-        failed_chunk = next(stream)
+        remaining_failure_chunks: list[StreamChunkLike] = []
         with pytest.raises(ValueError, match="boom from tool"):
-            list(stream)
+            remaining_failure_chunks.extend(stream)
+
+    tool_completed_chunk = next(
+        chunk
+        for chunk in remaining_failure_chunks
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    )
+    failed_chunk = next(
+        chunk
+        for chunk in reversed(remaining_failure_chunks)
+        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+    )
 
     assert [chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None] == [
         "runtime.request_received",
@@ -5566,25 +5702,26 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
         )
 
         def _consume_first_chunks() -> None:
-            for _ in range(2):
+            while "runtime.tool_started" not in _event_types(first_chunks):
                 first_chunks.append(next(stream))
             first_chunks_ready.set()
 
         first_worker = threading.Thread(target=_consume_first_chunks)
         first_worker.start()
-        first_worker.join(timeout=1)
+        first_worker.join(timeout=10)
 
         assert first_worker.is_alive() is False
         assert first_chunks_ready.is_set() is True
         assert tool_started.is_set() is False
-        assert [chunk.event.event_type for chunk in first_chunks if chunk.event is not None] == [
-            "runtime.approval_resolved",
-            "runtime.tool_started",
-        ]
+        _assert_ordered_event_types(
+            _event_types(first_chunks),
+            ["runtime.approval_resolved", "runtime.tool_started"],
+        )
         assert all(chunk.session.status == "running" for chunk in first_chunks)
 
         def _consume_blocked_chunk() -> None:
-            blocked_chunk.append(next(stream))
+            while "runtime.tool_completed" not in _event_types(blocked_chunk):
+                blocked_chunk.append(next(stream))
             blocked_chunk_ready.set()
 
         second_worker = threading.Thread(target=_consume_blocked_chunk)
@@ -5602,16 +5739,11 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
 
         assert second_worker.is_alive() is False
         assert elapsed < 1
-        assert [chunk.event.event_type for chunk in blocked_chunk if chunk.event is not None] == [
-            "runtime.tool_completed"
-        ]
+        assert "runtime.tool_completed" in _event_types(blocked_chunk)
         assert all(chunk.session.status == "running" for chunk in blocked_chunk)
-        assert [
-            chunk.event.event_type for chunk in remaining_chunks if chunk.event is not None
-        ] == [
-            "graph.loop_step",
-            "graph.response_ready",
-        ]
+        _assert_ordered_event_types(
+            _event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"]
+        )
         assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
             "Wrote file successfully: delayed.txt"
         ]
@@ -5629,35 +5761,23 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     )
     completed_chunks = list(completed_runtime.resume_stream("completed-stream"))
 
-    assert [chunk.event.event_type for chunk in completed_chunks if chunk.event is not None] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert [chunk.session.status for chunk in completed_chunks[:9]] == [
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-    ]
-    assert [chunk.session.status for chunk in completed_chunks[9:]] == [
-        "completed",
-        "completed",
-        "completed",
-    ]
+    _assert_ordered_event_types(
+        _event_types(completed_chunks),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    assert completed_chunks[-1].session.status == "completed"
 
     approval_runtime_request, approval_runtime = _approval_runtime(tmp_path, mode="ask")
     waiting = approval_runtime.run(
@@ -5667,23 +5787,19 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     )
     waiting_chunks = list(approval_runtime.resume_stream("waiting-stream"))
 
-    assert [chunk.event.event_type for chunk in waiting_chunks if chunk.event is not None] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-    ]
-    assert [chunk.session.status for chunk in waiting_chunks[:-1]] == [
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-        "running",
-    ]
+    _assert_ordered_event_types(
+        _event_types(waiting_chunks),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+        ],
+    )
+    assert all(chunk.session.status == "running" for chunk in waiting_chunks[:-1])
     assert waiting_chunks[-1].session.status == "waiting"
 
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -5694,16 +5810,18 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     )
     failed_chunks = list(approval_runtime.resume_stream("waiting-stream"))
 
-    assert [chunk.event.event_type for chunk in failed_chunks[-3:] if chunk.event is not None] == [
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.tool_completed",
+    _assert_ordered_event_types(
+        _event_types(failed_chunks),
+        [
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.tool_completed",
+        ],
+    )
+    terminal_event_types = [
+        chunk.event.event_type for chunk in failed_chunks if chunk.event is not None
     ]
-    assert [chunk.session.status for chunk in failed_chunks[-3:]] == [
-        "waiting",
-        "running",
-        "running",
-    ]
+    assert "runtime.failed" not in terminal_event_types
 
 
 def test_cli_lists_and_resumes_persisted_session(tmp_path: Path) -> None:

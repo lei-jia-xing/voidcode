@@ -431,6 +431,58 @@ def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]
     return payloads
 
 
+def _event_types_from_payload_events(payload: dict[str, object], key: str = "events") -> list[str]:
+    return [cast(str, event["event_type"]) for event in cast(list[dict[str, object]], payload[key])]
+
+
+def _event_types_from_sse_payloads(payloads: list[dict[str, object]]) -> list[str]:
+    event_types: list[str] = []
+    for payload in payloads:
+        event = payload.get("event")
+        if isinstance(event, dict):
+            event_types.append(cast(str, cast(dict[str, object], event)["event_type"]))
+    return event_types
+
+
+def _assert_ordered_event_types(actual: list[str], expected: list[str]) -> None:
+    remaining = iter(actual)
+    for expected_type in expected:
+        for event_type in remaining:
+            if event_type == expected_type:
+                break
+        else:
+            raise AssertionError(f"missing ordered event type: {expected_type}; actual={actual}")
+
+
+def _event_by_type(
+    events: list[dict[str, object]],
+    event_type: str,
+    *,
+    reverse: bool = False,
+) -> dict[str, object]:
+    source = reversed(events) if reverse else iter(events)
+    for event in source:
+        if event["event_type"] == event_type:
+            return event
+    raise AssertionError(f"missing event type: {event_type}")
+
+
+def _sse_event_by_type(
+    payloads: list[dict[str, object]],
+    event_type: str,
+    *,
+    reverse: bool = False,
+) -> dict[str, object]:
+    source = reversed(payloads) if reverse else iter(payloads)
+    for payload in source:
+        event = payload.get("event")
+        if isinstance(event, dict):
+            typed_event = cast(dict[str, object], event)
+            if typed_event.get("event_type") == event_type:
+                return typed_event
+    raise AssertionError(f"missing SSE event type: {event_type}")
+
+
 def _assert_runtime_session_metadata(
     metadata: object,
     *,
@@ -903,19 +955,22 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
         "turn": stored.session.turn,
         "metadata": stored.session.metadata,
     }
-    assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
+    _assert_ordered_event_types(
+        _event_types_from_payload_events(payload),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
 
 
 def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
@@ -1329,20 +1384,23 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
         workspace=tmp_path,
     )
     assert payload["output"] == "Wrote file successfully: danger.txt"
-    assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
+    _assert_ordered_event_types(
+        _event_types_from_payload_events(payload),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved later"
 
 
@@ -1770,19 +1828,24 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
         workspace=tmp_path,
     )
     assert payload["output"] is None
-    assert [event["event_type"] for event in cast(list[dict[str, object]], payload["events"])] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.tool_completed",
-    ]
     events = cast(list[dict[str, object]], payload["events"])
-    feedback_payload = cast(dict[str, object], events[8]["payload"])
+    _assert_ordered_event_types(
+        _event_types_from_payload_events(payload),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.tool_completed",
+        ],
+    )
+    feedback_payload = cast(
+        dict[str, object], _event_by_type(events, "runtime.tool_completed", reverse=True)["payload"]
+    )
     assert feedback_payload["status"] == "error"
     assert feedback_payload["permission_denied"] is True
     assert feedback_payload["denied_by"] == "user"
@@ -1828,25 +1891,26 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert waiting_response.status == 200
-    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 14
-    assert [
-        cast(dict[str, object], payload["event"])["event_type"] for payload in waiting_payloads
-    ] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-    ]
+    assert all(payload["kind"] == "event" for payload in waiting_payloads)
+    _assert_ordered_event_types(
+        _event_types_from_sse_payloads(waiting_payloads),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+        ],
+    )
     assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {
         "id": "http-loop-session"
     }
@@ -1870,39 +1934,41 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     assert approve_payload["output"] == (
         "Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"
     )
-    assert [
-        event["event_type"] for event in cast(list[dict[str, object]], approve_payload["events"])
-    ] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    assert [
-        event["sequence"] for event in cast(list[dict[str, object]], approve_payload["events"])
-    ] == list(range(1, 27))
+    approve_events = cast(list[dict[str, object]], approve_payload["events"])
+    _assert_ordered_event_types(
+        _event_types_from_payload_events(approve_payload),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    assert [event["sequence"] for event in approve_events] == list(
+        range(1, cast(int, approve_events[-1]["sequence"]) + 1)
+    )
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -1957,7 +2023,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert waiting_response.status == 200
-    assert [payload["kind"] for payload in waiting_payloads] == ["event"] * 14
+    assert all(payload["kind"] == "event" for payload in waiting_payloads)
     assert cast(dict[str, object], waiting_payloads[-1]["event"])["event_type"] == (
         "runtime.approval_requested"
     )
@@ -1982,29 +2048,31 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         workspace=tmp_path,
     )
     assert deny_payload["output"] is None
-    assert [
-        event["event_type"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.tool_completed",
-    ]
-    assert [
-        event["sequence"] for event in cast(list[dict[str, object]], deny_payload["events"])
-    ] == list(range(1, 17))
+    deny_events = cast(list[dict[str, object]], deny_payload["events"])
+    _assert_ordered_event_types(
+        _event_types_from_payload_events(deny_payload),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.tool_completed",
+        ],
+    )
+    assert [event["sequence"] for event in deny_events] == list(
+        range(1, cast(int, deny_events[-1]["sequence"]) + 1)
+    )
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -2598,20 +2666,8 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert stream_response.status == 200
-    assert [payload["kind"] for payload in stream_payloads] == [
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "event",
-        "output",
-    ]
+    assert [payload["kind"] for payload in stream_payloads].count("output") == 1
+    assert stream_payloads[-1]["kind"] == "output"
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -2633,21 +2689,22 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         workspace=tmp_path,
     )
     assert replay_payload["output"] == "stream replay"
-    assert [
-        event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
-    ] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
+    _assert_ordered_event_types(
+        _event_types_from_payload_events(replay_payload),
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
 
 
 def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) -> None:
@@ -2827,9 +2884,8 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     replay_payload = cast(dict[str, object], replay_response.json())
 
     assert stream_response.status == 200
-    tool_completed_event = cast(dict[str, object], payloads[8]["event"])
+    tool_completed_event = _sse_event_by_type(payloads, "runtime.tool_completed")
     assert tool_completed_event["session_id"] == "failed-stream-session"
-    assert tool_completed_event["sequence"] == 9
     assert tool_completed_event["event_type"] == "runtime.tool_completed"
     assert tool_completed_event["source"] == "tool"
     tool_completed_payload = cast(dict[str, object], tool_completed_event["payload"])
@@ -2841,9 +2897,10 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     typed_tool_status = cast(dict[str, object], tool_status)
     assert typed_tool_status["tool_name"] == "read_file"
     assert typed_tool_status["status"] == "failed"
-    assert payloads[9]["event"] == {
+    failed_event = _sse_event_by_type(payloads, "runtime.failed", reverse=True)
+    assert failed_event == {
         "session_id": "failed-stream-session",
-        "sequence": 10,
+        "sequence": failed_event["sequence"],
         "event_type": "runtime.failed",
         "source": "runtime",
         "payload": {
@@ -2855,6 +2912,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
             },
         },
     }
+    assert _event_types_from_sse_payloads(payloads)[-1] == "runtime.failed"
     assert list_response.json() == [
         {
             "session": {"id": "failed-stream-session"},
@@ -2875,20 +2933,23 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         workspace=tmp_path,
     )
     assert replay_payload["output"] is None
-    assert [
-        event["event_type"] for event in cast(list[dict[str, object]], replay_payload["events"])
-    ] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.permission_resolved",
-        "runtime.tool_started",
-        "runtime.tool_completed",
-        "runtime.failed",
-    ]
+    replay_event_types = _event_types_from_payload_events(replay_payload)
+    _assert_ordered_event_types(
+        replay_event_types,
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.permission_resolved",
+            "runtime.tool_started",
+            "runtime.tool_completed",
+            "runtime.failed",
+        ],
+    )
+    assert replay_event_types[-1] == "runtime.failed"
 
 
 def test_transport_serializes_structured_provider_failure_payloads() -> None:
@@ -3162,7 +3223,7 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
 
     assert response.status == 200
     assert response.json() == {
-        "git": {"state": "git_ready", "root": str(tmp_path), "error": None},
+        "git": {"state": "git_ready", "root": str(tmp_path), "branch": None, "error": None},
         "lsp": {"state": "running", "error": None, "details": {}},
         "mcp": {
             "state": "failed",

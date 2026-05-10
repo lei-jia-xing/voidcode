@@ -21,6 +21,7 @@ type PersistedState = {
   state: {
     language: "en" | "zh-CN";
     currentSessionId: string | null;
+    childSessionParentId?: string | null;
     agentPreset?: "leader";
     providerModel?: string;
     sessionSidebarWidth?: number;
@@ -217,6 +218,8 @@ const runtimeClientMocks = vi.hoisted(() => ({
   cancelBackgroundTaskMock: vi.fn<(taskId: string) => Promise<unknown>>(),
   getBackgroundTaskOutputMock:
     vi.fn<(taskId: string) => Promise<BackgroundTaskOutput>>(),
+  getChildSessionContextMock:
+    vi.fn<(sessionId: string) => Promise<BackgroundTaskOutput>>(),
   getSessionDebugMock:
     vi.fn<(sessionId: string) => Promise<RuntimeSessionDebugSnapshot>>(),
   getSettingsMock: vi.fn<() => Promise<RuntimeSettings>>(),
@@ -264,6 +267,7 @@ vi.mock("./lib/runtime/client", () => ({
     cancelSession: runtimeClientMocks.cancelSessionMock,
     cancelBackgroundTask: runtimeClientMocks.cancelBackgroundTaskMock,
     getBackgroundTaskOutput: runtimeClientMocks.getBackgroundTaskOutputMock,
+    getChildSessionContext: runtimeClientMocks.getChildSessionContextMock,
     getSessionDebug: runtimeClientMocks.getSessionDebugMock,
     getSettings: runtimeClientMocks.getSettingsMock,
     updateSettings: runtimeClientMocks.updateSettingsMock,
@@ -300,6 +304,7 @@ describe("useAppStore integration flow", () => {
       agentsError: null,
       sessions: [],
       currentSessionId: null,
+      childSessionParentId: null,
       sessionSidebarWidth: 344,
       currentSessionState: null,
       currentSessionEvents: [],
@@ -1401,6 +1406,85 @@ describe("useAppStore integration flow", () => {
     expect(
       runtimeClientMocks.listSessionBackgroundTasksMock,
     ).toHaveBeenCalledWith("session-parent");
+  });
+
+  it("restores the delegated child parent session on parent return", async () => {
+    const parentEvents = [
+      makeEvent(1, "runtime.request_received", { prompt: "parent prompt" }),
+    ];
+    const childOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-child",
+        status: "completed",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "child summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: {
+          ...makeSessionState("child-session", "completed"),
+          session: { id: "child-session", parent_id: "session-parent" },
+        },
+        prompt: "child prompt",
+        status: "completed",
+        summary: "child summary",
+        output: "child output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "child prompt" },
+            "runtime",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    };
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce(
+      childOutput,
+    );
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
+      makeRuntimeResponse(
+        "session-parent",
+        "completed",
+        parentEvents,
+        "parent output",
+      ),
+    );
+
+    await useAppStore.getState().selectSession("child-session");
+
+    expect(useAppStore.getState().currentSessionId).toBe("child-session");
+    expect(useAppStore.getState().childSessionParentId).toBe("session-parent");
+    expect(
+      runtimeClientMocks.listSessionBackgroundTasksMock,
+    ).toHaveBeenCalledWith("session-parent");
+
+    await useAppStore
+      .getState()
+      .selectSession(useAppStore.getState().childSessionParentId ?? "");
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
+      "session-parent",
+    );
+    expect(state.currentSessionId).toBe("session-parent");
+    expect(state.childSessionParentId).toBeNull();
+    expect(state.currentSessionOutput).toBe("parent output");
+    expect(state.selectedBackgroundTaskOutputId).toBeNull();
   });
 
   it("surfaces approval lookup failure when no pending request exists", async () => {

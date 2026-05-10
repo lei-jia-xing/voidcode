@@ -359,11 +359,26 @@ def _run_with_inline_approval(
                 reason="cli KeyboardInterrupt",
             ),
         )
+        merged_events = (*result.events, *resumed_result.events)
         result = RuntimeStreamResult(
             output=resumed_result.output,
             session=resumed_result.session,
-            events=(*result.events, *resumed_result.events),
+            events=merged_events,
         )
+        denied_tool_event = next(
+            (
+                event
+                for event in reversed(resumed_result.events)
+                if _last_event_is_permission_denied_tool_result(event)
+            ),
+            None,
+        )
+        if denied_tool_event is not None:
+            result = RuntimeStreamResult(
+                output=result.output,
+                session=result.session,
+                events=(*merged_events, denied_tool_event),
+            )
 
     if interactive and (not emit_events or trace_events):
         return result
@@ -420,6 +435,8 @@ def _consume_runtime_stream(
 
 def _incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | None:
     if result.session.status in {"completed", "failed", "waiting"}:
+        return None
+    if _last_event_is_permission_denied_tool_result(_last_event(result)):
         return None
     if _pending_blocked_event(result.session, _last_event(result)) is not None:
         return None
