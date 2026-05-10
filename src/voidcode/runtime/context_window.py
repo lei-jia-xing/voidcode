@@ -1991,6 +1991,7 @@ def assemble_provider_context(
         if prompt_profile_name is not None
         else None,
     )
+    metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     segments: list[RuntimeContextSegment] = [
         RuntimeContextSegment(
             role=section.role,

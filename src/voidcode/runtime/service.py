@@ -25,6 +25,7 @@ from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import (
     HookExecutionOutcome,
+    HookExecutionPolicy,
     HookExecutionRequest,
     LifecycleHookExecutionRequest,
     run_lifecycle_hooks,
@@ -73,6 +74,7 @@ from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
+from ..security.shell_policy import resolve_shell_command_policy
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
@@ -214,6 +216,8 @@ from .contracts import (
     SkillSummary,
     UnknownSessionError,
     WorkspaceReviewSnapshot,
+    runtime_mode_from_metadata,
+    runtime_read_only_from_metadata,
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
     validate_session_id,
@@ -382,7 +386,7 @@ from .tool_provider import (
     scoped_tool_registry_for_agent,
     tool_name_matches_patterns,
 )
-from .tool_registry import ToolRegistry
+from .tool_registry import ToolPolicyDecision, ToolRegistry
 from .workflow import (
     WorkflowModeResolution,
     WorkflowPreset,
@@ -446,6 +450,17 @@ def _execution_engine_or_none(value: object) -> ExecutionEngineName | None:
     if value == "provider":
         return "provider"
     return None
+
+
+def _agent_effective_execution_engine(
+    base_engine: ExecutionEngineName,
+    agent: RuntimeAgentConfig | None,
+) -> ExecutionEngineName:
+    if base_engine == "deterministic":
+        return "deterministic"
+    if agent is not None and agent.execution_engine is not None:
+        return agent.execution_engine
+    return base_engine
 
 
 def _path_scope_or_none(value: object) -> PathScope | None:
@@ -625,10 +640,9 @@ class VoidCodeRuntime:
             if initial_agent is not None and initial_agent.model is not None
             else self._config.model
         )
-        initial_execution_engine = (
-            initial_agent.execution_engine
-            if initial_agent is not None and initial_agent.execution_engine is not None
-            else self._config.execution_engine
+        initial_execution_engine = _agent_effective_execution_engine(
+            self._config.execution_engine,
+            initial_agent,
         )
         initial_provider_fallback = (
             initial_agent.provider_fallback
@@ -1845,10 +1859,8 @@ class VoidCodeRuntime:
         metadata: dict[str, object] | None = None,
     ) -> ToolRegistry:
         registry = self._tool_registry_with_effective_local_tools(effective_config)
-        if not self._config.memory.enabled:
-            registry = registry.excluding(MEMORY_TOOL_NAMES)
         scoped = scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
-        return self._tool_registry_with_workflow_policy(scoped, metadata)
+        return scoped.allowed_by_policy(self._tool_policy_decisions(scoped, metadata))
 
     @staticmethod
     def _read_only_workflow_tool_names(registry: ToolRegistry) -> tuple[str, ...]:
@@ -1859,10 +1871,130 @@ class VoidCodeRuntime:
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> ToolRegistry:
+        return registry.allowed_by_policy(self._tool_policy_decisions(registry, metadata))
+
+    def _tool_policy_decisions(
+        self,
+        registry: ToolRegistry,
+        metadata: dict[str, object] | None,
+    ) -> tuple[ToolPolicyDecision, ...]:
+        return tuple(
+            self._tool_policy_decision(tool_name=name, registry=registry, metadata=metadata)
+            for name in registry.tools
+        )
+
+    def _tool_policy_decision(
+        self,
+        *,
+        tool_name: str,
+        registry: ToolRegistry,
+        metadata: dict[str, object] | None,
+    ) -> ToolPolicyDecision:
+        mode = self._runtime_mode_for_policy_metadata(metadata)
+        read_only = self._runtime_read_only_for_policy_metadata(metadata)
         workflow = self._workflow_snapshot_from_metadata(metadata)
-        if workflow is None or workflow.get("read_only_default") is not True:
-            return registry
-        return registry.filtered(self._read_only_workflow_tool_names(registry))
+        if workflow is not None and workflow.get("read_only_default") is True:
+            read_only = True
+            raw_mode = workflow.get("mode")
+            effective = workflow.get("effective")
+            if isinstance(effective, dict):
+                effective_payload = cast(dict[str, object], effective)
+                if isinstance(effective_payload.get("mode"), str):
+                    mode = cast(str, effective_payload["mode"])
+            elif isinstance(raw_mode, str):
+                mode = raw_mode
+
+        if tool_name in MEMORY_TOOL_NAMES and not self._memory_tools_allowed(metadata):
+            return ToolPolicyDecision(
+                tool_name=tool_name,
+                allowed=False,
+                mode=mode,
+                read_only=read_only,
+                decision="deny",
+                reason="memory tools require explicit runtime memory policy allowance",
+            )
+
+        tool = registry.tools.get(tool_name)
+        if read_only and tool_name == "shell_exec":
+            return ToolPolicyDecision(
+                tool_name=tool_name,
+                allowed=True,
+                mode=mode,
+                read_only=read_only,
+                decision="allow",
+            )
+
+        if read_only and tool is not None and not tool.definition.read_only:
+            return ToolPolicyDecision(
+                tool_name=tool_name,
+                allowed=False,
+                mode=mode,
+                read_only=read_only,
+                decision="deny",
+                reason="read-only runtime policy denies mutating tools",
+            )
+
+        return ToolPolicyDecision(
+            tool_name=tool_name,
+            allowed=True,
+            mode=mode,
+            read_only=read_only,
+            decision="allow",
+        )
+
+    @staticmethod
+    def _runtime_mode_for_policy_metadata(metadata: dict[str, object] | None) -> str:
+        if metadata is None:
+            return "normal"
+        raw_mode = metadata.get("mode")
+        if raw_mode in {"normal", "analyze", "plan"}:
+            return cast(str, raw_mode)
+        return "normal"
+
+    @staticmethod
+    def _runtime_read_only_for_policy_metadata(metadata: dict[str, object] | None) -> bool:
+        if metadata is None:
+            return False
+        raw_mode = metadata.get("mode")
+        if raw_mode in {"analyze", "plan"}:
+            return True
+        read_only = metadata.get("read_only", False)
+        if not isinstance(read_only, bool):
+            raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
+        return read_only
+
+    def _memory_tools_allowed(self, metadata: dict[str, object] | None) -> bool:
+        if not self._config.memory.enabled:
+            return False
+        if metadata is None:
+            return False
+        command = metadata.get("command")
+        if isinstance(command, dict) and cast(dict[str, object], command).get("name") == "memory":
+            return True
+        return metadata.get("memory_tools_allowed") is True
+
+    def _tool_policy_denial(
+        self,
+        *,
+        session: SessionState,
+        tool_name: str,
+    ) -> ToolPolicyDecision | None:
+        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
+        registry = self._tool_registry_with_effective_local_tools(effective_config)
+        scoped = scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
+        if tool_name not in scoped.tools:
+            return None
+        decision = self._tool_policy_decision(
+            tool_name=tool_name,
+            registry=scoped,
+            metadata=session.metadata,
+        )
+        return None if decision.allowed else decision
+
+    @staticmethod
+    def _tool_policy_error(decision: ToolPolicyDecision) -> str:
+        reason = decision.reason or "runtime tool policy denied the tool"
+        return f"{reason}: '{decision.tool_name}'"
 
     def _delegation_tool_policy_error(
         self,
@@ -1903,23 +2035,8 @@ class VoidCodeRuntime:
         session: SessionState,
         tool_name: str,
     ) -> str | None:
-        workflow = self._workflow_snapshot_from_metadata(session.metadata)
-        if workflow is None or workflow.get("read_only_default") is not True:
-            return None
-        if (
-            tool_name
-            in self._tool_registry_with_workflow_policy(
-                self._base_tool_registry,
-                session.metadata,
-            ).tools
-        ):
-            return None
-        if tool_name not in self._base_tool_registry.tools:
-            return None
-        return (
-            "workflow read-only policy denied tool "
-            f"'{tool_name}' for preset '{workflow.get('selected_preset')}'"
-        )
+        denial = self._tool_policy_denial(session=session, tool_name=tool_name)
+        return None if denial is None else str(denial.reason)
 
     def current_lsp_state(self) -> LspManagerState:
         return self._lsp_manager.current_state()
@@ -2957,6 +3074,7 @@ class VoidCodeRuntime:
                 environment=os.environ,
                 sequence_start=sequence,
                 payload=payload or {},
+                policy=self._hook_execution_policy_from_metadata(session.metadata),
             )
         )
         emitted_chunks = tuple(
@@ -3014,6 +3132,7 @@ class VoidCodeRuntime:
                 recursion_env_var=self._hook_recursion_env_var,
                 environment=os.environ,
                 sequence_start=sequence,
+                policy=self._hook_execution_policy_from_metadata(session.metadata),
             )
         )
         emitted_chunks = tuple(
@@ -3036,6 +3155,24 @@ class VoidCodeRuntime:
             failed_error=outcome.failed_error,
             action=outcome.action,
         )
+
+    def _hook_execution_policy_from_metadata(
+        self,
+        metadata: dict[str, object] | None,
+    ) -> HookExecutionPolicy:
+        mode = self._runtime_mode_for_policy_metadata(metadata)
+        read_only = self._runtime_read_only_for_policy_metadata(metadata)
+        workflow = self._workflow_snapshot_from_metadata(metadata)
+        if workflow is not None and workflow.get("read_only_default") is True:
+            read_only = True
+            effective = workflow.get("effective")
+            if isinstance(effective, dict):
+                effective_payload = cast(dict[str, object], effective)
+                if isinstance(effective_payload.get("mode"), str):
+                    mode = cast(str, effective_payload["mode"])
+            elif isinstance(workflow.get("mode"), str):
+                mode = cast(str, workflow["mode"])
+        return HookExecutionPolicy(mode=mode, read_only=read_only)
 
     def _failed_chunk(
         self,
@@ -3165,6 +3302,13 @@ class VoidCodeRuntime:
         rule_decision: PermissionDecision | None = None
         normalized_paths = self._normalized_permission_path_candidates(tool_call, external_paths)
         shell_command = self._shell_command_for_tool_call(tool_call)
+        shell_policy = None
+        if shell_command is not None:
+            shell_policy = resolve_shell_command_policy(
+                shell_command,
+                read_only=runtime_read_only_from_metadata(session.metadata),
+                non_interactive=True,
+            )
         pattern_match = evaluate_pattern_permission_rules(
             rules=self._effective_runtime_config_from_metadata(session.metadata).permission.rules,
             tool_name=tool_call.tool_name,
@@ -3205,6 +3349,11 @@ class VoidCodeRuntime:
                 rule_decision, matched_rule = pattern_match
                 policy_surface = "permission.rules"
                 canonical_path = normalized_paths[0] if normalized_paths else None
+        if shell_policy is not None and not shell_policy.allowed:
+            rule_decision = "deny"
+            matched_rule = shell_policy.reason
+            policy_surface = "shell_policy"
+            canonical_path = None
 
         # Referenced via extracted run-loop collaborator.
         permission = resolve_permission(
@@ -3287,6 +3436,7 @@ class VoidCodeRuntime:
                 "external_directory_read",
                 "external_directory_write",
                 "permission.rules",
+                "shell_policy",
             }
             or pending.path_scope is not None
             or pending.operation_class is not None
@@ -3334,6 +3484,7 @@ class VoidCodeRuntime:
                 "external_directory_read",
                 "external_directory_write",
                 "permission.rules",
+                "shell_policy",
             }
             or pending.path_scope is not None
             or pending.operation_class is not None
@@ -6444,6 +6595,13 @@ class VoidCodeRuntime:
             raise RuntimeRequestError("parent_session_id must not match session_id")
 
         raw_metadata = {key: value for key, value in request.metadata.items()}
+        if parent_session_id is not None:
+            parent_metadata = self._parent_policy_metadata(parent_session_id)
+            if parent_metadata is not None:
+                raw_metadata = self._metadata_with_inherited_child_policy(
+                    child_metadata=raw_metadata,
+                    parent_metadata=parent_metadata,
+                )
         raw_workflow_mode = raw_metadata.get("workflow_mode")
         raw_workflow_preset = raw_metadata.get("workflow_preset")
         self._validate_explicit_workflow_mode_metadata(raw_metadata)
@@ -6507,6 +6665,61 @@ class VoidCodeRuntime:
             metadata=metadata,
             allocate_session_id=request.allocate_session_id,
         )
+
+    def _request_with_inherited_child_policy(self, request: RuntimeRequest) -> RuntimeRequest:
+        if request.parent_session_id is None:
+            return request
+        parent_metadata = self._parent_policy_metadata(request.parent_session_id)
+        if parent_metadata is None:
+            return request
+
+        child_metadata = dict(request.metadata)
+        inherited_metadata = self._metadata_with_inherited_child_policy(
+            child_metadata=child_metadata,
+            parent_metadata=parent_metadata,
+        )
+        if inherited_metadata == child_metadata:
+            return request
+        return RuntimeRequest(
+            prompt=request.prompt,
+            session_id=request.session_id,
+            parent_session_id=request.parent_session_id,
+            metadata=cast(RuntimeRequestMetadataPayload, inherited_metadata),
+            allocate_session_id=request.allocate_session_id,
+        )
+
+    def _parent_policy_metadata(self, parent_session_id: str) -> dict[str, object] | None:
+        parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
+        if parent_response is not None:
+            return parent_response.session.metadata
+        return self._active_session_metadata(parent_session_id)
+
+    def _metadata_with_inherited_child_policy(
+        self,
+        *,
+        child_metadata: dict[str, object],
+        parent_metadata: dict[str, object],
+    ) -> dict[str, object]:
+        inherited = dict(child_metadata)
+        parent_mode = runtime_mode_from_metadata(parent_metadata)
+        child_mode = runtime_mode_from_metadata(child_metadata)
+        inherited_mode = self._stricter_runtime_mode(parent_mode, child_mode)
+        if inherited_mode != "normal" or "mode" in child_metadata or "mode" in parent_metadata:
+            inherited["mode"] = inherited_mode
+
+        parent_read_only = runtime_read_only_from_metadata(parent_metadata)
+        child_read_only = runtime_read_only_from_metadata(child_metadata)
+        if parent_read_only or child_read_only or "read_only" in child_metadata:
+            inherited["read_only"] = parent_read_only or child_read_only
+
+        if not self._memory_tools_allowed(parent_metadata):
+            inherited.pop("memory_tools_allowed", None)
+        return inherited
+
+    @staticmethod
+    def _stricter_runtime_mode(parent_mode: str, child_mode: str) -> str:
+        mode_rank = {"normal": 0, "analyze": 1, "plan": 2}
+        return parent_mode if mode_rank[parent_mode] >= mode_rank[child_mode] else child_mode
 
     def _resolve_prompt_command_for_request(
         self,
@@ -7796,11 +8009,7 @@ class VoidCodeRuntime:
             allow_subagent_presets=allow_subagent_presets,
         )
         model = agent.model if agent.model is not None else resolved.model
-        execution_engine = (
-            agent.execution_engine
-            if agent.execution_engine is not None
-            else resolved.execution_engine
-        )
+        execution_engine = _agent_effective_execution_engine(resolved.execution_engine, agent)
         provider_fallback = (
             agent.provider_fallback
             if agent.provider_fallback is not None
@@ -8479,7 +8688,7 @@ class VoidCodeRuntime:
             if agent is not None and agent.provider_fallback is not None
             else None
         )
-        if execution_engine_override is not None:
+        if execution_engine != "deterministic" and execution_engine_override is not None:
             execution_engine = execution_engine_override
         if model_override is not None:
             model = model_override

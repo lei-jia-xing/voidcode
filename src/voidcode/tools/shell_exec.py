@@ -14,6 +14,8 @@ from pydantic import ValidationError
 
 from ..security.shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
+    non_interactive_shell_env,
+    resolve_shell_command_policy,
     resolve_shell_execution_policy,
 )
 from ._pydantic_args import ShellExecArgs, format_validation_error
@@ -221,6 +223,11 @@ class ShellExecTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         command_text = args.command.strip()
+        command_policy = resolve_shell_command_policy(command_text, non_interactive=True)
+        if not command_policy.allowed:
+            raise ValueError(str(command_policy.reason))
+        injected_env = non_interactive_shell_env(command_text)
+        injected_env_keys = command_policy.injected_env_keys
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
         policy = resolve_shell_execution_policy(
@@ -236,6 +243,7 @@ class ShellExecTool:
             process = subprocess.Popen(
                 command_text,
                 cwd=policy.workspace_root,
+                env={**os.environ, **injected_env} if injected_env else None,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -340,6 +348,7 @@ class ShellExecTool:
                         "truncated": False,
                         "interrupted": True,
                         "timed_out": True,
+                        "injected_env_keys": injected_env_keys,
                     },
                     truncated=False,
                     partial=True,
@@ -369,6 +378,7 @@ class ShellExecTool:
                     "interrupted": True,
                     "cancelled": True,
                     "reason": reason if isinstance(reason, str) else None,
+                    "injected_env_keys": injected_env_keys,
                 },
                 truncated=False,
                 partial=False,
@@ -390,6 +400,7 @@ class ShellExecTool:
                 "stderr_truncated": False,
                 "truncated": False,
                 "output_char_count": len(output),
+                "injected_env_keys": injected_env_keys,
             },
             truncated=False,
             partial=False,

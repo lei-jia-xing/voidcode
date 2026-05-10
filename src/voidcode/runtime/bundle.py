@@ -42,7 +42,7 @@ from .contracts import (
     validate_session_reference_id,
 )
 from .events import EventEnvelope, EventSource
-from .session import SessionRef, SessionState, SessionStatus
+from .session import SessionRef, SessionState, SessionStatus, session_metadata_for_persistence
 from .storage import SessionStore
 from .task import StoredBackgroundTaskSummary
 
@@ -721,7 +721,10 @@ class _SessionBundleBuilder:
         assert prompt is not None
         raw_events = tuple(self._build_event_payload(event) for event in response.events)
         events = tuple(payload for payload in raw_events if payload is not None)
-        metadata = _apply_payload_options(response.session.metadata, options=self._options)
+        metadata = _apply_payload_options(
+            session_metadata_for_persistence(response.session.metadata, events=response.events),
+            options=self._options,
+        )
         output = _sanitize_export_text(
             response.output,
             options=self._options,
@@ -1260,7 +1263,7 @@ def _session_metadata_with_import_marker(
     rebound_id: str,
     workspace: Path,
 ) -> dict[str, object]:
-    metadata = dict(session.metadata)
+    metadata = session_metadata_for_persistence(dict(session.metadata))
     original_workspace = metadata.get("workspace")
     marker: dict[str, object] = {
         "version": 1,

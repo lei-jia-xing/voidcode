@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import closing
@@ -232,6 +233,75 @@ def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
     expected_workflow = workflow_snapshot_from_metadata(metadata)
 
     assert loaded_workflow == expected_workflow
+
+
+def test_session_storage_roundtrips_redacted_runtime_policy_metadata(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "mode": "analyze",
+        "read_only": False,
+        "delegation": {"mode": "background", "subagent_type": "explore", "depth": 1},
+        "prompt_stack": {
+            "version": 1,
+            "fragments": [
+                {"source": "base", "preview": "safe preview"},
+                {"source": "secret", "preview": "api_key=raw-secret-value"},
+            ],
+        },
+        "runtime_state": {
+            "injected_env": {"CI": "1", "NPM_CONFIG_YES": "true"},
+            "api_key": "sk-runtime-secret",
+        },
+    }
+    request = RuntimeRequest(prompt="persist policy", session_id="policy-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="policy-session"),
+            status="failed",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id="policy-session",
+                sequence=1,
+                event_type="runtime.failed",
+                source="runtime",
+                payload={
+                    "kind": "runtime_tool_policy_denied",
+                    "tool": "write_file",
+                    "tool_policy": {
+                        "tool": "write_file",
+                        "mode": "analyze",
+                        "read_only": True,
+                        "decision": "deny",
+                        "reason": "read-only runtime policy denies mutating tools",
+                    },
+                },
+            ),
+        ),
+        output=None,
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="policy-session")
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="policy-session")
+    encoded = json.dumps(loaded.session.metadata, sort_keys=True)
+
+    assert loaded.session.metadata["mode"] == "analyze"
+    assert loaded.session.metadata["read_only"] is True
+    runtime_policy = cast(dict[str, object], loaded.session.metadata["runtime_policy"])
+    assert runtime_policy["mode"] == "analyze"
+    assert runtime_policy["read_only"] is True
+    assert runtime_policy["delegation"] == metadata["delegation"]
+    assert cast(dict[str, object], runtime_policy["tool_policy_denial"])["tool"] == "write_file"
+    assert "raw-secret-value" not in encoded
+    assert "sk-runtime-secret" not in encoded
+    assert 'NPM_CONFIG_YES": "true' not in encoded
+    assert checkpoint is not None
+    checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
+    assert checkpoint_metadata["runtime_policy"] == loaded.session.metadata["runtime_policy"]
 
 
 def test_tool_results_from_events_preserves_raw_read_file_content() -> None:

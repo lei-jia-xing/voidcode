@@ -1206,8 +1206,10 @@ class ManagedMcpManager:
 
     @staticmethod
     def _terminate_running_server(running: _RunningMcpServer) -> None:
-        running.session_context.__exit__(None, None, None)
-        running.transport_context.__exit__(None, None, None)
+        with suppress(Exception):
+            running.session_context.__exit__(None, None, None)
+        with suppress(Exception):
+            running.transport_context.__exit__(None, None, None)
         if running.stderr_log is not None:
             running.stderr_log.close()
 

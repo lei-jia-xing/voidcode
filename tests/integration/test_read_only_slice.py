@@ -87,6 +87,7 @@ class RuntimeResponseLike(Protocol):
     events: tuple[EventLike, ...]
     output: str | None
     session: SessionLike
+    transcript: tuple[EventLike, ...]
 
 
 class RuntimeRequestLike(Protocol):
@@ -1395,7 +1396,6 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
     response = runtime.run(
         runtime_request(prompt="track todo state", session_id="runtime-todo-session")
     )
-    loaded = runtime.session_result(session_id="runtime-todo-session")
     todo_events = tuple(
         event for event in response.events if event.event_type == "runtime.todo_updated"
     )
@@ -1435,9 +1435,48 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
     assert len(latest_todo_segments) == 1
     assert "verify latest todo context only" in latest_todo_segments[0]
     assert "make todo runtime-owned" not in latest_todo_segments[0]
-    raw_runtime_state = loaded.session.metadata["runtime_state"]
-    assert isinstance(raw_runtime_state, dict)
-    assert "todos" in raw_runtime_state
+
+
+def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_SingleToolGraph("write_file", {"path": "blocked.txt", "content": "no"}),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="read-only runtime policy denies mutating tools"):
+        runtime.run(
+            runtime_request(
+                prompt="try blocked write",
+                session_id="read-only-denied-flow",
+                metadata={"mode": "analyze", "read_only": True},
+            )
+        )
+    replay = runtime.session_result(session_id="read-only-denied-flow")
+    transcript = replay.transcript
+    failed_event = next(event for event in transcript if event.event_type == "runtime.failed")
+
+    assert replay.session.status == "failed"
+    assert [event.sequence for event in transcript] == list(range(1, len(transcript) + 1))
+    assert [event.event_type for event in transcript][-1:] == ["runtime.failed"]
+    assert [event.event_type for event in transcript][-2:] != ["runtime.failed", "runtime.failed"]
+    assert failed_event.payload["kind"] == "runtime_tool_policy_denied"
+    assert failed_event.payload["tool"] == "write_file"
+    assert replay.session.metadata["mode"] == "analyze"
+    assert replay.session.metadata["read_only"] is True
+    runtime_policy = cast(dict[str, object], replay.session.metadata["runtime_policy"])
+    denial = cast(dict[str, object], runtime_policy["tool_policy_denial"])
+    assert denial["event_sequence"] == failed_event.sequence
+    assert denial["tool"] == "write_file"
+    assert denial["read_only"] is True
 
 
 def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
@@ -2745,12 +2784,14 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
         "tool_name": "shell_exec",
         "session_id": "hook-success-session",
         "status": "ok",
+        "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
     assert post_hook_event.payload == {
         "phase": "post",
         "tool_name": "shell_exec",
         "session_id": "hook-success-session",
         "status": "ok",
+        "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
 
 

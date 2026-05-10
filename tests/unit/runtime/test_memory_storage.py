@@ -753,6 +753,7 @@ def test_memory_recall_renders_workspace_section_with_count_and_char_budget(
     assert segment.metadata == {
         "source": "runtime_workspace_memory",
         "tier": "workspace",
+        "layer": "project_context",
         "section": "Workspace Memory",
     }
     assert segment.content is not None

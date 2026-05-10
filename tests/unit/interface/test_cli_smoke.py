@@ -1046,6 +1046,69 @@ def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_fl
     assert request.metadata["provider_stream"] is True
 
 
+def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                ["run", "inspect repo", "--workspace", str(workspace), "--mode", "analyze"]
+            )
+
+    assert result == 0
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert request.metadata["mode"] == "analyze"
+    assert "read_only" not in request.metadata
+
+
+def test_run_command_read_only_flag_forwards_runtime_metadata() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(
+                [
+                    "run",
+                    "inspect repo",
+                    "--workspace",
+                    str(workspace),
+                    "--mode",
+                    "normal",
+                    "--read-only",
+                ]
+            )
+
+    assert result == 0
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert request.metadata["mode"] == "normal"
+    assert request.metadata["read_only"] is True
+
+
+def test_run_command_legacy_act_mode_maps_to_normal_runtime_mode() -> None:
+    cli = importlib.import_module("voidcode.cli")
+    workspace = Path("/tmp/demo-workspace")
+    config = SimpleNamespace(approval_mode="allow")
+    chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
+
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
+        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
+            runtime_class.return_value.run_stream.return_value = iter(chunks)
+            result = cli.main(["run", "act", "--workspace", str(workspace), "--mode", "act"])
+
+    assert result == 0
+    request = runtime_class.return_value.run_stream.call_args.args[0]
+    assert request.metadata["mode"] == "normal"
+    assert "execution_mode" not in request.metadata
+
+
 def test_run_command_accepts_runtime_discovered_custom_agent_id() -> None:
     cli = importlib.import_module("voidcode.cli")
     workspace = Path("/tmp/demo-workspace")
@@ -2580,6 +2643,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "workspace": str(workspace),
         "session_id": None,
         "approval_mode": "deny",
+        "execution_engine": "deterministic",
         "model": "repo/model",
         "fallback_models": [],
         "max_steps": 100,
@@ -2646,6 +2710,7 @@ def test_config_show_accepts_json_flag() -> None:
     assert result.returncode == 0
     assert payload["workspace"] == str(workspace)
     assert payload["approval_mode"] == "ask"
+    assert payload["execution_engine"] == "deterministic"
 
 
 def test_config_show_outputs_effective_category_models_without_secrets() -> None:
@@ -2704,6 +2769,7 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload["model"] == "opencode-go/glm-5"
+    assert payload["execution_engine"] == "provider"
     assert payload["fallback_models"] == []
     assert payload["agent"]["preset"] == "leader"
     assert payload["agent"]["prompt_profile"] == "leader"
@@ -2787,6 +2853,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
         "workspace": str(workspace),
         "session_id": "config-session",
         "approval_mode": "allow",
+        "execution_engine": "deterministic",
         "model": "repo/model",
         "fallback_models": ["repo/session-fallback"],
         "max_steps": 100,
@@ -2859,6 +2926,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli")
     runtime_config = SimpleNamespace(
         approval_mode="allow",
+        execution_engine="provider",
         model="runtime/model",
         max_steps=9,
         reasoning_effort="high",
@@ -2928,6 +2996,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         "workspace": str(workspace),
         "session_id": "config-session",
         "approval_mode": "allow",
+        "execution_engine": "provider",
         "model": "runtime/model",
         "fallback_models": [],
         "max_steps": 9,

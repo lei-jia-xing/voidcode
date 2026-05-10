@@ -552,6 +552,77 @@ def test_session_bundle_import_preserves_requested_and_effective_workflow_mode(
     assert imported_workflow == expected_workflow
 
 
+def test_session_bundle_export_import_preserves_redacted_runtime_policy_metadata(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "mode": "plan",
+        "read_only": False,
+        "prompt_stack": {
+            "version": 1,
+            "fragments": [{"source": "user", "preview": "Bearer rawpromptsecret"}],
+        },
+        "runtime_state": {"injected_env": {"NPM_CONFIG_YES": "true"}},
+    }
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(
+            prompt="bundle policy token=promptsecret",
+            session_id="policy-bundle",
+        ),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="policy-bundle"),
+                status="failed",
+                turn=1,
+                metadata=metadata,
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="policy-bundle",
+                    sequence=1,
+                    event_type="runtime.failed",
+                    source="runtime",
+                    payload={
+                        "kind": "runtime_tool_policy_denied",
+                        "tool": "write_file",
+                        "tool_policy": {
+                            "tool": "write_file",
+                            "mode": "plan",
+                            "read_only": True,
+                            "decision": "deny",
+                        },
+                    },
+                ),
+            ),
+        ),
+    )
+
+    built = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="policy-bundle",
+    )
+    parsed = parse_session_bundle(built.to_payload())
+    target_workspace = tmp_path / "imported-policy"
+    target_workspace.mkdir()
+    apply_session_bundle(parsed, session_store=store, workspace=target_workspace)
+
+    encoded = json.dumps(built.to_payload(), sort_keys=True)
+    bundled_metadata = built.sessions[0].metadata
+    imported = store.load_session(workspace=target_workspace, session_id="policy-bundle")
+
+    assert bundled_metadata["mode"] == "plan"
+    assert bundled_metadata["read_only"] is True
+    assert imported.session.metadata["mode"] == "plan"
+    assert imported.session.metadata["read_only"] is True
+    assert imported.session.metadata["runtime_policy"] == bundled_metadata["runtime_policy"]
+    assert "rawpromptsecret" not in encoded
+    assert "promptsecret" not in encoded
+    assert 'NPM_CONFIG_YES": "true' not in encoded
+
+
 def test_session_bundle_includes_available_artifacts_only_when_tool_output_requested(
     tmp_path: Path,
 ) -> None:

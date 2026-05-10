@@ -8,6 +8,7 @@ from typing import cast
 from voidcode.hook.config import RuntimeHooksConfig, RuntimeHookSurface
 from voidcode.hook.executor import (
     HookExecutionOutcome,
+    HookExecutionPolicy,
     HookExecutionRequest,
     LifecycleHookExecutionRequest,
     run_lifecycle_hooks,
@@ -47,6 +48,7 @@ def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
         "tool_name": "write_file",
         "session_id": "hook-session",
         "status": "ok",
+        "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
 
 
@@ -127,6 +129,52 @@ def test_run_tool_hooks_emits_structured_diagnostic_from_stdout(tmp_path: Path) 
     assert outcome.diagnostics == ("policy observed",)
     assert outcome.events[0].payload["diagnostic"] == "policy observed"
     assert outcome.events[0].payload["guidance"] == "continue safely"
+
+
+def test_run_tool_hooks_skips_executable_commands_under_read_only_policy(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "hook-ran.txt"
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=(
+            (
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('hook-ran.txt').write_text('bad')",
+            ),
+        ),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="read_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+            policy=HookExecutionPolicy(mode="analyze", read_only=True),
+        )
+    )
+
+    assert marker.exists() is False
+    assert outcome.failed_error is None
+    assert outcome.last_sequence == 8
+    assert outcome.events[0].payload == {
+        "phase": "pre",
+        "tool_name": "read_file",
+        "session_id": "hook-session",
+        "status": "skipped",
+        "hook_policy": {
+            "outcome": "skipped",
+            "mode": "analyze",
+            "read_only": True,
+            "reason": "read-only runtime policy skips executable hook commands",
+        },
+    }
 
 
 def test_run_tool_hooks_ignores_malformed_structured_stdout(tmp_path: Path) -> None:
@@ -272,6 +320,7 @@ def test_run_lifecycle_hooks_executes_configured_session_command_and_reports_eve
         "session_id": "hook-session",
         "prompt": "hello",
         "hook_status": "ok",
+        "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
 
 
@@ -330,6 +379,42 @@ def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> N
 
     assert outcome.failed_error is None
     assert output_path.read_text() == "background_task_completed:task-1"
+
+
+def test_run_lifecycle_hooks_skips_shell_policy_denied_command_under_plan_mode(
+    tmp_path: Path,
+) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_session_end=(("rm", "-rf", "generated"),),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_end",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=4,
+            policy=HookExecutionPolicy(mode="plan", read_only=True),
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.last_sequence == 5
+    assert outcome.events[0].payload == {
+        "surface": "session_end",
+        "session_id": "hook-session",
+        "hook_status": "skipped",
+        "hook_policy": {
+            "outcome": "skipped",
+            "mode": "plan",
+            "read_only": True,
+            "reason": "read-only runtime policy denies shell commands classified as destructive",
+        },
+    }
 
 
 def test_run_lifecycle_hooks_executes_new_background_surfaces(tmp_path: Path) -> None:

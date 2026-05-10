@@ -119,6 +119,8 @@
 
 当前实现已经完成 runtime 对 agent preset 的第一阶段落地：`leader` 作为默认顶层 active preset 进入 provider-backed 主路径，`product` 可以作为显式顶层 planning preset 被选择。runtime 会向 provider 注入所选 preset 的 `prompt_profile` / `prompt_materialization`，应用 agent-scoped model / execution engine / provider fallback，收窄可见与可调用工具，校验 agent hook preset refs，并让 manifest `skill_refs` / agent-scoped skills 进入本次运行的 runtime-managed skill application。runtime 还会把 tools、skills、hook preset guidance、MCP binding intent 与 provider/model metadata materialize 成 `agent_capability_snapshot` 并持久化到 session metadata；skill snapshot 的 binding 也引用这份 snapshot，从而让 replay/debug 使用历史 truth，而不是重新从变动后的 catalog 推导。`advisor`、`explore`、`researcher`、`worker` 现在可以作为 delegated child preset 进入 runtime-owned child execution，但除 `leader` 与 `product` 外，它们仍不能被当作任意顶层 active agent 直接启动。
 
+这些 prompt 与 capability binding 是 additive guidance / declarative intent。它们不能授予 memory-tool 权限、不能放宽 `mode` / `read_only` enforcement、不能绕过 shell command policy、不能让 hook preset refs 变成 executable lifecycle hook commands，也不能让 delegated child 获得未由 runtime 路由授予的工具或 skill body。`force_load_skills` 与 delegated `load_skills` 的完整 skill body 注入只作用于目标 run / child session；parent-only skill context 不会因为 agent prompt 或 manifest wording 泄漏给 child。
+
 ### Phase 3：再评估 multi-agent orchestration
 
 只有当 capability substrate 已经稳定、并且真实出现 multi-agent workflow 需求时，再决定是否引入更重的 orchestration 机制（包括但不限于 LangGraph）。
@@ -132,6 +134,7 @@
 - 把 runtime 的控制面职责迁移到 graph 或 agent
 - 让客户端直接调用工具或绕过 runtime
 - 在当前阶段就实现完整的 supervisor / worker / delegation runtime
+- 通过 agent prompt、hook preset wording 或 repo overview prompt fragment 取代 agent 自己使用 read/search/git/LSP/tool surfaces 的可审计探索过程
 
 ## 结论
 

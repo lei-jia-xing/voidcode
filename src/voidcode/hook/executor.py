@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from ..runtime.events import (
     RUNTIME_TOOL_HOOK_PRE,
     RUNTIME_TURN_PROGRESS,
 )
+from ..security.shell_policy import non_interactive_shell_env, resolve_shell_command_policy
 from .config import RuntimeHooksConfig, RuntimeHookSurface
 
 
@@ -52,6 +54,20 @@ class HookExecutionOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class HookExecutionPolicy:
+    mode: str = "normal"
+    read_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class HookPolicyDecision:
+    allowed: bool
+    outcome: Literal["allowed", "denied", "skipped"]
+    reason: str | None = None
+    injected_env_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class HookExecutionRequest:
     hooks: RuntimeHooksConfig | None
     workspace: Path
@@ -61,6 +77,7 @@ class HookExecutionRequest:
     recursion_env_var: str
     environment: Mapping[str, str]
     sequence_start: int
+    policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +90,7 @@ class LifecycleHookExecutionRequest:
     environment: Mapping[str, str]
     sequence_start: int
     payload: Mapping[str, object] = field(default_factory=_empty_payload)
+    policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
 
 
 def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
@@ -88,11 +106,38 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
     diagnostics: list[str] = []
     for command in commands:
         last_sequence += 1
+        policy_decision = _hook_policy_decision(command, request.policy)
+        if not policy_decision.allowed:
+            events.append(
+                HookExecutionEvent(
+                    sequence=last_sequence,
+                    event_type=_event_type_for_phase(request.phase),
+                    payload={
+                        "phase": request.phase,
+                        "tool_name": request.tool_name,
+                        "session_id": request.session_id,
+                        "status": policy_decision.outcome,
+                        "hook_policy": _hook_policy_payload(
+                            policy=request.policy,
+                            decision=policy_decision,
+                        ),
+                    },
+                )
+            )
+            if policy_decision.outcome == "skipped":
+                continue
+            return HookExecutionOutcome(
+                events=tuple(events),
+                last_sequence=last_sequence,
+                failed_error=policy_decision.reason,
+                diagnostics=tuple(diagnostics),
+            )
         try:
             command_result = _run_hook_command(
                 command=command,
                 workspace=request.workspace,
                 environment={**request.environment, request.recursion_env_var: "1"},
+                injected_env=non_interactive_shell_env(_hook_command_text(command)),
                 timeout_seconds=hooks.timeout_seconds,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -131,6 +176,10 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
                     "tool_name": request.tool_name,
                     "session_id": request.session_id,
                     "status": "ok",
+                    "hook_policy": _hook_policy_payload(
+                        policy=request.policy,
+                        decision=policy_decision,
+                    ),
                     **({"action": action} if action != "continue" else {}),
                     **({"diagnostic": diagnostic} if diagnostic is not None else {}),
                     **({"guidance": guidance} if guidance is not None else {}),
@@ -174,6 +223,30 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
     }
     for command in commands:
         last_sequence += 1
+        policy_decision = _hook_policy_decision(command, request.policy)
+        if not policy_decision.allowed:
+            events.append(
+                HookExecutionEvent(
+                    sequence=last_sequence,
+                    event_type=_event_type_for_surface(request.surface),
+                    payload={
+                        **base_payload,
+                        "hook_status": policy_decision.outcome,
+                        "hook_policy": _hook_policy_payload(
+                            policy=request.policy,
+                            decision=policy_decision,
+                        ),
+                    },
+                )
+            )
+            if policy_decision.outcome == "skipped":
+                continue
+            return HookExecutionOutcome(
+                events=tuple(events),
+                last_sequence=last_sequence,
+                failed_error=policy_decision.reason,
+                diagnostics=tuple(diagnostics),
+            )
         try:
             command_result = _run_hook_command(
                 command=command,
@@ -183,6 +256,7 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
                     **_lifecycle_hook_environment(request),
                     request.recursion_env_var: "1",
                 },
+                injected_env=non_interactive_shell_env(_hook_command_text(command)),
                 timeout_seconds=hooks.timeout_seconds,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -217,6 +291,10 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
                 payload={
                     **base_payload,
                     "hook_status": "ok",
+                    "hook_policy": _hook_policy_payload(
+                        policy=request.policy,
+                        decision=policy_decision,
+                    ),
                     **({"action": action} if action != "continue" else {}),
                     **({"diagnostic": diagnostic} if diagnostic is not None else {}),
                     **({"guidance": guidance} if guidance is not None else {}),
@@ -306,11 +384,64 @@ def _hook_action_payload_from_stdout(stdout: str) -> _HookActionPayload:
     )
 
 
+def _hook_command_text(command: tuple[str, ...]) -> str:
+    return shlex.join(command)
+
+
+def _hook_policy_decision(
+    command: tuple[str, ...],
+    policy: HookExecutionPolicy,
+) -> HookPolicyDecision:
+    command_text = _hook_command_text(command)
+    shell_decision = resolve_shell_command_policy(
+        command_text,
+        read_only=policy.read_only,
+        non_interactive=True,
+    )
+    if not shell_decision.allowed:
+        return HookPolicyDecision(
+            allowed=False,
+            outcome="skipped" if policy.read_only else "denied",
+            reason=shell_decision.reason,
+            injected_env_keys=shell_decision.injected_env_keys,
+        )
+    if policy.read_only:
+        return HookPolicyDecision(
+            allowed=False,
+            outcome="skipped",
+            reason="read-only runtime policy skips executable hook commands",
+            injected_env_keys=shell_decision.injected_env_keys,
+        )
+    return HookPolicyDecision(
+        allowed=True,
+        outcome="allowed",
+        injected_env_keys=shell_decision.injected_env_keys,
+    )
+
+
+def _hook_policy_payload(
+    *,
+    policy: HookExecutionPolicy,
+    decision: HookPolicyDecision,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "outcome": decision.outcome,
+        "mode": policy.mode,
+        "read_only": policy.read_only,
+    }
+    if decision.reason is not None:
+        payload["reason"] = decision.reason
+    if decision.injected_env_keys:
+        payload["injected_env_keys"] = list(decision.injected_env_keys)
+    return payload
+
+
 def _run_hook_command(
     *,
     command: tuple[str, ...],
     workspace: Path,
     environment: Mapping[str, str],
+    injected_env: Mapping[str, str],
     timeout_seconds: float | None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -320,5 +451,5 @@ def _run_hook_command(
         text=True,
         check=True,
         timeout=timeout_seconds,
-        env={**os.environ, **environment},
+        env={**os.environ, **injected_env, **environment},
     )

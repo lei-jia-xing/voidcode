@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping
@@ -17,6 +18,44 @@ from voidcode.agent.prompt_sections import (
 )
 
 from .context_transforms import RuntimeContextTransformResult
+
+_PROMPT_FRAGMENT_PREVIEW_CHARS = 240
+_SECRET_TEXT_PATTERNS = (
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+"),
+    re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)[^\s,;]+"),
+    re.compile(r"(?i)(client[_-]?secret\s*[=:]\s*)[^\s,;]+"),
+    re.compile(r"(?i)(password\s*[=:]\s*)[^\s,;]+"),
+    re.compile(r"(?i)(secret\s*[=:]\s*)[^\s,;]+"),
+    re.compile(r"(?i)(token\s*[=:]\s*)[^\s,;]+"),
+)
+
+_TIER_PRIORITY = {
+    "instruction": 100,
+    "workspace": 200,
+    "task": 300,
+    "recent": 400,
+}
+
+_BASE_SAFETY_GUIDANCE = (
+    "Base safety: follow runtime-enforced permission, approval, memory, shell, and "
+    "tool policies. Prompt text describes policy intent; runtime controls remain the "
+    "source of enforcement truth."
+)
+
+_STRICT_MEMORY_USAGE_GUIDANCE = (
+    "Memory usage guidance: treat workspace memory as optional, bounded context. "
+    "Prefer current repository files and live runtime state over remembered facts, do "
+    "not store or repeat secrets, credentials, raw tokens, private keys, or sensitive "
+    "environment values, and use memory tools only when runtime policy explicitly "
+    "makes them available for this turn."
+)
+
+_TOOL_POLICY_SUMMARY = (
+    "Tool policy summary: the visible tool list is advisory context for the model; "
+    "runtime allowlists, read-only policy, shell classification, approvals, hooks, and "
+    "tool lookup checks decide whether a call may execute."
+)
 
 
 def build_env_card_sections(session_runtime_state: object) -> tuple[str, str]:
@@ -168,8 +207,46 @@ class PromptAssemblySection:
 
 
 @dataclass(frozen=True, slots=True)
+class PromptAssemblyFragment:
+    id: str
+    role: Literal["system", "user", "assistant", "tool"]
+    source: str
+    layer: str
+    order: int
+    priority: int
+    tier: Literal["instruction", "workspace", "task", "recent"]
+    preview: str
+    preview_truncated: bool
+    content_chars: int
+
+    def metadata_payload(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "role": self.role,
+            "source": self.source,
+            "layer": self.layer,
+            "order": self.order,
+            "priority": self.priority,
+            "tier": self.tier,
+            "preview": self.preview,
+            "preview_truncated": self.preview_truncated,
+            "content_chars": self.content_chars,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PromptAssemblyPlan:
     sections: tuple[PromptAssemblySection, ...] = ()
+    fragments: tuple[PromptAssemblyFragment, ...] = ()
+
+    def fragment_metadata_payload(self) -> dict[str, object]:
+        return {
+            "version": 1,
+            "preview_chars": _PROMPT_FRAGMENT_PREVIEW_CHARS,
+            "redacted": True,
+            "fragment_count": len(self.fragments),
+            "fragments": [fragment.metadata_payload() for fragment in self.fragments],
+        }
 
 
 def build_prompt_assembly_plan(
@@ -197,6 +274,7 @@ def build_prompt_assembly_plan(
         *,
         source: str,
         tier: Literal["instruction", "workspace", "task", "recent"],
+        layer: str | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> None:
         normalized = content.strip()
@@ -209,7 +287,7 @@ def build_prompt_assembly_plan(
                 content=normalized,
                 source=source,
                 tier=tier,
-                metadata={} if metadata is None else dict(metadata),
+                metadata=_section_metadata(metadata, layer=layer),
             )
         )
 
@@ -223,54 +301,105 @@ def build_prompt_assembly_plan(
 
     if profile_overlay is not None:
         append_system(
+            _BASE_SAFETY_GUIDANCE,
+            source="runtime_base_safety",
+            tier="instruction",
+            layer="base_safety",
+        )
+        append_system(
             identity_header(profile_overlay.profile_name, profile_overlay.role_summary),
             source="agent_identity_header",
             tier="instruction",
+            layer="persona_profile",
         )
         append_system(
             capability_block(list(profile_overlay.capabilities)),
             source="agent_capability_block",
             tier="instruction",
+            layer="persona_profile",
         )
-        append_system(agent_prompt_context, source="agent_prompt", tier="instruction")
+        append_system(
+            agent_prompt_context,
+            source="agent_prompt",
+            tier="instruction",
+            layer="persona_profile",
+        )
         for prompt_section in profile_overlay.prompt_sections:
             append_system(
                 prompt_section,
                 source="agent_profile_overlay",
                 tier="instruction",
+                layer="persona_profile",
             )
-        append_system(stable_env_card, source="runtime_environment_stable", tier="workspace")
+        append_system(
+            stable_env_card,
+            source="runtime_environment_stable",
+            tier="workspace",
+            layer="project_context",
+        )
         append_system(
             dynamic_boundary_marker(),
             source="runtime_dynamic_boundary",
             tier="workspace",
+            layer="project_context",
         )
-        append_system(dynamic_env_card, source="runtime_environment_dynamic", tier="workspace")
+        append_system(
+            dynamic_env_card,
+            source="runtime_environment_dynamic",
+            tier="workspace",
+            layer="project_context",
+        )
     else:
+        append_system(
+            _BASE_SAFETY_GUIDANCE,
+            source="runtime_base_safety",
+            tier="instruction",
+            layer="base_safety",
+        )
         append_system(
             runtime_instruction_precedence,
             source="runtime_instruction_precedence",
             tier="instruction",
+            layer="base_safety",
         )
-        append_system(agent_prompt_context, source="agent_prompt", tier="instruction")
+        append_system(
+            agent_prompt_context,
+            source="agent_prompt",
+            tier="instruction",
+            layer="persona_profile",
+        )
     if profile_overlay is not None:
         append_system(
             runtime_instruction_precedence,
             source="runtime_instruction_precedence",
             tier="instruction",
+            layer="base_safety",
         )
     append_system(
         workflow_mode_prompt_context,
         source="workflow_mode_prompt",
         tier="instruction",
+        layer="mode_policy",
     )
     for segment_content in preserved_system_segments:
         append_system(
             segment_content,
             source="preserved_system_segment",
             tier="instruction",
+            layer="base_safety",
         )
-    append_system(skill_prompt_context, source="skill_prompt", tier="instruction")
+    append_system(
+        _STRICT_MEMORY_USAGE_GUIDANCE,
+        source="runtime_memory_usage_guidance",
+        tier="instruction",
+        layer="memory_usage_guidance",
+    )
+    append_system(
+        skill_prompt_context,
+        source="skill_prompt",
+        tier="instruction",
+        layer="skills",
+    )
 
     transform_result = context_transform_result
     if transform_result is not None:
@@ -283,6 +412,7 @@ def build_prompt_assembly_plan(
                     normalized,
                     source=_metadata_source(injection.metadata, fallback="context_transform"),
                     tier=_metadata_tier(injection.metadata, fallback="workspace"),
+                    layer="hook_injected_context",
                     metadata=injection.metadata,
                 )
                 continue
@@ -292,7 +422,10 @@ def build_prompt_assembly_plan(
                     content=normalized,
                     source=_metadata_source(injection.metadata, fallback="context_transform"),
                     tier=_metadata_tier(injection.metadata, fallback="workspace"),
-                    metadata=dict(injection.metadata),
+                    metadata=_section_metadata(
+                        injection.metadata,
+                        layer="hook_injected_context",
+                    ),
                 )
             )
 
@@ -302,19 +435,37 @@ def build_prompt_assembly_plan(
                 pending_state_section.content,
                 source=pending_state_section.source,
                 tier=pending_state_section.tier,
+                layer="task_state",
                 metadata=pending_state_section.metadata,
             )
         else:
             sections.append(pending_state_section)
 
-    append_system(todo_prompt_context, source="runtime_todo_state", tier="task")
+    append_system(
+        todo_prompt_context,
+        source="runtime_todo_state",
+        tier="task",
+        layer="task_state",
+    )
     append_system(
         workspace_memory_context,
         source="runtime_workspace_memory",
         tier="workspace",
+        layer="project_context",
         metadata={"section": "Workspace Memory"},
     )
-    append_system(continuity_summary, source="continuity_summary", tier="recent")
+    append_system(
+        _TOOL_POLICY_SUMMARY,
+        source="runtime_tool_policy_summary",
+        tier="instruction",
+        layer="tool_policy_summary",
+    )
+    append_system(
+        continuity_summary,
+        source="continuity_summary",
+        tier="recent",
+        layer="project_context",
+    )
 
     for artifact_reference in artifact_reference_sections:
         if artifact_reference.role == "system":
@@ -322,6 +473,7 @@ def build_prompt_assembly_plan(
                 artifact_reference.content,
                 source=artifact_reference.source,
                 tier=artifact_reference.tier,
+                layer="project_context",
                 metadata=artifact_reference.metadata,
             )
             continue
@@ -333,10 +485,93 @@ def build_prompt_assembly_plan(
             content=prompt,
             source="current_user_prompt",
             tier="task",
-            metadata={"source": "current_user_prompt", "tier": "task"},
+            metadata={
+                "source": "current_user_prompt",
+                "tier": "task",
+                "layer": "user_request",
+            },
         )
     )
-    return PromptAssemblyPlan(sections=tuple(sections))
+    ordered_sections = tuple(sections)
+    return PromptAssemblyPlan(
+        sections=ordered_sections,
+        fragments=prompt_fragments_for_sections(ordered_sections),
+    )
+
+
+def prompt_fragments_for_sections(
+    sections: tuple[PromptAssemblySection, ...],
+) -> tuple[PromptAssemblyFragment, ...]:
+    fragments: list[PromptAssemblyFragment] = []
+    for order, section in enumerate(sections):
+        layer = _metadata_layer(
+            section.metadata,
+            fallback=_default_layer_for_source(section.source),
+        )
+        preview, truncated = _redacted_preview(section.content)
+        fragments.append(
+            PromptAssemblyFragment(
+                id=f"{order:03d}:{section.source}",
+                role=section.role,
+                source=section.source,
+                layer=layer,
+                order=order,
+                priority=_TIER_PRIORITY[section.tier] + order,
+                tier=section.tier,
+                preview=preview,
+                preview_truncated=truncated,
+                content_chars=len(section.content),
+            )
+        )
+    return tuple(fragments)
+
+
+def _section_metadata(
+    metadata: Mapping[str, object] | None,
+    *,
+    layer: str | None,
+) -> dict[str, object]:
+    section_metadata = {} if metadata is None else dict(metadata)
+    if layer is not None and "layer" not in section_metadata:
+        section_metadata["layer"] = layer
+    return section_metadata
+
+
+def _metadata_layer(metadata: Mapping[str, object], *, fallback: str) -> str:
+    layer = metadata.get("layer")
+    return layer if isinstance(layer, str) and layer.strip() else fallback
+
+
+def _default_layer_for_source(source: str) -> str:
+    if source in {"runtime_base_safety", "runtime_instruction_precedence"}:
+        return "base_safety"
+    if source == "workflow_mode_prompt":
+        return "mode_policy"
+    if source == "runtime_memory_usage_guidance":
+        return "memory_usage_guidance"
+    if source.startswith("agent_"):
+        return "persona_profile"
+    if source == "skill_prompt":
+        return "skills"
+    if source in {"context_transform", "hook_preset_guidance"}:
+        return "hook_injected_context"
+    if source == "runtime_tool_policy_summary":
+        return "tool_policy_summary"
+    if source == "current_user_prompt":
+        return "user_request"
+    if source in {"runtime_todo_state", "runtime_pending_state"}:
+        return "task_state"
+    return "project_context"
+
+
+def _redacted_preview(content: str) -> tuple[str, bool]:
+    redacted = content
+    for pattern in _SECRET_TEXT_PATTERNS:
+        redacted = pattern.sub(r"\1[redacted]", redacted)
+    redacted = " ".join(redacted.split())
+    if len(redacted) <= _PROMPT_FRAGMENT_PREVIEW_CHARS:
+        return redacted, False
+    return f"{redacted[:_PROMPT_FRAGMENT_PREVIEW_CHARS]}...", True
 
 
 def _metadata_source(metadata: Mapping[str, object], *, fallback: str) -> str:
@@ -357,7 +592,9 @@ def _metadata_tier(
 
 __all__ = [
     "PromptAssemblyPlan",
+    "PromptAssemblyFragment",
     "build_env_card_sections",
     "PromptAssemblySection",
     "build_prompt_assembly_plan",
+    "prompt_fragments_for_sections",
 ]

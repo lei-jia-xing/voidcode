@@ -31,7 +31,13 @@ from .memory import MemoryKind, MemoryRecord, MemorySearchResult, MemoryStatus
 from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
-from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
+from .session import (
+    SessionRef,
+    SessionState,
+    SessionStatus,
+    StoredSessionSummary,
+    session_metadata_for_persistence,
+)
 from .task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -1402,6 +1408,10 @@ class SqliteSessionStore:
             session_id=session_id,
             events=response.events,
         )
+        persisted_metadata = session_metadata_for_persistence(
+            response.session.metadata,
+            events=events,
+        )
         created_at = self._read_created_at(
             connection=connection,
             workspace=workspace,
@@ -1425,7 +1435,7 @@ class SqliteSessionStore:
                 response.session.turn,
                 request.prompt,
                 response.output,
-                json.dumps(response.session.metadata, sort_keys=True),
+                json.dumps(persisted_metadata, sort_keys=True),
                 pending_approval_json,
                 pending_question_json,
                 json.dumps(resume_checkpoint, sort_keys=True),
@@ -1444,7 +1454,7 @@ class SqliteSessionStore:
             connection=connection,
             workspace=workspace,
             session_id=session_id,
-            metadata=response.session.metadata,
+            metadata=persisted_metadata,
         )
         return updated_at
 
@@ -1478,7 +1488,10 @@ class SqliteSessionStore:
             "kind": kind,
             "prompt": request.prompt,
             "session_status": response.session.status,
-            "session_metadata": response.session.metadata,
+            "session_metadata": session_metadata_for_persistence(
+                response.session.metadata,
+                events=response.events,
+            ),
             "skill_snapshot_hash": snapshot_hash,
             "skill_snapshot_version": snapshot_version,
             "skill_binding_snapshot": binding_snapshot,
