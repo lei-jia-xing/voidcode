@@ -1069,6 +1069,7 @@ class RuntimeTransportApp:
         *,
         show_thinking: bool = False,
     ) -> None:
+        runtime: RuntimeTransport | None = None
         try:
             body = await self._read_body(receive)
             request = self._parse_runtime_request(body)
@@ -1078,7 +1079,14 @@ class RuntimeTransportApp:
 
         try:
             with self._active_request_scope():
-                runtime = self._runtime_factory()
+                try:
+                    runtime = self._runtime_factory()
+                except Exception:
+                    logger.exception("unexpected transport streaming failure")
+                    await self._json_response(
+                        send, status=500, payload={"error": "internal server error"}
+                    )
+                    return
                 stream = self._stream_runtime_chunks(runtime, request)
                 try:
                     first_chunk = await anext(stream)

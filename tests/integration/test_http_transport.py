@@ -3044,6 +3044,33 @@ def test_transport_logs_unexpected_streaming_errors(caplog: pytest.LogCaptureFix
     assert "unexpected transport streaming failure" in caplog.text
 
 
+def test_transport_run_stream_reports_factory_failure_without_unboundlocalerror(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    create_runtime_app = _load_transport_app_factory()
+
+    def _failing_runtime_factory() -> object:
+        raise RuntimeError("boom from factory")
+
+    app = create_runtime_app(
+        workspace=Path("/tmp/workspace"),
+        runtime_factory=_failing_runtime_factory,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        response = _run_app(
+            app,
+            method="POST",
+            path="/api/runtime/run/stream",
+            body=json.dumps({"prompt": "explode"}).encode("utf-8"),
+        )
+
+    assert response.status == 500
+    assert response.json() == {"error": "internal server error"}
+    assert "boom from factory" in caplog.text
+    assert "UnboundLocalError" not in caplog.text
+
+
 def test_transport_rejects_invalid_run_stream_payload() -> None:
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=Path("/tmp/workspace"))
