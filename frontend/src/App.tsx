@@ -23,14 +23,27 @@ import { buildSessionDisplayTitle } from "./components/sessionTitle";
 
 function SubsessionTimelineHeader({
   childPrompt,
+  onReturn,
 }: {
   childPrompt: string | null;
+  onReturn: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <div className="mx-auto max-w-[var(--vc-chat-content-width)] px-4 pt-4">
-      <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
-        {t("subsession.timelineTitle")}
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] uppercase tracking-wide text-[var(--vc-text-subtle)]">
+          {t("subsession.timelineTitle")}
+        </div>
+        <ControlButton
+          compact
+          variant="ghost"
+          onClick={onReturn}
+          title="Alt+Up"
+        >
+          <MoveLeft className="h-4 w-4" />
+          <span>{t("subsession.backToParent")}</span>
+        </ControlButton>
       </div>
       {childPrompt ? (
         <div className="mt-1 text-sm text-[var(--vc-text-muted)]">
@@ -470,7 +483,7 @@ function App() {
   const isWorkspaceBootLoading =
     !hasCurrentWorkspace &&
     (workspacesStatus === "idle" || workspacesStatus === "loading");
-  const currentBranch = statusSnapshot?.git.branch?.trim() || null;
+  const currentBranch = statusSnapshot?.git?.branch?.trim() || null;
 
   return (
     <div className="flex h-screen bg-[var(--vc-bg)] text-[var(--vc-text-muted)] font-sans overflow-hidden selection:bg-[var(--vc-border-strong)] selection:text-[var(--vc-text-primary)]">
@@ -610,6 +623,7 @@ function App() {
                 />
                 <SubsessionTimelineHeader
                   childPrompt={selectedChildContext.childPrompt}
+                  onReturn={returnToParentSession}
                 />
               </>
             ) : null}

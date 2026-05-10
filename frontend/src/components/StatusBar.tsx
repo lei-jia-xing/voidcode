@@ -432,19 +432,19 @@ export function StatusBar({
   const popoverId = useId();
 
   const serverTone = toneFromState(snapshot?.acp?.state);
-  const lspTone = toneFromState(snapshot?.lsp.state);
-  const mcpTone = toneFromState(snapshot?.mcp.state);
+  const lspTone = toneFromState(snapshot?.lsp?.state);
+  const mcpTone = toneFromState(snapshot?.mcp?.state);
   const overallTone = aggregateTone(serverTone, lspTone, mcpTone);
-  const mcpDetails = snapshot?.mcp.details;
+  const mcpDetails = snapshot?.mcp?.details;
   const mcpRetryAvailable = Boolean(mcpDetails?.retry_available);
 
   const counts = useMemo(() => {
     return {
       server: snapshot?.acp?.state === "failed" ? 1 : 0,
-      lsp: lspServers(snapshot?.lsp.details).filter(
+      lsp: lspServers(snapshot?.lsp?.details).filter(
         (server) => server.status === "failed",
       ).length,
-      mcp: mcpServers(snapshot?.mcp.details).filter(
+      mcp: mcpServers(snapshot?.mcp?.details).filter(
         (server) => server.status === "failed",
       ).length,
     };

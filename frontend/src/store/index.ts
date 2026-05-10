@@ -857,7 +857,12 @@ export const useAppStore = create<AppState>()(
       },
 
       selectSession: async (sessionId: string) => {
-        if (isRunLocked(get().runStatus)) {
+        const childParentSessionId = get().childSessionParentId;
+        const allowChildParentReturn =
+          Boolean(sessionId) &&
+          childParentSessionId !== null &&
+          sessionId === childParentSessionId;
+        if (isRunLocked(get().runStatus) && !allowChildParentReturn) {
           return;
         }
 
@@ -942,6 +947,9 @@ export const useAppStore = create<AppState>()(
                 get().currentSessionEvents,
               currentSessionOutput:
                 childContext.session_result?.output ?? childContext.output,
+              runStatus: childContext.session_result?.session
+                ? runStatusForReplay(childContext.session_result.session)
+                : "idle",
               replayStatus: "success",
             });
             await get().loadBackgroundTasks();

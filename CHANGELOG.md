@@ -7,6 +7,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Web frontend delegated child sessions now expose an in-context return action,
+  keep replay run state aligned with running child sessions, and allow returning
+  to the parent session while the delegated child is still active.
+- Web runtime status surfaces no longer crash when partial status payloads omit
+  nested `git`, `lsp`, or `mcp` details.
+
 ## [0.1.0] - 2026-05-06
 
 First productionized release of the VoidCode runtime control plane.
