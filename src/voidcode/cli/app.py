@@ -422,14 +422,12 @@ def _consume_runtime_stream(
 def _incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | None:
     if result.session.status in {"completed", "failed", "waiting"}:
         return None
-    if _last_event_is_permission_denied_tool_result(_last_event(result)):
+    if _has_permission_denied_tool_result(result.events):
         return None
     if _pending_blocked_event(result.session, _last_event(result)) is not None:
         return None
     last_event = _last_event(result)
     if last_event is not None and last_event.event_type == "runtime.failed":
-        return None
-    if _last_event_is_permission_denied_tool_result(last_event):
         return None
     return (
         "runtime stream ended without a terminal outcome; "
@@ -441,6 +439,10 @@ def _last_event_is_permission_denied_tool_result(event: EventEnvelope | None) ->
     if event is None or event.event_type != "runtime.tool_completed":
         return False
     return event.payload.get("permission_denied") is True
+
+
+def _has_permission_denied_tool_result(events: tuple[EventEnvelope, ...]) -> bool:
+    return any(_last_event_is_permission_denied_tool_result(event) for event in events)
 
 
 def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
