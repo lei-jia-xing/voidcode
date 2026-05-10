@@ -1487,6 +1487,141 @@ describe("useAppStore integration flow", () => {
     expect(state.selectedBackgroundTaskOutputId).toBeNull();
   });
 
+  it("keeps delegated child replay run status in sync while the child is still running", async () => {
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce({
+      task: {
+        task_id: "task-child-running",
+        status: "running",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "child-session",
+        delegated_prompt: "inspect child",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: null,
+        error: null,
+        result_available: false,
+        cancellation_cause: null,
+      },
+      session_result: {
+        session: {
+          session: { id: "child-session", parent_id: "session-parent" },
+          status: "running",
+          turn: 1,
+          metadata: {},
+        },
+        prompt: "inspect child",
+        status: "running",
+        summary: null,
+        output: null,
+        error: null,
+        last_event_sequence: 1,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "inspect child" },
+            "runtime",
+            "child-session",
+          ),
+        ],
+      },
+      output: null,
+    });
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+
+    await useAppStore.getState().selectSession("child-session");
+
+    const state = useAppStore.getState();
+    expect(state.currentSessionId).toBe("child-session");
+    expect(state.childSessionParentId).toBe("session-parent");
+    expect(state.replayStatus).toBe("success");
+    expect(state.runStatus).toBe("running");
+  });
+
+  it("allows returning to the parent session while a delegated child replay is still running", async () => {
+    const parentEvents = [
+      makeEvent(
+        1,
+        "runtime.request_received",
+        { prompt: "parent prompt" },
+        "runtime",
+        "session-parent",
+      ),
+      makeEvent(
+        2,
+        "graph.response_ready",
+        { output: "parent output" },
+        "graph",
+        "session-parent",
+      ),
+    ];
+
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce({
+      task: {
+        task_id: "task-child-running",
+        status: "running",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "child-session",
+        delegated_prompt: "inspect child",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: null,
+        error: null,
+        result_available: false,
+        cancellation_cause: null,
+      },
+      session_result: {
+        session: {
+          session: { id: "child-session", parent_id: "session-parent" },
+          status: "running",
+          turn: 1,
+          metadata: {},
+        },
+        prompt: "inspect child",
+        status: "running",
+        summary: null,
+        output: "child output",
+        error: null,
+        last_event_sequence: 1,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "inspect child" },
+            "runtime",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    });
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
+    runtimeClientMocks.getSessionReplayMock.mockResolvedValueOnce(
+      makeRuntimeResponse(
+        "session-parent",
+        "completed",
+        parentEvents,
+        "parent output",
+      ),
+    );
+
+    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().selectSession("session-parent");
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.getSessionReplayMock).toHaveBeenCalledWith(
+      "session-parent",
+    );
+    expect(state.currentSessionId).toBe("session-parent");
+    expect(state.childSessionParentId).toBeNull();
+    expect(state.runStatus).toBe("idle");
+    expect(state.currentSessionOutput).toBe("parent output");
+  });
+
   it("surfaces approval lookup failure when no pending request exists", async () => {
     const sessionId = "broken-session";
     const requestReceived = makeEvent(
