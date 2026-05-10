@@ -220,6 +220,7 @@
   "subsession.childPrompt": "委派提示词",
   "subsession.liveWorking": "子代理仍在工作中...",
   "subsession.timelineTitle": "子会话时间线",
+  "subsession.backToParent": "返回父会话",
   "review.title": "审查",
   "review.fileTree": "文件树",
   "review.toggleFileTree": "切换文件树",

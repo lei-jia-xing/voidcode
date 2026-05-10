@@ -220,6 +220,7 @@
   "subsession.childPrompt": "Delegated prompt",
   "subsession.liveWorking": "Subagent is still working...",
   "subsession.timelineTitle": "Subsession timeline",
+  "subsession.backToParent": "Back to parent",
   "review.title": "Review",
   "review.fileTree": "File Tree",
   "review.toggleFileTree": "Toggle file tree",
