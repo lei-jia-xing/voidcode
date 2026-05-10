@@ -7,15 +7,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-
-- Web frontend delegated child sessions now expose an in-context return action,
-  keep replay run state aligned with running child sessions, and allow returning
-  to the parent session while the delegated child is still active.
-- Web runtime status surfaces no longer crash when partial status payloads omit
-  nested `git`, `lsp`, or `mcp` details.
-
-## [0.1.0] - 2026-05-06
+## [0.1.0] - 2026-05-10
 
 First productionized release of the VoidCode runtime control plane.
 
@@ -66,6 +58,14 @@ needed to run a real end-to-end coding session.
 - Structured hook diagnostics and long-running task stability hardening.
 - Context continuity safeguards and intensive loop verification state.
 - PyPI release pipeline via GitHub Actions trusted publishing.
+
+### Fixed
+
+- Web frontend delegated child sessions now expose an in-context return action,
+  keep replay run state aligned with running child sessions, and allow returning
+  to the parent session while the delegated child is still active.
+- Web runtime status surfaces no longer crash when partial status payloads omit
+  nested `git`, `lsp`, or `mcp` details.
 
 ### Documentation
 
