@@ -71,6 +71,7 @@ packages = ["src/voidcode"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "frontend/**",
   "scripts",
   "src/voidcode",
   "tests",
