@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
 import { useAppStore } from "./store";
+import type { RuntimeStatusSnapshot } from "./lib/runtime/types";
 import "./i18n";
 
 vi.mock("./store", () => ({
@@ -421,6 +422,28 @@ describe("App", () => {
     expect(screen.queryByText("Agent Idle")).not.toBeInTheDocument();
   });
 
+  it("renders when runtime status omits git details", () => {
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      statusSnapshot: {} as RuntimeStatusSnapshot,
+    });
+
+    render(<App />);
+
+    expect(screen.getByText("New Chat")).toBeInTheDocument();
+  });
+
   it("shows delegated child session transcript and switches back to the parent session", () => {
     const loadBackgroundTaskOutput = vi.fn();
     const selectSession = vi.fn();
@@ -557,12 +580,13 @@ describe("App", () => {
     expect(screen.getByText("child output")).toBeInTheDocument();
     expect(screen.getByText("Subsession timeline")).toBeInTheDocument();
     expect(screen.getByText("你好")).toBeInTheDocument();
+    expect(screen.getByText("Back to parent")).toBeInTheDocument();
     expect(
       screen.getByText("Subagent is still working..."),
     ).toBeInTheDocument();
     expect(screen.queryByText("parent output")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("Parent session"));
+    fireEvent.click(screen.getByText("Back to parent"));
 
     expect(selectSession).toHaveBeenCalledWith("parent-session");
     expect(loadBackgroundTaskOutput).not.toHaveBeenCalledWith(null);
