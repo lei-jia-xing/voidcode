@@ -6715,7 +6715,7 @@ class VoidCodeRuntime:
         if inherited_mode != "normal" or "mode" in child_metadata or "mode" in parent_metadata:
             inherited["mode"] = inherited_mode
 
-        parent_read_only = runtime_read_only_from_metadata(parent_metadata)
+        parent_read_only = self._effective_runtime_read_only_for_policy_metadata(parent_metadata)
         child_read_only = runtime_read_only_from_metadata(child_metadata)
         if parent_read_only or child_read_only or "read_only" in child_metadata:
             inherited["read_only"] = parent_read_only or child_read_only

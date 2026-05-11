@@ -85,8 +85,37 @@ def test_resolve_shell_command_policy_denies_risky_commands_in_read_only(command
     assert "read-only runtime policy denies shell commands" in decision.reason
 
 
-def test_resolve_shell_command_policy_allows_readonly_commands_in_read_only() -> None:
-    assert resolve_shell_command_policy("rg shell_policy src", read_only=True).allowed is True
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -c \'from pathlib import Path; Path("generated.txt").write_text("bad")\'',
+        'bash -lc "rm generated.txt"',
+    ],
+)
+def test_resolve_shell_command_policy_denies_unknown_commands_in_read_only(
+    command: str,
+) -> None:
+    decision = resolve_shell_command_policy(command, read_only=True)
+
+    assert classify_shell_command(command).category == "unknown"
+    assert decision.allowed is False
+    assert decision.reason is not None
+    assert "read-only runtime policy denies shell commands classified as unknown" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pwd",
+        "ls",
+        "rg shell_policy src",
+        "git status",
+    ],
+)
+def test_resolve_shell_command_policy_allows_readonly_commands_in_read_only(
+    command: str,
+) -> None:
+    assert resolve_shell_command_policy(command, read_only=True).allowed is True
 
 
 @pytest.mark.parametrize("command", ["npm install", "pnpm install", "yarn install", "bun install"])

@@ -138,7 +138,7 @@ class ShellCommandClassification:
 
     @property
     def denied_in_read_only(self) -> bool:
-        return self.category in {"package_manager", "mutating", "destructive"}
+        return self.category in {"package_manager", "mutating", "destructive", "unknown"}
 
 
 @dataclass(frozen=True, slots=True)
