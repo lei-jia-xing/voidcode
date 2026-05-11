@@ -451,5 +451,5 @@ def _run_hook_command(
         text=True,
         check=True,
         timeout=timeout_seconds,
-        env={**os.environ, **injected_env, **environment},
+        env={**os.environ, **environment, **injected_env},
     )

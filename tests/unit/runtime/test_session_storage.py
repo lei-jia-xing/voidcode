@@ -233,6 +233,156 @@ def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
     expected_workflow = workflow_snapshot_from_metadata(metadata)
 
     assert loaded_workflow == expected_workflow
+    assert loaded.session.metadata.get("mode", "normal") == "normal"
+    assert loaded.session.metadata.get("mode") != "sustain"
+
+
+def test_session_storage_workflow_read_only_default_does_not_pollute_runtime_mode(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    metadata: dict[str, object] = {
+        "workflow": {
+            "snapshot_version": 2,
+            "requested": {"workflow_mode": "deep_work", "workflow_preset": "research"},
+            "effective": {
+                "mode": "deep_work",
+                "legacy_preset": "research",
+                "source": "workflow_mode",
+                "read_only_default": True,
+            },
+        },
+    }
+    request = RuntimeRequest(prompt="persist readonly workflow", session_id="readonly-workflow")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="readonly-workflow"),
+            status="completed",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id="readonly-workflow",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="readonly-workflow")
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="readonly-workflow")
+    workflow = cast(dict[str, object], loaded.session.metadata["workflow"])
+    effective = cast(dict[str, object], workflow["effective"])
+    runtime_policy = cast(dict[str, object], loaded.session.metadata["runtime_policy"])
+
+    assert loaded.session.metadata["mode"] == "normal"
+    assert loaded.session.metadata["read_only"] is True
+    assert effective["mode"] == "deep_work"
+    assert runtime_policy["mode"] == "normal"
+    assert runtime_policy["read_only"] is True
+    assert checkpoint is not None
+    checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
+    assert checkpoint_metadata["mode"] == "normal"
+    assert cast(dict[str, object], checkpoint_metadata["runtime_policy"])["mode"] == "normal"
+
+
+def test_session_storage_load_normalizes_legacy_workflow_mode_pollution(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-mode-pollution.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    request = RuntimeRequest(prompt="legacy polluted", session_id="legacy-polluted")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="legacy-polluted"),
+            status="completed",
+            turn=1,
+            metadata={
+                "workflow": {
+                    "snapshot_version": 2,
+                    "effective": {"mode": "sustain", "read_only_default": False},
+                },
+            },
+        ),
+        events=(
+            EventEnvelope(
+                session_id="legacy-polluted",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+    polluted_metadata = {
+        "mode": "sustain",
+        "read_only": False,
+        "workflow": {
+            "snapshot_version": 2,
+            "effective": {"mode": "sustain", "read_only_default": False},
+        },
+        "runtime_policy": {"version": 1, "mode": "sustain", "read_only": False},
+    }
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(polluted_metadata, sort_keys=True), "legacy-polluted"),
+        )
+        connection.commit()
+
+    loaded = store.load_session(workspace=tmp_path, session_id="legacy-polluted")
+    result = store.load_session_result(workspace=tmp_path, session_id="legacy-polluted")
+
+    assert loaded.session.metadata["mode"] == "normal"
+    assert result.session.metadata["mode"] == "normal"
+    assert cast(dict[str, object], loaded.session.metadata["runtime_policy"])["mode"] == "normal"
+    workflow = cast(dict[str, object], loaded.session.metadata["workflow"])
+    assert cast(dict[str, object], workflow["effective"])["mode"] == "sustain"
+
+
+def test_session_storage_load_background_task_normalizes_legacy_workflow_mode_pollution(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-task-mode-pollution.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    metadata: dict[str, object] = {
+        "mode": "product",
+        "workflow": {
+            "snapshot_version": 2,
+            "effective": {"mode": "product", "read_only_default": False},
+        },
+        "runtime_policy": {"version": 1, "mode": "product", "read_only": False},
+    }
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="legacy-task"),
+            request=BackgroundTaskRequestSnapshot(
+                prompt="legacy task",
+                parent_session_id="parent-session",
+                metadata=metadata,
+            ),
+        ),
+    )
+    with closing(sqlite3.connect(database_path)) as connection:
+        _ = connection.execute(
+            "UPDATE background_tasks SET request_metadata_json = ? WHERE task_id = ?",
+            (json.dumps(metadata, sort_keys=True), "legacy-task"),
+        )
+        connection.commit()
+
+    task = store.load_background_task(workspace=tmp_path, task_id="legacy-task")
+
+    assert task.request.metadata["mode"] == "normal"
+    assert cast(dict[str, object], task.request.metadata["runtime_policy"])["mode"] == "normal"
+    workflow = cast(dict[str, object], task.request.metadata["workflow"])
+    assert cast(dict[str, object], workflow["effective"])["mode"] == "product"
 
 
 def test_session_storage_roundtrips_redacted_runtime_policy_metadata(tmp_path: Path) -> None:

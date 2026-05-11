@@ -3714,6 +3714,112 @@ def test_runtime_shell_exec_write_command_requests_approval_without_path_inferen
     assert approval.payload["policy_surface"] is None
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["touch generated.txt", "npm install"],
+)
+def test_runtime_workflow_read_only_default_denies_risky_shell_commands(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(approval_mode="allow"),
+                graph=_SingleToolGraph("shell_exec", {"command": command}),
+                permission_policy=policy,
+                mcp_manager=_NoopMcpManager(),
+            ),
+        ),
+    )
+
+    denied = runtime.run(
+        runtime_request(
+            prompt="workflow shell denial",
+            session_id=f"workflow-readonly-shell-{command.split()[0]}",
+            metadata={"workflow_preset": "review"},
+        )
+    )
+
+    assert denied.session.status == "completed"
+    assert (tmp_path / "generated.txt").exists() is False
+    runtime_config = cast(dict[str, object], denied.session.metadata["runtime_config"])
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+    assert workflow["read_only_default"] is True
+    assert not any(
+        event.event_type == "runtime.failed"
+        and event.payload.get("kind") == "runtime_tool_policy_denied"
+        for event in denied.events
+    )
+    denial = next(
+        event for event in denied.events if event.event_type == "runtime.approval_resolved"
+    )
+    assert denial.payload["decision"] == "deny"
+    assert denial.payload["policy_surface"] == "shell_policy"
+    assert "read-only runtime policy denies shell commands" in cast(
+        str, denial.payload["matched_rule"]
+    )
+    feedback = next(
+        event
+        for event in denied.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("permission_denied") is True
+    )
+    assert feedback.payload["status"] == "error"
+
+
+def test_runtime_workflow_read_only_default_allows_readonly_shell_command(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    config_module = importlib.import_module("voidcode.runtime.config")
+
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    runtime_config = cast(Callable[..., object], config_module.RuntimeConfig)
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                config=runtime_config(approval_mode="allow"),
+                graph=_SingleToolGraph("shell_exec", {"command": "pwd"}),
+                permission_policy=policy,
+                mcp_manager=_NoopMcpManager(),
+            ),
+        ),
+    )
+
+    response = runtime.run(
+        runtime_request(
+            prompt="workflow shell allow",
+            session_id="workflow-readonly-shell-allow",
+            metadata={"workflow_preset": "review"},
+        )
+    )
+
+    assert response.session.status == "completed"
+    assert response.output == "done"
+    completed = next(
+        event
+        for event in response.events
+        if event.event_type == "runtime.tool_completed"
+        and event.payload.get("tool") == "shell_exec"
+    )
+    assert completed.payload["status"] == "ok"
+    assert cast(str, completed.payload["content"]).strip() == str(tmp_path.resolve())
+
+
 def test_runtime_uses_persisted_external_permission_rules_after_resume(
     tmp_path: Path,
 ) -> None:

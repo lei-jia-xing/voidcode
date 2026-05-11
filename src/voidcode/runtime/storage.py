@@ -36,6 +36,7 @@ from .session import (
     SessionState,
     SessionStatus,
     StoredSessionSummary,
+    normalize_persisted_session_metadata,
     session_metadata_for_persistence,
 )
 from .task import (
@@ -2795,7 +2796,9 @@ class SqliteSessionStore:
                 session_id=session_id,
             )
         metadata = self._metadata_with_todo_state(
-            cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))),
+            normalize_persisted_session_metadata(
+                cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
+            ),
             stored_todo_state,
         )
         session = SessionState(
@@ -2956,7 +2959,12 @@ class SqliteSessionStore:
             )
             for row in event_rows
         )
-        return cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))), events
+        return (
+            normalize_persisted_session_metadata(
+                cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
+            ),
+            events,
+        )
 
     def _write_revert_marker(
         self,
@@ -4162,6 +4170,7 @@ class SqliteSessionStore:
         metadata = json.loads(cast(str, row["request_metadata_json"]))
         if not isinstance(metadata, dict):
             raise ValueError("background task metadata must decode to an object")
+        metadata = normalize_persisted_session_metadata(cast(dict[str, object], metadata))
         return BackgroundTaskState(
             task=BackgroundTaskRef(id=cast(str, row["task_id"])),
             status=self._parse_background_task_status(cast(str, row["status"])),
@@ -4169,7 +4178,7 @@ class SqliteSessionStore:
                 prompt=cast(str, row["prompt"]),
                 session_id=cast(str | None, row["request_session_id"]),
                 parent_session_id=cast(str | None, row["request_parent_session_id"]),
-                metadata=cast(dict[str, object], metadata),
+                metadata=metadata,
                 allocate_session_id=bool(cast(int, row["allocate_session_id"])),
             ),
             session_id=cast(str | None, row["session_id"]),

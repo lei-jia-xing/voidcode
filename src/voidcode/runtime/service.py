@@ -1891,10 +1891,9 @@ class VoidCodeRuntime:
         metadata: dict[str, object] | None,
     ) -> ToolPolicyDecision:
         mode = self._runtime_mode_for_policy_metadata(metadata)
-        read_only = self._runtime_read_only_for_policy_metadata(metadata)
+        read_only = self._effective_runtime_read_only_for_policy_metadata(metadata)
         workflow = self._workflow_snapshot_from_metadata(metadata)
         if workflow is not None and workflow.get("read_only_default") is True:
-            read_only = True
             raw_mode = workflow.get("mode")
             effective = workflow.get("effective")
             if isinstance(effective, dict):
@@ -1961,6 +1960,16 @@ class VoidCodeRuntime:
         read_only = metadata.get("read_only", False)
         if not isinstance(read_only, bool):
             raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
+        return read_only
+
+    def _effective_runtime_read_only_for_policy_metadata(
+        self,
+        metadata: dict[str, object] | None,
+    ) -> bool:
+        read_only = self._runtime_read_only_for_policy_metadata(metadata)
+        workflow = self._workflow_snapshot_from_metadata(metadata)
+        if workflow is not None and workflow.get("read_only_default") is True:
+            return True
         return read_only
 
     def _memory_tools_allowed(self, metadata: dict[str, object] | None) -> bool:
@@ -3161,10 +3170,9 @@ class VoidCodeRuntime:
         metadata: dict[str, object] | None,
     ) -> HookExecutionPolicy:
         mode = self._runtime_mode_for_policy_metadata(metadata)
-        read_only = self._runtime_read_only_for_policy_metadata(metadata)
+        read_only = self._effective_runtime_read_only_for_policy_metadata(metadata)
         workflow = self._workflow_snapshot_from_metadata(metadata)
         if workflow is not None and workflow.get("read_only_default") is True:
-            read_only = True
             effective = workflow.get("effective")
             if isinstance(effective, dict):
                 effective_payload = cast(dict[str, object], effective)
@@ -3306,7 +3314,7 @@ class VoidCodeRuntime:
         if shell_command is not None:
             shell_policy = resolve_shell_command_policy(
                 shell_command,
-                read_only=runtime_read_only_from_metadata(session.metadata),
+                read_only=self._effective_runtime_read_only_for_policy_metadata(session.metadata),
                 non_interactive=True,
             )
         pattern_match = evaluate_pattern_permission_rules(
