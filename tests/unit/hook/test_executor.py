@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from voidcode.hook.config import RuntimeHooksConfig, RuntimeHookSurface
 from voidcode.hook.executor import (
     HookExecutionOutcome,
+    HookExecutionPolicy,
     HookExecutionRequest,
     LifecycleHookExecutionRequest,
     run_lifecycle_hooks,
@@ -47,6 +51,7 @@ def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
         "tool_name": "write_file",
         "session_id": "hook-session",
         "status": "ok",
+        "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
 
 
@@ -129,6 +134,52 @@ def test_run_tool_hooks_emits_structured_diagnostic_from_stdout(tmp_path: Path) 
     assert outcome.events[0].payload["guidance"] == "continue safely"
 
 
+def test_run_tool_hooks_skips_executable_commands_under_read_only_policy(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "hook-ran.txt"
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        pre_tool=(
+            (
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('hook-ran.txt').write_text('bad')",
+            ),
+        ),
+    )
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="read_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+            policy=HookExecutionPolicy(mode="analyze", read_only=True),
+        )
+    )
+
+    assert marker.exists() is False
+    assert outcome.failed_error is None
+    assert outcome.last_sequence == 8
+    assert outcome.events[0].payload == {
+        "phase": "pre",
+        "tool_name": "read_file",
+        "session_id": "hook-session",
+        "status": "skipped",
+        "hook_policy": {
+            "outcome": "skipped",
+            "mode": "analyze",
+            "read_only": True,
+            "reason": "read-only runtime policy denies shell commands classified as unknown",
+        },
+    }
+
+
 def test_run_tool_hooks_ignores_malformed_structured_stdout(tmp_path: Path) -> None:
     hooks = RuntimeHooksConfig(
         enabled=True,
@@ -180,6 +231,155 @@ def test_run_tool_hooks_does_not_reuse_prior_guidance_on_later_events(
 
     assert outcome.events[0].payload["guidance"] == "first only"
     assert "guidance" not in outcome.events[1].payload
+
+
+def test_run_tool_hooks_injected_package_manager_env_overrides_caller_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_env: dict[str, str] | None = None
+
+    def fake_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_env
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_env = cast(dict[str, str], env)
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    monkeypatch.setenv("CI", "caller-base")
+    monkeypatch.setenv("NPM_CONFIG_YES", "caller-base")
+    monkeypatch.setenv("YARN_ENABLE_IMMUTABLE_INSTALLS", "caller-base")
+    monkeypatch.setattr("voidcode.hook.executor.subprocess.run", fake_run)
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=RuntimeHooksConfig(enabled=True, pre_tool=(("npm", "install"),)),
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="shell_exec",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={
+                "CI": "caller-request",
+                "NPM_CONFIG_YES": "caller-request",
+                "YARN_ENABLE_IMMUTABLE_INSTALLS": "caller-request",
+            },
+            sequence_start=7,
+        )
+    )
+
+    assert outcome.failed_error is None
+    resolved_env = captured_env or {}
+    assert resolved_env["CI"] == "1"
+    assert resolved_env["NPM_CONFIG_YES"] == "true"
+    assert resolved_env["YARN_ENABLE_IMMUTABLE_INSTALLS"] == "false"
+    assert resolved_env["VOIDCODE_RUNNING_TOOL_HOOK"] == "1"
+    assert outcome.events[0].payload["hook_policy"] == {
+        "outcome": "allowed",
+        "mode": "normal",
+        "read_only": False,
+        "injected_env_keys": [
+            "CI",
+            "NPM_CONFIG_YES",
+            "YARN_ENABLE_IMMUTABLE_INSTALLS",
+        ],
+    }
+
+
+def test_run_lifecycle_hooks_preserves_payload_env_while_injected_env_wins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_env: dict[str, str] | None = None
+
+    def fake_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_env
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_env = cast(dict[str, str], env)
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr("voidcode.hook.executor.subprocess.run", fake_run)
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=RuntimeHooksConfig(enabled=True, on_session_start=(("yarn", "install"),)),
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_start",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={
+                "CI": "caller-request",
+                "NPM_CONFIG_YES": "caller-request",
+                "YARN_ENABLE_IMMUTABLE_INSTALLS": "caller-request",
+                "VOIDCODE_HOOK_SURFACE": "caller-request",
+                "VOIDCODE_PROMPT": "caller-request",
+            },
+            sequence_start=11,
+            payload={"prompt": "hello"},
+        )
+    )
+
+    assert outcome.failed_error is None
+    resolved_env = captured_env or {}
+    assert resolved_env["CI"] == "1"
+    assert resolved_env["NPM_CONFIG_YES"] == "true"
+    assert resolved_env["YARN_ENABLE_IMMUTABLE_INSTALLS"] == "false"
+    assert resolved_env["VOIDCODE_HOOK_SURFACE"] == "session_start"
+    assert resolved_env["VOIDCODE_PROMPT"] == "hello"
+    assert resolved_env["VOIDCODE_RUNNING_TOOL_HOOK"] == "1"
+
+
+def test_run_tool_hooks_does_not_inject_env_for_non_package_manager_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_env: dict[str, str] | None = None
+
+    def fake_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_env
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_env = cast(dict[str, str], env)
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("NPM_CONFIG_YES", raising=False)
+    monkeypatch.delenv("YARN_ENABLE_IMMUTABLE_INSTALLS", raising=False)
+    monkeypatch.setattr("voidcode.hook.executor.subprocess.run", fake_run)
+
+    outcome = run_tool_hooks(
+        HookExecutionRequest(
+            hooks=RuntimeHooksConfig(enabled=True, pre_tool=((sys.executable, "-c", ""),)),
+            workspace=tmp_path,
+            session_id="hook-session",
+            tool_name="read_file",
+            phase="pre",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=7,
+        )
+    )
+
+    assert outcome.failed_error is None
+    resolved_env = captured_env or {}
+    assert "CI" not in resolved_env
+    assert "NPM_CONFIG_YES" not in resolved_env
+    assert "YARN_ENABLE_IMMUTABLE_INSTALLS" not in resolved_env
+    assert outcome.events[0].payload["hook_policy"] == {
+        "outcome": "allowed",
+        "mode": "normal",
+        "read_only": False,
+    }
 
 
 def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
@@ -272,6 +472,7 @@ def test_run_lifecycle_hooks_executes_configured_session_command_and_reports_eve
         "session_id": "hook-session",
         "prompt": "hello",
         "hook_status": "ok",
+        "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
 
 
@@ -330,6 +531,42 @@ def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> N
 
     assert outcome.failed_error is None
     assert output_path.read_text() == "background_task_completed:task-1"
+
+
+def test_run_lifecycle_hooks_skips_shell_policy_denied_command_under_plan_mode(
+    tmp_path: Path,
+) -> None:
+    hooks = RuntimeHooksConfig(
+        enabled=True,
+        on_session_end=(("rm", "-rf", "generated"),),
+    )
+
+    outcome = run_lifecycle_hooks(
+        LifecycleHookExecutionRequest(
+            hooks=hooks,
+            workspace=tmp_path,
+            session_id="hook-session",
+            surface="session_end",
+            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
+            environment={},
+            sequence_start=4,
+            policy=HookExecutionPolicy(mode="plan", read_only=True),
+        )
+    )
+
+    assert outcome.failed_error is None
+    assert outcome.last_sequence == 5
+    assert outcome.events[0].payload == {
+        "surface": "session_end",
+        "session_id": "hook-session",
+        "hook_status": "skipped",
+        "hook_policy": {
+            "outcome": "skipped",
+            "mode": "plan",
+            "read_only": True,
+            "reason": "read-only runtime policy denies shell commands classified as destructive",
+        },
+    }
 
 
 def test_run_lifecycle_hooks_executes_new_background_surfaces(tmp_path: Path) -> None:

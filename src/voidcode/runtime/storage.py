@@ -31,7 +31,14 @@ from .memory import MemoryKind, MemoryRecord, MemorySearchResult, MemoryStatus
 from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
-from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
+from .session import (
+    SessionRef,
+    SessionState,
+    SessionStatus,
+    StoredSessionSummary,
+    normalize_persisted_session_metadata,
+    session_metadata_for_persistence,
+)
 from .task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -1402,6 +1409,10 @@ class SqliteSessionStore:
             session_id=session_id,
             events=response.events,
         )
+        persisted_metadata = session_metadata_for_persistence(
+            response.session.metadata,
+            events=events,
+        )
         created_at = self._read_created_at(
             connection=connection,
             workspace=workspace,
@@ -1425,7 +1436,7 @@ class SqliteSessionStore:
                 response.session.turn,
                 request.prompt,
                 response.output,
-                json.dumps(response.session.metadata, sort_keys=True),
+                json.dumps(persisted_metadata, sort_keys=True),
                 pending_approval_json,
                 pending_question_json,
                 json.dumps(resume_checkpoint, sort_keys=True),
@@ -1444,7 +1455,7 @@ class SqliteSessionStore:
             connection=connection,
             workspace=workspace,
             session_id=session_id,
-            metadata=response.session.metadata,
+            metadata=persisted_metadata,
         )
         return updated_at
 
@@ -1478,7 +1489,10 @@ class SqliteSessionStore:
             "kind": kind,
             "prompt": request.prompt,
             "session_status": response.session.status,
-            "session_metadata": response.session.metadata,
+            "session_metadata": session_metadata_for_persistence(
+                response.session.metadata,
+                events=response.events,
+            ),
             "skill_snapshot_hash": snapshot_hash,
             "skill_snapshot_version": snapshot_version,
             "skill_binding_snapshot": binding_snapshot,
@@ -2782,7 +2796,9 @@ class SqliteSessionStore:
                 session_id=session_id,
             )
         metadata = self._metadata_with_todo_state(
-            cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))),
+            normalize_persisted_session_metadata(
+                cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
+            ),
             stored_todo_state,
         )
         session = SessionState(
@@ -2943,7 +2959,12 @@ class SqliteSessionStore:
             )
             for row in event_rows
         )
-        return cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"]))), events
+        return (
+            normalize_persisted_session_metadata(
+                cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
+            ),
+            events,
+        )
 
     def _write_revert_marker(
         self,
@@ -4149,6 +4170,7 @@ class SqliteSessionStore:
         metadata = json.loads(cast(str, row["request_metadata_json"]))
         if not isinstance(metadata, dict):
             raise ValueError("background task metadata must decode to an object")
+        metadata = normalize_persisted_session_metadata(cast(dict[str, object], metadata))
         return BackgroundTaskState(
             task=BackgroundTaskRef(id=cast(str, row["task_id"])),
             status=self._parse_background_task_status(cast(str, row["status"])),
@@ -4156,7 +4178,7 @@ class SqliteSessionStore:
                 prompt=cast(str, row["prompt"]),
                 session_id=cast(str | None, row["request_session_id"]),
                 parent_session_id=cast(str | None, row["request_parent_session_id"]),
-                metadata=cast(dict[str, object], metadata),
+                metadata=metadata,
                 allocate_session_id=bool(cast(int, row["allocate_session_id"])),
             ),
             session_id=cast(str | None, row["session_id"]),

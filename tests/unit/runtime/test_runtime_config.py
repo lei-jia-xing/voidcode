@@ -94,6 +94,13 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
     assert config.max_steps == DEFAULT_MAX_STEPS
     assert config.background_task == RuntimeBackgroundTaskConfig()
     assert config.hooks is None
+    assert config.memory.enabled is True
+    assert config.memory.scope == "workspace"
+    assert config.memory.semantic_search == "auto"
+    assert config.memory.sqlite_vec.enabled == "auto"
+    assert config.memory.recall.enabled is False
+    assert config.memory.recall.limit == 5
+    assert config.memory.recall.max_chars == 2000
     assert config.permission.read.rules == (("*", "allow"),)
     assert config.permission.write.rules == (("*", "allow"),)
 

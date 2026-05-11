@@ -30,6 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
+from voidcode.runtime.contracts import RuntimeRequestMetadataPayload
 from voidcode.runtime.task import BackgroundTaskStatus, is_background_task_terminal
 from voidcode.tools import ToolCall
 
@@ -100,6 +101,22 @@ class _QuestionThenDoneGraph:
                             }
                         ]
                     },
+                ),
+                output=None,
+                events=(),
+                is_finished=False,
+            )
+        return SimpleNamespace(tool_call=None, output="done", events=(), is_finished=True)
+
+
+class _WriteThenDoneGraph:
+    def step(self, request: Any, tool_results: tuple[object, ...], *, session: Any) -> Any:
+        _ = request, session
+        if not tool_results:
+            return SimpleNamespace(
+                tool_call=ToolCall(
+                    tool_name="write_file",
+                    arguments={"path": "child.txt", "content": "delegated"},
                 ),
                 output=None,
                 events=(),
@@ -1395,6 +1412,141 @@ def test_runtime_exposes_start_background_task(tmp_path: Path) -> None:
     started = runtime.start_background_task(runtime_module.RuntimeRequest(prompt="background work"))
     assert started.task.id.startswith("task-")
     assert started.status in ("queued", "running", "completed")
+
+
+def test_runtime_background_child_inherits_parent_read_only_policy(tmp_path: Path) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime")
+    (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
+    _ = runtime.run(
+        runtime_module.RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="leader-read-only",
+            metadata={"mode": "analyze"},
+        )
+    )
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path, graph=_WriteThenDoneGraph())
+
+    started = runtime.start_background_task(
+        runtime_module.RuntimeRequest(
+            prompt="write child.txt delegated",
+            parent_session_id="leader-read-only",
+        )
+    )
+    completed = _wait_for_background_task(
+        runtime,
+        started.task.id,
+        predicate=_is_terminal_background_task,
+    )
+    child_result = runtime.session_result(session_id=cast(str, completed.child_session_id))
+
+    assert completed.status == "failed"
+    assert completed.request.metadata["mode"] == "analyze"
+    assert completed.request.metadata["read_only"] is True
+    assert child_result.session.metadata["mode"] == "analyze"
+    assert child_result.session.metadata["read_only"] is True
+    assert child_result.error is not None
+    assert "read-only runtime policy denies mutating tools" in child_result.error
+    assert not (tmp_path / "child.txt").exists()
+
+
+def test_runtime_child_policy_inheritance_treats_workflow_default_as_read_only(
+    tmp_path: Path,
+) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime")
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
+    parent_metadata: dict[str, object] = {
+        "workflow": {
+            "selected_preset": "review",
+            "read_only_default": True,
+            "effective": {
+                "mode": "default",
+                "read_only_default": True,
+            },
+        }
+    }
+
+    inherited = runtime._metadata_with_inherited_child_policy(
+        child_metadata={},
+        parent_metadata=parent_metadata,
+    )
+
+    assert "read_only" not in parent_metadata
+    assert inherited["read_only"] is True
+
+
+def test_runtime_background_child_inherits_workflow_read_only_default(
+    tmp_path: Path,
+) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
+    _ = runtime.run(
+        runtime_module.RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="leader-workflow-read-only",
+            metadata={"workflow_preset": "review"},
+        )
+    )
+    runtime = runtime_module.VoidCodeRuntime(
+        workspace=tmp_path,
+        config=config_module.RuntimeConfig(execution_engine="deterministic"),
+        graph=_WriteThenDoneGraph(),
+    )
+
+    started = runtime.start_background_task(
+        runtime_module.RuntimeRequest(
+            prompt="write child.txt delegated",
+            parent_session_id="leader-workflow-read-only",
+        )
+    )
+    completed = _wait_for_background_task(
+        runtime,
+        started.task.id,
+        predicate=_is_terminal_background_task,
+    )
+    child_result = runtime.session_result(session_id=cast(str, completed.child_session_id))
+
+    assert completed.status == "failed"
+    assert completed.request.metadata["read_only"] is True
+    assert completed.request.metadata["mode"] == "normal"
+    assert child_result.session.metadata["read_only"] is True
+    assert child_result.error is not None
+    assert "read-only runtime policy denies mutating tools" in child_result.error
+    assert not (tmp_path / "child.txt").exists()
+
+
+def test_runtime_background_child_cannot_enable_memory_when_parent_forbids(
+    tmp_path: Path,
+) -> None:
+    runtime_module = importlib.import_module("voidcode.runtime")
+    (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
+    _ = runtime.run(
+        runtime_module.RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="leader-no-memory",
+        )
+    )
+
+    started = runtime.start_background_task(
+        runtime_module.RuntimeRequest(
+            prompt="read sample.txt",
+            parent_session_id="leader-no-memory",
+            metadata=cast(RuntimeRequestMetadataPayload, {"memory_tools_allowed": True}),
+        )
+    )
+    completed = _wait_for_background_task(
+        runtime,
+        started.task.id,
+        predicate=_is_terminal_background_task,
+    )
+    child_result = runtime.session_result(session_id=cast(str, completed.child_session_id))
+
+    assert completed.status == "completed"
+    assert "memory_tools_allowed" not in completed.request.metadata
+    assert "memory_tools_allowed" not in child_result.session.metadata
 
 
 def test_runtime_exposes_load_background_task(tmp_path: Path) -> None:

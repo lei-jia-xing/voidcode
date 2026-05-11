@@ -44,6 +44,86 @@ def test_shell_exec_tool_runs_command_in_workspace(tmp_path: Path) -> None:
     assert result.data.get("truncated") is False
     assert result.data.get("stdout_truncated") is False
     assert result.data.get("stderr_truncated") is False
+    assert result.data.get("injected_env_keys") == ()
+
+
+def test_shell_exec_tool_injects_package_manager_env_without_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = ShellExecTool()
+    captured_env: dict[str, str] | None = None
+
+    class _FakePipe:
+        def read(self, _size: int) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            return None
+
+    class _FakeProcess:
+        pid = 4321
+        returncode = 0
+        stdout = _FakePipe()
+        stderr = _FakePipe()
+
+        def wait(self, *, timeout: float | None = None) -> int:
+            _ = timeout
+            return self.returncode
+
+    def fake_popen(
+        _command: str,
+        **kwargs: object,
+    ) -> _FakeProcess:
+        nonlocal captured_env
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_env = cast(dict[str, str], env)
+        return _FakeProcess()
+
+    monkeypatch.setattr("voidcode.tools.shell_exec.subprocess.Popen", fake_popen)
+
+    result = tool.invoke(
+        ToolCall(tool_name="shell_exec", arguments={"command": "npm install"}),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert result.data.get("injected_env_keys") == (
+        "CI",
+        "NPM_CONFIG_YES",
+        "YARN_ENABLE_IMMUTABLE_INSTALLS",
+    )
+    injected_keys = cast(tuple[str, ...], result.data["injected_env_keys"])
+    resolved_env = captured_env or {}
+    assert resolved_env
+    result_content = result.content or ""
+    for key in injected_keys:
+        assert key in resolved_env
+        assert resolved_env[key] not in result_content
+
+
+def test_shell_exec_tool_does_not_inject_env_for_denied_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = ShellExecTool()
+    popen_called = False
+
+    def fake_popen(*_args: object, **_kwargs: object) -> object:
+        nonlocal popen_called
+        popen_called = True
+        raise AssertionError("denied commands must not spawn subprocesses")
+
+    monkeypatch.setattr("voidcode.tools.shell_exec.subprocess.Popen", fake_popen)
+
+    with pytest.raises(ValueError, match="interactive/TUI commands"):
+        tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": "sudo npm install"}),
+            workspace=tmp_path,
+        )
+
+    assert popen_called is False
 
 
 def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
@@ -64,6 +144,43 @@ def test_shell_exec_tool_supports_shell_operators(tmp_path: Path) -> None:
     assert isinstance(result.content, str)
     assert result.content.strip() == "alpha"
     assert (tmp_path / "sample.txt").read_text(encoding="utf-8").strip() == "alpha"
+
+
+def test_shell_exec_tool_rejects_compact_interactive_sequence_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = ShellExecTool()
+    popen_called = False
+
+    def fake_popen(*_args: object, **_kwargs: object) -> object:
+        nonlocal popen_called
+        popen_called = True
+        raise AssertionError("denied commands must not spawn subprocesses")
+
+    monkeypatch.setattr("voidcode.tools.shell_exec.subprocess.Popen", fake_popen)
+
+    with pytest.raises(ValueError, match="interactive/TUI commands"):
+        tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": "pwd&&vim README.md"}),
+            workspace=tmp_path,
+        )
+
+    assert popen_called is False
+
+
+@pytest.mark.parametrize("command", ["vim README.md", "nvim README.md", "less README.md"])
+def test_shell_exec_tool_rejects_interactive_commands_before_execution(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    tool = ShellExecTool()
+
+    with pytest.raises(ValueError, match="interactive/TUI commands"):
+        tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": command}),
+            workspace=tmp_path,
+        )
 
 
 def test_shell_exec_tool_rejects_invalid_command_arguments(tmp_path: Path) -> None:

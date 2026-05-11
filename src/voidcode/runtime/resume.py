@@ -23,7 +23,7 @@ from .contracts import (
 from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope
 from .permission import PendingApproval, PermissionResolution
 from .question import PendingQuestion, QuestionResponse
-from .session import SessionState
+from .session import SessionState, session_metadata_for_persistence
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
@@ -49,6 +49,7 @@ class PersistedResumeCheckpointEnvelope:
 def _metadata_with_resume_run_id(
     metadata: dict[str, object], *, run_id: str | None
 ) -> dict[str, object]:
+    metadata = session_metadata_for_persistence(metadata)
     if run_id is None:
         return metadata
     raw_runtime_state = metadata.get("runtime_state")

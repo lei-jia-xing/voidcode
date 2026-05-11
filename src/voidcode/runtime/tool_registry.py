@@ -10,6 +10,27 @@ from .config import RuntimeHooksConfig
 from .tool_provider import BuiltinToolProvider
 
 
+@dataclass(frozen=True, slots=True)
+class ToolPolicyDecision:
+    tool_name: str
+    allowed: bool
+    mode: str
+    read_only: bool
+    decision: str
+    reason: str | None = None
+
+    def metadata(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "tool": self.tool_name,
+            "mode": self.mode,
+            "read_only": self.read_only,
+            "decision": self.decision,
+        }
+        if self.reason is not None:
+            payload["reason"] = self.reason
+        return payload
+
+
 @dataclass(slots=True)
 class ToolRegistry:
     """Small in-memory registry used by the runtime boundary."""
@@ -85,4 +106,10 @@ class ToolRegistry:
         excluded = frozenset(tool_names)
         return ToolRegistry(
             tools={name: tool for name, tool in self.tools.items() if name not in excluded}
+        )
+
+    def allowed_by_policy(self, policy: Iterable[ToolPolicyDecision]) -> ToolRegistry:
+        allowed_names = frozenset(decision.tool_name for decision in policy if decision.allowed)
+        return ToolRegistry(
+            tools={name: tool for name, tool in self.tools.items() if name in allowed_names}
         )

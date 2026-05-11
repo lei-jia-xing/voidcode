@@ -32,6 +32,7 @@ from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
+    RuntimeRequestMetadataPayload,
     SessionState,
     ToolRegistry,
     VoidCodeRuntime,
@@ -121,6 +122,23 @@ class _StubMcpGraph:
                 )
             )
         return _StubStep(output=request.prompt, is_finished=True)
+
+
+class _ToolCallGraph:
+    def __init__(self, tool_call: ToolCall) -> None:
+        self._tool_call = tool_call
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: SessionState,
+    ) -> GraphStep:
+        _ = request, session
+        if not tool_results:
+            return _StubStep(tool_call=self._tool_call)
+        return _StubStep(output=tool_results[-1].content or "done", is_finished=True)
 
 
 class _InjectedToolGraph:
@@ -453,7 +471,7 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     assert agent["preset"] == "leader"
     effective_config = runtime._effective_runtime_config_from_metadata(response.session.metadata)
     scoped_registry = runtime._tool_registry_for_effective_config(effective_config)
-    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.issubset(
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(
         scoped_registry.tools
     )
     assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
@@ -478,6 +496,172 @@ def test_disabled_memory_runtime_does_not_expose_memory_tools(tmp_path: Path) ->
         registry.tools
     )
     assert runtime.memory_status().total_count == 0
+
+
+def test_memory_tools_are_conservative_without_explicit_runtime_policy(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
+        graph=_StubGraph(),
+    )
+    effective_config = runtime._effective_runtime_config_from_metadata(None)
+
+    registry = runtime._tool_registry_for_effective_config(effective_config)
+
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(
+        registry.tools
+    )
+
+
+def test_memory_command_context_exposes_memory_tools_when_memory_enabled(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
+        graph=_StubGraph(),
+    )
+    effective_config = runtime._effective_runtime_config_from_metadata(None)
+
+    registry = runtime._tool_registry_for_effective_config(
+        effective_config,
+        {"command": {"name": "memory"}},
+    )
+
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.issubset(registry.tools)
+
+
+def test_read_only_mode_direct_invocation_denies_mutating_tool_before_execution(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "blocked.txt"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ToolCallGraph(
+            ToolCall(
+                tool_name="write_file",
+                arguments={"path": "blocked.txt", "content": "nope"},
+            )
+        ),
+        config=RuntimeConfig(execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    events = []
+
+    with pytest.raises(ValueError, match="read-only runtime policy denies mutating tools"):
+        for chunk in runtime.run_stream(
+            RuntimeRequest(
+                prompt="go",
+                session_id="read-only-write-denied",
+                metadata=cast(RuntimeRequestMetadataPayload, {"mode": "analyze"}),
+            )
+        ):
+            if chunk.event is not None:
+                events.append(chunk.event)
+
+    assert target.exists() is False
+    failed = events[-1]
+    assert failed.event_type == "runtime.failed"
+    assert failed.payload["kind"] == "runtime_tool_policy_denied"
+    assert failed.payload["tool"] == "write_file"
+    assert failed.payload["tool_policy"] == {
+        "tool": "write_file",
+        "mode": "analyze",
+        "read_only": True,
+        "decision": "deny",
+        "reason": "read-only runtime policy denies mutating tools",
+    }
+
+
+def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "hook-ran.txt"
+    (tmp_path / "sample.txt").write_text("ok", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ToolCallGraph(
+            ToolCall(
+                tool_name="read_file",
+                arguments={"path": "sample.txt"},
+            )
+        ),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                pre_tool=(
+                    (
+                        sys.executable,
+                        "-c",
+                        "from pathlib import Path; Path('hook-ran.txt').write_text('bad')",
+                    ),
+                ),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    events = []
+
+    _ = runtime.run(
+        RuntimeRequest(
+            prompt="go",
+            session_id="read-only-hook-skipped",
+            metadata=cast(RuntimeRequestMetadataPayload, {"mode": "plan"}),
+        )
+    )
+    replay = runtime.resume("read-only-hook-skipped")
+    events.extend(replay.events)
+
+    assert marker.exists() is False
+    hook_event = next(event for event in events if event.event_type == "runtime.tool_hook_pre")
+    assert hook_event.payload == {
+        "phase": "pre",
+        "tool_name": "read_file",
+        "session_id": "read-only-hook-skipped",
+        "status": "skipped",
+        "hook_policy": {
+            "outcome": "skipped",
+            "mode": "plan",
+            "read_only": True,
+            "reason": "read-only runtime policy denies shell commands classified as unknown",
+        },
+    }
+
+
+def test_memory_tool_direct_invocation_denies_without_explicit_runtime_policy(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ToolCallGraph(
+            ToolCall(
+                tool_name="memory_add",
+                arguments={"content": "persist me", "kind": "project"},
+            )
+        ),
+        config=RuntimeConfig(execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    events = []
+
+    with pytest.raises(ValueError, match="memory tools require explicit runtime memory policy"):
+        for chunk in runtime.run_stream(
+            RuntimeRequest(prompt="go", session_id="memory-tool-denied")
+        ):
+            if chunk.event is not None:
+                events.append(chunk.event)
+
+    failed = events[-1]
+    assert failed.event_type == "runtime.failed"
+    assert failed.payload["kind"] == "runtime_tool_policy_denied"
+    assert failed.payload["tool"] == "memory_add"
+    assert failed.payload["tool_policy"] == {
+        "tool": "memory_add",
+        "mode": "normal",
+        "read_only": False,
+        "decision": "deny",
+        "reason": "memory tools require explicit runtime memory policy allowance",
+    }
+    assert runtime.memory_status().active_count == 0
 
 
 def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(

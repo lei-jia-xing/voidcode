@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from voidcode.runtime.contracts import (
     RuntimeRequestError,
+    runtime_mode_from_metadata,
+    runtime_read_only_from_metadata,
     validate_runtime_request_metadata,
 )
 from voidcode.runtime.permission import (
     DEFAULT_RUNTIME_EXECUTION_MODE,
     PLAN_MODE_DENIAL_REASON,
+    OperationClass,
     PermissionPolicy,
+    RuntimeExecutionMode,
     execution_mode_from_metadata,
     is_plan_mode_blocked,
     resolve_permission,
@@ -65,9 +71,9 @@ def test_is_plan_mode_blocked_matrix(
 ) -> None:
     assert (
         is_plan_mode_blocked(
-            execution_mode=mode,  # type: ignore[arg-type]
+            execution_mode=cast(RuntimeExecutionMode, mode),
             tool=tool,
-            operation_class=operation_class,  # type: ignore[arg-type]
+            operation_class=cast(OperationClass | None, operation_class),
         )
         is expected
     )
@@ -158,3 +164,72 @@ def test_request_metadata_accepts_act_execution_mode() -> None:
 def test_request_metadata_rejects_unknown_execution_mode() -> None:
     with pytest.raises(RuntimeRequestError, match="execution_mode"):
         _ = validate_runtime_request_metadata({"execution_mode": "magic"})
+
+
+def test_request_metadata_defaults_to_normal_action_capable_runtime_mode() -> None:
+    normalized = validate_runtime_request_metadata({})
+
+    assert "mode" not in normalized
+    assert "read_only" not in normalized
+    assert runtime_mode_from_metadata(normalized) == "normal"
+    assert runtime_read_only_from_metadata(normalized) is False
+
+
+@pytest.mark.parametrize("mode", ["normal", "analyze", "plan"])
+def test_request_metadata_accepts_runtime_mode(mode: str) -> None:
+    normalized = validate_runtime_request_metadata({"mode": mode})
+
+    assert normalized.get("mode") == mode
+
+
+def test_request_metadata_rejects_unknown_runtime_mode() -> None:
+    with pytest.raises(RuntimeRequestError, match="mode"):
+        _ = validate_runtime_request_metadata({"mode": "magic"})
+
+
+@pytest.mark.parametrize("read_only", [True, False])
+def test_request_metadata_accepts_explicit_read_only_flag(read_only: bool) -> None:
+    normalized = validate_runtime_request_metadata({"read_only": read_only})
+
+    assert normalized.get("read_only") is read_only
+    assert runtime_read_only_from_metadata(normalized) is read_only
+
+
+def test_request_metadata_rejects_non_boolean_read_only_flag() -> None:
+    with pytest.raises(RuntimeRequestError, match="read_only"):
+        _ = validate_runtime_request_metadata({"read_only": "true"})
+
+
+@pytest.mark.parametrize("mode", ["analyze", "plan"])
+def test_analyze_and_plan_runtime_modes_imply_effective_read_only(mode: str) -> None:
+    normalized = validate_runtime_request_metadata({"mode": mode, "read_only": False})
+
+    assert runtime_mode_from_metadata(normalized) == mode
+    assert runtime_read_only_from_metadata(normalized) is True
+
+
+def test_normal_runtime_mode_allows_explicit_read_only() -> None:
+    normalized = validate_runtime_request_metadata({"mode": "normal", "read_only": True})
+
+    assert runtime_mode_from_metadata(normalized) == "normal"
+    assert runtime_read_only_from_metadata(normalized) is True
+
+
+def test_runtime_mode_and_execution_mode_remain_compatible() -> None:
+    normalized = validate_runtime_request_metadata(
+        {"mode": "plan", "read_only": True, "execution_mode": "act"}
+    )
+
+    assert normalized.get("mode") == "plan"
+    assert normalized.get("read_only") is True
+    assert normalized.get("execution_mode") == "act"
+
+
+def test_runtime_mode_helper_rejects_invalid_unvalidated_metadata() -> None:
+    with pytest.raises(RuntimeRequestError, match="mode"):
+        _ = runtime_mode_from_metadata({"mode": "magic"})
+
+
+def test_runtime_read_only_helper_rejects_invalid_unvalidated_read_only() -> None:
+    with pytest.raises(RuntimeRequestError, match="read_only"):
+        _ = runtime_read_only_from_metadata({"read_only": "true"})

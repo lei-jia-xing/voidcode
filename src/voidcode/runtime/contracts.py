@@ -72,12 +72,15 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     continuation_loop: RuntimeContinuationLoopMetadata
     delegation: RuntimeSubagentRoutingMetadata
     execution_mode: str
+    mode: RuntimeMode
+    read_only: bool
     max_steps: int
     provider_stream: bool
     reasoning_effort: str
     show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
+    memory_tools_allowed: bool
     workflow_mode: str
     workflow_plan: dict[str, object]
     workflow_preset: str
@@ -92,6 +95,7 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
 
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata
 
+type RuntimeMode = Literal["normal", "analyze", "plan"]
 type RuntimeSubagentMode = Literal["sync", "background"]
 
 
@@ -124,12 +128,15 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "continuation_loop",
         "delegation",
         "execution_mode",
+        "mode",
+        "read_only",
         "max_steps",
         "provider_stream",
         "reasoning_effort",
         "show_thinking",
         "skills",
         "force_load_skills",
+        "memory_tools_allowed",
         "workflow_mode",
         "workflow_plan",
         "workflow_preset",
@@ -153,6 +160,38 @@ def _validate_optional_runtime_metadata_string(
     if not isinstance(value, str) or not value:
         raise RuntimeRequestError(f"request metadata '{field_name}' must be a non-empty string")
     return value
+
+
+def parse_runtime_mode(value: object) -> RuntimeMode:
+    if value == "normal":
+        return "normal"
+    if value == "analyze":
+        return "analyze"
+    if value == "plan":
+        return "plan"
+    raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'")
+
+
+def runtime_mode_from_metadata(
+    metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
+) -> RuntimeMode:
+    if metadata is None:
+        return "normal"
+    return parse_runtime_mode(metadata.get("mode", "normal"))
+
+
+def runtime_read_only_from_metadata(
+    metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
+) -> bool:
+    if metadata is None:
+        return False
+    mode = runtime_mode_from_metadata(metadata)
+    if mode in {"analyze", "plan"}:
+        return True
+    read_only = metadata.get("read_only", False)
+    if not isinstance(read_only, bool):
+        raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
+    return read_only
 
 
 def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
@@ -554,6 +593,15 @@ def validate_runtime_request_metadata(
             raise RuntimeRequestError("request metadata 'execution_mode' must be 'plan' or 'act'")
         normalized["execution_mode"] = execution_mode
 
+    if "mode" in metadata:
+        normalized["mode"] = parse_runtime_mode(metadata["mode"])
+
+    if "read_only" in metadata:
+        read_only = metadata["read_only"]
+        if not isinstance(read_only, bool):
+            raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
+        normalized["read_only"] = read_only
+
     if "max_steps" in metadata:
         max_steps = metadata["max_steps"]
         if not isinstance(max_steps, int) or isinstance(max_steps, bool):
@@ -625,6 +673,12 @@ def validate_runtime_request_metadata(
                 )
             parsed_force_load.append(raw_name)
         normalized["force_load_skills"] = parsed_force_load
+
+    if "memory_tools_allowed" in metadata:
+        memory_tools_allowed = metadata["memory_tools_allowed"]
+        if not isinstance(memory_tools_allowed, bool):
+            raise RuntimeRequestError("request metadata 'memory_tools_allowed' must be a boolean")
+        normalized["memory_tools_allowed"] = memory_tools_allowed
 
     if "workflow_mode" in metadata:
         normalized["workflow_mode"] = _validate_optional_runtime_metadata_string(

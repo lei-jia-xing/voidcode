@@ -1643,6 +1643,7 @@ class RuntimeBackgroundTaskSupervisor:
                     **({"background_task_error": task.error} if task.error is not None else {}),
                     **(extra_payload or {}),
                 },
+                policy=runtime._hook_execution_policy_from_metadata(task.request.metadata),
             )
         )
         if outcome.failed_error is not None:

@@ -332,10 +332,26 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
         and "old finished task" not in content
         for content in system_segments
     )
-    assert [segment.metadata for segment in assembled.segments if segment.role == "system"] == [
-        {"source": "runtime_instruction_precedence", "tier": "instruction"},
-        {"source": "runtime_todo_state", "tier": "task"},
+    system_metadata = [
+        segment.metadata
+        for segment in assembled.segments
+        if segment.role == "system" and segment.metadata is not None
     ]
+    assert {metadata["source"] for metadata in system_metadata} >= {
+        "runtime_base_safety",
+        "runtime_instruction_precedence",
+        "runtime_memory_usage_guidance",
+        "runtime_tool_policy_summary",
+        "runtime_todo_state",
+    }
+    todo_metadata = next(
+        metadata for metadata in system_metadata if metadata["source"] == "runtime_todo_state"
+    )
+    assert todo_metadata == {
+        "source": "runtime_todo_state",
+        "tier": "task",
+        "layer": "task_state",
+    }
 
 
 def test_assemble_provider_context_records_explicit_context_tiers() -> None:
@@ -373,7 +389,7 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
         "version": 1,
         "order": ["instruction", "task", "recent"],
         "counts": {
-            "instruction": 2,
+            "instruction": 5,
             "workspace": 0,
             "task": 2,
             "recent": 2,
@@ -387,8 +403,8 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
     assert [(segment.metadata or {}).get("tier") for segment in assembled.segments[:4]] == [
         "instruction",
         "instruction",
-        "task",
-        "task",
+        "instruction",
+        "instruction",
     ]
 
 
@@ -688,6 +704,7 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
     assert pending_segments[0].metadata == {
         "source": "runtime_pending_state",
         "tier": "task",
+        "layer": "task_state",
         "status": "waiting_approval",
         "blocked_tool": "write_file",
         "approval_request_id": "approval-123",
@@ -721,6 +738,7 @@ def test_assemble_provider_context_injects_pending_question_state() -> None:
     assert pending_segments[0].metadata == {
         "source": "runtime_pending_state",
         "tier": "task",
+        "layer": "task_state",
         "status": "waiting_question",
         "blocked_tool": "question",
     }

@@ -229,9 +229,11 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata["agent"] = {"preset": cast(str, args.agent)}
         if getattr(args, "skills", None):
             metadata["skills"] = cast(list[str], args.skills)
-        execution_mode = cast(str | None, getattr(args, "execution_mode", None))
-        if execution_mode is not None:
-            metadata["execution_mode"] = execution_mode
+        runtime_mode = cast(str | None, getattr(args, "runtime_mode", None))
+        if runtime_mode is not None:
+            metadata["mode"] = "normal" if runtime_mode == "act" else runtime_mode
+        if getattr(args, "read_only", False):
+            metadata["read_only"] = True
         if getattr(args, "max_steps", None) is not None:
             metadata["max_steps"] = cast(int, args.max_steps)
         if cli_reasoning_effort is not None:
@@ -2128,6 +2130,7 @@ def _handle_config_show_command(args: argparse.Namespace) -> int:
             "workspace": str(workspace),
             "session_id": session_id,
             "approval_mode": effective_config.approval_mode,
+            "execution_engine": effective_config.execution_engine,
             "model": effective_config.model,
             "fallback_models": (
                 list(effective_config.provider_fallback.fallback_models)
@@ -2806,9 +2809,14 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 )
 @click.option(
     "--mode",
-    "execution_mode",
-    type=click.Choice(["plan", "act"]),
-    help="Plan mode denies all mutating tool calls; act mode is the default.",
+    "runtime_mode",
+    type=click.Choice(["normal", "analyze", "plan", "act"]),
+    help="Select runtime mode metadata; analyze and plan are runtime-enforced read-only modes.",
+)
+@click.option(
+    "--read-only",
+    is_flag=True,
+    help="Request runtime-enforced read-only tool policy without selecting a named mode.",
 )
 @click.option("--model", help="Override the provider/model for this run.")
 @click.option("--skills", multiple=True, help="Optional skill names applied for this run.")
@@ -2843,7 +2851,8 @@ def run(
     json_output: bool,
     trace: bool,
     provider_stream: bool | None,
-    execution_mode: str | None,
+    runtime_mode: str | None,
+    read_only: bool,
 ) -> int:
     return _invoke_handler_from_click(
         _handle_run_command,
@@ -2862,7 +2871,8 @@ def run(
             json=json_output,
             trace=trace,
             provider_stream=provider_stream,
-            execution_mode=execution_mode,
+            runtime_mode=runtime_mode,
+            read_only=read_only,
         ),
     )
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from voidcode.agent.prompt_sections import (
     assemble_sections,
     capability_block,
@@ -68,13 +70,16 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     )
 
     assert [section.source for section in plan.sections] == [
+        "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
         "workflow_mode_prompt",
         "preserved_system_segment",
+        "runtime_memory_usage_guidance",
         "skill_prompt",
         "runtime_pending_state",
         "runtime_todo_state",
+        "runtime_tool_policy_summary",
         "continuity_summary",
         "runtime_context_artifact_reference",
         "current_user_prompt",
@@ -87,8 +92,11 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "instruction",
         "instruction",
         "instruction",
+        "instruction",
+        "instruction",
         "task",
         "task",
+        "instruction",
         "recent",
         "recent",
         "task",
@@ -106,7 +114,10 @@ def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
     )
 
     assert [section.source for section in plan.sections] == [
+        "runtime_base_safety",
         "runtime_instruction_precedence",
+        "runtime_memory_usage_guidance",
+        "runtime_tool_policy_summary",
         "current_user_prompt",
     ]
 
@@ -132,12 +143,15 @@ def test_build_prompt_assembly_plan_keeps_non_system_transform_roles() -> None:
     )
 
     assert [section.source for section in plan.sections] == [
+        "runtime_base_safety",
         "runtime_instruction_precedence",
+        "runtime_memory_usage_guidance",
         "transform_assistant",
         "transform_system",
+        "runtime_tool_policy_summary",
         "current_user_prompt",
     ]
-    assistant_section = plan.sections[1]
+    assistant_section = plan.sections[3]
     assert assistant_section.role == "assistant"
     assert assistant_section.content == "assistant injected note"
     assert assistant_section.tier == "workspace"
@@ -157,11 +171,12 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
         pending_state_section=pending,
     )
 
-    pending_section = plan.sections[1]
+    pending_section = plan.sections[3]
     assert pending_section.source == "runtime_pending_state"
     assert pending_section.metadata == {
         "status": "waiting_question",
         "blocked_tool": "question",
+        "layer": "task_state",
     }
     assert pending_section.tier == "task"
 
@@ -184,6 +199,7 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
     boundary_index = sources.index("runtime_dynamic_boundary")
 
     assert sources[:boundary_index] == [
+        "runtime_base_safety",
         "agent_identity_header",
         "agent_capability_block",
         "agent_prompt",
@@ -194,7 +210,9 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         "runtime_environment_dynamic",
         "runtime_instruction_precedence",
         "workflow_mode_prompt",
+        "runtime_memory_usage_guidance",
         "runtime_todo_state",
+        "runtime_tool_policy_summary",
         "current_user_prompt",
     ]
     assert plan.sections[boundary_index].content == dynamic_boundary_marker()
@@ -266,3 +284,89 @@ def test_general_prompt_sections_are_provider_neutral() -> None:
     rendered_general_sections = "\n\n".join(general_sections)
     for provider_term in PROVIDER_SPECIFIC_PROMPT_TERMS:
         assert provider_term not in rendered_general_sections
+
+
+def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previews() -> None:
+    secret_prompt = "Investigate api_key=super-secret-token-value " + ("x" * 320)
+    plan = build_prompt_assembly_plan(
+        prompt=secret_prompt,
+        runtime_instruction_precedence="runtime first",
+        agent_prompt_context="agent prompt",
+        workflow_mode_prompt_context="workflow mode prompt",
+        skill_prompt_context="skill context",
+        context_transform_result=RuntimeContextTransformResult(
+            injections=(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content="hook says bearer abcdefghijklmnop",
+                    metadata={"source": "hook_context", "tier": "workspace"},
+                ),
+            )
+        ),
+        workspace_memory_context="Workspace Memory:\n- remember password=hunter2",
+    )
+
+    fragment_payload = plan.fragment_metadata_payload()
+    fragments = cast(list[dict[str, object]], fragment_payload["fragments"])
+
+    assert fragment_payload["redacted"] is True
+    assert fragment_payload["preview_chars"] == 240
+    assert [fragment["order"] for fragment in fragments] == list(range(len(fragments)))
+    assert [fragment["id"] for fragment in fragments] == [
+        f"{index:03d}:{section.source}" for index, section in enumerate(plan.sections)
+    ]
+    assert [fragment["source"] for fragment in fragments] == [
+        "runtime_base_safety",
+        "runtime_instruction_precedence",
+        "agent_prompt",
+        "workflow_mode_prompt",
+        "runtime_memory_usage_guidance",
+        "skill_prompt",
+        "hook_context",
+        "runtime_workspace_memory",
+        "runtime_tool_policy_summary",
+        "current_user_prompt",
+    ]
+    assert [fragment["layer"] for fragment in fragments] == [
+        "base_safety",
+        "base_safety",
+        "persona_profile",
+        "mode_policy",
+        "memory_usage_guidance",
+        "skills",
+        "hook_injected_context",
+        "project_context",
+        "tool_policy_summary",
+        "user_request",
+    ]
+
+    rendered_payload = str(fragment_payload)
+    assert "super-secret-token-value" not in rendered_payload
+    assert "abcdefghijklmnop" not in rendered_payload
+    assert "hunter2" not in rendered_payload
+    assert "[redacted]" in rendered_payload
+    assert fragments[-1]["preview_truncated"] is True
+    user_preview = cast(str, fragments[-1]["preview"])
+    assert len(user_preview) <= 243
+
+
+def test_prompt_stack_metadata_is_attached_to_assembled_context_without_raw_prompt() -> None:
+    from voidcode.runtime.context_window import assemble_provider_context
+
+    assembled = assemble_provider_context(
+        prompt="Please use access_token=very-secret-token-value " + ("z" * 280),
+        tool_results=(),
+        session_metadata={},
+        agent_prompt_context="agent prompt",
+    )
+
+    prompt_stack = cast(dict[str, object], assembled.metadata["prompt_stack"])
+    assert isinstance(prompt_stack, dict)
+    rendered_prompt_stack = str(prompt_stack)
+    assert "very-secret-token-value" not in rendered_prompt_stack
+    assert "[redacted]" in rendered_prompt_stack
+    prompt_stack_fragments = cast(list[dict[str, object]], prompt_stack["fragments"])
+    assert prompt_stack_fragments[-1]["source"] == "current_user_prompt"
+    assert prompt_stack_fragments[-1]["preview_truncated"] is True
+    assert assembled.segments[-1].content is not None
+    assert assembled.segments[-1].content.startswith("Please use access_token=")

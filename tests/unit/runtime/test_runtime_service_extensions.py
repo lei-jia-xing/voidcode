@@ -129,6 +129,7 @@ from voidcode.runtime.provider_protocol import (
 )
 from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
+    BackgroundTaskResult,
     GraphRunRequest,
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
@@ -2476,6 +2477,80 @@ def test_runtime_background_task_progress_hooks_skip_result_load_when_no_command
     )
 
 
+def test_runtime_background_lifecycle_hook_uses_workflow_read_only_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "background-hook-ran.txt"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_background_task_completed=(
+                    (
+                        sys.executable,
+                        "-c",
+                        "from pathlib import Path; Path('background-hook-ran.txt').write_text('bad')",  # noqa: E501
+                    ),
+                ),
+            )
+        ),
+    )
+    supervisor = runtime._background_task_supervisor
+    captured_policies: list[dict[str, object]] = []
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-workflow-readonly-hook"),
+        status="completed",
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background readonly hook",
+            parent_session_id="leader-session",
+            metadata={
+                "workflow": {
+                    "read_only_default": True,
+                    "effective": {"mode": "review"},
+                }
+            },
+        ),
+        session_id="child-session",
+        result_available=True,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "background_task_result",
+        lambda *, task: BackgroundTaskResult(
+            task_id=task.task.id,
+            parent_session_id=task.parent_session_id,
+            child_session_id=task.session_id,
+            status=task.status,
+            result_available=True,
+        ),
+    )
+    original_run_lifecycle_hooks = runtime_background_tasks_module.run_lifecycle_hooks
+
+    def capture_lifecycle_policy(request: Any) -> object:
+        captured_policies.append(
+            {"mode": request.policy.mode, "read_only": request.policy.read_only}
+        )
+        return original_run_lifecycle_hooks(request)
+
+    monkeypatch.setattr(
+        runtime_background_tasks_module,
+        "run_lifecycle_hooks",
+        capture_lifecycle_policy,
+    )
+
+    supervisor.run_background_task_lifecycle_surface(
+        task=task,
+        surface="background_task_completed",
+        session_id="leader-session",
+    )
+
+    assert captured_policies == [{"mode": "review", "read_only": True}]
+    assert marker.exists() is False
+
+
 def test_runtime_background_task_started_hook_runs_outside_queue_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3216,6 +3291,34 @@ def test_runtime_session_debug_snapshot_reports_completed_state(tmp_path: Path) 
     assert snapshot.suggested_operator_action == "replay"
     assert (
         snapshot.operator_guidance == "Session is terminal; replay or inspect transcript if needed."
+    )
+
+
+def test_runtime_deterministic_config_is_not_overridden_by_agent_manifest(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sample.txt").write_text("deterministic agent\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="deterministic"),
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="read sample.txt",
+            session_id="deterministic-agent",
+            metadata={"agent": {"preset": "leader"}},
+        )
+    )
+
+    assert response.session.status == "completed"
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    assert isinstance(runtime_config, dict)
+    assert runtime_config["execution_engine"] == "deterministic"
+    assert not any(event.event_type == "graph.provider_stream" for event in response.events)
+    assert not any(
+        event.event_type == "graph.model_turn" and event.payload.get("mode") == "provider"
+        for event in response.events
     )
 
 
@@ -4767,7 +4870,7 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=graph,
-        config=RuntimeConfig(approval_mode="ask"),
+        config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="resume cancel", session_id="resume-cancel"))
@@ -4831,7 +4934,7 @@ def test_runtime_approval_resume_tool_context_receives_abort_signal(tmp_path: Pa
         workspace=tmp_path,
         graph=_AbortSignalApprovalGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
-        config=RuntimeConfig(approval_mode="ask"),
+        config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="capture abort", session_id="resume-abort-signal"))
@@ -4891,7 +4994,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
         workspace=tmp_path,
         graph=_AbortSignalApprovalGraph(),
         tool_registry=ToolRegistry.from_tools([tool]),
-        config=RuntimeConfig(approval_mode="ask"),
+        config=RuntimeConfig(approval_mode="ask", mcp=RuntimeMcpConfig(enabled=False)),
         permission_policy=PermissionPolicy(mode="ask"),
     )
     waiting = runtime.run(RuntimeRequest(prompt="approved abort", session_id="approved-abort"))
@@ -10747,7 +10850,7 @@ def test_runtime_research_workflow_fresh_records_read_only_metadata_without_wide
     assert workflow_snapshot["default_agent_executable_top_level"] is False
     assert capability_workflow["read_only_default"] is True
     assert "write_file" not in effective_tool_names
-    assert "shell_exec" not in effective_tool_names
+    assert "shell_exec" in effective_tool_names
     assert "read_file" in effective_tool_names
     assert tool_snapshot["request_allowlist"] is None
     assert tool_snapshot["request_default"] is None
@@ -13534,6 +13637,12 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "continuity_state": expected_continuity,
     }
     response_context_window = cast(dict[str, object], response.session.metadata["context_window"])
+    prompt_stack = cast(dict[str, object], response_context_window["prompt_stack"])
+    prompt_stack_fragments = cast(list[dict[str, object]], prompt_stack["fragments"])
+    assert prompt_stack["version"] == 1
+    assert prompt_stack["redacted"] is True
+    assert prompt_stack["fragment_count"] == len(prompt_stack_fragments)
+    assert prompt_stack_fragments[-1]["source"] == "current_user_prompt"
     assert response_context_window == {
         "compacted": True,
         "compaction_reason": "tool_result_window",
@@ -13548,6 +13657,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "continuity_state": expected_continuity,
         "summary_anchor": summary_anchor,
         "summary_source": summary_source,
+        "prompt_stack": prompt_stack,
         "context_transforms": {
             "version": 1,
             "failure_policy": "warn",
@@ -13571,7 +13681,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "version": 1,
             "order": ["instruction", "workspace", "recent", "task"],
             "counts": {
-                "instruction": 5,
+                "instruction": 8,
                 "workspace": 4,
                 "task": 1,
                 "recent": 3,

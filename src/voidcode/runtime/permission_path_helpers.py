@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from ..security.shell_policy import extract_shell_path_candidates
 from ..tools.contracts import ToolCall
-from .permission_context import extract_shell_path_candidates
 
 
 def shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
