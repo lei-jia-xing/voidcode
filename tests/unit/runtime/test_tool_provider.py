@@ -622,7 +622,7 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
             "outcome": "skipped",
             "mode": "plan",
             "read_only": True,
-            "reason": "read-only runtime policy skips executable hook commands",
+            "reason": "read-only runtime policy denies shell commands classified as unknown",
         },
     }
 

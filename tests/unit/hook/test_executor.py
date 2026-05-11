@@ -175,7 +175,7 @@ def test_run_tool_hooks_skips_executable_commands_under_read_only_policy(
             "outcome": "skipped",
             "mode": "analyze",
             "read_only": True,
-            "reason": "read-only runtime policy skips executable hook commands",
+            "reason": "read-only runtime policy denies shell commands classified as unknown",
         },
     }
 
