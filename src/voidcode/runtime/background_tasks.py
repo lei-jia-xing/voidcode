@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from ..hook.config import RuntimeHookSurface
-from ..hook.executor import HookExecutionPolicy, LifecycleHookExecutionRequest, run_lifecycle_hooks
+from ..hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
 from ..provider.models import ResolvedProviderConfig
 from .contracts import (
     BackgroundTaskResult,
@@ -20,8 +20,6 @@ from .contracts import (
     RuntimeResponse,
     RuntimeSessionResult,
     UnknownSessionError,
-    runtime_mode_from_metadata,
-    runtime_read_only_from_metadata,
 )
 from .events import (
     RUNTIME_BACKGROUND_TASK_CANCELLED,
@@ -1645,10 +1643,7 @@ class RuntimeBackgroundTaskSupervisor:
                     **({"background_task_error": task.error} if task.error is not None else {}),
                     **(extra_payload or {}),
                 },
-                policy=HookExecutionPolicy(
-                    mode=runtime_mode_from_metadata(task.request.metadata),
-                    read_only=runtime_read_only_from_metadata(task.request.metadata),
-                ),
+                policy=runtime._hook_execution_policy_from_metadata(task.request.metadata),
             )
         )
         if outcome.failed_error is not None:

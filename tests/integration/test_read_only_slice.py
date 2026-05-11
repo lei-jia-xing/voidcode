@@ -3820,6 +3820,61 @@ def test_runtime_workflow_read_only_default_allows_readonly_shell_command(
     assert cast(str, completed.payload["content"]).strip() == str(tmp_path.resolve())
 
 
+def test_runtime_workflow_read_only_default_skips_background_lifecycle_hook_command(
+    tmp_path: Path,
+) -> None:
+    runtime_request, runtime_class = _load_runtime_types()
+    config_module = importlib.import_module("voidcode.runtime.config")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    marker = tmp_path / "background-hook-ran.txt"
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            runtime_class(
+                workspace=tmp_path,
+                graph=_SingleToolGraph("write_file", {"path": "child.txt", "content": "ok"}),
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="deterministic",
+                    hooks=config_module.RuntimeHooksConfig(
+                        enabled=True,
+                        on_background_task_completed=(
+                            (
+                                sys.executable,
+                                "-c",
+                                "from pathlib import Path; Path('background-hook-ran.txt').write_text('bad')",  # noqa: E501
+                            ),
+                        ),
+                    ),
+                ),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            ),
+        ),
+    )
+
+    started = runtime.start_background_task(
+        runtime_request(
+            prompt="workflow background hook skip",
+            metadata={
+                "delegation": {
+                    "mode": "background",
+                    "subagent_type": "advisor",
+                    "description": "Workflow readonly hook child",
+                },
+                "workflow_preset": "review",
+            },
+        )
+    )
+    completed = _wait_for_background_task_status(runtime, started.task.id, {"failed"})
+
+    assert completed.status == "failed"
+    assert "delegation policy denied tool 'write_file'" in str(completed.error)
+    assert (tmp_path / "child.txt").exists() is False
+    assert marker.exists() is False
+
+
 def test_runtime_uses_persisted_external_permission_rules_after_resume(
     tmp_path: Path,
 ) -> None:

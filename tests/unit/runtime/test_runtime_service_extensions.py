@@ -129,6 +129,7 @@ from voidcode.runtime.provider_protocol import (
 )
 from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
+    BackgroundTaskResult,
     GraphRunRequest,
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
@@ -2474,6 +2475,80 @@ def test_runtime_background_task_progress_hooks_skip_result_load_when_no_command
             "progress_event_sequence": 1,
         },
     )
+
+
+def test_runtime_background_lifecycle_hook_uses_workflow_read_only_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "background-hook-ran.txt"
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_background_task_completed=(
+                    (
+                        sys.executable,
+                        "-c",
+                        "from pathlib import Path; Path('background-hook-ran.txt').write_text('bad')",  # noqa: E501
+                    ),
+                ),
+            )
+        ),
+    )
+    supervisor = runtime._background_task_supervisor
+    captured_policies: list[dict[str, object]] = []
+    task = BackgroundTaskState(
+        task=BackgroundTaskRef(id="task-workflow-readonly-hook"),
+        status="completed",
+        request=BackgroundTaskRequestSnapshot(
+            prompt="background readonly hook",
+            parent_session_id="leader-session",
+            metadata={
+                "workflow": {
+                    "read_only_default": True,
+                    "effective": {"mode": "review"},
+                }
+            },
+        ),
+        session_id="child-session",
+        result_available=True,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "background_task_result",
+        lambda *, task: BackgroundTaskResult(
+            task_id=task.task.id,
+            parent_session_id=task.parent_session_id,
+            child_session_id=task.session_id,
+            status=task.status,
+            result_available=True,
+        ),
+    )
+    original_run_lifecycle_hooks = runtime_background_tasks_module.run_lifecycle_hooks
+
+    def capture_lifecycle_policy(request: Any) -> object:
+        captured_policies.append(
+            {"mode": request.policy.mode, "read_only": request.policy.read_only}
+        )
+        return original_run_lifecycle_hooks(request)
+
+    monkeypatch.setattr(
+        runtime_background_tasks_module,
+        "run_lifecycle_hooks",
+        capture_lifecycle_policy,
+    )
+
+    supervisor.run_background_task_lifecycle_surface(
+        task=task,
+        surface="background_task_completed",
+        session_id="leader-session",
+    )
+
+    assert captured_policies == [{"mode": "review", "read_only": True}]
+    assert marker.exists() is False
 
 
 def test_runtime_background_task_started_hook_runs_outside_queue_lock(
