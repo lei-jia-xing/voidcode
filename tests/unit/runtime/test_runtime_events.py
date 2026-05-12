@@ -136,6 +136,17 @@ def test_reasoning_redaction_can_show_thinking_explicitly() -> None:
     assert shown["preview"] == "private chain"
 
 
+def test_runtime_reasoning_payload_preserves_full_text() -> None:
+    text = "x" * 5000
+
+    payload = runtime_reasoning_part_payload(text=text)
+
+    assert payload["text"] == text
+    assert payload["text_char_count"] == 5000
+    assert payload["truncated"] is False
+    assert payload["preview"] == text[:240]
+
+
 def test_delegated_lifecycle_payload_preserves_typed_transport_shape() -> None:
     delegated = DelegatedLifecycleEventPayload(
         session_id="child-session",
