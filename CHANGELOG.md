@@ -31,6 +31,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **build:** include frontend sources in source distributions
 
+- **runtime:** preserve full reasoning output (#489)
+
 
 
 ## [0.1.0] - 2026-05-10
