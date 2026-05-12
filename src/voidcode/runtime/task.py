@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+from .policy import PRODUCT_DELEGATION_DENIAL_REASON
+
 type BackgroundTaskStatus = Literal[
     "queued",
     "running",
@@ -155,8 +157,8 @@ def resolve_subagent_route(
             raise ValueError("subagent_type 'leader' is not a callable child preset")
         if requested.subagent_type == "product":
             raise ValueError(
-                "subagent_type 'product' is a top-level planning preset, "
-                "not a callable child preset"
+                f"{PRODUCT_DELEGATION_DENIAL_REASON}: subagent_type 'product' "
+                "is a top-level planning preset, not a callable child preset"
             )
         if requested.subagent_type not in callable_presets:
             valid_presets = ", ".join(sorted(callable_presets))

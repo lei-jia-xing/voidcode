@@ -50,7 +50,12 @@ from .contracts import (
     validate_session_id,
     validate_session_reference_id,
 )
-from .events import DelegatedLifecycleEventPayload, EventEnvelope, redact_reasoning_payload
+from .events import (
+    DelegatedLifecycleEventPayload,
+    EventEnvelope,
+    redact_reasoning_payload,
+    runtime_policy_observability_payload,
+)
 from .permission import PermissionResolution
 from .question import QuestionResponse
 from .service import VoidCodeRuntime
@@ -2120,8 +2125,10 @@ class RuntimeTransportApp:
         *,
         show_thinking: bool = False,
     ) -> dict[str, object]:
+        runtime_policy = RuntimeTransportApp._runtime_policy_debug_payload(snapshot)
         return {
             "session": RuntimeTransportApp._serialize_session_state(snapshot.session),
+            **({"runtime_policy": runtime_policy} if runtime_policy is not None else {}),
             "prompt": snapshot.prompt,
             "persisted_status": snapshot.persisted_status,
             "current_status": snapshot.current_status,
@@ -2194,6 +2201,15 @@ class RuntimeTransportApp:
             "suggested_operator_action": snapshot.suggested_operator_action,
             "operator_guidance": snapshot.operator_guidance,
         }
+
+    @staticmethod
+    def _runtime_policy_debug_payload(
+        snapshot: RuntimeSessionDebugSnapshot,
+    ) -> dict[str, object] | None:
+        runtime_policy = snapshot.session.metadata.get("runtime_policy")
+        if not isinstance(runtime_policy, dict):
+            return None
+        return runtime_policy_observability_payload(cast(dict[str, object], runtime_policy))
 
     @staticmethod
     def _serialize_hook_preset_snapshot(

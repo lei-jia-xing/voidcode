@@ -311,6 +311,16 @@ class RuntimeResumeCoordinator:
             agent=effective_config.agent,
             source="resume",
         )
+        assembled_context = runtime._assemble_provider_context(
+            prompt=prompt,
+            tool_results=tuple(tool_results),
+            session_metadata=session.metadata,
+            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+        )
+        session = runtime._session_with_context_window_payload_metadata(
+            session,
+            dict(assembled_context.metadata),
+        )
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
@@ -320,12 +330,7 @@ class RuntimeResumeCoordinator:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             ),
-            assembled_context=runtime._assemble_provider_context(
-                prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
-                skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
-            ),
+            assembled_context=assembled_context,
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
@@ -535,7 +540,7 @@ class RuntimeResumeCoordinator:
                 if isinstance(stored_prompt, str)
                 else self._runtime._prompt_from_events(stored_response.events)
             )
-            request = self._resumed_runtime_request(
+            _ = self._resumed_runtime_request(
                 stored_response=stored_response,
                 prompt=prompt,
             )
@@ -660,6 +665,16 @@ class RuntimeResumeCoordinator:
             source="resume",
         )
 
+        assembled_context = runtime._assemble_provider_context(
+            prompt=prompt,
+            tool_results=tuple(tool_results),
+            session_metadata=session.metadata,
+            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+        )
+        session = runtime._session_with_context_window_payload_metadata(
+            session,
+            dict(assembled_context.metadata),
+        )
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
@@ -669,12 +684,7 @@ class RuntimeResumeCoordinator:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             ),
-            assembled_context=runtime._assemble_provider_context(
-                prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
-                skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
-            ),
+            assembled_context=assembled_context,
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
@@ -1260,6 +1270,16 @@ class RuntimeResumeCoordinator:
             agent=effective_config.agent,
             source="resume",
         )
+        assembled_context = runtime._assemble_provider_context(
+            prompt=prompt,
+            tool_results=tuple(tool_results),
+            session_metadata=session.metadata,
+            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+        )
+        session = runtime._session_with_context_window_payload_metadata(
+            session,
+            dict(assembled_context.metadata),
+        )
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
@@ -1269,12 +1289,7 @@ class RuntimeResumeCoordinator:
                 tool_results=tuple(tool_results),
                 session_metadata=session.metadata,
             ),
-            assembled_context=runtime._assemble_provider_context(
-                prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
-                skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
-            ),
+            assembled_context=assembled_context,
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),

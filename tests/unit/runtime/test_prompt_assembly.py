@@ -20,6 +20,7 @@ from voidcode.runtime.context_transforms import (
 from voidcode.runtime.prompt_assembly import (
     PromptAssemblySection,
     build_prompt_assembly_plan,
+    prompt_activation_decision,
 )
 
 BUILTIN_PROMPT_PROFILES = (
@@ -370,3 +371,57 @@ def test_prompt_stack_metadata_is_attached_to_assembled_context_without_raw_prom
     assert prompt_stack_fragments[-1]["preview_truncated"] is True
     assert assembled.segments[-1].content is not None
     assert assembled.segments[-1].content.startswith("Please use access_token=")
+
+
+def test_prompt_activation_decision_records_first_activation_without_raw_prompt() -> None:
+    decision = prompt_activation_decision(
+        session_metadata={
+            "mode": "plan",
+            "runtime_policy": {
+                "intent": {"label": "unspecified"},
+                "prompt_activation": {"enabled": True, "profile_refs": ["leader"]},
+            },
+        },
+        prompt_profile_name="leader",
+    )
+
+    assert decision.section is not None
+    assert decision.section.source == "runtime_prompt_activation"
+    assert "does not grant tools" in decision.section.content
+    assert decision.metadata["activated_this_turn"] is True
+    assert decision.metadata["raw_prompt_stored"] is False
+    activated = cast(list[dict[str, object]], decision.metadata["activated"])
+    assert activated == [decision.metadata["last_activation"]]
+    assert activated[0]["activation_id"] == "agent_prompt:leader"
+    assert activated[0]["mode"] == "plan"
+    assert activated[0]["intent_slot"] == "unspecified"
+    assert "key" in activated[0]
+    assert "<prompt_activation_guidance>" not in str(decision.metadata)
+
+
+def test_prompt_activation_decision_is_idempotent_for_existing_session_slot() -> None:
+    first = prompt_activation_decision(
+        session_metadata={
+            "mode": "plan",
+            "runtime_policy": {
+                "intent": {"label": "unspecified"},
+                "prompt_activation": {"enabled": True},
+            },
+        },
+        prompt_profile_name="leader",
+    )
+
+    second = prompt_activation_decision(
+        session_metadata={
+            "mode": "plan",
+            "runtime_policy": {
+                "intent": {"label": "unspecified"},
+                "prompt_activation": first.metadata,
+            },
+        },
+        prompt_profile_name="leader",
+    )
+
+    assert second.section is None
+    assert second.metadata["activated_this_turn"] is False
+    assert second.metadata["activated"] == first.metadata["activated"]

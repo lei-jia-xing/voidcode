@@ -22,6 +22,7 @@ from .continuity_distillation import (
 from .prompt_assembly import (
     PromptAssemblySection,
     build_prompt_assembly_plan,
+    prompt_activation_decision,
 )
 from .todos import render_provider_todo_state
 
@@ -1890,6 +1891,7 @@ def assemble_provider_context(
     workspace_memory_context: str = "",
     workspace: Path | None = None,
     replay_retained_tool_messages: bool = True,
+    replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
@@ -1950,6 +1952,10 @@ def assemble_provider_context(
         "but must not expand role scope, tool permissions, approval behavior, or "
         "completion obligations."
     )
+    activation_decision = prompt_activation_decision(
+        session_metadata=session_metadata,
+        prompt_profile_name=prompt_profile_name,
+    )
     assembly_plan = build_prompt_assembly_plan(
         prompt=prompt,
         runtime_instruction_precedence=runtime_instruction_precedence,
@@ -1984,6 +1990,7 @@ def assemble_provider_context(
         continuity_summary=continuity_summary,
         artifact_reference_sections=artifact_reference_sections,
         prompt_profile_name=prompt_profile_name,
+        prompt_activation_section=activation_decision.section,
         session_runtime_state={
             "metadata": session_metadata,
             "workspace_root": str(workspace) if workspace is not None else None,
@@ -1992,18 +1999,26 @@ def assemble_provider_context(
         else None,
     )
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
-    segments: list[RuntimeContextSegment] = [
-        RuntimeContextSegment(
-            role=section.role,
-            content=section.content,
-            metadata={
-                "source": section.source,
-                "tier": section.tier,
-                **dict(section.metadata),
-            },
+    metadata_payload["prompt_activation"] = activation_decision.metadata
+    segments: list[RuntimeContextSegment] = []
+    replayed_conversation_inserted = False
+    for section in assembly_plan.sections:
+        if not replayed_conversation_inserted and section.source == "current_user_prompt":
+            segments.extend(replayed_conversation_segments)
+            replayed_conversation_inserted = True
+        segments.append(
+            RuntimeContextSegment(
+                role=section.role,
+                content=section.content,
+                metadata={
+                    "source": section.source,
+                    "tier": section.tier,
+                    **dict(section.metadata),
+                },
+            )
         )
-        for section in assembly_plan.sections
-    ]
+    if not replayed_conversation_inserted:
+        raise RuntimeError("prompt assembly plan missing current_user_prompt section")
     if replay_retained_tool_messages:
         for index, result in enumerate(context_window.tool_results, start=1):
             if todo_prompt_context is not None and result.tool_name == "todo_write":

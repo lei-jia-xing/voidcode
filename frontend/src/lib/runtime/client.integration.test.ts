@@ -265,7 +265,7 @@ describe("RuntimeClient integration contract", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input, init) => {
         const url = String(input);
-        if (url.endsWith("/question")) {
+        if (url.includes("/question")) {
           expect(init?.method).toBe("POST");
           expect(init?.body).toBe(
             JSON.stringify({
@@ -293,7 +293,7 @@ describe("RuntimeClient integration contract", () => {
         if (url === "/api/tasks") {
           return { ok: true, json: async () => [] } as Response;
         }
-        if (url.endsWith("/debug")) {
+        if (url.includes("/debug")) {
           return {
             ok: true,
             json: async () => ({

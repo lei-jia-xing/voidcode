@@ -77,12 +77,24 @@ def session_with_context_window_payload_metadata(
         if isinstance(summary_anchor, str)
         else None
     )
+    metadata = dict(session.metadata)
+    raw_prompt_activation = context_window_payload.get("prompt_activation")
+    if isinstance(raw_prompt_activation, dict):
+        prompt_activation = dict(cast(dict[str, object], raw_prompt_activation))
+        raw_runtime_policy = metadata.get("runtime_policy")
+        runtime_policy = (
+            dict(cast(dict[str, object], raw_runtime_policy))
+            if isinstance(raw_runtime_policy, dict)
+            else {}
+        )
+        runtime_policy["prompt_activation"] = prompt_activation
+        metadata["runtime_policy"] = runtime_policy
     return SessionState(
         session=session.session,
         status=session.status,
         turn=session.turn,
         metadata={
-            **session.metadata,
+            **metadata,
             "context_window": context_window_payload,
             "runtime_state": {
                 **runtime_state,

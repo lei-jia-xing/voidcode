@@ -45,6 +45,62 @@ Memory tools are conservative by default. 它们只有在显式允许的 runtime
 
 `mode` 的当前稳定语义是：缺省 `normal` 保持 action-capable；`analyze` 与 `plan` 隐式 effective read-only；显式 `read_only=true` 会把 `normal` run 收窄为 read-only。CLI 只把 `--mode` / `--read-only` 映射进 runtime request metadata，不能在客户端侧复制 mutating-tool、memory-tool 或 shell policy enforcement。
 
+## Runtime Harness Policy v1
+
+Runtime Harness Policy v1 is the runtime-owned authorization and explanation layer for a single turn. It materializes the effective intent, tool, delegation, hook, and prompt-activation decisions into one persisted `RuntimePolicySnapshot`. It is not a second control plane: extension points may contribute validated declarations, diagnostics, or narrowing guidance, but runtime policy remains the only source of authorization.
+
+`RuntimePolicySnapshot` v1 is a JSON-serializable, redacted object with these required fields:
+
+| Field | Required shape | Meaning |
+| --- | --- | --- |
+| `schema_version` | integer, `1` | Snapshot schema version. Unsupported versions fail fast on load/import. |
+| `policy_version` | string | Version of the materialization rules used to compute this snapshot. |
+| `created_at` or `turn_id` | RFC3339 timestamp or stable turn identifier | Identifies when/for which turn the snapshot was created without exposing prompt body. |
+| `agent_preset` | string | Selected runtime agent preset for the run or child session. |
+| `agent_manifest_id` | string or null | Resolved builtin/custom manifest id used for capability binding. |
+| `intent` | object | Bounded neutral intent metadata: label, confidence, matched rule ids, and optional guidance ids. It cannot grant or infer capability. Heuristic free-text classification is intentionally not part of v1. |
+| `tool_policy` | object | Effective visible/callable tool policy, including allowed and denied tool ids plus stable denial reasons. |
+| `delegation_policy` | object | Effective child routing policy, allowed child presets/categories, denied targets, and stable denial reasons. |
+| `hook_policy` | object | Named event-scoped hook policy with allowed observe/report/cancel/guidance actions. Hooks are non-authoritative. |
+| `prompt_activation` | object | One-time guidance activation ids, activation state, and redacted previews only. It cannot alter tool or delegation policy. |
+| `precedence_trace` | array | Ordered, audit-safe decisions showing which source allowed, narrowed, or denied each policy facet. |
+| `diagnostics` | object | Redacted bounded diagnostics. No raw prompts, skill bodies, env values, credentials, or unrestricted metadata escape hatches. |
+
+### Runtime Harness Policy precedence
+
+Policy materialization uses this fixed order from highest to lowest authority:
+
+1. Runtime hard denials and security invariants, including product non-delegation.
+2. Persisted session policy for resume/replay/import when a snapshot already exists.
+3. Validated runtime config and schema-bounded policy fields.
+4. Agent manifest declared capabilities and top-level/subagent mode.
+5. Request/session options that can only select or narrow allowed behavior.
+6. Hook preset metadata, which is guidance/guard/report only.
+7. Bounded neutral intent metadata, which is non-authoritative and cannot grant or infer capability.
+8. Runtime defaults and registry/provider capabilities.
+
+Lower-precedence inputs may narrow or annotate higher-precedence decisions, but they cannot grant a tool, hook action, prompt activation, MCP binding, delegation target, approval, or product delegation denied above them. Intent metadata cannot grant capabilities or reintroduce heuristic prompt classification. Hooks cannot grant capabilities or mutate persisted policy truth. Prompt activation is guidance-only.
+
+### Bounded observability
+
+Runtime attaches a `runtime_policy` object to `runtime.request_received`, and additive clients may also tolerate a future standalone `runtime.policy_materialized` event. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, prompt-activation state, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the payload never includes raw prompt bodies, skill bodies, env values, credentials, or unbounded metadata.
+
+Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`. Prompt activation persists inside `RuntimePolicySnapshot.prompt_activation`; replay/resume may show historical activation records but must project run-local `activated_this_turn` as false unless the current run actually activated it.
+
+Legacy sessions without a stored snapshot synthesize a conservative v1 snapshot on replay/debug surfaces. Unsupported stored snapshot/schema versions fail fast rather than being silently migrated or widened.
+
+### Product non-delegation invariant
+
+`product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, category mapping, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_retry`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
+
+### Legacy snapshot synthesis
+
+Legacy sessions and bundles without `RuntimePolicySnapshot` remain resumable/importable. The runtime must synthesize a conservative v1 snapshot using persisted session/config truth and hard denials, record the synthesis in `precedence_trace`, and keep product delegation denied. It must not recompute historical sessions from mutable live defaults when a stored snapshot exists.
+
+### v1 non-goals
+
+Runtime Harness Policy v1 does not define a generic policy DSL, LLM-based classifier, heuristic intent classifier, arbitrary multi-agent topology, product delegation, agent-to-agent bus, MCP redesign, marketplace/dynamic plugin system, or prompt-text enforcement layer. It keeps MCP behind existing config gates unless a stable policy identifier already exists.
+
 ## Extension Families
 
 ### Context transforms

@@ -389,7 +389,7 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
         "version": 1,
         "order": ["instruction", "task", "recent"],
         "counts": {
-            "instruction": 5,
+            "instruction": 6,
             "workspace": 0,
             "task": 2,
             "recent": 2,

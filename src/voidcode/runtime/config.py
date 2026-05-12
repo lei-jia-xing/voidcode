@@ -48,6 +48,9 @@ from .permission import (
     PatternPermissionRule,
     PermissionDecision,
 )
+from .policy import (
+    validate_runtime_policy_config_payload,
+)
 from .task import supported_subagent_categories
 from .workflow import WorkflowPresetRegistry, workflow_presets_from_payload
 
@@ -99,6 +102,7 @@ _REPO_CONFIG_KEYS = frozenset(
         "$schema",
         "approval_mode",
         "permission",
+        "policy",
         "model",
         "fallback_models",
         "max_steps",
@@ -501,6 +505,7 @@ class RuntimeConfig:
     permission: ExternalDirectoryPermissionConfig = field(
         default_factory=ExternalDirectoryPermissionConfig
     )
+    policy: object | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
     max_steps: int | None = DEFAULT_MAX_STEPS
@@ -531,6 +536,7 @@ class RuntimeConfig:
 class RuntimeConfigOverrides:
     approval_mode: PermissionDecision | None = None
     permission: ExternalDirectoryPermissionConfig | None = None
+    policy: object | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     max_steps: int | None = None
@@ -673,6 +679,7 @@ def load_runtime_config(
             environment=env_overrides.approval_mode,
         ),
         permission=repo_local.permission or ExternalDirectoryPermissionConfig(),
+        policy=repo_local.policy,
         model=_resolve_model(
             explicit=model,
             repo_local=repo_local.model,
@@ -774,6 +781,12 @@ def _load_repo_local_config(
 
     payload = cast(dict[str, object], raw_payload)
     _reject_unknown_config_keys(payload, allowed_keys=_REPO_CONFIG_KEYS, field_path="")
+
+    raw_policy = payload.get("policy")
+    policy = validate_runtime_policy_config_payload(
+        raw_policy,
+        source="runtime config field 'policy'",
+    )
 
     raw_model = payload.get("model")
     if raw_model is not None and not isinstance(raw_model, str):
@@ -882,6 +895,7 @@ def _load_repo_local_config(
     return RuntimeConfigOverrides(
         approval_mode=parsed_approval_mode,
         permission=parsed_permission,
+        policy=policy,
         model=raw_model,
         execution_engine=parsed_execution_engine,
         max_steps=parsed_max_steps,
@@ -2702,10 +2716,7 @@ def _parse_agent_config(
             payload.get("manifest_skill_refs"),
             field_path="agent.manifest_skill_refs",
         ),
-        manifest_hook_refs=_parse_string_list(
-            payload.get("manifest_hook_refs"),
-            field_path="agent.manifest_hook_refs",
-        ),
+        manifest_hook_refs=_parse_agent_manifest_hook_refs(payload.get("manifest_hook_refs")),
         hook_refs=hook_refs,
         context_transform_refs=context_transform_refs,
         model=model.strip() if isinstance(model, str) else None,
@@ -2934,6 +2945,16 @@ def _parse_agent_hook_refs(
         return ()
     _ = hooks
     return validate_hook_preset_refs(hook_refs, field_path="runtime config field 'agent.hook_refs'")
+
+
+def _parse_agent_manifest_hook_refs(raw_refs: object) -> tuple[str, ...]:
+    refs = _parse_string_list(raw_refs, field_path="agent.manifest_hook_refs")
+    if not refs:
+        return ()
+    return validate_hook_preset_refs(
+        refs,
+        field_path="runtime config field 'agent.manifest_hook_refs'",
+    )
 
 
 def _parse_agent_context_transform_refs(raw_refs: object) -> tuple[str, ...]:
@@ -3179,6 +3200,13 @@ def parse_runtime_context_window_payload(
 ) -> RuntimeContextWindowConfig | None:
     try:
         return _parse_context_window_config(raw_context_window)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def parse_runtime_policy_payload(raw_policy: object, *, source: str) -> object | None:
+    try:
+        return validate_runtime_policy_config_payload(raw_policy, source=source)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 

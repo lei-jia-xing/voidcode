@@ -517,3 +517,99 @@ def test_runtime_config_rejects_repo_local_workflow_mode_default(tmp_path: Path)
         match="runtime config field 'workflow_mode' is not supported",
     ):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
+    schema = runtime_config_json_schema()
+    properties = cast(dict[str, object], schema["properties"])
+    defs = cast(dict[str, object], schema["$defs"])
+
+    assert properties["policy"] == {"$ref": "#/$defs/runtimePolicyConfig"}
+    policy_config = cast(dict[str, object], defs["runtimePolicyConfig"])
+    assert policy_config["additionalProperties"] is False
+    policy_properties = cast(dict[str, object], policy_config["properties"])
+    assert set(policy_properties) == {
+        "enabled",
+        "version",
+        "tool_policy",
+        "delegation_policy",
+        "hook_policy",
+        "prompt_activation",
+    }
+    assert "metadata" not in policy_properties
+    assert policy_properties["version"] == {"type": "string", "const": "v1"}
+    assert policy_properties["tool_policy"] == {"$ref": "#/$defs/runtimePolicyToolPolicyConfig"}
+    assert policy_properties["delegation_policy"] == {
+        "$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"
+    }
+    assert policy_properties["hook_policy"] == {"$ref": "#/$defs/runtimePolicyHookPolicyConfig"}
+
+    hook_policy = cast(dict[str, object], defs["runtimePolicyHookPolicyConfig"])
+    hook_properties = cast(dict[str, object], hook_policy["properties"])
+    allowed_scopes = cast(dict[str, object], hook_properties["allowed_event_scopes"])
+    allowed_scope_items = cast(dict[str, object], allowed_scopes["items"])
+    assert allowed_scope_items["enum"] == [
+        "session_start",
+        "session_end",
+        "pre_tool",
+        "post_tool",
+        "background_task_registered",
+        "background_task_started",
+        "background_task_progress",
+        "background_task_completed",
+        "background_task_failed",
+        "background_task_cancelled",
+        "background_task_notification_enqueued",
+        "background_task_result_read",
+        "delegated_result_available",
+        "context_pressure",
+        "turn_progress",
+        "stuck_detected",
+    ]
+
+
+def test_runtime_config_rejects_invalid_policy_shapes(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps({"policy": {"metadata": {"unbounded": True}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="policy.metadata"):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_policy_product_delegation(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "policy": {
+                    "version": "v1",
+                    "delegation_policy": {"allow": ["product"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="delegation_denied_product_top_level_only"):
+        _ = load_runtime_config(tmp_path, env={})
+
+
+def test_runtime_config_rejects_invalid_policy_hook_scope(tmp_path: Path) -> None:
+    config_path = tmp_path / ".voidcode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "policy": {
+                    "version": "v1",
+                    "hook_policy": {"allowed_event_scopes": ["chat_message_transform"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="policy.hook_policy.allowed_event_scopes"):
+        _ = load_runtime_config(tmp_path, env={})

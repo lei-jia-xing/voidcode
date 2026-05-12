@@ -853,3 +853,26 @@ def test_validate_builtin_agent_manifests_rejects_unknown_model_family_override(
                 ),
             )
         )
+
+
+def test_product_manifest_excludes_all_delegation_helpers() -> None:
+    product = get_builtin_agent_manifest("product")
+
+    assert product is not None
+    assert product.top_level_selectable is True
+    assert product.mode == "primary"
+    assert {
+        "task",
+        "background_output",
+        "background_retry",
+        "background_cancel",
+    }.isdisjoint(product.tool_allowlist)
+
+
+def test_product_delegation_denial_exposes_stable_policy_reason() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        _ = resolve_subagent_route(
+            SubagentRoutingIdentity(mode="background", subagent_type="product")
+        )
+
+    assert "delegation_denied_product_top_level_only" in str(exc_info.value)

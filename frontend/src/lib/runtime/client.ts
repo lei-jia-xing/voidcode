@@ -61,6 +61,12 @@ function encodePathSegments(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
+function withShowThinking(path: string): string {
+  return path.includes("?")
+    ? `${path}&show_thinking=true`
+    : `${path}?show_thinking=true`;
+}
+
 export class RuntimeClient {
   static async listWorkspaces(): Promise<WorkspaceRegistrySnapshot> {
     const res = await fetch(`/api/workspaces`);
@@ -164,7 +170,9 @@ export class RuntimeClient {
   }
 
   static async getSessionReplay(sessionId: string): Promise<RuntimeResponse> {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const res = await fetch(
+      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}`),
+    );
     await expectOk(res, "Failed to replay session");
     return res.json();
   }
@@ -173,7 +181,7 @@ export class RuntimeClient {
     sessionId: string,
   ): Promise<RuntimeSessionResult> {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/result`,
+      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/result`),
     );
     await expectOk(res, "Failed to load session result");
     return res.json();
@@ -183,7 +191,7 @@ export class RuntimeClient {
     sessionId: string,
   ): Promise<RuntimeSessionDebugSnapshot> {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/debug`,
+      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/debug`),
     );
     await expectOk(res, "Failed to load session debug");
     return res.json();
@@ -211,7 +219,9 @@ export class RuntimeClient {
     decision: ApprovalDecision,
   ): Promise<RuntimeResponse> {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/approval`,
+      withShowThinking(
+        `/api/sessions/${encodeURIComponent(sessionId)}/approval`,
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -229,7 +239,9 @@ export class RuntimeClient {
     responses: QuestionAnswer[],
   ): Promise<RuntimeResponse> {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/question`,
+      withShowThinking(
+        `/api/sessions/${encodeURIComponent(sessionId)}/question`,
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -293,7 +305,9 @@ export class RuntimeClient {
   static async getBackgroundTaskOutput(
     taskId: string,
   ): Promise<BackgroundTaskOutput> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/output`);
+    const res = await fetch(
+      withShowThinking(`/api/tasks/${encodeURIComponent(taskId)}/output`),
+    );
     await expectOk(res, "Failed to load background task output");
     return res.json();
   }
@@ -302,7 +316,9 @@ export class RuntimeClient {
     sessionId: string,
   ): Promise<ChildSessionContextResult> {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/delegated-context`,
+      withShowThinking(
+        `/api/sessions/${encodeURIComponent(sessionId)}/delegated-context`,
+      ),
     );
     await expectOk(res, "Failed to load delegated child session context");
     return res.json();
@@ -329,7 +345,7 @@ export class RuntimeClient {
   static async *runStream(
     request: RuntimeRequest,
   ): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
-    const res = await fetch(`/api/runtime/run/stream`, {
+    const res = await fetch(withShowThinking(`/api/runtime/run/stream`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),

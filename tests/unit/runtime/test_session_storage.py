@@ -444,14 +444,29 @@ def test_session_storage_roundtrips_redacted_runtime_policy_metadata(tmp_path: P
     runtime_policy = cast(dict[str, object], loaded.session.metadata["runtime_policy"])
     assert runtime_policy["mode"] == "analyze"
     assert runtime_policy["read_only"] is True
-    assert runtime_policy["delegation"] == metadata["delegation"]
-    assert cast(dict[str, object], runtime_policy["tool_policy_denial"])["tool"] == "write_file"
+    assert runtime_policy["delegation_policy"] == {
+        "allowed_presets": ["advisor", "explore", "researcher", "worker"],
+        "denied": [
+            {
+                "target": "product",
+                "reason": "delegation_denied_product_top_level_only",
+            }
+        ],
+        "product_denial_reason": "delegation_denied_product_top_level_only",
+    }
+    policy_observations = cast(dict[str, object], loaded.session.metadata["policy_observations"])
+    tool_policy_denial = cast(dict[str, object], policy_observations["tool_policy_denial"])
+    assert tool_policy_denial["tool"] == "write_file"
     assert "raw-secret-value" not in encoded
     assert "sk-runtime-secret" not in encoded
     assert 'NPM_CONFIG_YES": "true' not in encoded
     assert checkpoint is not None
     checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
-    assert checkpoint_metadata["runtime_policy"] == loaded.session.metadata["runtime_policy"]
+    checkpoint_runtime_policy = dict(cast(dict[str, object], checkpoint_metadata["runtime_policy"]))
+    loaded_runtime_policy = dict(cast(dict[str, object], loaded.session.metadata["runtime_policy"]))
+    checkpoint_runtime_policy.pop("created_at", None)
+    loaded_runtime_policy.pop("created_at", None)
+    assert checkpoint_runtime_policy == loaded_runtime_policy
 
 
 def test_tool_results_from_events_preserves_raw_read_file_content() -> None:

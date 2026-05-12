@@ -224,5 +224,7 @@ def test_web_search_tool_uses_fallback_when_no_exa_key_integration(tmp_path: Pat
         )
 
     assert result.status == "ok"
-    assert result.data.get("source") in {"duckduckgo", "exa"}
+    assert result.data.get("source") == "duckduckgo"
+    assert result.fallback_reason is None
     assert isinstance(result.content, str)
+    assert "https://example.com/a" in result.content

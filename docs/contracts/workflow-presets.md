@@ -183,6 +183,12 @@ Remote/configured-server-intent descriptors are availability metadata in workflo
 4. `sustain` 强调前后 `git status`、保留 hooks 和显式意图。
 5. `default` 保持中性，不强加额外验证要求。
 
+## Runtime Harness Policy relationship
+
+Workflow mode is an input to policy materialization, not an authorization layer. A selected workflow mode or legacy workflow preset may add guidance, read-only intent, skill refs, hook refs, MCP binding intent, and verification metadata, but these feed `RuntimePolicySnapshot.precedence_trace` below runtime hard denials, persisted session policy, validated config, agent manifest, and explicit request/session options.
+
+Workflow declarations cannot grant denied tools, delegation targets, hook authority, prompt activation rights, MCP access, or product delegation. If a workflow's legacy default agent/category would imply product as a child target, runtime policy must deny it with `delegation_denied_product_top_level_only` rather than silently remapping it.
+
 ## 非目标
 
 本契约明确不描述以下内容：

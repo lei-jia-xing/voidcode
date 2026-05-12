@@ -438,17 +438,16 @@ class RuntimeBackgroundTaskSupervisor:
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         runtime = self._runtime
         self.reconcile_background_tasks_if_needed()
-        validated_request = runtime._validated_request(request)
         task_id = f"task-{uuid4().hex}"
         initial_state = BackgroundTaskState(
             task=BackgroundTaskRef(id=task_id),
             status="queued",
             request=BackgroundTaskRequestSnapshot(
-                prompt=validated_request.prompt,
-                session_id=validated_request.session_id,
-                parent_session_id=validated_request.parent_session_id,
-                metadata={key: value for key, value in validated_request.metadata.items()},
-                allocate_session_id=validated_request.allocate_session_id,
+                prompt=request.prompt,
+                session_id=request.session_id,
+                parent_session_id=request.parent_session_id,
+                metadata={key: value for key, value in request.metadata.items()},
+                allocate_session_id=request.allocate_session_id,
             ),
         )
         runtime._session_store.create_background_task(

@@ -69,6 +69,26 @@ Return repository or research discovery in this format:
 </search_agent_contract>"""
 
 
+def prompt_activation_guidance_block(
+    *,
+    activation_id: str,
+    mode: str,
+    intent_slot: str,
+    profile_refs: list[str],
+) -> str:
+    refs = _clean_lines(profile_refs)
+    refs_line = ", ".join(refs) if refs else "runtime default"
+    return f"""<prompt_activation_guidance>
+Activation: {activation_id.strip()}
+Mode: {mode.strip()}
+Intent slot: {intent_slot.strip()}
+Policy refs: {refs_line}
+This is one-time guidance for this session slot only. It helps you interpret the active role
+prompt, but it does not grant tools, delegation authority, approvals, memory access, or any
+other runtime capability. Runtime policy and tool checks remain the enforcement truth.
+</prompt_activation_guidance>"""
+
+
 def dynamic_boundary_marker() -> str:
     return _DYNAMIC_BOUNDARY_MARKER
 
@@ -89,5 +109,6 @@ __all__ = [
     "env_card_dynamic",
     "env_card_stable",
     "identity_header",
+    "prompt_activation_guidance_block",
     "search_agent_contract_block",
 ]

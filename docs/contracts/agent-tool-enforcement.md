@@ -193,6 +193,8 @@ tool allowlist enforcement 发生在 approval 之前。
 - runtime 必须通过已有失败路径拒绝执行
 - 不得静默降级为“工具不存在但继续猜测”
 - 不得把该工具重新注入 `available_tools`
+- deny reason 必须通过 runtime-owned machine-readable surfaces 保持可见：`runtime.request_received.payload.runtime_policy.tool_policy.denied` / `delegation_policy.denied`、`runtime.failed` 或 denied `runtime.tool_completed` payload、session replay/debug JSON。payload 必须是 bounded/redacted，不能包含 raw prompt、skill body、secret 或 env value。
+- prompt 文本、hook output、prompt activation 或客户端请求不能把 denied tool/delegation 目标重新变成可调用能力。
 
 这类失败应被视为 runtime-owned governance failure，而不是 client rendering concern。
 

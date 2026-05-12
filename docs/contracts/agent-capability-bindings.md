@@ -65,6 +65,12 @@ Workflow mode 本身不是 agent capability binding 的新执行层。它只是 
 - Manifest `skill_refs` 是 catalog-visible default selection；request/delegated `force_load_skills` 会注入 full skill body，但只作用于当前 run / child session。
 - Parent session 的 force-loaded skill bodies 不会自动泄漏到 child session；child 必须通过 delegated `load_skills` / `force_load_skills` 明确加载。
 
+## RuntimePolicySnapshot binding
+
+`agent_capability_snapshot` explains what the selected agent manifest and config declared. `RuntimePolicySnapshot` is the later authorization snapshot that applies runtime hard denials, persisted session policy, config, manifest, request/session options, hook metadata, deterministic intent, and defaults in fixed precedence order.
+
+Agent declarations can only select or narrow capability intent before policy materialization. They cannot grant a tool, skill body, hook authority, MCP binding, delegation target, approval, or product delegation that runtime policy denies. Child policy is derived from the parent snapshot plus the child manifest and can only be a subset of parent capabilities. Replay/debug should prefer persisted `RuntimePolicySnapshot` for enforcement explanation, while `agent_capability_snapshot` remains the declaration/materialization evidence that fed it.
+
 ## Replay 要求
 
 Replay/debug 应优先读取 persisted `agent_capability_snapshot`。旧 session 的能力解释不能因为 builtin manifest、hook catalog、skill registry 或 MCP config 后续变化而被静默改写。

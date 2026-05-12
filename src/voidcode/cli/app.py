@@ -81,7 +81,11 @@ from ..runtime.contracts import (
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
-from ..runtime.events import EventEnvelope, redact_reasoning_payload
+from ..runtime.events import (
+    EventEnvelope,
+    redact_reasoning_payload,
+    runtime_policy_observability_payload,
+)
 from ..runtime.memory import MemoryKind, MemoryRecord
 from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.question import QuestionResponse
@@ -1501,6 +1505,7 @@ def _serialize_session_debug_snapshot(
     session_payload: dict[str, object] = {"id": snapshot.session.session.id}
     if snapshot.session.session.parent_id is not None:
         session_payload["parent_id"] = snapshot.session.session.parent_id
+    runtime_policy = _runtime_policy_debug_payload(snapshot)
     return {
         "session": {
             "session": session_payload,
@@ -1508,6 +1513,7 @@ def _serialize_session_debug_snapshot(
             "turn": snapshot.session.turn,
             "metadata": snapshot.session.metadata,
         },
+        **({"runtime_policy": runtime_policy} if runtime_policy is not None else {}),
         "prompt": snapshot.prompt,
         "persisted_status": snapshot.persisted_status,
         "current_status": snapshot.current_status,
@@ -1576,6 +1582,15 @@ def _serialize_session_debug_snapshot(
         "suggested_operator_action": snapshot.suggested_operator_action,
         "operator_guidance": snapshot.operator_guidance,
     }
+
+
+def _runtime_policy_debug_payload(
+    snapshot: RuntimeSessionDebugSnapshot,
+) -> dict[str, object] | None:
+    runtime_policy = snapshot.session.metadata.get("runtime_policy")
+    if not isinstance(runtime_policy, dict):
+        return None
+    return runtime_policy_observability_payload(cast(dict[str, object], runtime_policy))
 
 
 def _serialize_hook_preset_snapshot(

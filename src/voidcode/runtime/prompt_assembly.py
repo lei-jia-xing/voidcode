@@ -15,6 +15,7 @@ from voidcode.agent.prompt_sections import (
     capability_block,
     dynamic_boundary_marker,
     identity_header,
+    prompt_activation_guidance_block,
 )
 
 from .context_transforms import RuntimeContextTransformResult
@@ -56,6 +57,132 @@ _TOOL_POLICY_SUMMARY = (
     "runtime allowlists, read-only policy, shell classification, approvals, hooks, and "
     "tool lookup checks decide whether a call may execute."
 )
+_PROMPT_ACTIVATION_PREVIEW_CHARS = 160
+
+
+@dataclass(frozen=True, slots=True)
+class PromptActivationDecision:
+    section: PromptAssemblySection | None
+    metadata: dict[str, object]
+
+
+def prompt_activation_decision(
+    *,
+    session_metadata: Mapping[str, object],
+    prompt_profile_name: str | None,
+) -> PromptActivationDecision:
+    runtime_policy = _mapping_value(session_metadata.get("runtime_policy"))
+    prompt_activation = _mapping_value(runtime_policy.get("prompt_activation"))
+    enabled = prompt_activation.get("enabled", True) is not False
+    mode = (
+        _metadata_string(session_metadata, "mode")
+        or _metadata_string(runtime_policy, "mode")
+        or "normal"
+    )
+    intent = _mapping_value(runtime_policy.get("intent"))
+    intent_slot = _metadata_string(intent, "label") or "unspecified"
+    activation_id = _activation_id(prompt_profile_name)
+    activation_key = _activation_key(
+        activation_id=activation_id,
+        mode=mode,
+        intent_slot=intent_slot,
+    )
+    existing_records = _activation_records(prompt_activation.get("activated"))
+    already_active = any(record.get("key") == activation_key for record in existing_records)
+    profile_refs = _string_list(prompt_activation.get("profile_refs"))
+    base_metadata: dict[str, object] = {
+        **prompt_activation,
+        "enabled": enabled,
+        "activation_id": activation_id,
+        "mode": mode,
+        "intent_slot": intent_slot,
+        "granularity": "session+activation_id+mode+intent_slot",
+        "raw_prompt_stored": False,
+        "activated": existing_records,
+    }
+    if not enabled or already_active:
+        base_metadata["activated_this_turn"] = (
+            session_metadata.get("_prompt_activation_this_run") is True
+        )
+        return PromptActivationDecision(section=None, metadata=base_metadata)
+
+    guidance = prompt_activation_guidance_block(
+        activation_id=activation_id,
+        mode=mode,
+        intent_slot=intent_slot,
+        profile_refs=profile_refs,
+    )
+    preview_source = (
+        f"Activation {activation_id} for mode {mode} and intent slot {intent_slot}. "
+        "Guidance-only; runtime policy remains enforcement truth."
+    )
+    preview, preview_truncated = _redacted_preview(preview_source)
+    record: dict[str, object] = {
+        "key": activation_key,
+        "activation_id": activation_id,
+        "mode": mode,
+        "intent_slot": intent_slot,
+        "source": "runtime_policy",
+        "guidance_only": True,
+        "raw_prompt_stored": False,
+        "preview": preview[:_PROMPT_ACTIVATION_PREVIEW_CHARS],
+        "preview_truncated": preview_truncated or len(preview) > _PROMPT_ACTIVATION_PREVIEW_CHARS,
+    }
+    base_metadata["activated"] = [*existing_records, record]
+    base_metadata["activated_this_turn"] = True
+    base_metadata["last_activation"] = record
+    return PromptActivationDecision(
+        section=PromptAssemblySection(
+            role="system",
+            content=guidance,
+            source="runtime_prompt_activation",
+            tier="instruction",
+            metadata={
+                "layer": "prompt_activation",
+                "activation_id": activation_id,
+                "mode": mode,
+                "intent_slot": intent_slot,
+                "guidance_only": True,
+            },
+        ),
+        metadata=base_metadata,
+    )
+
+
+def _activation_id(prompt_profile_name: str | None) -> str:
+    profile = prompt_profile_name.strip() if prompt_profile_name is not None else ""
+    return f"agent_prompt:{profile}" if profile else "agent_prompt:default"
+
+
+def _activation_key(*, activation_id: str, mode: str, intent_slot: str) -> str:
+    return f"{activation_id}|mode:{mode}|intent:{intent_slot}"
+
+
+def _mapping_value(value: object) -> dict[str, object]:
+    return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}
+
+
+def _metadata_string(metadata: Mapping[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [item for item in value if isinstance(item, str) and item.strip()]
+
+
+def _activation_records(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list | tuple):
+        return []
+    records: list[dict[str, object]] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            record = dict(cast(Mapping[str, object], item))
+            if isinstance(record.get("key"), str):
+                records.append(record)
+    return records
 
 
 def build_env_card_sections(session_runtime_state: object) -> tuple[str, str]:
@@ -265,6 +392,7 @@ def build_prompt_assembly_plan(
     artifact_reference_sections: Iterable[PromptAssemblySection] = (),
     prompt_profile_name: str | None = None,
     session_runtime_state: object | None = None,
+    prompt_activation_section: PromptAssemblySection | None = None,
 ) -> PromptAssemblyPlan:
     sections: list[PromptAssemblySection] = []
     seen_system_contents: set[str] = set()
@@ -381,6 +509,14 @@ def build_prompt_assembly_plan(
         tier="instruction",
         layer="mode_policy",
     )
+    if prompt_activation_section is not None:
+        append_system(
+            prompt_activation_section.content,
+            source=prompt_activation_section.source,
+            tier=prompt_activation_section.tier,
+            layer="prompt_activation",
+            metadata=prompt_activation_section.metadata,
+        )
     for segment_content in preserved_system_segments:
         append_system(
             segment_content,
@@ -547,6 +683,8 @@ def _default_layer_for_source(source: str) -> str:
         return "base_safety"
     if source == "workflow_mode_prompt":
         return "mode_policy"
+    if source == "runtime_prompt_activation":
+        return "prompt_activation"
     if source == "runtime_memory_usage_guidance":
         return "memory_usage_guidance"
     if source.startswith("agent_"):
@@ -596,5 +734,6 @@ __all__ = [
     "build_env_card_sections",
     "PromptAssemblySection",
     "build_prompt_assembly_plan",
+    "prompt_activation_decision",
     "prompt_fragments_for_sections",
 ]

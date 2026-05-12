@@ -679,6 +679,92 @@ def test_session_bundle_export_import_preserves_redacted_runtime_policy_metadata
     assert 'NPM_CONFIG_YES": "true' not in encoded
 
 
+def test_session_bundle_preserves_prompt_activation_records_without_raw_guidance(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    activation_record: dict[str, object] = {
+        "key": "agent_prompt:leader|mode:plan|intent:unspecified",
+        "activation_id": "agent_prompt:leader",
+        "mode": "plan",
+        "intent_slot": "unspecified",
+        "source": "runtime_policy",
+        "guidance_only": True,
+        "raw_prompt_stored": False,
+        "preview": "Activation: agent_prompt:leader token=activation-secret",
+        "preview_truncated": False,
+    }
+    metadata: dict[str, object] = {
+        "mode": "plan",
+        "runtime_policy": {
+            "schema_version": 1,
+            "policy_version": "v1",
+            "agent_preset": "leader",
+            "agent_manifest_id": "leader",
+            "intent": {"label": "unspecified"},
+            "tool_policy": {},
+            "delegation_policy": {},
+            "hook_policy": {},
+            "prompt_activation": {
+                "enabled": True,
+                "activated_this_turn": True,
+                "activated": [activation_record],
+                "last_activation": activation_record,
+                "raw_prompt_stored": False,
+            },
+            "precedence_trace": [],
+            "diagnostics": {},
+            "mode": "plan",
+            "read_only": True,
+        },
+    }
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="activation bundle", session_id="activation-bundle"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="activation-bundle"),
+                status="completed",
+                turn=1,
+                metadata=metadata,
+            ),
+            events=(
+                EventEnvelope(
+                    session_id="activation-bundle",
+                    sequence=1,
+                    event_type="graph.response_ready",
+                    source="graph",
+                    payload={"summary": "done"},
+                ),
+            ),
+        ),
+    )
+
+    built = build_session_bundle(
+        session_store=store,
+        workspace=tmp_path,
+        session_id="activation-bundle",
+    )
+    target_workspace = tmp_path / "imported-activation"
+    target_workspace.mkdir()
+    apply_session_bundle(
+        parse_session_bundle(built.to_payload()),
+        session_store=store,
+        workspace=target_workspace,
+    )
+
+    encoded = json.dumps(built.to_payload(), sort_keys=True)
+    bundled_policy = cast(dict[str, object], built.sessions[0].metadata["runtime_policy"])
+    bundled_activation = cast(dict[str, object], bundled_policy["prompt_activation"])
+    imported = store.load_session(workspace=target_workspace, session_id="activation-bundle")
+
+    assert bundled_activation["activated_this_turn"] is True
+    assert cast(list[object], bundled_activation["activated"])
+    assert "activation-secret" not in encoded
+    assert "<prompt_activation_guidance>" not in encoded
+    assert imported.session.metadata["runtime_policy"] == bundled_policy
+
+
 def test_session_bundle_includes_available_artifacts_only_when_tool_output_requested(
     tmp_path: Path,
 ) -> None:
@@ -911,6 +997,32 @@ def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
         "imported_at_session_id": "bundle-session-imported",
     }
     assert loaded.events[-1].sequence == 3
+
+
+def test_session_bundle_import_rejects_unsupported_runtime_policy_snapshot_version(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    bundle = parse_session_bundle(
+        _minimal_bundle_payload(
+            [
+                {
+                    **_minimal_session_payload("future-policy-bundle"),
+                    "metadata": {
+                        "runtime_policy": {
+                            "schema_version": 999,
+                            "policy_version": "v1",
+                        }
+                    },
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="unsupported runtime_policy schema_version"):
+        apply_session_bundle(bundle, session_store=store, workspace=tmp_path)
+
+    assert not store.has_session(workspace=tmp_path, session_id="future-policy-bundle")
 
 
 def test_session_bundle_unknown_schema_fails_fast() -> None:

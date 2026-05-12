@@ -4,8 +4,10 @@ import os
 import re
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
+from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
 from ._pydantic_args import WebSearchArgs, format_validation_error
@@ -13,6 +15,7 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 
 DEFAULT_NUM_RESULTS = 8
 DEFAULT_TIMEOUT = 30
+DUCKDUCKGO_EMPTY_MESSAGE = "No search results found. Please try a different query."
 
 
 def _search_exa(
@@ -70,7 +73,7 @@ def _search_fallback(
     query: str,
     num_results: int = DEFAULT_NUM_RESULTS,
     timeout: int = DEFAULT_TIMEOUT,
-) -> str:
+) -> tuple[str, str, str | None]:
     url = "https://html.duckduckgo.com/html/"
 
     try:
@@ -83,38 +86,209 @@ def _search_fallback(
                 },
             )
             response.raise_for_status()
-            html = response.text
+            soup = BeautifulSoup(response.text, "html.parser")
 
-        results: list[tuple[str, str, str]] = []
-        pattern = r'<a class="result__a" href="([^"]+)"[^>]*>([^<]+)</a>'
-        snippet_pattern = r'<a class="result__snippet"[^>]*>([^<]+)</a>'
+        results = _extract_duckduckgo_results(soup, num_results)
 
-        for match in re.finditer(pattern, html):
-            url_match = match.group(1)
-            title = match.group(2).strip()
-            snippet_match = re.search(snippet_pattern, html[match.start() : match.start() + 500])
-            snippet = snippet_match.group(1).strip() if snippet_match else ""
+        if results:
+            return _format_duckduckgo_results(results), "duckduckgo", None
 
-            results.append((title, url_match, snippet))
+        return (
+            DUCKDUCKGO_EMPTY_MESSAGE,
+            "duckduckgo-empty",
+            "duckduckgo fallback returned no parseable results",
+        )
+
+    except Exception:
+        return (
+            DUCKDUCKGO_EMPTY_MESSAGE,
+            "duckduckgo-error",
+            "duckduckgo fallback failed before parsing results",
+        )
+
+
+def _extract_duckduckgo_results(
+    soup: BeautifulSoup, num_results: int
+) -> list[tuple[str, str, str]]:
+    results: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for container in _duckduckgo_result_containers(soup):
+        title, result_url = _duckduckgo_container_title_and_url(container)
+        if not title or not result_url:
+            continue
+
+        dedupe_key = (title, result_url)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        snippet = _duckduckgo_container_snippet(container)
+        results.append((title, result_url, snippet))
+
+        if len(results) >= num_results:
+            break
+
+    if len(results) < num_results:
+        for anchor in soup.select("a.result__a, a[href]"):
+            title, result_url = _duckduckgo_anchor_title_and_url(anchor)
+            if not title or not result_url:
+                continue
+
+            dedupe_key = (title, result_url)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            snippet = _duckduckgo_anchor_snippet(anchor)
+            results.append((title, result_url, snippet))
 
             if len(results) >= num_results:
                 break
 
-        if results:
-            output_lines: list[str] = []
-            for i, (title, result_url, snippet) in enumerate(results, 1):
-                output_lines.append(f"{i}. {title}")
-                output_lines.append(f"   {result_url}")
-                if snippet:
-                    clean_snippet = re.sub(r"<[^>]+>", "", snippet)
-                    output_lines.append(f"   {clean_snippet[:200]}...")
-                output_lines.append("")
-            return "\n".join(output_lines)
+    return results
 
-    except Exception:
-        pass
 
-    return "No search results found. Please try a different query."
+def _duckduckgo_result_containers(soup: BeautifulSoup) -> list[Tag]:
+    selectors = (
+        "div.result",
+        "div.result__body",
+        'article[data-testid="result"]',
+        'div[data-testid="result"]',
+        'li[data-testid="result"]',
+        "article",
+    )
+
+    containers: list[Tag] = []
+    seen_ids: set[int] = set()
+
+    for selector in selectors:
+        for container in soup.select(selector):
+            container_id = id(container)
+            if container_id in seen_ids:
+                continue
+            seen_ids.add(container_id)
+            containers.append(container)
+
+    return containers
+
+
+def _duckduckgo_container_title_and_url(container: Tag) -> tuple[str, str]:
+
+    link_selectors = (
+        "a.result__a",
+        "h2 a[href]",
+        "h3 a[href]",
+        "a[href]",
+    )
+
+    for selector in link_selectors:
+        for anchor in container.select(selector):
+            title = anchor.get_text(" ", strip=True)
+            raw_href = anchor.get("href")
+            href = raw_href if isinstance(raw_href, str) else ""
+            if not title or not href:
+                continue
+
+            result_url = _resolve_duckduckgo_result_url(href)
+            if result_url:
+                return title, result_url
+
+    return "", ""
+
+
+def _duckduckgo_anchor_title_and_url(anchor: Tag) -> tuple[str, str]:
+    title = anchor.get_text(" ", strip=True)
+    raw_href = anchor.get("href")
+    href = raw_href if isinstance(raw_href, str) else ""
+    if not title or not href:
+        return "", ""
+
+    result_url = _resolve_duckduckgo_result_url(href)
+    if result_url:
+        return title, result_url
+
+    return "", ""
+
+
+def _duckduckgo_container_snippet(container: Tag) -> str:
+
+    snippet_selectors = (
+        ".result__snippet",
+        "[data-result-snippet]",
+        ".snippet",
+        ".exsnippet",
+        ".result__body .snippet",
+    )
+
+    for selector in snippet_selectors:
+        snippet_node = container.select_one(selector)
+        if snippet_node is not None:
+            return snippet_node.get_text(" ", strip=True)
+
+    snippet_node = container.find(
+        ["div", "span", "a", "p"],
+        class_=re.compile("snippet|exsnippet|result__snippet"),
+    )
+    if snippet_node is not None:
+        return snippet_node.get_text(" ", strip=True)
+
+    return ""
+
+
+def _duckduckgo_anchor_snippet(anchor: Tag) -> str:
+    parent = anchor.parent
+    if isinstance(parent, Tag):
+        for sibling in parent.next_siblings:
+            if not isinstance(sibling, Tag):
+                continue
+            if sibling.name == "a" and "result__a" in (sibling.get("class") or []):
+                break
+            if "snippet" in " ".join(sibling.get("class") or []):
+                return sibling.get_text(" ", strip=True)
+            candidate = sibling.find(
+                ["div", "span", "a", "p"],
+                class_=re.compile("snippet|exsnippet|result__snippet"),
+            )
+            if candidate is not None:
+                return candidate.get_text(" ", strip=True)
+
+    return ""
+
+
+def _format_duckduckgo_results(results: list[tuple[str, str, str]]) -> str:
+    output_lines: list[str] = []
+    for i, (title, result_url, snippet) in enumerate(results, 1):
+        output_lines.append(f"{i}. {title}")
+        output_lines.append(f"   {result_url}")
+        if snippet:
+            clean_snippet = re.sub(r"<[^>]+>", "", snippet)
+            output_lines.append(f"   {clean_snippet[:200]}...")
+        output_lines.append("")
+    return "\n".join(output_lines)
+
+
+def _resolve_duckduckgo_result_url(raw_url: str) -> str | None:
+    if raw_url.startswith("//"):
+        return _resolve_duckduckgo_result_url(f"https:{raw_url}")
+    if raw_url.startswith("http://") or raw_url.startswith("https://") or raw_url.startswith("/"):
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query)
+        for key in ("uddg", "u"):
+            values = query.get(key)
+            if values:
+                return unquote(values[0])
+        if (
+            parsed.scheme
+            and parsed.netloc
+            and parsed.netloc.endswith("duckduckgo.com")
+            and parsed.path.startswith("/l/")
+        ):
+            return raw_url
+        if raw_url.startswith("/l/"):
+            return raw_url
+        return raw_url
+    return None
 
 
 class WebSearchTool:
@@ -149,6 +323,7 @@ class WebSearchTool:
         workspace: Path,
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
+        _ = workspace
         try:
             args = WebSearchArgs.model_validate(
                 {
@@ -175,9 +350,9 @@ class WebSearchTool:
         if exa_results:
             output = exa_results
             source = "exa"
+            fallback_reason = None
         else:
-            output = _search_fallback(args.query, num_results, timeout)
-            source = "duckduckgo"
+            output, source, fallback_reason = _search_fallback(args.query, num_results, timeout)
 
         return ToolResult(
             tool_name=self.definition.name,
@@ -191,5 +366,5 @@ class WebSearchTool:
             },
             timeout_seconds=timeout,
             source=source,
-            fallback_reason=None if source == "exa" else "duckduckgo fallback",
+            fallback_reason=fallback_reason,
         )

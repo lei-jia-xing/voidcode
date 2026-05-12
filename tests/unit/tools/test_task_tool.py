@@ -392,3 +392,28 @@ def test_task_tool_requires_runtime_context(tmp_path: Path) -> None:
             ),
             workspace=tmp_path,
         )
+
+
+def test_task_tool_rejects_product_with_stable_policy_reason_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        with pytest.raises(ValueError) as exc_info:
+            tool.invoke(
+                ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "Plan this",
+                        "run_in_background": True,
+                        "load_skills": [],
+                        "subagent_type": "product",
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
+    assert runtime.requests == []

@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+from .policy import runtime_policy_snapshot_from_session_metadata
+
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed"]
 type SessionKind = Literal["top_level", "child"]
 
@@ -115,6 +117,25 @@ def _workflow_effective_read_only(metadata: dict[str, object], read_only: bool) 
     return read_only
 
 
+def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object]:
+    """Return session metadata projected for replay/resume without run-local markers."""
+
+    projected = dict(metadata)
+    projected.pop("_prompt_activation_this_run", None)
+    raw_runtime_policy = projected.get("runtime_policy")
+    if not isinstance(raw_runtime_policy, dict):
+        return projected
+    runtime_policy = dict(cast(dict[str, object], raw_runtime_policy))
+    raw_prompt_activation = runtime_policy.get("prompt_activation")
+    if isinstance(raw_prompt_activation, dict):
+        runtime_policy["prompt_activation"] = {
+            **cast(dict[str, object], raw_prompt_activation),
+            "activated_this_turn": False,
+        }
+    projected["runtime_policy"] = runtime_policy
+    return projected
+
+
 def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
     """Return persisted metadata with top-level runtime mode compatibility normalized."""
 
@@ -196,10 +217,14 @@ def session_metadata_for_persistence(
     """Return bounded, redacted session metadata safe for durable storage."""
 
     persisted = cast(dict[str, object], _bounded_redacted(metadata))
+    persisted.pop("_prompt_activation_this_run", None)
     mode = _runtime_mode(persisted)
     read_only = _runtime_read_only(persisted, mode=mode)
     read_only = _workflow_effective_read_only(persisted, read_only)
     observations = _policy_observations(events)
+    raw_persisted_runtime_policy = persisted.get("runtime_policy")
+    if isinstance(raw_persisted_runtime_policy, dict):
+        persisted["runtime_policy"] = runtime_policy_snapshot_from_session_metadata(persisted)
     has_policy_truth = (
         "mode" in metadata
         or "read_only" in metadata
@@ -215,19 +240,17 @@ def session_metadata_for_persistence(
     persisted["mode"] = mode
     persisted["read_only"] = read_only
 
-    runtime_policy: dict[str, object] = {
-        "version": 1,
-        "mode": mode,
-        "read_only": read_only,
-    }
-    raw_delegation = persisted.get("delegation")
-    if isinstance(raw_delegation, dict):
-        runtime_policy["delegation"] = dict(cast(dict[str, object], raw_delegation))
-    raw_prompt_stack = persisted.get("prompt_stack")
-    if isinstance(raw_prompt_stack, dict):
-        runtime_policy["prompt_stack"] = dict(cast(dict[str, object], raw_prompt_stack))
-    runtime_policy.update(observations)
-    persisted["runtime_policy"] = runtime_policy
+    if "runtime_policy" in persisted:
+        raw_runtime_policy = persisted.get("runtime_policy")
+        if observations and isinstance(raw_runtime_policy, dict):
+            persisted["runtime_policy"] = {
+                **cast(dict[str, object], raw_runtime_policy),
+                **observations,
+            }
+    else:
+        if observations:
+            persisted["policy_observations"] = observations
+        persisted["runtime_policy"] = runtime_policy_snapshot_from_session_metadata(persisted)
     return persisted
 
 

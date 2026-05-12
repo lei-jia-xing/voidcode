@@ -11,6 +11,7 @@ from .events import (
     DelegatedRoutingPayload,
     EventEnvelope,
 )
+from .policy import PRODUCT_DELEGATION_DENIAL_REASON
 from .question import QuestionResponse
 from .session import SessionRef, SessionState
 from .task import (
@@ -520,6 +521,8 @@ def runtime_subagent_route_from_metadata(
         raise RuntimeRequestError(
             "request metadata 'delegation.selected_preset' must be a non-empty string"
         )
+    if persisted_selected_preset == "product":
+        raise RuntimeRequestError(PRODUCT_DELEGATION_DENIAL_REASON)
     if persisted_selected_preset != resolved.selected_preset:
         raise RuntimeRequestError(
             "request metadata 'delegation.selected_preset' does not match the resolved child preset"
@@ -1171,6 +1174,9 @@ class RuntimeProviderContextSnapshot:
 class RuntimeHookPresetSnapshot:
     refs: tuple[str, ...]
     kinds: tuple[str, ...]
+    event_scopes: tuple[str, ...]
+    allowed_actions: tuple[str, ...]
+    authority: str
     source: str
     count: int
 
