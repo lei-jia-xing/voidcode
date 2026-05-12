@@ -891,8 +891,10 @@ export function deriveChatMessages(
 function reconcileFinalText(message: ChatMessage, output: string) {
   message.content = output;
   if (!message.parts) return;
-  const hasTextPart = message.parts.some((p) => p.kind === "text");
-  if (hasTextPart) {
+  for (let index = message.parts.length - 1; index >= 0; index -= 1) {
+    const part = message.parts[index];
+    if (part.kind !== "text") continue;
+    part.text = output;
     return;
   }
   message.parts.push({

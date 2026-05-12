@@ -1649,4 +1649,43 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText(/internalState/)).not.toBeInTheDocument();
     expect(screen.queryByText(/token/)).not.toBeInTheDocument();
   });
+
+  it("reconciles an existing text part to the final authoritative output", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "summarize" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "text", kind: "delta", text: "partial draft" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "graph.response_ready",
+        source: "graph",
+        payload: { output: "final authoritative answer" },
+      },
+    ];
+
+    const [, assistant] = deriveChatMessages(events, null);
+
+    expect(assistant.content).toBe("final authoritative answer");
+
+    const textParts = (assistant.parts ?? []).filter(
+      (part) => part.kind === "text",
+    );
+    expect(textParts).toHaveLength(1);
+    expect(textParts[0]).toMatchObject({
+      kind: "text",
+      text: "final authoritative answer",
+    });
+  });
 });
