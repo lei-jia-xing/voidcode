@@ -320,6 +320,145 @@ describe("ChatThread", () => {
     expect(screen.getByText(/return token/)).toBeInTheDocument();
   });
 
+  it("renders runtime.reasoning_part (production event shape)", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "trace a bug" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: {
+          type: "reasoning",
+          text: "checking auth middleware first",
+          source: "provider_stream",
+          visibility: "showable",
+          time: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T00:00:01Z" },
+        },
+        received_at: 1500,
+      },
+    ];
+
+    render(
+      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
+    );
+
+    expect(screen.getByText(/^Thinking:$/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/checking auth middleware first/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders text → tool → text in emission order, not lumped by kind", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "interleave check" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "text", text: "FIRST_TEXT " },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read_file",
+          tool_call_id: "call-1",
+          arguments: { path: "README.md" },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "read_file",
+          tool_call_id: "call-1",
+          status: "ok",
+          arguments: { path: "README.md" },
+          content: "ok",
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 5,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "text", text: "SECOND_TEXT" },
+      },
+    ];
+
+    render(
+      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
+    );
+
+    const firstTextNode = screen.getByText(/FIRST_TEXT/);
+    const toolRow = document.querySelector('[data-tool-row="read_file"]');
+    const secondTextNode = screen.getByText(/SECOND_TEXT/);
+
+    expect(firstTextNode).toBeInTheDocument();
+    expect(toolRow).not.toBeNull();
+    expect(secondTextNode).toBeInTheDocument();
+
+    const firstPos = firstTextNode.compareDocumentPosition(toolRow!);
+    const secondPos = toolRow!.compareDocumentPosition(secondTextNode);
+
+    expect(firstPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(secondPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("merges consecutive same-kind deltas into one part", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "merge" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: { type: "reasoning", text: "step1 " },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: { type: "reasoning", text: "step2" },
+      },
+    ];
+
+    const [, assistant] = deriveChatMessages(events, null);
+    expect(assistant.parts).toBeDefined();
+    const reasoningParts = (assistant.parts ?? []).filter(
+      (p) => p.kind === "reasoning",
+    );
+    expect(reasoningParts).toHaveLength(1);
+    expect(
+      reasoningParts[0].kind === "reasoning" && reasoningParts[0].text,
+    ).toBe("step1 step2");
+  });
+
   it("renders structured tool activities", () => {
     render(
       <ChatThread

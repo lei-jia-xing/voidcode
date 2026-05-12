@@ -24,6 +24,7 @@ export interface ChatMessage {
   thinkingUpdatedAt?: number;
   tools: {
     id?: string;
+    partKey?: string;
     name: string;
     label?: string;
     summary?: string;
@@ -44,6 +45,10 @@ export interface ChatMessage {
       sessionId?: string;
     }[];
   }[];
+  // Populated by deriveChatMessages with the model's actual emission order.
+  // When absent (legacy hand-built fixtures), the renderer falls back to the
+  // historical "tools → thinking → text" layout.
+  parts?: MessagePart[];
   approval: {
     requestId: string;
     tool: string;
@@ -57,6 +62,11 @@ export interface ChatMessage {
   status: "in_progress" | "completed" | "failed" | "waiting";
   sequence: number;
 }
+
+export type MessagePart =
+  | { kind: "text"; sequence: number; text: string }
+  | { kind: "reasoning"; sequence: number; text: string }
+  | { kind: "tool"; sequence: number; toolKey: string };
 
 type ChatTool = ChatMessage["tools"][number];
 
@@ -214,6 +224,7 @@ function findApprovalBlockedTool(
 function upsertTool(
   currentAssistant: ChatMessage | null,
   tool: ChatTool,
+  sequence: number,
 ): ChatTool | null {
   if (!currentAssistant) return null;
   const existing = findTool(currentAssistant.tools, {
@@ -221,12 +232,17 @@ function upsertTool(
     name: tool.name,
   });
   if (!existing) {
-    currentAssistant.tools.push(tool);
-    return tool;
+    const partKey = tool.partKey ?? tool.id ?? `${tool.name}#${sequence}`;
+    const newTool = { ...tool, partKey };
+    currentAssistant.tools.push(newTool);
+    appendToolPart(currentAssistant, sequence, partKey);
+    return newTool;
   }
   existing.name = tool.name;
   existing.status = tool.status;
   existing.id = tool.id ?? existing.id;
+  existing.partKey =
+    existing.partKey ?? tool.partKey ?? tool.id ?? `${tool.name}#${sequence}`;
   existing.label = tool.label ?? existing.label;
   existing.summary = tool.summary ?? existing.summary;
   existing.display = tool.display ?? existing.display;
@@ -238,6 +254,46 @@ function upsertTool(
   if (tool.error !== undefined) existing.error = tool.error;
   existing.hooks = tool.hooks ?? existing.hooks;
   return existing;
+}
+
+function appendTextDeltaPart(
+  message: ChatMessage,
+  sequence: number,
+  text: string,
+) {
+  if (!message.parts || !text) return;
+  const last = message.parts[message.parts.length - 1];
+  if (last && last.kind === "text") {
+    last.text += text;
+    return;
+  }
+  message.parts.push({ kind: "text", sequence, text });
+}
+
+function appendReasoningDeltaPart(
+  message: ChatMessage,
+  sequence: number,
+  text: string,
+) {
+  if (!message.parts || !text) return;
+  const last = message.parts[message.parts.length - 1];
+  if (last && last.kind === "reasoning") {
+    last.text += text;
+    return;
+  }
+  message.parts.push({ kind: "reasoning", sequence, text });
+}
+
+function appendToolPart(
+  message: ChatMessage,
+  sequence: number,
+  toolKey: string,
+) {
+  if (!message.parts) return;
+  if (message.parts.some((p) => p.kind === "tool" && p.toolKey === toolKey)) {
+    return;
+  }
+  message.parts.push({ kind: "tool", sequence, toolKey });
 }
 
 function appendHookToTool(
@@ -329,6 +385,7 @@ function responseTextFromPayload(
 function applyToolStatus(
   currentAssistant: ChatMessage | null,
   toolStatus: ToolStatusPayload,
+  sequence: number,
   eventPayload?: Record<string, unknown>,
 ) {
   if (!currentAssistant) return;
@@ -360,19 +417,50 @@ function applyToolStatus(
       eventPayload.status === "error")
       ? eventPayload
       : undefined;
-  upsertTool(currentAssistant, {
-    id,
-    name,
-    label,
-    summary,
-    display,
-    copyable: display?.copyable,
-    status: toolStatusFromPayload(toolStatus.status),
-    arguments: objectPayload(eventPayload?.arguments),
-    result,
-    content,
-    error,
-  });
+  upsertTool(
+    currentAssistant,
+    {
+      id,
+      name,
+      label,
+      summary,
+      display,
+      copyable: display?.copyable,
+      status: toolStatusFromPayload(toolStatus.status),
+      arguments: objectPayload(eventPayload?.arguments),
+      result,
+      content,
+      error,
+    },
+    sequence,
+  );
+}
+
+function reasoningTextFromEvent(event: EventEnvelope): string {
+  const payload = event.payload;
+  if (!payload) return "";
+  if (event.event_type === "runtime.reasoning_part") {
+    if (typeof payload.text === "string") return payload.text;
+    if (typeof payload.preview === "string") return payload.preview;
+    return "";
+  }
+  if (
+    event.event_type === "graph.provider_stream" &&
+    payload.channel === "reasoning"
+  ) {
+    if (typeof payload.delta === "string") return payload.delta;
+    if (typeof payload.content === "string") return payload.content;
+    if (typeof payload.text === "string") return payload.text;
+  }
+  return "";
+}
+
+function isReasoningEvent(event: EventEnvelope): boolean {
+  if (event.event_type === "runtime.reasoning_part") return true;
+  return (
+    event.event_type === "graph.provider_stream" &&
+    event.payload?.channel === "reasoning"
+  );
 }
 
 export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
@@ -587,25 +675,16 @@ export function deriveChatMessages(
         content: "",
         thinking: [],
         tools: [],
+        parts: [],
         approval: null,
         question: null,
         status: "in_progress",
         sequence: event.sequence,
       };
       messages.push(currentAssistant);
-    } else if (
-      event.event_type === "graph.provider_stream" &&
-      event.payload?.channel === "reasoning"
-    ) {
+    } else if (isReasoningEvent(event)) {
       if (currentAssistant) {
-        const reasoningText =
-          typeof event.payload?.delta === "string"
-            ? event.payload.delta
-            : typeof event.payload?.content === "string"
-              ? event.payload.content
-              : typeof event.payload?.text === "string"
-                ? event.payload.text
-                : "";
+        const reasoningText = reasoningTextFromEvent(event);
         const hasReasoningPayload = Boolean(reasoningText.trim());
         if (hasReasoningPayload && typeof event.received_at === "number") {
           currentAssistant.thinkingStartedAt ??= event.received_at;
@@ -613,6 +692,11 @@ export function deriveChatMessages(
         }
         if (hasReasoningPayload) {
           currentAssistant.thinking.push(reasoningText);
+          appendReasoningDeltaPart(
+            currentAssistant,
+            event.sequence,
+            reasoningText,
+          );
         }
       }
     } else if (
@@ -630,12 +714,18 @@ export function deriveChatMessages(
                 : "";
         if (delta) {
           currentAssistant.content += delta;
+          appendTextDeltaPart(currentAssistant, event.sequence, delta);
         }
       }
     } else if (event.event_type === "graph.tool_request_created") {
       if (currentAssistant) {
         if (toolStatus) {
-          applyToolStatus(currentAssistant, toolStatus, event.payload);
+          applyToolStatus(
+            currentAssistant,
+            toolStatus,
+            event.sequence,
+            event.payload,
+          );
           continue;
         }
         const toolName =
@@ -647,20 +737,29 @@ export function deriveChatMessages(
             ? event.payload.tool_call_id
             : undefined;
         const legacy = legacyToolMetadata(toolName, event.payload);
-        upsertTool(currentAssistant, {
-          id: toolCallId,
-          name: toolName,
-          label: legacy.label,
-          summary: legacy.summary,
-          legacy,
-          status: "running",
-          arguments: objectPayload(event.payload?.arguments),
-        });
+        upsertTool(
+          currentAssistant,
+          {
+            id: toolCallId,
+            name: toolName,
+            label: legacy.label,
+            summary: legacy.summary,
+            legacy,
+            status: "running",
+            arguments: objectPayload(event.payload?.arguments),
+          },
+          event.sequence,
+        );
       }
     } else if (event.event_type === "runtime.tool_completed") {
       if (currentAssistant) {
         if (toolStatus) {
-          applyToolStatus(currentAssistant, toolStatus, event.payload);
+          applyToolStatus(
+            currentAssistant,
+            toolStatus,
+            event.sequence,
+            event.payload,
+          );
           continue;
         }
         const toolName =
@@ -671,24 +770,28 @@ export function deriveChatMessages(
               ? event.payload.tool_call_id
               : undefined;
           const legacy = legacyToolMetadata(toolName, event.payload);
-          upsertTool(currentAssistant, {
-            id: toolCallId,
-            name: toolName,
-            label: legacy.label,
-            summary: legacy.summary,
-            legacy,
-            status: toolStatusFromPayload(event.payload?.status),
-            arguments: objectPayload(event.payload?.arguments),
-            result: event.payload,
-            content:
-              typeof event.payload?.content === "string"
-                ? event.payload.content
-                : null,
-            error:
-              typeof event.payload?.error === "string"
-                ? event.payload.error
-                : null,
-          });
+          upsertTool(
+            currentAssistant,
+            {
+              id: toolCallId,
+              name: toolName,
+              label: legacy.label,
+              summary: legacy.summary,
+              legacy,
+              status: toolStatusFromPayload(event.payload?.status),
+              arguments: objectPayload(event.payload?.arguments),
+              result: event.payload,
+              content:
+                typeof event.payload?.content === "string"
+                  ? event.payload.content
+                  : null,
+              error:
+                typeof event.payload?.error === "string"
+                  ? event.payload.error
+                  : null,
+            },
+            event.sequence,
+          );
         }
       }
     } else if (event.event_type === "runtime.approval_requested") {
@@ -742,13 +845,17 @@ export function deriveChatMessages(
     } else if (event.event_type === "graph.response_ready") {
       if (currentAssistant) {
         const output = responseTextFromPayload(event.payload) ?? "";
-        if (output) currentAssistant.content = output;
+        if (output) {
+          reconcileFinalText(currentAssistant, output);
+        }
         currentAssistant.status = "completed";
       }
     } else if (event.event_type === "runtime.completed") {
       if (currentAssistant) {
         const output = responseTextFromPayload(event.payload);
-        if (output) currentAssistant.content = output;
+        if (output) {
+          reconcileFinalText(currentAssistant, output);
+        }
         currentAssistant.status = "completed";
       }
     } else if (event.event_type === "runtime.failed") {
@@ -761,7 +868,12 @@ export function deriveChatMessages(
     ) {
       appendHookToTool(currentAssistant, event);
     } else if (toolStatus) {
-      applyToolStatus(currentAssistant, toolStatus, event.payload);
+      applyToolStatus(
+        currentAssistant,
+        toolStatus,
+        event.sequence,
+        event.payload,
+      );
     }
   }
 
@@ -770,8 +882,22 @@ export function deriveChatMessages(
     currentAssistant.status === "in_progress" &&
     currentOutput !== null
   ) {
-    currentAssistant.content = currentOutput;
+    reconcileFinalText(currentAssistant, currentOutput);
   }
 
   return messages;
+}
+
+function reconcileFinalText(message: ChatMessage, output: string) {
+  message.content = output;
+  if (!message.parts) return;
+  const hasTextPart = message.parts.some((p) => p.kind === "text");
+  if (hasTextPart) {
+    return;
+  }
+  message.parts.push({
+    kind: "text",
+    sequence: message.sequence,
+    text: output,
+  });
 }

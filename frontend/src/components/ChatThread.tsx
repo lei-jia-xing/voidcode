@@ -37,7 +37,7 @@ import {
   Wand2,
   Wrench,
 } from "lucide-react";
-import { ChatMessage } from "../lib/runtime/event-parser";
+import { ChatMessage, MessagePart } from "../lib/runtime/event-parser";
 import type {
   BackgroundTaskSummary,
   QuestionAnswer,
@@ -1870,6 +1870,92 @@ function ToolActivities({
   );
 }
 
+function OrderedMessageParts({
+  message,
+  onSelectSession,
+  backgroundTasksById,
+  selectedBackgroundTaskOutput,
+}: {
+  message: ChatMessage;
+  onSelectSession?: (sessionId: string) => void;
+  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+  selectedBackgroundTaskOutput?: {
+    taskId: string;
+    durationSeconds: number | null;
+    toolCallCount: number | null;
+  } | null;
+}) {
+  const parts = message.parts ?? [];
+  const isStreaming = message.status === "in_progress";
+  const lastTextPartIndex = (() => {
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      if (parts[i].kind === "text") return i;
+    }
+    return -1;
+  })();
+
+  return (
+    <>
+      {parts.map((part, idx) => (
+        <MessagePartView
+          key={partKey(part, idx)}
+          part={part}
+          tools={message.tools}
+          active={isStreaming && idx === lastTextPartIndex}
+          onSelectSession={onSelectSession}
+          backgroundTasksById={backgroundTasksById}
+          selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
+        />
+      ))}
+    </>
+  );
+}
+
+function partKey(part: MessagePart, idx: number): string {
+  if (part.kind === "tool") return `tool-${part.toolKey}-${idx}`;
+  return `${part.kind}-${part.sequence}-${idx}`;
+}
+
+function MessagePartView({
+  part,
+  tools,
+  active,
+  onSelectSession,
+  backgroundTasksById,
+  selectedBackgroundTaskOutput,
+}: {
+  part: MessagePart;
+  tools: ChatTool[];
+  active: boolean;
+  onSelectSession?: (sessionId: string) => void;
+  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+  selectedBackgroundTaskOutput?: {
+    taskId: string;
+    durationSeconds: number | null;
+    toolCallCount: number | null;
+  } | null;
+}) {
+  if (part.kind === "text") {
+    const visible = visibleAssistantContent(part.text);
+    if (!visible) return null;
+    return <StreamingMarkdown content={visible} active={active} />;
+  }
+  if (part.kind === "reasoning") {
+    if (!part.text.trim()) return null;
+    return <ThinkingBlock thinking={[part.text]} />;
+  }
+  const tool = tools.find((t) => (t.partKey ?? t.id) === part.toolKey);
+  if (!tool) return null;
+  return (
+    <ToolActivity
+      tool={tool}
+      onSelectSession={onSelectSession}
+      backgroundTasksById={backgroundTasksById}
+      selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
+    />
+  );
+}
+
 function ToolActivity({
   tool,
   forceCollapsed = false,
@@ -2103,20 +2189,35 @@ export function ChatThread({
                   <StatusIndicator status={message.status} />
                 </div>
                 <div className="space-y-3">
-                  <ToolActivities
-                    tools={message.tools}
-                    onSelectSession={onSelectSession}
-                    backgroundTasksById={backgroundTasksById}
-                    selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
-                  />
-                  {message.thinking.length > 0 && (
-                    <ThinkingBlock thinking={message.thinking} />
-                  )}
-                  {assistantContent && (
-                    <StreamingMarkdown
-                      content={assistantContent}
-                      active={message.status === "in_progress"}
+                  {message.parts !== undefined ? (
+                    <OrderedMessageParts
+                      message={message}
+                      onSelectSession={onSelectSession}
+                      backgroundTasksById={backgroundTasksById}
+                      selectedBackgroundTaskOutput={
+                        selectedBackgroundTaskOutput
+                      }
                     />
+                  ) : (
+                    <>
+                      <ToolActivities
+                        tools={message.tools}
+                        onSelectSession={onSelectSession}
+                        backgroundTasksById={backgroundTasksById}
+                        selectedBackgroundTaskOutput={
+                          selectedBackgroundTaskOutput
+                        }
+                      />
+                      {message.thinking.length > 0 && (
+                        <ThinkingBlock thinking={message.thinking} />
+                      )}
+                      {assistantContent && (
+                        <StreamingMarkdown
+                          content={assistantContent}
+                          active={message.status === "in_progress"}
+                        />
+                      )}
+                    </>
                   )}
                   {message.approval && isWaitingApproval && (
                     <ApprovalCard
