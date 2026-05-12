@@ -1738,11 +1738,17 @@ def test_provider_replays_prior_conversation_for_existing_session_without_tool_r
     second = runtime.run(
         runtime_request(prompt="user second turn", session_id="conversation-session")
     )
+    second_turn_segments = _assembled_context(requests[1]).segments
     replayed_segments = [
         segment
-        for segment in _assembled_context(requests[1]).segments
+        for segment in second_turn_segments
         if (segment.role, segment.content)
         in {("user", "user first turn"), ("assistant", "assistant first answer")}
+    ]
+    conversational_segments = [
+        segment
+        for segment in second_turn_segments
+        if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
     ]
 
     assert first.session.status == "completed"
@@ -1750,6 +1756,80 @@ def test_provider_replays_prior_conversation_for_existing_session_without_tool_r
     assert [(segment.role, segment.content) for segment in replayed_segments] == [
         ("user", "user first turn"),
         ("assistant", "assistant first answer"),
+    ]
+    assert (conversational_segments[-1].role, conversational_segments[-1].content) == (
+        "user",
+        "user second turn",
+    )
+
+
+def test_provider_replayed_conversation_precedes_current_prompt_after_stale_assistant_tail(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+
+    class _StaleTailModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    prompt = _assembled_context(request).prompt
+                    output = (
+                        "stale assistant reply"
+                        if prompt == "initial user prompt"
+                        else "fresh assistant reply"
+                    )
+                    return provider_protocol_module.ProviderTurnResult(output=output)
+
+            return _Provider()
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            service_module.VoidCodeRuntime(
+                workspace=tmp_path,
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="provider",
+                    model="opencode/gpt-5.4",
+                ),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+                model_provider_registry=model_provider_module.ModelProviderRegistry(
+                    providers=cast(Any, {"opencode": _StaleTailModelProvider()})
+                ),
+            ),
+        ),
+    )
+
+    first = runtime.run(
+        runtime_request(prompt="initial user prompt", session_id="conversation-session")
+    )
+    second = runtime.run(
+        runtime_request(prompt="current user prompt", session_id="conversation-session")
+    )
+    second_turn_segments = _assembled_context(requests[1]).segments
+    conversational_segments = [
+        segment
+        for segment in second_turn_segments
+        if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
+    ]
+
+    assert first.session.status == "completed"
+    assert second.session.status == "completed"
+    assert [(segment.role, segment.content) for segment in conversational_segments[-3:]] == [
+        ("user", "initial user prompt"),
+        ("assistant", "stale assistant reply"),
+        ("user", "current user prompt"),
     ]
 
 
