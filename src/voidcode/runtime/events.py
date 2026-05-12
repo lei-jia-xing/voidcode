@@ -221,10 +221,7 @@ RUNTIME_REASONING_DIAGNOSTIC: Final[PrototypeAdditiveEventType] = "runtime.reaso
 RUNTIME_TURN_PROGRESS: Final[PrototypeAdditiveEventType] = "runtime.turn_progress"
 RUNTIME_STUCK_DETECTED: Final[PrototypeAdditiveEventType] = "runtime.stuck_detected"
 
-REASONING_TEXT_LIMIT_CHARS: Final[int] = 4000
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
-REASONING_SESSION_TEXT_LIMIT_CHARS: Final[int] = 16_000
-REASONING_SESSION_PART_LIMIT: Final[int] = 32
 _SAFE_PROVIDER_REASONING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"source"})
 POLICY_OBSERVABILITY_LIST_LIMIT: Final[int] = 32
 POLICY_OBSERVABILITY_TRACE_LIMIT: Final[int] = 16
@@ -311,18 +308,15 @@ def runtime_reasoning_part_payload(
     started_at: str | None = None,
     ended_at: str | None = None,
 ) -> dict[str, object]:
-    """Build a bounded, runtime-owned reasoning part payload."""
 
     captured_at = datetime.now(UTC).isoformat()
     text_char_count = len(text)
-    truncated = text_char_count > REASONING_TEXT_LIMIT_CHARS
-    bounded_text = text[:REASONING_TEXT_LIMIT_CHARS]
-    preview = bounded_text[:REASONING_PREVIEW_LIMIT_CHARS]
+    preview = text[:REASONING_PREVIEW_LIMIT_CHARS]
     payload: dict[str, object] = {
         "type": "reasoning",
-        "text": bounded_text,
+        "text": text,
         "text_char_count": text_char_count,
-        "truncated": truncated,
+        "truncated": False,
         "source": source,
         "visibility": "showable",
         "time": {

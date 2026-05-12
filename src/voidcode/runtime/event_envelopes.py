@@ -6,8 +6,6 @@ from typing import cast
 from ..acp import AcpDelegatedExecution
 from ..graph.contracts import GraphEvent
 from .events import (
-    REASONING_SESSION_PART_LIMIT,
-    REASONING_SESSION_TEXT_LIMIT_CHARS,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
     RUNTIME_ACP_DISCONNECTED,
@@ -24,7 +22,6 @@ from .events import (
     RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
-    RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_REASONING_PART,
     EventEnvelope,
     runtime_reasoning_part_from_provider_stream,
@@ -189,7 +186,6 @@ def envelopes_for_mcp_events(
 class ReasoningCaptureState:
     part_count: int = 0
     text_char_count: int = 0
-    limit_diagnostic_emitted: bool = False
     stream_observed: bool = False
     reasoning_observed: bool = False
     output_diagnostic_emitted: bool = False
@@ -215,36 +211,12 @@ def renumber_events(
         if reasoning_payload is not None:
             capture_state.reasoning_observed = True
             text_char_count = reasoning_payload.get("text_char_count")
-            bounded_text = reasoning_payload.get("text")
-            next_text_count = capture_state.text_char_count + (
-                len(bounded_text) if isinstance(bounded_text, str) else 0
-            )
-            if (
-                capture_state.part_count >= REASONING_SESSION_PART_LIMIT
-                or next_text_count > REASONING_SESSION_TEXT_LIMIT_CHARS
-            ):
-                event_type = RUNTIME_REASONING_DIAGNOSTIC
-                source = "runtime"
-                diagnostic_payload: dict[str, object] = {
-                    "severity": "warning",
-                    "category": "reasoning_capture_limit",
-                    "reason": "session_reasoning_capture_limit_exceeded",
-                    "captured_part_count": capture_state.part_count,
-                    "captured_text_char_count": capture_state.text_char_count,
-                    "omitted_text_char_count": text_char_count
-                    if isinstance(text_char_count, int)
-                    else None,
-                }
-                payload = diagnostic_payload
-                if capture_state.limit_diagnostic_emitted:
-                    continue
-                capture_state.limit_diagnostic_emitted = True
-            else:
-                event_type = RUNTIME_REASONING_PART
-                source = "runtime"
-                payload = reasoning_payload
-                capture_state.part_count += 1
-                capture_state.text_char_count = next_text_count
+            event_type = RUNTIME_REASONING_PART
+            source = "runtime"
+            payload = reasoning_payload
+            capture_state.part_count += 1
+            if isinstance(text_char_count, int):
+                capture_state.text_char_count += text_char_count
         envelopes.append(
             EventEnvelope(
                 session_id=session_id,

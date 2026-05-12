@@ -18945,7 +18945,7 @@ def test_runtime_does_not_persist_show_thinking_request_metadata(tmp_path: Path)
     assert "show_thinking" not in response.session.metadata
 
 
-def test_runtime_reasoning_capture_has_aggregate_limit(tmp_path: Path) -> None:
+def test_runtime_reasoning_capture_preserves_all_provider_parts(tmp_path: Path) -> None:
     reasoning_events = tuple(
         ProviderStreamEvent(kind="delta", channel="reasoning", text="x" * 4000) for _ in range(40)
     )
@@ -18989,12 +18989,11 @@ def test_runtime_reasoning_capture_has_aggregate_limit(tmp_path: Path) -> None:
         if event.event_type == "runtime.reasoning_diagnostic"
         and event.payload.get("category") == "reasoning_capture_limit"
     ]
-    assert len(reasoning_parts) == 4
-    assert len(limit_events) == 1
-    assert limit_events[0].payload["captured_text_char_count"] == 16_000
+    assert len(reasoning_parts) == 40
+    assert len(limit_events) == 0
 
 
-def test_runtime_reasoning_capture_limit_spans_provider_turns(tmp_path: Path) -> None:
+def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_path: Path) -> None:
     (tmp_path / "sample.txt").write_text("sample contents", encoding="utf-8")
     first_turn_reasoning = tuple(
         ProviderStreamEvent(kind="delta", channel="reasoning", text="x" * 4000) for _ in range(3)
@@ -19055,10 +19054,8 @@ def test_runtime_reasoning_capture_limit_spans_provider_turns(tmp_path: Path) ->
         if event.event_type == "runtime.reasoning_diagnostic"
         and event.payload.get("category") == "reasoning_capture_limit"
     ]
-    assert len(reasoning_parts) == 4
-    assert len(limit_events) == 1
-    assert limit_events[0].payload["captured_part_count"] == 4
-    assert limit_events[0].payload["captured_text_char_count"] == 16_000
+    assert len(reasoning_parts) == 6
+    assert len(limit_events) == 0
 
 
 def test_runtime_reports_reasoning_output_diagnostic_for_reasoning_capable_model(

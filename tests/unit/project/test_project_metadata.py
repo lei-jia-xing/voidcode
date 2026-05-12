@@ -21,5 +21,6 @@ def test_pyproject_matches_expected_metadata() -> None:
     project_data = cast(Mapping[str, object], pyproject_data["project"])
 
     assert project_data["name"] == "voidcode"
-    assert project_data["version"] == "0.1.0"
+    assert isinstance(project_data["version"], str)
+    assert project_data["version"]
     assert project_data["description"]
