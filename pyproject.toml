@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voidcode"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first coding agent runtime inspired by OpenCode and Claude Code"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
