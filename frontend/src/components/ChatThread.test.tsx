@@ -1688,4 +1688,82 @@ describe("Tool Card Display Contract", () => {
       text: "final authoritative answer",
     });
   });
+
+  it("shows a streamed tool call before the formal tool request event", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "inspect readme" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "tool",
+          kind: "content",
+          text: JSON.stringify({
+            tool_name: "read_file",
+            tool_call_id: "call-1",
+            arguments: { path: "README.md" },
+          }),
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read_file",
+          tool_call_id: "call-1",
+          arguments: { path: "README.md" },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "read_file",
+          tool_call_id: "call-1",
+          status: "ok",
+          arguments: { path: "README.md" },
+          content: "done",
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 5,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "text", kind: "delta", text: "Done." },
+      },
+    ];
+
+    const [, assistant] = deriveChatMessages(events, null);
+    const toolParts = (assistant.parts ?? []).filter(
+      (part) => part.kind === "tool",
+    );
+
+    expect(toolParts).toHaveLength(1);
+    expect(assistant.tools).toHaveLength(1);
+    expect(assistant.tools[0]).toMatchObject({
+      id: "call-1",
+      name: "read_file",
+      status: "completed",
+    });
+
+    render(
+      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
+    );
+
+    expect(screen.getByText("Read: README.md")).toBeInTheDocument();
+    expect(screen.getByText("Done.")).toBeInTheDocument();
+  });
 });

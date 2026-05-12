@@ -463,6 +463,32 @@ function isReasoningEvent(event: EventEnvelope): boolean {
   );
 }
 
+function streamedToolCallFromEvent(event: EventEnvelope): {
+  id?: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+} | null {
+  if (event.event_type !== "graph.provider_stream") return null;
+  if (event.payload?.channel !== "tool" || event.payload?.kind !== "content") {
+    return null;
+  }
+  const text = event.payload?.text;
+  if (typeof text !== "string" || !text.trim()) return null;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const name = nonEmptyString(parsed.tool_name);
+    if (!name) return null;
+    const id = nonEmptyString(parsed.tool_call_id);
+    return {
+      id,
+      name,
+      arguments: objectPayload(parsed.arguments),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
   const tasks: DerivedTask[] = [];
   let currentToolTask: DerivedTask | null = null;
@@ -715,6 +741,28 @@ export function deriveChatMessages(
         if (delta) {
           currentAssistant.content += delta;
           appendTextDeltaPart(currentAssistant, event.sequence, delta);
+        }
+      }
+    } else if (event.event_type === "graph.provider_stream") {
+      if (currentAssistant) {
+        const streamedToolCall = streamedToolCallFromEvent(event);
+        if (streamedToolCall) {
+          const legacy = legacyToolMetadata(streamedToolCall.name, {
+            arguments: streamedToolCall.arguments,
+          });
+          upsertTool(
+            currentAssistant,
+            {
+              id: streamedToolCall.id,
+              name: streamedToolCall.name,
+              label: legacy.label,
+              summary: legacy.summary,
+              legacy,
+              status: "pending",
+              arguments: streamedToolCall.arguments,
+            },
+            event.sequence,
+          );
         }
       }
     } else if (event.event_type === "graph.tool_request_created") {
