@@ -37,6 +37,23 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
         "todo_continuation_guidance",
     ],
     "kinds": ["guidance", "guard", "guidance", "guard", "continuation"],
+    "event_scopes": [
+        "graph.model_turn",
+        "graph.tool_request_created",
+        "runtime.background_task_cancelled",
+        "runtime.background_task_completed",
+        "runtime.background_task_failed",
+        "runtime.background_task_result_read",
+        "runtime.delegated_result_available",
+        "runtime.permission_resolved",
+        "runtime.request_received",
+        "runtime.stuck_detected",
+        "runtime.todo_updated",
+        "runtime.tool_started",
+        "runtime.turn_progress",
+    ],
+    "allowed_actions": ["cancel", "guidance", "observe", "report"],
+    "authority": "non_authoritative",
     "source": "builtin",
     "count": 5,
 }
@@ -1640,12 +1657,23 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     assert second.session.status == "completed"
     assert len(requests) == 3
     continued_context = _assembled_context(requests[1])
+    second_turn_context = _assembled_context(requests[2])
     assert [result.tool_name for result in continued_context.tool_results] == ["read_file"]
     assert continued_context.tool_results[0].content is not None
-    assert "1: alpha" in cast(str, continued_context.tool_results[0].content)
+    assert "1: alpha" in continued_context.tool_results[0].content
     assert continued_context.tool_results[0].data["tool_call_id"] == "read-1"
     assert continued_context.tool_results[0].data["arguments"] == {"filePath": "sample.txt"}
-    assert _assembled_context(requests[2]).tool_results == continued_context.tool_results
+    assert second_turn_context.tool_results == continued_context.tool_results
+    replayed_segments = [
+        segment
+        for segment in second_turn_context.segments
+        if isinstance(segment.content, str)
+        and (segment.content == "read sample.txt" or segment.content == "done")
+    ]
+    assert [(segment.role, segment.content) for segment in replayed_segments] == [
+        ("user", "read sample.txt"),
+        ("assistant", "done"),
+    ]
 
     replay = runtime.resume("continue-session")
     replay_request_events = [
@@ -1658,6 +1686,151 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     assert [event.sequence for event in replay.events] == sorted(
         event.sequence for event in replay.events
     )
+
+
+def test_provider_replays_prior_conversation_for_existing_session_without_tool_results(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+
+    class _ConversationModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    prompt = _assembled_context(request).prompt
+                    output = "assistant first answer" if prompt == "user first turn" else "done"
+                    return provider_protocol_module.ProviderTurnResult(output=output)
+
+            return _Provider()
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            service_module.VoidCodeRuntime(
+                workspace=tmp_path,
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="provider",
+                    model="opencode/gpt-5.4",
+                ),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+                model_provider_registry=model_provider_module.ModelProviderRegistry(
+                    providers=cast(Any, {"opencode": _ConversationModelProvider()})
+                ),
+            ),
+        ),
+    )
+
+    first = runtime.run(
+        runtime_request(prompt="user first turn", session_id="conversation-session")
+    )
+    second = runtime.run(
+        runtime_request(prompt="user second turn", session_id="conversation-session")
+    )
+    replayed_segments = [
+        segment
+        for segment in _assembled_context(requests[1]).segments
+        if (segment.role, segment.content)
+        in {("user", "user first turn"), ("assistant", "assistant first answer")}
+    ]
+
+    assert first.session.status == "completed"
+    assert second.session.status == "completed"
+    assert [(segment.role, segment.content) for segment in replayed_segments] == [
+        ("user", "user first turn"),
+        ("assistant", "assistant first answer"),
+    ]
+
+
+def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_context(
+    tmp_path: Path,
+) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+
+    parent_runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            service_module.VoidCodeRuntime(
+                workspace=tmp_path,
+                graph=cast(Any, _SingleToolGraph("glob", {"pattern": "*.txt"})),
+            ),
+        ),
+    )
+    _ = parent_runtime.run(runtime_request(prompt="parent one", session_id="parent-one"))
+    _ = parent_runtime.run(runtime_request(prompt="parent two", session_id="parent-two"))
+
+    class _ParentMismatchModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    prompt = _assembled_context(request).prompt
+                    output = (
+                        "assistant parent-one sentinel"
+                        if prompt == "user parent-one sentinel"
+                        else "assistant parent-two response"
+                    )
+                    return provider_protocol_module.ProviderTurnResult(output=output)
+
+            return _Provider()
+
+    runtime = cast(
+        RuntimeRunner,
+        cast(
+            object,
+            service_module.VoidCodeRuntime(
+                workspace=tmp_path,
+                config=config_module.RuntimeConfig(
+                    approval_mode="allow",
+                    execution_engine="provider",
+                    model="opencode/gpt-5.4",
+                ),
+                permission_policy=permission_module.PermissionPolicy(mode="allow"),
+                model_provider_registry=model_provider_module.ModelProviderRegistry(
+                    providers=cast(Any, {"opencode": _ParentMismatchModelProvider()})
+                ),
+            ),
+        ),
+    )
+
+    first = runtime.run(
+        runtime_request(
+            prompt="user parent-one sentinel",
+            session_id="shared-child-session",
+            parent_session_id="parent-one",
+        )
+    )
+    rehydrated_segments = cast(
+        Any,
+        runtime,
+    )._rehydrated_conversation_segments_for_existing_session(
+        session_id="shared-child-session",
+        parent_session_id="parent-two",
+    )
+
+    assert first.session.status == "completed"
+    assert rehydrated_segments == ()
 
 
 def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shape(
@@ -1959,9 +2132,9 @@ def test_provider_child_request_excludes_parent_tool_results_and_transcript_by_d
     assert response.output == "parent done"
     assert "parent-only tool result" in _request_text(parent_followup_request)
     assert child_context.tool_results == ()
-    assert "parent-only tool result" not in _request_text(child_request)
-    assert "runtime.request_received" not in _request_text(child_request)
-    assert "runtime.tool_completed" not in _request_text(child_request)
+    child_request_text = _request_text(child_request)
+    assert "parent-only tool result" not in child_request_text
+    assert "runtime.tool_completed" not in child_request_text
     assert "transcript" not in child_context.metadata
 
 
@@ -4153,6 +4326,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "workspace",
         "runtime_config",
         "resolved_hook_presets",
+        "runtime_policy",
         "agent_capability_snapshot",
         "runtime_state",
         "context_window",
@@ -4627,18 +4801,21 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
     sessions = resumed_runtime.list_sessions()
 
     assert resumed.session.status == "failed"
-    assert [event.event_type for event in resumed.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.failed",
-    ]
-    assert [event.sequence for event in resumed.events] == list(range(1, 10))
+    _assert_ordered_event_types(
+        [event.event_type for event in resumed.events],
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.failed",
+        ],
+    )
+    assert [event.sequence for event in resumed.events] == list(range(1, len(resumed.events) + 1))
     assert resumed.events[-1].payload == {
         "error": "unknown tool: write_file",
         "error_summary": "unknown tool: write_file",
@@ -5204,6 +5381,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
     assert set(replay.session.metadata) == {
         "workspace",
         "runtime_config",
+        "runtime_policy",
         "agent_capability_snapshot",
         "runtime_state",
         "context_window",

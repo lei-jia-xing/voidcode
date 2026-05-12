@@ -4,8 +4,10 @@ import os
 import re
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
 from ._pydantic_args import WebSearchArgs, format_validation_error
@@ -83,19 +85,37 @@ def _search_fallback(
                 },
             )
             response.raise_for_status()
-            html = response.text
+            soup = BeautifulSoup(response.text, "html.parser")
 
         results: list[tuple[str, str, str]] = []
-        pattern = r'<a class="result__a" href="([^"]+)"[^>]*>([^<]+)</a>'
-        snippet_pattern = r'<a class="result__snippet"[^>]*>([^<]+)</a>'
+        anchors = soup.select("a.result__a")
+        if not anchors:
+            anchors = soup.select("article a[href]")
 
-        for match in re.finditer(pattern, html):
-            url_match = match.group(1)
-            title = match.group(2).strip()
-            snippet_match = re.search(snippet_pattern, html[match.start() : match.start() + 500])
-            snippet = snippet_match.group(1).strip() if snippet_match else ""
+        for anchor in anchors:
+            title = anchor.get_text(" ", strip=True)
+            raw_href = anchor.get("href")
+            href = raw_href if isinstance(raw_href, str) else ""
+            if not title or not href:
+                continue
 
-            results.append((title, url_match, snippet))
+            result_url = _resolve_duckduckgo_result_url(href)
+            if not result_url:
+                continue
+
+            container = anchor.find_parent("div", class_="result") or anchor.find_parent("article")
+            snippet = ""
+            if container is not None:
+                snippet_node = container.select_one(".result__snippet")
+                if snippet_node is None:
+                    snippet_node = container.find(
+                        ["a", "div", "span"],
+                        class_=re.compile("snippet"),
+                    )
+                if snippet_node is not None:
+                    snippet = snippet_node.get_text(" ", strip=True)
+
+            results.append((title, result_url, snippet))
 
             if len(results) >= num_results:
                 break
@@ -115,6 +135,24 @@ def _search_fallback(
         pass
 
     return "No search results found. Please try a different query."
+
+
+def _resolve_duckduckgo_result_url(raw_url: str) -> str | None:
+    if raw_url.startswith("//"):
+        return _resolve_duckduckgo_result_url(f"https:{raw_url}")
+    if raw_url.startswith("http://") or raw_url.startswith("https://"):
+        parsed = urlparse(raw_url)
+        if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+            uddg = parse_qs(parsed.query).get("uddg")
+            if uddg:
+                return unquote(uddg[0])
+        return raw_url
+    if raw_url.startswith("/l/"):
+        parsed = urlparse(raw_url)
+        uddg = parse_qs(parsed.query).get("uddg")
+        if uddg:
+            return unquote(uddg[0])
+    return None
 
 
 class WebSearchTool:
@@ -149,6 +187,7 @@ class WebSearchTool:
         workspace: Path,
         runtime_timeout_seconds: int | None,
     ) -> ToolResult:
+        _ = workspace
         try:
             args = WebSearchArgs.model_validate(
                 {

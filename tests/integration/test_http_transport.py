@@ -949,11 +949,30 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
 
     assert response.status == 200
     assert payload["output"] == "http replay"
-    assert payload["session"] == {
-        "session": {"id": "transport-session"},
-        "status": stored.session.status,
-        "turn": stored.session.turn,
-        "metadata": stored.session.metadata,
+    request_event = _event_by_type(
+        cast(list[dict[str, object]], payload["events"]),
+        "runtime.request_received",
+    )
+    request_payload = cast(dict[str, object], request_event["payload"])
+    policy_observability = cast(dict[str, object], request_payload["runtime_policy"])
+    assert policy_observability["bounded"] is True
+    assert policy_observability["redacted"] is True
+    assert "http replay" not in json.dumps(policy_observability)
+    replay_session = cast(dict[str, object], payload["session"])
+    expected_metadata = dict(stored.session.metadata)
+    expected_metadata.pop("prompt_stack", None)
+    expected_metadata.pop("provider_context", None)
+    expected_metadata.pop("_prompt_activation_this_run", None)
+    assert replay_session["session"] == {"id": "transport-session"}
+    assert replay_session["status"] == stored.session.status
+    assert replay_session["turn"] == stored.session.turn
+    replay_metadata = cast(dict[str, object], replay_session["metadata"])
+    replay_runtime_policy = cast(dict[str, object], replay_metadata.pop("runtime_policy"))
+    expected_runtime_policy = cast(dict[str, object], expected_metadata.pop("runtime_policy"))
+    assert replay_metadata == expected_metadata
+    assert replay_runtime_policy["prompt_activation"] == {
+        **cast(dict[str, object], expected_runtime_policy["prompt_activation"]),
+        "activated_this_turn": False,
     }
     _assert_ordered_event_types(
         _event_types_from_payload_events(payload),
@@ -1330,6 +1349,15 @@ def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
     for diagnostic in cast(list[dict[str, object]], provider_context["diagnostics"]):
         assert diagnostic["policy_action"] in {"none", "warn", "block", "ignored"}
         assert isinstance(diagnostic["policy_blocking"], bool)
+    runtime_policy = cast(dict[str, object], payload["runtime_policy"])
+    assert runtime_policy["bounded"] is True
+    assert runtime_policy["redacted"] is True
+    assert runtime_policy["materialization"] == {
+        "kind": "runtime_policy_materialized",
+        "source": "runtime_control_plane",
+        "snapshot_present": True,
+    }
+    assert "debug payload" not in json.dumps(runtime_policy)
     assert payload["suggested_operator_action"] == "replay"
 
 
@@ -1980,7 +2008,22 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         }
     ]
     assert replay_response.status == 200
-    assert replay_payload == approve_payload
+    replay_session = cast(dict[str, object], replay_payload["session"])
+    approve_session = cast(dict[str, object], approve_payload["session"])
+    replay_metadata = cast(dict[str, object], replay_session["metadata"])
+    approve_metadata = cast(dict[str, object], approve_session["metadata"])
+    assert replay_payload["output"] == approve_payload["output"]
+    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(
+        approve_payload
+    )
+    assert replay_session["session"] == approve_session["session"]
+    assert replay_session["status"] == approve_session["status"]
+    assert replay_session["turn"] == approve_session["turn"]
+    expected_metadata = dict(approve_metadata)
+    expected_metadata.pop("prompt_stack", None)
+    expected_metadata.pop("provider_context", None)
+    expected_metadata.pop("_prompt_activation_this_run", None)
+    assert replay_metadata == expected_metadata
     assert (tmp_path / "copied.txt").read_text(encoding="utf-8") == "copied marker"
 
 
@@ -2084,7 +2127,22 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
         }
     ]
     assert replay_response.status == 200
-    assert replay_payload == deny_payload
+    replay_session = cast(dict[str, object], replay_payload["session"])
+    deny_session = cast(dict[str, object], deny_payload["session"])
+    replay_metadata = cast(dict[str, object], replay_session["metadata"])
+    deny_metadata = cast(dict[str, object], deny_session["metadata"])
+    assert replay_payload["output"] == deny_payload["output"]
+    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(
+        deny_payload
+    )
+    assert replay_session["session"] == deny_session["session"]
+    assert replay_session["status"] == deny_session["status"]
+    assert replay_session["turn"] == deny_session["turn"]
+    expected_metadata = dict(deny_metadata)
+    expected_metadata.pop("prompt_stack", None)
+    expected_metadata.pop("provider_context", None)
+    expected_metadata.pop("_prompt_activation_this_run", None)
+    assert replay_metadata == expected_metadata
     assert (tmp_path / "copied.txt").exists() is False
 
 

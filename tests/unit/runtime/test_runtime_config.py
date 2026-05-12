@@ -1593,6 +1593,17 @@ def test_runtime_agent_payload_rejects_unknown_hook_reference() -> None:
         )
 
 
+def test_runtime_agent_payload_rejects_persisted_invalid_manifest_hook_reference() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"runtime config field 'agent.manifest_hook_refs' references unknown hook preset",
+    ):
+        _ = parse_runtime_agent_payload(
+            {"preset": "leader", "manifest_hook_refs": ["unknown"]},
+            source="test payload",
+        )
+
+
 def test_runtime_agent_payload_rejects_unknown_context_transform_reference() -> None:
     with pytest.raises(
         ValueError,
@@ -3237,3 +3248,47 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
     assert effective.model == "session/model"
     assert effective.execution_engine == "deterministic"
     assert effective.max_steps == 7
+
+
+def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "policy": {
+                    "enabled": True,
+                    "version": "v1",
+                    "tool_policy": {"default": "runtime_default"},
+                    "delegation_policy": {"default": "runtime_default", "deny": ["product"]},
+                    "hook_policy": {"allowed_event_scopes": ["pre_tool", "post_tool"]},
+                    "prompt_activation": {"enabled": True},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    policy = getattr(config, "policy", None)
+    assert policy is not None
+    assert policy.schema_version == 1
+    assert policy.version == "v1"
+    assert policy.delegation_policy.denied == ("product",)
+    assert policy.hook_policy.allowed_event_scopes == ("pre_tool", "post_tool")
+
+
+def test_runtime_config_policy_cannot_grant_product_delegation(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "policy": {
+                    "version": "v1",
+                    "delegation_policy": {"allow": ["product"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="delegation_denied_product_top_level_only"):
+        _ = load_runtime_config(tmp_path, env={})

@@ -72,6 +72,7 @@ type PrototypeAdditiveEventType = Literal[
     "runtime.background_task_result_read",
     "runtime.delegated_result_available",
     "runtime.skill_loaded",
+    "runtime.policy_materialized",
     "runtime.todo_updated",
     "runtime.reasoning_part",
     "runtime.reasoning_diagnostic",
@@ -213,6 +214,7 @@ RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
     "runtime.delegated_result_available"
 )
 RUNTIME_SKILL_LOADED: Final[PrototypeAdditiveEventType] = "runtime.skill_loaded"
+RUNTIME_POLICY_MATERIALIZED: Final[PrototypeAdditiveEventType] = "runtime.policy_materialized"
 RUNTIME_TODO_UPDATED: Final[PrototypeAdditiveEventType] = "runtime.todo_updated"
 RUNTIME_REASONING_PART: Final[PrototypeAdditiveEventType] = "runtime.reasoning_part"
 RUNTIME_REASONING_DIAGNOSTIC: Final[PrototypeAdditiveEventType] = "runtime.reasoning_diagnostic"
@@ -224,6 +226,8 @@ REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
 REASONING_SESSION_TEXT_LIMIT_CHARS: Final[int] = 16_000
 REASONING_SESSION_PART_LIMIT: Final[int] = 32
 _SAFE_PROVIDER_REASONING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"source"})
+POLICY_OBSERVABILITY_LIST_LIMIT: Final[int] = 32
+POLICY_OBSERVABILITY_TRACE_LIMIT: Final[int] = 16
 
 EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
@@ -290,6 +294,7 @@ PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = 
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SKILL_LOADED,
+    RUNTIME_POLICY_MATERIALIZED,
     RUNTIME_TODO_UPDATED,
     RUNTIME_REASONING_PART,
     RUNTIME_REASONING_DIAGNOSTIC,
@@ -329,6 +334,141 @@ def runtime_reasoning_part_payload(
     if provider_metadata:
         payload["provider_metadata"] = dict(provider_metadata)
     return payload
+
+
+def runtime_policy_observability_payload(
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    """Project a persisted runtime policy snapshot into bounded client observability."""
+
+    tool_policy = _mapping_or_empty(snapshot.get("tool_policy"))
+    delegation_policy = _mapping_or_empty(snapshot.get("delegation_policy"))
+    hook_policy = _mapping_or_empty(snapshot.get("hook_policy"))
+    prompt_activation = _mapping_or_empty(snapshot.get("prompt_activation"))
+    intent = _mapping_or_empty(snapshot.get("intent"))
+    return {
+        "schema_version": snapshot.get("schema_version"),
+        "policy_version": snapshot.get("policy_version"),
+        "mode": snapshot.get("mode"),
+        "read_only": snapshot.get("read_only"),
+        "agent_preset": snapshot.get("agent_preset"),
+        "agent_manifest_id": snapshot.get("agent_manifest_id"),
+        "materialization": {
+            "kind": "runtime_policy_materialized",
+            "source": "runtime_control_plane",
+            "snapshot_present": True,
+        },
+        "intent": {
+            "label": intent.get("label"),
+            "confidence": intent.get("confidence"),
+            "authoritative": intent.get("authoritative") is True,
+            "matched_rule_ids": _bounded_string_list(intent.get("matched_rule_ids")),
+        },
+        "tool_policy": {
+            "allowed": _bounded_string_list(tool_policy.get("allowed")),
+            "denied": _bounded_denial_list(tool_policy.get("denied")),
+            "source": _string_or_none(tool_policy.get("source")),
+        },
+        "delegation_policy": {
+            "allowed_presets": _bounded_string_list(delegation_policy.get("allowed_presets")),
+            "denied": _bounded_denial_list(delegation_policy.get("denied")),
+            "product_denial_reason": _string_or_none(
+                delegation_policy.get("product_denial_reason")
+            ),
+        },
+        "hook_policy": {
+            "allowed_event_scopes": _bounded_string_list(hook_policy.get("allowed_event_scopes")),
+            "actions": _bounded_string_list(hook_policy.get("actions")),
+            "authoritative": hook_policy.get("authoritative") is True,
+        },
+        "prompt_activation": {
+            "enabled": prompt_activation.get("enabled") is not False,
+            "raw_prompt_stored": prompt_activation.get("raw_prompt_stored") is True,
+            "activated_this_turn": prompt_activation.get("activated_this_turn") is True,
+            "activated_refs": _bounded_string_list(prompt_activation.get("activated_refs")),
+        },
+        "precedence_trace": _bounded_trace(snapshot.get("precedence_trace")),
+        "diagnostics": _bounded_diagnostics(snapshot.get("diagnostics")),
+        "redacted": True,
+        "bounded": True,
+    }
+
+
+def _mapping_or_empty(value: object) -> Mapping[str, object]:
+    mapping = _mapping_or_none(value)
+    return mapping if mapping is not None else {}
+
+
+def _bounded_string_list(
+    value: object,
+    *,
+    limit: int = POLICY_OBSERVABILITY_LIST_LIMIT,
+) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    strings: list[str] = []
+    for item in value[:limit]:
+        if isinstance(item, str) and item:
+            strings.append(item[:REASONING_PREVIEW_LIMIT_CHARS])
+    return strings
+
+
+def _bounded_denial_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list | tuple):
+        return []
+    denials: list[dict[str, object]] = []
+    for item in value[:POLICY_OBSERVABILITY_LIST_LIMIT]:
+        if not isinstance(item, Mapping):
+            continue
+        denial = _mapping_or_empty(item)
+        bounded: dict[str, object] = {}
+        target = _string_or_none(denial.get("target")) or _string_or_none(denial.get("tool"))
+        reason = _string_or_none(denial.get("reason"))
+        if target is not None:
+            bounded["target"] = target[:REASONING_PREVIEW_LIMIT_CHARS]
+        if reason is not None:
+            bounded["reason"] = reason[:REASONING_PREVIEW_LIMIT_CHARS]
+        if bounded:
+            denials.append(bounded)
+    return denials
+
+
+def _bounded_trace(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list | tuple):
+        return []
+    trace: list[dict[str, object]] = []
+    for item in value[:POLICY_OBSERVABILITY_TRACE_LIMIT]:
+        if not isinstance(item, Mapping):
+            continue
+        entry = _mapping_or_empty(item)
+        bounded: dict[str, object] = {}
+        for key in ("source", "applied", "authoritative", "reason", "label", "confidence"):
+            raw = entry.get(key)
+            if isinstance(raw, str):
+                bounded[key] = raw[:REASONING_PREVIEW_LIMIT_CHARS]
+            elif isinstance(raw, bool | int | float) or raw is None:
+                bounded[key] = raw
+        trace.append(bounded)
+    return trace
+
+
+def _bounded_diagnostics(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    diagnostics: dict[str, object] = {}
+    bounded_items = list(cast(Mapping[str, object], value).items())[
+        :POLICY_OBSERVABILITY_LIST_LIMIT
+    ]
+    for key, raw in bounded_items:
+        if not isinstance(key, str):
+            continue
+        if isinstance(raw, str):
+            diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = raw[:REASONING_PREVIEW_LIMIT_CHARS]
+        elif isinstance(raw, bool | int | float) or raw is None:
+            diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = raw
+        else:
+            diagnostics[key[:REASONING_PREVIEW_LIMIT_CHARS]] = "<bounded>"
+    return diagnostics
 
 
 def runtime_reasoning_part_from_provider_stream(

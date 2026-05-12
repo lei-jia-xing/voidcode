@@ -161,6 +161,14 @@ EventEnvelope(
 - source: `runtime`
 - 当前 payload:
   - `prompt: str`
+  - `runtime_policy: object`（可选；当会话已 materialize Runtime Harness Policy v1 时出现）
+- `runtime_policy` 是 persisted `RuntimePolicySnapshot` 的有界、redacted projection。它包含 `schema_version`、`policy_version`、`mode`、`read_only`、agent ids、`materialization`、neutral `intent`、`tool_policy`、`delegation_policy`、`hook_policy`、`prompt_activation`、`precedence_trace` 与 `diagnostics`。
+- `runtime_policy.materialization.kind == "runtime_policy_materialized"` 表示 runtime control plane 已完成 policy materialization；这不是可由客户端写回或覆盖的第二控制面。
+- `tool_policy.denied` / `delegation_policy.denied` 必须携带稳定 denial reason；product child delegation 的稳定 reason 是 `delegation_denied_product_top_level_only`。
+- `hook_policy` 只描述 named event-scoped hook decisions。Hooks are non-authoritative: they can observe/report/cancel/guidance within runtime policy, but cannot grant tool/delegation authority.
+- `prompt_activation.activated_this_turn` 是 run-local projection；replay/resume surfaces must project it conservatively and never imply fresh activation unless the current run actually activated it.
+- This projection never contains raw prompt bodies, skill bodies, secret-like values, env values, or unbounded policy inputs. Strings/lists/traces/diagnostics are bounded by runtime-owned helpers.
+- Legacy sessions without stored policy truth synthesize a conservative v1 projection on replay/debug surfaces. Unsupported policy/schema versions are version errors and must fail fast rather than silently widening policy.
 
 ### `runtime.skills_loaded`
 - source: `runtime`

@@ -95,6 +95,7 @@ runtime 已有的基础能力：
 - result retrieval 不会把完整 child transcript 自动复制进 parent session
 - retry 是显式 runtime operation，不能引入无限自动重试；旧 terminal task 保持不可变，retry 会创建新的 queued task handle
 - MCP 只按 runtime/session scope 管理，不声明 workspace-scoped lifecycle
+- `product` remains top-level only. Any direct, imported, configured, or replayed attempt to use `product` as a child preset must fail before child session/task side effects with stable reason `delegation_denied_product_top_level_only`, and that reason must remain visible through bounded runtime policy diagnostics and delegated/task error surfaces.
 
 ## 所有权边界
 
@@ -388,6 +389,12 @@ Delegated child execution 必须先经过 runtime-owned routing 与 tool scope e
 - `worker` 当前不默认获得再次 delegation 的 `task` 工具；这避免形成无控制的 nested delegation。
 - manifest `skill_refs` 作为 catalog/default selection 进入 runtime skill application；`force_load_skills` 与 delegated `load_skills` 只在目标 run 或 child session 注入完整 skill body，parent full-body skill context 不应泄漏给 child。
 - hook guardrails 是 runtime lifecycle 的观察/干预层，不是 session truth 的替代品；background terminal hook failure 只记录警告，不改写已持久化的 terminal truth。
+
+## Runtime Harness Policy delegation gate
+
+Before any child-session allocation, background-task row creation, queueing, lifecycle hook notification, or provider/tool execution side effect, delegated execution must pass the parent `RuntimePolicySnapshot.delegation_policy`. The child snapshot is derived from the parent snapshot plus the selected child manifest and can only be a subset of parent tools, skills, hooks, MCP bindings, prompt activations, and delegation rights.
+
+The product invariant is hard-denied at this gate. Direct `subagent_type="product"`, configured aliases that resolve to product, category mappings, manifest references, hook output, neutral intent metadata, imported delegated state, and replay/bundle state must all produce `delegation_denied_product_top_level_only` before side effects. This contract does not add a product subagent allowlist and does not add delegation helpers to product. Delegation allow/deny state is visible through the bounded `runtime.request_received.payload.runtime_policy` projection and through delegated/background lifecycle or explicit runtime failure payloads; clients must not infer delegation authority from prompt text.
 
 ## MCP scope 与测试立场
 

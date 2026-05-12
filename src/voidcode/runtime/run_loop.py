@@ -42,6 +42,7 @@ from ..tools.output import (
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from .context_window import (
+    RuntimeContextSegment,
     RuntimeContextWindow,
     RuntimeContinuityState,
     continuity_summary_metadata,
@@ -358,6 +359,37 @@ def _session_without_provider_attempt(session: SessionState) -> SessionState:
         turn=session.turn,
         metadata=_metadata_without_provider_attempt(session.metadata),
     )
+
+
+def _replayed_conversation_segments(
+    request: GraphRunRequest,
+) -> tuple[RuntimeContextSegment, ...]:
+    assembled_context = request.assembled_context
+    segments = getattr(assembled_context, "segments", ())
+    replayed: list[RuntimeContextSegment] = []
+    for segment in segments:
+        metadata = getattr(segment, "metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("source") != "replayed_conversation":
+            continue
+        content = getattr(segment, "content", None)
+        if content is not None and not isinstance(content, str):
+            continue
+        role = getattr(segment, "role", None)
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+        replayed.append(
+            RuntimeContextSegment(
+                role=role,
+                content=content,
+                tool_call_id=getattr(segment, "tool_call_id", None),
+                tool_name=getattr(segment, "tool_name", None),
+                tool_arguments=getattr(segment, "tool_arguments", None),
+                metadata=dict(cast(dict[str, object], metadata)),
+            )
+        )
+    return tuple(replayed)
 
 
 def _graph_request_without_provider_attempt(
@@ -1291,6 +1323,9 @@ class RuntimeRunLoopCoordinator:
                 session_metadata=session.metadata,
                 skill_prompt_context=skill_prompt_context,
                 preserved_system_segments=tuple(preserved_system_segments),
+                replayed_conversation_segments=_replayed_conversation_segments(
+                    current_graph_request
+                ),
             )
             context_window_payload = {
                 **assembled_context.metadata,

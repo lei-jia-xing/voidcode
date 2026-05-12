@@ -55,13 +55,19 @@ runtime 可以从两个位置看到 agent hook preset refs：
 
 ## 合并与 materialization 规则
 
-当前实现只负责 catalog 与 validation。后续 materialization 必须遵守以下规则：
+当前实现负责 catalog / validation，并会把已解析 hook preset 作为 runtime policy 与 provider-context guidance 的输入。materialization 必须遵守以下规则：
 
 1. builtin manifest refs 与 runtime config refs 都只能引用 catalog 中存在的 preset；
-2. runtime 可以把 resolved preset snapshot 持久化到 session metadata 或 provider context，但不能让 agent 层决定执行时机；
+2. runtime 会把 resolved preset snapshot 持久化到 session metadata 或 provider context，但不能让 agent 层决定执行时机；
 3. materialized guidance 只能收窄或提醒角色行为，不能扩大 tool allowlist、permission 或 delegation budget；
 4. replay 应展示历史 truth，不能用新的 hook preset catalog 重新解释旧 session；
 5. 如果未来支持用户自定义 hook preset，必须先定义独立 schema 与 precedence，不能复用 formatter preset 命名空间。
+
+## Runtime Harness Policy hook semantics
+
+Runtime Harness Policy v1 treats hook presets as named, event-scoped policy inputs. A hook preset may declare guidance, guard, report, observe, or cancel intent for a bounded event scope, but it is never an authorization source. Its resolved contribution is written into `RuntimePolicySnapshot.hook_policy` as redacted metadata, is exposed through the bounded `runtime.request_received.payload.runtime_policy` projection, and can only narrow or explain behavior already allowed by higher-precedence policy.
+
+Hook policy cannot grant tools, widen tool defaults, create child sessions, rewrite tool arguments to bypass approval, enable MCP, mutate persisted session truth, or allow product delegation. If a hook attempts to grant denied capability, the policy materializer must ignore or reject that contribution and record a stable denial in `precedence_trace`. Unknown hook refs and invalid event scopes must fail during config/manifest validation.
 
 ## 非目标
 

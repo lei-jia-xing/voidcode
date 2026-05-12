@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError, asdict
 from types import ModuleType
-from typing import Any, get_type_hints
+from typing import Any, cast, get_type_hints
 
 import pytest
 
@@ -253,15 +254,82 @@ def test_runtime_contracts_allow_additive_future_event_types() -> None:
     event = runtime.EventEnvelope(
         session_id="session-1",
         sequence=1,
-        event_type=events_module.RUNTIME_MEMORY_REFRESHED,
+        event_type=events_module.RUNTIME_POLICY_MATERIALIZED,
         source="runtime",
         payload={"summary_version": 2},
     )
     response = runtime.RuntimeResponse(session=session, events=(event,))
 
     assert get_type_hints(runtime.EventEnvelope)["event_type"] is str
-    assert response.events[0].event_type == events_module.RUNTIME_MEMORY_REFRESHED
-    assert asdict(response.events[0])["event_type"] == events_module.RUNTIME_MEMORY_REFRESHED
+    assert response.events[0].event_type == events_module.RUNTIME_POLICY_MATERIALIZED
+    assert asdict(response.events[0])["event_type"] == events_module.RUNTIME_POLICY_MATERIALIZED
+
+
+def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
+    events_module = importlib.import_module("voidcode.runtime.events")
+
+    payload = events_module.runtime_policy_observability_payload(
+        {
+            "schema_version": 1,
+            "policy_version": "v1",
+            "mode": "normal",
+            "read_only": False,
+            "agent_preset": "leader",
+            "agent_manifest_id": "leader",
+            "intent": {
+                "label": "unspecified",
+                "confidence": 0.0,
+                "authoritative": False,
+                "matched_rule_ids": ["rule-1"],
+            },
+            "tool_policy": {"allowed": ["read_file"], "denied": [], "source": "runtime_config"},
+            "delegation_policy": {
+                "allowed_presets": ["explore"],
+                "denied": [
+                    {
+                        "target": "product",
+                        "reason": "delegation_denied_product_top_level_only",
+                        "raw_prompt": "do not leak",
+                    }
+                ],
+                "product_denial_reason": "delegation_denied_product_top_level_only",
+            },
+            "hook_policy": {
+                "allowed_event_scopes": ["pre_tool"],
+                "actions": ["observe"],
+                "authoritative": False,
+            },
+            "prompt_activation": {
+                "enabled": True,
+                "raw_prompt_stored": False,
+                "activated_this_turn": True,
+                "activated_refs": ["role_reminder"],
+            },
+            "precedence_trace": [{"source": "runtime_hard_denials", "applied": True}],
+            "diagnostics": {"api_key": "<redacted>", "large": "x" * 1000},
+        }
+    )
+
+    assert payload["redacted"] is True
+    assert payload["bounded"] is True
+    assert payload["materialization"] == {
+        "kind": "runtime_policy_materialized",
+        "source": "runtime_control_plane",
+        "snapshot_present": True,
+    }
+    assert payload["tool_policy"] == {
+        "allowed": ["read_file"],
+        "denied": [],
+        "source": "runtime_config",
+    }
+    assert payload["delegation_policy"] == {
+        "allowed_presets": ["explore"],
+        "denied": [{"target": "product", "reason": "delegation_denied_product_top_level_only"}],
+        "product_denial_reason": "delegation_denied_product_top_level_only",
+    }
+    assert "do not leak" not in json.dumps(payload)
+    large_diagnostic = cast(str, cast(dict[str, object], payload["diagnostics"])["large"])
+    assert len(large_diagnostic) == 240
 
 
 def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:

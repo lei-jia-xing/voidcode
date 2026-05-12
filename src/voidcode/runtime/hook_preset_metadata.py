@@ -50,10 +50,27 @@ def hook_preset_event_payload_from_session_metadata(
     snapshot = resolved_hook_preset_snapshot_from_session_metadata(metadata)
     if snapshot is None or not snapshot.presets:
         return None
-    kinds = [preset["kind"] for preset in snapshot.presets]
+    kinds = [cast(str, preset["kind"]) for preset in snapshot.presets]
+    event_scopes = sorted(
+        {
+            scope
+            for preset in snapshot.presets
+            for scope in cast(tuple[str, ...], preset["event_scopes"])
+        }
+    )
+    allowed_actions = sorted(
+        {
+            action
+            for preset in snapshot.presets
+            for action in cast(tuple[str, ...], preset["allowed_actions"])
+        }
+    )
     return {
         "refs": list(snapshot.refs),
         "kinds": kinds,
+        "event_scopes": event_scopes,
+        "allowed_actions": allowed_actions,
+        "authority": "non_authoritative",
         "source": "builtin",
         "count": len(snapshot.presets),
     }
@@ -68,6 +85,9 @@ def debug_hook_preset_snapshot(
     return RuntimeHookPresetSnapshot(
         refs=tuple(cast(list[str], payload["refs"])),
         kinds=tuple(cast(list[str], payload["kinds"])),
+        event_scopes=tuple(cast(list[str], payload["event_scopes"])),
+        allowed_actions=tuple(cast(list[str], payload["allowed_actions"])),
+        authority=cast(str, payload["authority"]),
         source=cast(str, payload["source"]),
         count=cast(int, payload["count"]),
     )

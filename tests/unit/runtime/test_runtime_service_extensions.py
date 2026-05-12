@@ -3500,6 +3500,9 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == [
         "role_reminder"
     ]
+    assert cast(dict[str, object], capability_snapshot["hooks"])["authority"] == (
+        "non_authoritative"
+    )
     assert cast(dict[str, object], capability_snapshot["mcp"])["governance"] == (
         "runtime_session_scoped_config_gated"
     )
@@ -3612,6 +3615,8 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "ref": "role_reminder",
                 "kind": "guidance",
                 "source": "builtin",
+                "event_scopes": ["runtime.request_received", "graph.model_turn"],
+                "allowed_actions": ["guidance"],
                 "guidance": (
                     "Follow the active agent preset exactly: preserve its responsibility "
                     "boundary, tool scope, and output obligations for this run."
@@ -3621,6 +3626,12 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "ref": "delegation_guard",
                 "kind": "guard",
                 "source": "builtin",
+                "event_scopes": [
+                    "graph.tool_request_created",
+                    "runtime.permission_resolved",
+                    "runtime.tool_started",
+                ],
+                "allowed_actions": ["observe", "report", "cancel", "guidance"],
                 "guidance": (
                     "Delegate only through runtime-owned task routing, respect supported child "
                     "presets, and never bypass runtime tool, approval, or session governance."
@@ -3630,6 +3641,14 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "ref": "background_output_quality_guidance",
                 "kind": "guidance",
                 "source": "builtin",
+                "event_scopes": [
+                    "runtime.background_task_completed",
+                    "runtime.background_task_failed",
+                    "runtime.background_task_cancelled",
+                    "runtime.background_task_result_read",
+                    "runtime.delegated_result_available",
+                ],
+                "allowed_actions": ["observe", "report", "guidance"],
                 "guidance": (
                     "When reading background task or process output, request only the detail "
                     "needed for the current decision, do not poll immediately after starting "
@@ -3643,6 +3662,12 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "ref": "delegated_retry_guidance",
                 "kind": "guard",
                 "source": "builtin",
+                "event_scopes": [
+                    "runtime.background_task_failed",
+                    "runtime.background_task_cancelled",
+                    "runtime.delegated_result_available",
+                ],
+                "allowed_actions": ["observe", "report", "guidance"],
                 "guidance": (
                     "Retry failed, cancelled, or interrupted delegated background tasks only when "
                     "it is the next explicit recovery step. Use the runtime-owned "
@@ -3655,6 +3680,12 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "ref": "todo_continuation_guidance",
                 "kind": "continuation",
                 "source": "builtin",
+                "event_scopes": [
+                    "runtime.todo_updated",
+                    "runtime.turn_progress",
+                    "runtime.stuck_detected",
+                ],
+                "allowed_actions": ["observe", "report", "guidance"],
                 "guidance": (
                     "For multi-step work, keep todos current, complete finished items "
                     "immediately, and use remaining todos to resume the next concrete action."
@@ -3677,8 +3708,12 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
         and segment.metadata.get("source") == "hook_preset_guidance"
     ]
     assert len(hook_segments) == 1
-    assert "active agent preset" in (hook_segments[0].content or "")
-    assert "runtime-owned task routing" in (hook_segments[0].content or "")
+    hook_guidance = hook_segments[0].content or ""
+    assert "active agent preset" in hook_guidance
+    assert "runtime-owned task routing" in hook_guidance
+    assert "runtime.request_received" in hook_guidance
+    assert "<event_scopes>" in hook_guidance
+    assert "<allowed_actions>" in hook_guidance
     assert request.assembled_context.metadata["context_transforms"] == {
         "version": 1,
         "failure_policy": "warn",
@@ -5327,6 +5362,9 @@ def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None
     assert hook_event.payload == {
         "refs": ["role_reminder"],
         "kinds": ["guidance"],
+        "event_scopes": ["graph.model_turn", "runtime.request_received"],
+        "allowed_actions": ["guidance"],
+        "authority": "non_authoritative",
         "source": "builtin",
         "count": 1,
     }
@@ -5365,6 +5403,23 @@ def test_runtime_snapshots_manifest_default_hook_refs(tmp_path: Path) -> None:
             "todo_continuation_guidance",
         ],
         "kinds": ["guidance", "guard", "guidance", "guard", "continuation"],
+        "event_scopes": [
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.background_task_cancelled",
+            "runtime.background_task_completed",
+            "runtime.background_task_failed",
+            "runtime.background_task_result_read",
+            "runtime.delegated_result_available",
+            "runtime.permission_resolved",
+            "runtime.request_received",
+            "runtime.stuck_detected",
+            "runtime.todo_updated",
+            "runtime.tool_started",
+            "runtime.turn_progress",
+        ],
+        "allowed_actions": ["cancel", "guidance", "observe", "report"],
+        "authority": "non_authoritative",
         "source": "builtin",
         "count": 5,
     }
@@ -5396,6 +5451,18 @@ def test_runtime_debug_uses_persisted_hook_preset_snapshot_not_formatter_presets
     assert snapshot.hook_presets is not None
     assert snapshot.hook_presets.refs == ("delegation_guard",)
     assert snapshot.hook_presets.kinds == ("guard",)
+    assert snapshot.hook_presets.event_scopes == (
+        "graph.tool_request_created",
+        "runtime.permission_resolved",
+        "runtime.tool_started",
+    )
+    assert snapshot.hook_presets.allowed_actions == (
+        "cancel",
+        "guidance",
+        "observe",
+        "report",
+    )
+    assert snapshot.hook_presets.authority == "non_authoritative"
     assert snapshot.hook_presets.source == "builtin"
     assert snapshot.hook_presets.count == 1
 
@@ -5426,6 +5493,42 @@ def test_hook_preset_snapshot_does_not_change_agent_tool_permissions(tmp_path: P
     hook_tools = runtime_with_hooks._tool_registry_for_effective_config(hook_config)
 
     assert tuple(no_hook_tools.tools) == tuple(hook_tools.tools)
+
+
+def test_hook_preset_snapshot_cannot_grant_denied_tools_or_policy_authority(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                hook_refs=("delegation_guard",),
+                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+                execution_engine="provider",
+            )
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="non-authority", session_id="hook-non-authority"))
+    effective_config = runtime._effective_runtime_config_from_metadata(response.session.metadata)
+    scoped_tools = runtime._tool_registry_for_effective_config(
+        effective_config,
+        response.session.metadata,
+    )
+    hook_snapshot = cast(dict[str, object], response.session.metadata["resolved_hook_presets"])
+    capability_snapshot = cast(
+        dict[str, object],
+        response.session.metadata["agent_capability_snapshot"],
+    )
+    hook_capability = cast(dict[str, object], capability_snapshot["hooks"])
+
+    assert tuple(scoped_tools.tools) == ("read_file",)
+    assert "task" not in scoped_tools.tools
+    assert hook_snapshot["refs"] == ["delegation_guard"]
+    assert hook_capability["authority"] == "non_authoritative"
+    assert hook_capability["materialization"] == "guidance_only"
 
 
 def test_runtime_category_routing_resolves_real_child_agent_and_persists_identity(
@@ -5512,6 +5615,99 @@ def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_id
         "selected_preset": "explore",
         "selected_execution_engine": "provider",
     }
+
+
+def test_runtime_child_runtime_policy_is_derived_from_parent_snapshot_subset(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(tools=RuntimeToolsConfig(allowlist=("read_file", "grep"))),
+    )
+    parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    parent_policy = cast(dict[str, object], parent_response.session.metadata["runtime_policy"])
+    parent_tool_policy = cast(dict[str, object], parent_policy["tool_policy"])
+    parent_delegation_policy = cast(dict[str, object], parent_policy["delegation_policy"])
+    parent_hook_policy = cast(dict[str, object], parent_policy["hook_policy"])
+    assert parent_tool_policy["allowed"] == ["read_file", "grep"]
+
+    child_response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            session_id="child-session",
+            parent_session_id="leader-session",
+            metadata={"delegation": {"mode": "sync", "subagent_type": "explore"}},
+        )
+    )
+
+    child_policy = cast(dict[str, object], child_response.session.metadata["runtime_policy"])
+    child_tool_policy = cast(dict[str, object], child_policy["tool_policy"])
+    child_delegation_policy = cast(dict[str, object], child_policy["delegation_policy"])
+    child_hook_policy = cast(dict[str, object], child_policy["hook_policy"])
+    child_trace = cast(list[dict[str, object]], child_policy["precedence_trace"])
+
+    assert set(cast(list[str], child_tool_policy["allowed"])) <= set(
+        cast(list[str], parent_tool_policy["allowed"])
+    )
+    assert "task" not in cast(list[str], child_tool_policy["allowed"])
+    assert set(cast(list[str], child_delegation_policy["allowed_presets"])) <= set(
+        cast(list[str], parent_delegation_policy["allowed_presets"])
+    )
+    assert set(cast(list[str], child_hook_policy["allowed_event_scopes"])) <= set(
+        cast(list[str], parent_hook_policy["allowed_event_scopes"])
+    )
+    assert any(entry.get("source") == "parent_runtime_policy_snapshot" for entry in child_trace)
+
+
+def test_runtime_resume_rejects_persisted_unsupported_runtime_policy_snapshot(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore()
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="future policy", session_id="future-policy-session"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="future-policy-session"),
+                status="completed",
+                turn=1,
+                metadata={"runtime_config": {"execution_engine": "deterministic"}},
+            ),
+            events=(),
+            output="done",
+        ),
+    )
+    database_path = store._resolve_database_path()  # noqa: SLF001
+    with sqlite3.connect(database_path) as connection:
+        _ = connection.execute(
+            """
+            UPDATE sessions
+            SET metadata_json = ?
+            WHERE workspace_id = ? AND session_id = ?
+            """,
+            (
+                json.dumps(
+                    {
+                        "runtime_config": {"execution_engine": "deterministic"},
+                        "runtime_policy": {"schema_version": 999, "policy_version": "v1"},
+                    },
+                    sort_keys=True,
+                ),
+                str(tmp_path.resolve()),
+                "future-policy-session",
+            ),
+        )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        session_store=store,
+    )
+
+    with pytest.raises(ValueError, match="unsupported runtime_policy schema_version"):
+        _ = runtime.run(
+            RuntimeRequest(prompt="resume future policy", session_id="future-policy-session")
+        )
 
 
 def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
@@ -10622,13 +10818,16 @@ def test_runtime_emits_skills_loaded_catalog_without_default_full_injection(tmp_
 
     response = runtime.run(RuntimeRequest(prompt="hello"))
 
-    assert [event.event_type for event in response.events[:2]] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-    ]
-    assert response.events[1].payload["skills"] == ["demo"]
-    assert response.events[1].payload["selected_skills"] == []
-    assert cast(int, response.events[1].payload["catalog_context_length"]) > 0
+    _assert_ordered_event_types(
+        [event.event_type for event in response.events],
+        ["runtime.request_received", "runtime.skills_loaded"],
+    )
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded.payload["skills"] == ["demo"]
+    assert skills_loaded.payload["selected_skills"] == []
+    assert cast(int, skills_loaded.payload["catalog_context_length"]) > 0
     assert response.session.metadata["applied_skills"] == []
     assert "applied_skill_payloads" not in response.session.metadata
     assert _SkillCapturingStubGraph.last_request is not None
@@ -11589,6 +11788,124 @@ def test_runtime_delegated_workflow_unknown_preset_fails_before_child_execution(
     assert (
         runtime.list_background_tasks_by_parent_session(parent_session_id="workflow-unknown-parent")
         == ()
+    )
+
+
+def test_runtime_background_product_delegation_fails_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-denial-parent"))
+
+    with pytest.raises(RuntimeRequestError) as exc_info:
+        _ = runtime.start_background_task(
+            RuntimeRequest(
+                prompt="try product child",
+                parent_session_id="product-denial-parent",
+                metadata={"delegation": {"mode": "background", "subagent_type": "product"}},
+                allocate_session_id=True,
+            )
+        )
+
+    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
+    assert (
+        runtime.list_background_tasks_by_parent_session(parent_session_id="product-denial-parent")
+        == ()
+    )
+    assert [
+        summary
+        for summary in runtime.list_sessions()
+        if summary.session.parent_id == "product-denial-parent"
+    ] == []
+
+
+def test_runtime_imported_product_selected_preset_fails_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-import-parent"))
+
+    with pytest.raises(RuntimeRequestError) as exc_info:
+        _ = runtime.start_background_task(
+            RuntimeRequest(
+                prompt="try imported product child",
+                parent_session_id="product-import-parent",
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "subagent_type": "worker",
+                        "selected_preset": "product",
+                    }
+                },
+                allocate_session_id=True,
+            )
+        )
+
+    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
+    assert (
+        runtime.list_background_tasks_by_parent_session(parent_session_id="product-import-parent")
+        == ()
+    )
+
+
+def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                tools=RuntimeToolsConfig(allowlist=("read_file", "task")),
+            ),
+        ),
+    )
+    parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="subset-parent"))
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="delegated child",
+            session_id="subset-child",
+            parent_session_id="subset-parent",
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
+        )
+    )
+
+    parent_capability = cast(
+        dict[str, object], parent_response.session.metadata["agent_capability_snapshot"]
+    )
+    child_capability = cast(
+        dict[str, object], response.session.metadata["agent_capability_snapshot"]
+    )
+    parent_tool_payload = cast(dict[str, object], parent_capability["tools"])
+    child_tool_payload = cast(dict[str, object], child_capability["tools"])
+    parent_tools = set(cast(list[str], parent_tool_payload["effective_names"]))
+    child_tools = set(cast(list[str], child_tool_payload["effective_names"]))
+    child_delegation = cast(dict[str, object], child_capability["delegation"])
+
+    assert child_tools <= parent_tools
+    assert child_tools == {"read_file"}
+    assert child_delegation["parent_bounded"] is True
+    assert child_delegation["can_expand_parent_policy"] is False
+    assert cast(list[str], child_delegation["allowed_child_presets"]) == [
+        "advisor",
+        "explore",
+        "researcher",
+        "worker",
+    ]
+    assert {"target": "product", "reason": "delegation_denied_product_top_level_only"} in cast(
+        list[dict[str, object]], child_delegation["denied"]
     )
 
 
@@ -13356,6 +13673,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
     assert set(response.session.metadata) == {
         "workspace",
         "runtime_config",
+        "runtime_policy",
         "agent_capability_snapshot",
         "runtime_state",
         "context_window",
@@ -13375,6 +13693,24 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
             "configured_enabled": True,
             "servers": ["context7", "websearch", "grep_app"],
         },
+    }
+    runtime_policy = cast(dict[str, object], response.session.metadata["runtime_policy"])
+    assert runtime_policy["schema_version"] == 1
+    assert runtime_policy["agent_preset"] == "leader"
+    assert runtime_policy["agent_manifest_id"] == "leader"
+    request_event = next(
+        event for event in response.events if event.event_type == "runtime.request_received"
+    )
+    assert request_event.event_type == "runtime.request_received"
+    policy_observability = cast(dict[str, object], request_event.payload["runtime_policy"])
+    assert policy_observability["bounded"] is True
+    assert policy_observability["redacted"] is True
+    assert policy_observability["schema_version"] == 1
+    assert "hello" not in json.dumps(policy_observability)
+    assert policy_observability["materialization"] == {
+        "kind": "runtime_policy_materialized",
+        "source": "runtime_control_plane",
+        "snapshot_present": True,
     }
     runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
     assert set(runtime_state) == {"acp", "run_id"}
@@ -13681,7 +14017,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "version": 1,
             "order": ["instruction", "workspace", "recent", "task"],
             "counts": {
-                "instruction": 8,
+                "instruction": 9,
                 "workspace": 4,
                 "task": 1,
                 "recent": 3,
@@ -13706,6 +14042,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "context_pressure_threshold": 0.7,
         "context_pressure_detected": False,
         "context_overflow_detected": False,
+        "prompt_activation": response_context_window["prompt_activation"],
     }
     assert isinstance(response_context_window["estimated_context_tokens"], int)
     assert response_context_window["estimated_context_tokens"] > 0
@@ -16346,11 +16683,13 @@ def test_runtime_agent_skills_config_loads_and_persists_runtime_skills(
     response = runtime.run(RuntimeRequest(prompt="hello", session_id="leader-agent-skills-config"))
 
     assert response.session.status == "completed"
-    assert response.events[1].event_type == "runtime.skills_loaded"
-    loaded_skills = cast(list[str], response.events[1].payload["skills"])
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    loaded_skills = cast(list[str], skills_loaded.payload["skills"])
     assert "demo" in loaded_skills
     assert "git-master" not in loaded_skills
-    assert response.events[1].payload["selected_skills"] == []
+    assert skills_loaded.payload["selected_skills"] == []
     assert response.session.metadata["applied_skills"] == []
     assert "applied_skill_payloads" not in response.session.metadata
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
@@ -16407,7 +16746,10 @@ def test_runtime_agent_manifest_skill_refs_select_runtime_skills(
     response = runtime.run(RuntimeRequest(prompt="hello", session_id="leader-skill-refs"))
 
     assert response.session.status == "completed"
-    assert response.events[1].payload["selected_skills"] == ["demo"]
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded.payload["selected_skills"] == ["demo"]
     assert response.session.metadata["applied_skills"] == []
     assert _SkillCapturingStubGraph.last_request is not None
     assembled = _SkillCapturingStubGraph.last_request.assembled_context
@@ -16462,9 +16804,15 @@ def test_runtime_agent_manifest_skill_refs_combine_with_request_skills(
     )
 
     assert response.session.status == "completed"
-    assert response.events[1].payload["selected_skills"] == ["demo", "zeta"]
-    assert response.events[2].payload["skills"] == ["demo", "zeta"]
-    assert response.events[2].payload["count"] == 1
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    skills_applied = next(
+        event for event in response.events if event.event_type == "runtime.skills_applied"
+    )
+    assert skills_loaded.payload["selected_skills"] == ["demo", "zeta"]
+    assert skills_applied.payload["skills"] == ["demo", "zeta"]
+    assert skills_applied.payload["count"] == 1
     assert response.session.metadata["selected_skill_names"] == ["demo", "zeta"]
     assert response.session.metadata["applied_skills"] == ["zeta"]
     assert _SkillCapturingStubGraph.last_request is not None
@@ -16523,7 +16871,10 @@ def test_runtime_empty_force_load_skills_preserves_manifest_selected_skills(
 
     event_types = [event.event_type for event in response.events]
     assert response.session.status == "completed"
-    assert response.events[1].payload["selected_skills"] == ["demo"]
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded.payload["selected_skills"] == ["demo"]
     assert "runtime.skills_applied" not in event_types
     assert response.session.metadata["selected_skill_names"] == ["demo"]
     assert response.session.metadata["applied_skills"] == []
@@ -16589,7 +16940,10 @@ def test_runtime_child_empty_force_load_preserves_manifest_skill_refs_without_bo
 
     event_types = [event.event_type for event in response.events]
     assert response.session.status == "completed"
-    assert response.events[1].payload["selected_skills"] == ["demo"]
+    skills_loaded = next(
+        event for event in response.events if event.event_type == "runtime.skills_loaded"
+    )
+    assert skills_loaded.payload["selected_skills"] == ["demo"]
     assert "runtime.skills_applied" not in event_types
     assert response.session.metadata["selected_skill_names"] == ["demo"]
     assert response.session.metadata["applied_skills"] == []

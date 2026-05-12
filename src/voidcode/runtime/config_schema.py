@@ -62,6 +62,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "description": "Default approval policy for tool execution.",
             },
             "permission": {"$ref": "#/$defs/permissionConfig"},
+            "policy": {"$ref": "#/$defs/runtimePolicyConfig"},
             "model": {
                 "type": "string",
                 "minLength": 1,
@@ -719,6 +720,79 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "uniqueItems": True,
                     },
                     "required": {"type": "boolean", "default": True},
+                },
+            },
+            "runtimePolicyConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "version": {"type": "string", "const": "v1"},
+                    "tool_policy": {"$ref": "#/$defs/runtimePolicyToolPolicyConfig"},
+                    "delegation_policy": {"$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"},
+                    "hook_policy": {"$ref": "#/$defs/runtimePolicyHookPolicyConfig"},
+                    "prompt_activation": {"$ref": "#/$defs/runtimePolicyPromptActivationConfig"},
+                },
+            },
+            "runtimePolicyToolPolicyConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "allow": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "deny": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                },
+            },
+            "runtimePolicyDelegationPolicyConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "allow": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "deny": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                },
+            },
+            "runtimePolicyHookPolicyConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "allowed_event_scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "session_start",
+                                "session_end",
+                                "pre_tool",
+                                "post_tool",
+                                "background_task_registered",
+                                "background_task_started",
+                                "background_task_progress",
+                                "background_task_completed",
+                                "background_task_failed",
+                                "background_task_cancelled",
+                                "background_task_notification_enqueued",
+                                "background_task_result_read",
+                                "delegated_result_available",
+                                "context_pressure",
+                                "turn_progress",
+                                "stuck_detected",
+                            ],
+                        },
+                    },
+                    "actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["observe", "report", "cancel", "guidance"],
+                        },
+                    },
+                },
+            },
+            "runtimePolicyPromptActivationConfig": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                    "profile_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
                 },
             },
             "permissionConfig": {
