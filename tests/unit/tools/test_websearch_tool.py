@@ -27,6 +27,11 @@ def _html_response(html: str) -> httpx.Response:
     )
 
 
+def _failing_response() -> httpx.Response:
+    request = httpx.Request("GET", "https://html.duckduckgo.com/html/?q=test&kl=wt-wt")
+    return httpx.Response(503, request=request)
+
+
 def test_websearch_tool_rejects_empty_query() -> None:
     tool = WebSearchTool()
     empty_query_error = (
@@ -168,6 +173,71 @@ def test_websearch_tool_uses_beautifulsoup_ddg_fallback_parsing() -> None:
     assert lines[4] == "2. Result B"
     assert lines[5] == "   https://example.org/b"
     assert lines[6] == "   Snippet B..."
+
+
+def test_websearch_tool_parses_broader_ddg_html_without_result_class() -> None:
+    tool = WebSearchTool()
+
+    html = """
+    <html>
+      <body>
+        <article data-testid="result">
+          <div class="result__title">
+            <h2>
+              <a href="/l/?uddg=https%3A%2F%2Fexample.net%2Fc">Result C</a>
+            </h2>
+          </div>
+          <div class="exsnippet">Snippet C</div>
+        </article>
+      </body>
+    </html>
+    """
+
+    with patch("httpx.Client.get", return_value=_html_response(html)):
+        result = tool.invoke(
+            ToolCall(tool_name="web_search", arguments={"query": "test", "numResults": 1}),
+            workspace=Path("/tmp"),
+        )
+
+    assert result.status == "ok"
+    assert result.data["source"] == "duckduckgo"
+    assert result.fallback_reason is None
+    assert isinstance(result.content, str)
+    assert "Result C" in result.content
+    assert "https://example.net/c" in result.content
+    assert "Snippet C..." in result.content
+
+
+def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> None:
+    tool = WebSearchTool()
+
+    with patch("httpx.Client.get", return_value=_failing_response()):
+        result = tool.invoke(
+            ToolCall(tool_name="web_search", arguments={"query": "test"}),
+            workspace=Path("/tmp"),
+        )
+
+    assert result.status == "ok"
+    assert result.data["source"] == "duckduckgo-error"
+    assert result.fallback_reason == "duckduckgo fallback failed before parsing results"
+    assert result.content == "No search results found. Please try a different query."
+
+
+def test_websearch_tool_reports_truthful_metadata_when_ddg_html_has_no_results() -> None:
+    tool = WebSearchTool()
+
+    html = "<html><body><main><p>No searchable results here.</p></main></body></html>"
+
+    with patch("httpx.Client.get", return_value=_html_response(html)):
+        result = tool.invoke(
+            ToolCall(tool_name="web_search", arguments={"query": "test"}),
+            workspace=Path("/tmp"),
+        )
+
+    assert result.status == "ok"
+    assert result.data["source"] == "duckduckgo-empty"
+    assert result.fallback_reason == "duckduckgo fallback returned no parseable results"
+    assert result.content == "No search results found. Please try a different query."
 
 
 def test_tools_package_and_default_registry_export_websearch_tool() -> None:
