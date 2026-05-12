@@ -14,6 +14,8 @@ jobs:
         steps:
             - name: Checkout repository
               uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
 
             - name: Setup uv
               uses: astral-sh/setup-uv@v7
@@ -65,6 +67,9 @@ jobs:
             - name: Setup Bun
               uses: oven-sh/setup-bun@v2
 
+            - name: Set up git-cliff
+              uses: kenji-miyake/setup-git-cliff@v1
+
             - name: Install frontend dependencies
               working-directory: frontend
               run: bun install --frozen-lockfile
@@ -93,9 +98,16 @@ jobs:
                     exit 1
                   fi
 
+            - name: Generate release notes with git-cliff
+              run: git-cliff --config cliff.toml --latest --strip header --output release-notes.md
+              env:
+                  GITHUB_REPO: ${{ github.repository }}
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
             - name: Upload distributions to GitHub Release
               uses: softprops/action-gh-release@v2
               with:
+                  body_path: release-notes.md
                   files: |
                       dist/*.whl
                       dist/*.tar.gz

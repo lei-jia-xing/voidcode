@@ -74,6 +74,12 @@ run = "uv run python -X utf8 -m pytest -n auto --cov=voidcode --cov-report=term-
 [tasks.build]
 run = "uv build"
 
+[tasks."release:notes"]
+run = "git-cliff --config cliff.toml --output CHANGELOG.md"
+
+[tasks."release:preview"]
+run = "git-cliff --config cliff.toml"
+
 [tasks.check]
 depends = ["lint", "typecheck", "test", "frontend:check"]
 

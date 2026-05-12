@@ -146,6 +146,10 @@ mise run frontend:build
 mise run check
 mise run ci
 
+# Release notes / changelog
+mise run release:preview
+mise run release:notes
+
 # Pre-commit hooks
 mise run pre-commit
 uv run pre-commit install
@@ -153,6 +157,8 @@ uv run pre-commit install
 
 `mise` orchestrates tasks and loads the local virtual environment. `uv` remains the source of truth for Python dependency management and execution. Use `mise run test:fast` for the tight local feedback loop, `mise run test` for parallel full pytest without coverage, and `mise run test:coverage` for coverage-bearing validation.
 Bun scripts are owned by `frontend/package.json`; the repository root intentionally has no `package.json` so root-level automation goes through `mise.toml`.
+
+Release notes are generated with `git-cliff` using [`cliff.toml`](./cliff.toml). The current GitHub release workflow keeps its `release.published` trigger and uses `git-cliff` to populate the GitHub Release body while artifact upload continues through GitHub Actions.
 
 ## Documentation map
 
