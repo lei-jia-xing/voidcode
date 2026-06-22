@@ -27,6 +27,34 @@ type ContinuationLoopVerificationStatus = Literal[
     "failed",
 ]
 type ContinuationLoopStrategy = Literal["continue", "reset"]
+
+BACKGROUND_TASK_STATUSES: frozenset[BackgroundTaskStatus] = frozenset(
+    (
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+    )
+)
+CONTINUATION_LOOP_STATUSES: frozenset[ContinuationLoopStatus] = frozenset(
+    (
+        "active",
+        "completed",
+        "cancelled",
+        "exhausted",
+    )
+)
+CONTINUATION_LOOP_VERIFICATION_STATUSES: frozenset[ContinuationLoopVerificationStatus] = frozenset(
+    (
+        "not_required",
+        "pending",
+        "verified",
+        "failed",
+    )
+)
+CONTINUATION_LOOP_STRATEGIES: frozenset[ContinuationLoopStrategy] = frozenset(("continue", "reset"))
 type SubagentExecutionMode = Literal["sync", "background"]
 type SubagentResultOwner = Literal["child_session"]
 type SubagentSummaryOwner = Literal["background_task"]
@@ -571,24 +599,17 @@ def validate_continuation_loop_id(loop_id: str) -> str:
 
 
 def parse_continuation_loop_strategy(value: str) -> ContinuationLoopStrategy:
-    if value == "continue":
-        return "continue"
-    if value == "reset":
-        return "reset"
-    raise ValueError("continuation loop strategy must be 'continue' or 'reset'")
+    if value not in CONTINUATION_LOOP_STRATEGIES:
+        raise ValueError("continuation loop strategy must be 'continue' or 'reset'")
+    return cast(ContinuationLoopStrategy, value)
 
 
 def parse_continuation_loop_verification_status(
     value: str,
 ) -> ContinuationLoopVerificationStatus:
-    if value == "not_required":
-        return "not_required"
-    if value == "pending":
-        return "pending"
-    if value == "verified":
-        return "verified"
-    if value == "failed":
-        return "failed"
-    raise ValueError(
-        "continuation loop verification_status must be not_required, pending, verified, or failed"
-    )
+    if value not in CONTINUATION_LOOP_VERIFICATION_STATUSES:
+        raise ValueError(
+            "continuation loop verification_status must be "
+            "not_required, pending, verified, or failed"
+        )
+    return cast(ContinuationLoopVerificationStatus, value)

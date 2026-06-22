@@ -98,31 +98,26 @@ type DelegatedLifecycleStatus = Literal[
 ]
 type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
 
+_DELEGATED_LIFECYCLE_STATUSES: frozenset[DelegatedLifecycleStatus] = frozenset(
+    (
+        "queued",
+        "running",
+        "waiting_approval",
+        "completed",
+        "failed",
+        "cancelled",
+        "interrupted",
+    )
+)
+_EVENT_SOURCES: frozenset[EventSource] = frozenset(("runtime", "graph", "tool"))
+
 
 def _parse_delegated_routing_mode(value: object) -> Literal["sync", "background"] | None:
-    if value == "sync":
-        return "sync"
-    if value == "background":
-        return "background"
-    return None
+    return cast(Literal["sync", "background"], value) if value in ("sync", "background") else None
 
 
 def _parse_delegated_lifecycle_status(value: object) -> DelegatedLifecycleStatus | None:
-    if value == "queued":
-        return "queued"
-    if value == "running":
-        return "running"
-    if value == "waiting_approval":
-        return "waiting_approval"
-    if value == "completed":
-        return "completed"
-    if value == "failed":
-        return "failed"
-    if value == "cancelled":
-        return "cancelled"
-    if value == "interrupted":
-        return "interrupted"
-    return None
+    return cast(DelegatedLifecycleStatus, value) if value in _DELEGATED_LIFECYCLE_STATUSES else None
 
 
 RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"

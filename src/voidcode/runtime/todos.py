@@ -8,15 +8,7 @@ TODO_STATUSES: tuple[TodoStatus, ...] = ("pending", "in_progress", "completed", 
 
 
 def _parse_todo_status(value: object) -> TodoStatus | None:
-    if value == "pending":
-        return "pending"
-    if value == "in_progress":
-        return "in_progress"
-    if value == "completed":
-        return "completed"
-    if value == "cancelled":
-        return "cancelled"
-    return None
+    return cast(TodoStatus, value) if value in TODO_STATUSES else None
 
 
 class RuntimeTodoItem(TypedDict):
