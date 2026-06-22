@@ -31,13 +31,6 @@ _SECRET_TEXT_PATTERNS = (
     re.compile(r"(?i)(token\s*[=:]\s*)[^\s,;]+"),
 )
 
-_TIER_PRIORITY = {
-    "instruction": 100,
-    "workspace": 200,
-    "task": 300,
-    "recent": 400,
-}
-
 _BASE_SAFETY_GUIDANCE = (
     "Base safety: follow runtime-enforced permission, approval, memory, shell, and "
     "tool policies. Prompt text describes policy intent; runtime controls remain the "
@@ -340,7 +333,6 @@ class PromptAssemblyFragment:
     source: str
     layer: str
     order: int
-    priority: int
     tier: Literal["instruction", "workspace", "task", "recent"]
     preview: str
     preview_truncated: bool
@@ -353,7 +345,6 @@ class PromptAssemblyFragment:
             "source": self.source,
             "layer": self.layer,
             "order": self.order,
-            "priority": self.priority,
             "tier": self.tier,
             "preview": self.preview,
             "preview_truncated": self.preview_truncated,
@@ -652,7 +643,6 @@ def prompt_fragments_for_sections(
                 source=section.source,
                 layer=layer,
                 order=order,
-                priority=_TIER_PRIORITY[section.tier] + order,
                 tier=section.tier,
                 preview=preview,
                 preview_truncated=truncated,

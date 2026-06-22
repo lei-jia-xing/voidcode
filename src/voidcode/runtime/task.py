@@ -28,12 +28,6 @@ type ContinuationLoopVerificationStatus = Literal[
 ]
 type ContinuationLoopStrategy = Literal["continue", "reset"]
 type SubagentExecutionMode = Literal["sync", "background"]
-type SubagentResultOwner = Literal["child_session"]
-type SubagentSummaryOwner = Literal["background_task"]
-type SubagentApprovalOwner = Literal["child_session"]
-type SubagentCancellationOwner = Literal["delegated_task"]
-type SubagentResumeOwner = Literal["child_session"]
-type SubagentRestartReconciliationOwner = Literal["runtime"]
 type SubagentExecutablePreset = str
 type DelegatedReminderStopCondition = Literal[
     "result_read",
@@ -278,37 +272,9 @@ class SubagentExecutionCorrelation:
 
 
 @dataclass(frozen=True, slots=True)
-class SubagentExecutionOwnership:
-    result_owner: SubagentResultOwner = "child_session"
-    summary_owner: SubagentSummaryOwner = "background_task"
-    approval_owner: SubagentApprovalOwner = "child_session"
-    cancellation_owner: SubagentCancellationOwner = "delegated_task"
-    resume_owner: SubagentResumeOwner = "child_session"
-
-
-@dataclass(frozen=True, slots=True)
-class SubagentExecutionLifecycle:
-    cancellation_semantics: str = (
-        "queued tasks cancel immediately; running tasks record cancellation "
-        "on the delegated task handle"
-    )
-    resume_semantics: str = (
-        "resume targets the child session id; parent sessions receive "
-        "backfilled delegated lifecycle events only"
-    )
-    restart_reconciliation_semantics: str = (
-        "runtime reconciles delegated tasks from persisted child-session truth "
-        "and backfills one waiting or terminal parent event"
-    )
-    restart_reconciliation_owner: SubagentRestartReconciliationOwner = "runtime"
-
-
-@dataclass(frozen=True, slots=True)
 class SubagentExecutionContract:
     correlation: SubagentExecutionCorrelation
     routing: SubagentRoutingIdentity | None = None
-    ownership: SubagentExecutionOwnership = field(default_factory=SubagentExecutionOwnership)
-    lifecycle: SubagentExecutionLifecycle = field(default_factory=SubagentExecutionLifecycle)
 
     @classmethod
     def from_snapshot(

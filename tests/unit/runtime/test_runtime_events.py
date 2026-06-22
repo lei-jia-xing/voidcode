@@ -242,8 +242,11 @@ def test_background_task_result_delegated_event_payload_names_are_explicit() -> 
     )
 
     payload = result.delegated_event.as_payload()
+    execution_contract = result.subagent_execution
 
     assert result.task_id == "task-1"
+    assert not hasattr(execution_contract, "ownership")
+    assert not hasattr(execution_contract, "lifecycle")
     assert payload["parent_session_id"] == "leader-session"
     assert payload["session_id"] == "child-session"
     assert payload["delegation"] == {

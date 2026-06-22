@@ -313,6 +313,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
     assert fragment_payload["redacted"] is True
     assert fragment_payload["preview_chars"] == 240
     assert [fragment["order"] for fragment in fragments] == list(range(len(fragments)))
+    assert all("priority" not in fragment for fragment in fragments)
     assert [fragment["id"] for fragment in fragments] == [
         f"{index:03d}:{section.source}" for index, section in enumerate(plan.sections)
     ]
