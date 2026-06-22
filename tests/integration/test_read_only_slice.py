@@ -1363,12 +1363,10 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
                                         {
                                             "content": "make todo runtime-owned",
                                             "status": "in_progress",
-                                            "priority": "high",
                                         },
                                         {
                                             "content": "document completed setup",
                                             "status": "completed",
-                                            "priority": "low",
                                         },
                                     ]
                                 },
@@ -1383,7 +1381,6 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
                                         {
                                             "content": "verify latest todo context only",
                                             "status": "pending",
-                                            "priority": "medium",
                                         }
                                     ]
                                 },

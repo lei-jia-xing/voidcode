@@ -499,14 +499,13 @@ def test_strip_redaction_sentinels_handles_nested_todo_arguments() -> None:
                 {
                     "content": {"omitted": True, "byte_count": 9, "line_count": 1},
                     "status": "pending",
-                    "priority": "high",
                 }
             ]
         },
         redacted_keys=frozenset({"content"}),
     )
 
-    assert stripped == {"todos": [{"content": "", "status": "pending", "priority": "high"}]}
+    assert stripped == {"todos": [{"content": "", "status": "pending"}]}
 
 
 def test_strip_redaction_sentinels_preserves_truncation_previews() -> None:

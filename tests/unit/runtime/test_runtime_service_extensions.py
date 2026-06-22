@@ -1269,7 +1269,6 @@ class _DuplicateTodoThenResultAwareTurnProvider:
             {
                 "content": "make todo runtime-owned",
                 "status": "in_progress",
-                "priority": "high",
             }
         ]
         if len(turn_request.tool_results) < 2:

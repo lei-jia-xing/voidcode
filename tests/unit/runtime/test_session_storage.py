@@ -577,7 +577,6 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
                             {
                                 "content": "persist me",
                                 "status": "in_progress",
-                                "priority": "high",
                                 "position": 1,
                                 "updated_at": 3,
                             }
@@ -614,7 +613,6 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
                         {
                             "content": "persist me",
                             "status": "in_progress",
-                            "priority": "high",
                             "position": 1,
                             "updated_at": 3,
                         }

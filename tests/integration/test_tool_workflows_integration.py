@@ -162,9 +162,9 @@ def test_todo_write_tool_persists_summary_integration(tmp_path: Path) -> None:
             tool_name="todo_write",
             arguments={
                 "todos": [
-                    {"content": "task1", "status": "pending", "priority": "high"},
-                    {"content": "task2", "status": "in_progress", "priority": "medium"},
-                    {"content": "task3", "status": "completed", "priority": "low"},
+                    {"content": "task1", "status": "pending"},
+                    {"content": "task2", "status": "in_progress"},
+                    {"content": "task3", "status": "completed"},
                 ]
             },
         ),
