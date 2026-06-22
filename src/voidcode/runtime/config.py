@@ -64,6 +64,7 @@ serialize_provider_fallback_config = provider_config.serialize_provider_fallback
 serialize_provider_configs = provider_config.serialize_provider_configs
 
 RUNTIME_CONFIG_FILE_NAME = ".voidcode.json"
+DEFAULT_LOCAL_TOOLS_PATH = ".voidcode/tools"
 
 
 def _running_on_windows() -> bool:
@@ -315,7 +316,7 @@ class RuntimeToolsBuiltinConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeToolsLocalConfig:
     enabled: bool | None = None
-    path: str = ".voidcode/tools"
+    path: str = DEFAULT_LOCAL_TOOLS_PATH
 
 
 @dataclass(frozen=True, slots=True)
@@ -1483,7 +1484,7 @@ class _RuntimeToolsLocalValidationModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool | None = None
-    path: str = ".voidcode/tools"
+    path: str = DEFAULT_LOCAL_TOOLS_PATH
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -1496,7 +1497,7 @@ class _RuntimeToolsLocalValidationModel(BaseModel):
     def _validate_path(cls, value: object, info: ValidationInfo) -> str:
         field_path = _validation_context_field_path(info, default="tools.local")
         if value is None:
-            return ".voidcode/tools"
+            return DEFAULT_LOCAL_TOOLS_PATH
         if not isinstance(value, str) or not value.strip():
             raise ValueError(
                 f"runtime config field '{field_path}.path' must be a non-empty string when provided"
