@@ -11,8 +11,10 @@ import pytest
 
 from voidcode.runtime.context_transforms import (
     HookPresetGuidanceTransformProvider,
+    RuntimeContextTransformInjection,
     RuntimeContextTransformRegistry,
     RuntimeContextTransformRequest,
+    RuntimeContextTransformResult,
     RuntimeFileRulesTransformProvider,
 )
 from voidcode.runtime.context_window import (
@@ -709,6 +711,131 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
         "blocked_tool": "write_file",
         "approval_request_id": "approval-123",
     }
+
+
+def test_assemble_provider_context_skill_todo_transform_content_present() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={
+            "runtime_state": {
+                "todos": {
+                    "version": 1,
+                    "revision": 1,
+                    "todos": [
+                        {
+                            "content": "implement feature",
+                            "status": "in_progress",
+                            "position": 1,
+                            "updated_at": 1,
+                        }
+                    ],
+                }
+            }
+        },
+        skill_prompt_context="skill guidance text",
+        context_transform_result=RuntimeContextTransformResult(
+            injections=(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content="transform injected",
+                    metadata={"source": "transform_test", "tier": "workspace"},
+                ),
+            )
+        ),
+        policy=_legacy_context_window_policy(max_tool_result_tokens=100),
+    )
+
+    skill_segments = [
+        s
+        for s in assembled.segments
+        if s.metadata is not None and s.metadata.get("source") == "skill_prompt"
+    ]
+    assert len(skill_segments) == 1
+    assert "skill guidance text" in (skill_segments[0].content or "")
+
+    todo_segments = [
+        s
+        for s in assembled.segments
+        if s.metadata is not None and s.metadata.get("source") == "runtime_todo_state"
+    ]
+    assert len(todo_segments) >= 1
+    todo_text = "\n".join(str(s.content) for s in todo_segments if s.content)
+    assert "implement feature" in todo_text
+
+    transform_segments = [
+        s
+        for s in assembled.segments
+        if s.metadata is not None and s.metadata.get("source") == "transform_test"
+    ]
+    assert len(transform_segments) == 1
+    assert "transform injected" in (transform_segments[0].content or "")
+
+    tiers = cast(dict[str, object], assembled.metadata.get("context_tiers", {}))
+    counts = cast(dict[str, int], tiers.get("counts", {}))
+    assert counts.get("task", 0) >= 1
+    assert counts.get("instruction", 0) >= 1
+    assert counts.get("workspace", 0) >= 1
+
+
+def test_assemble_provider_context_pressure_preserves_skill_todo_transform() -> None:
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={
+            "runtime_state": {
+                "todos": {
+                    "version": 1,
+                    "revision": 1,
+                    "todos": [
+                        {
+                            "content": "critical todo",
+                            "status": "in_progress",
+                            "position": 1,
+                            "updated_at": 1,
+                        }
+                    ],
+                }
+            }
+        },
+        agent_prompt_context="x" * 1000,
+        skill_prompt_context="critical skill guidance",
+        context_transform_result=RuntimeContextTransformResult(
+            injections=(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content="critical transform note",
+                    metadata={"source": "transform_pressure", "tier": "workspace"},
+                ),
+            )
+        ),
+        policy=_legacy_context_window_policy(
+            model_context_window_tokens=20,
+            context_pressure_threshold=0.5,
+        ),
+    )
+
+    assert assembled.metadata.get("context_pressure_detected") is True
+    assert assembled.metadata.get("context_overflow_detected") is True
+
+    assert any(
+        (s.metadata or {}).get("source") == "skill_prompt"
+        and s.content is not None
+        and "critical skill guidance" in s.content
+        for s in assembled.segments
+    )
+    todo_text = "\n".join(
+        str(s.content)
+        for s in assembled.segments
+        if s.metadata and s.metadata.get("source") == "runtime_todo_state" and s.content
+    )
+    assert "critical todo" in todo_text
+    assert any(
+        (s.metadata or {}).get("source") == "transform_pressure"
+        and s.content is not None
+        and "critical transform note" in s.content
+        for s in assembled.segments
+    )
 
 
 def test_assemble_provider_context_injects_pending_question_state() -> None:

@@ -374,6 +374,68 @@ def test_prompt_stack_metadata_is_attached_to_assembled_context_without_raw_prom
     assert assembled.segments[-1].content.startswith("Please use access_token=")
 
 
+def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> None:
+    plan = build_prompt_assembly_plan(
+        prompt="continue work",
+        runtime_instruction_precedence="runtime first",
+        agent_prompt_context="agent prompt body",
+        workflow_mode_prompt_context="workflow mode text",
+        skill_prompt_context="skill guidance for tools",
+        todo_prompt_context="active todo: finish feature",
+        context_transform_result=RuntimeContextTransformResult(
+            injections=(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content="hook injected guidance",
+                    metadata={"source": "transform_hook", "tier": "workspace"},
+                ),
+            )
+        ),
+    )
+
+    assert [section.source for section in plan.sections] == [
+        "runtime_base_safety",
+        "runtime_instruction_precedence",
+        "agent_prompt",
+        "workflow_mode_prompt",
+        "runtime_memory_usage_guidance",
+        "skill_prompt",
+        "transform_hook",
+        "runtime_todo_state",
+        "runtime_tool_policy_summary",
+        "current_user_prompt",
+    ]
+    assert [section.tier for section in plan.sections] == [
+        "instruction",
+        "instruction",
+        "instruction",
+        "instruction",
+        "instruction",
+        "instruction",
+        "workspace",
+        "task",
+        "instruction",
+        "task",
+    ]
+    skill_section = next(s for s in plan.sections if s.source == "skill_prompt")
+    assert "skill guidance for tools" in skill_section.content
+    todo_section = next(s for s in plan.sections if s.source == "runtime_todo_state")
+    assert "active todo: finish feature" in todo_section.content
+    transform_section = next(s for s in plan.sections if s.source == "transform_hook")
+    assert "hook injected guidance" in transform_section.content
+    assert plan.sections[-1].role == "user"
+    assert plan.sections[-1].content == "continue work"
+
+    fragment_payload = plan.fragment_metadata_payload()
+    fragments = cast(list[dict[str, object]], fragment_payload["fragments"])
+    skill_fragment = next(f for f in fragments if f["source"] == "skill_prompt")
+    assert skill_fragment["layer"] == "skills"
+    todo_fragment = next(f for f in fragments if f["source"] == "runtime_todo_state")
+    assert todo_fragment["layer"] == "task_state"
+    transform_fragment = next(f for f in fragments if f["source"] == "transform_hook")
+    assert transform_fragment["layer"] == "hook_injected_context"
+
+
 def test_prompt_activation_decision_records_first_activation_without_raw_prompt() -> None:
     decision = prompt_activation_decision(
         session_metadata={
