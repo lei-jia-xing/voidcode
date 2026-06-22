@@ -327,6 +327,25 @@ class PromptAssemblySection:
 
 
 @dataclass(frozen=True, slots=True)
+class _PromptContextBlock:
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str
+    source: str
+    tier: Literal["instruction", "workspace", "task", "recent"]
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    layer: str | None = None
+
+    def to_section(self) -> PromptAssemblySection:
+        return PromptAssemblySection(
+            role=self.role,
+            content=self.content,
+            source=self.source,
+            tier=self.tier,
+            metadata=_section_metadata(self.metadata, layer=self.layer),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PromptAssemblyFragment:
     id: str
     role: Literal["system", "user", "assistant", "tool"]
@@ -396,19 +415,17 @@ def build_prompt_assembly_plan(
         layer: str | None = None,
         metadata: Mapping[str, object] | None = None,
     ) -> None:
-        normalized = content.strip()
-        if not normalized or normalized in seen_system_contents:
-            return
-        seen_system_contents.add(normalized)
-        sections.append(
-            PromptAssemblySection(
-                role="system",
-                content=normalized,
-                source=source,
-                tier=tier,
-                metadata=_section_metadata(metadata, layer=layer),
-            )
+        block = _normalize_prompt_context_block(
+            content,
+            source=source,
+            tier=tier,
+            layer=layer,
+            metadata=metadata,
         )
+        if block is None or block.content in seen_system_contents:
+            return
+        seen_system_contents.add(block.content)
+        sections.append(block.to_section())
 
     profile_overlay = (
         get_profile_overlay(prompt_profile_name) if prompt_profile_name is not None else None
@@ -661,6 +678,28 @@ def _section_metadata(
     if layer is not None and "layer" not in section_metadata:
         section_metadata["layer"] = layer
     return section_metadata
+
+
+def _normalize_prompt_context_block(
+    content: str,
+    *,
+    source: str,
+    tier: Literal["instruction", "workspace", "task", "recent"],
+    layer: str | None,
+    metadata: Mapping[str, object] | None,
+    role: Literal["system", "user", "assistant", "tool"] = "system",
+) -> _PromptContextBlock | None:
+    normalized_content = content.strip()
+    if not normalized_content:
+        return None
+    return _PromptContextBlock(
+        role=role,
+        content=normalized_content,
+        source=source,
+        tier=tier,
+        metadata={} if metadata is None else dict(metadata),
+        layer=layer,
+    )
 
 
 def _metadata_layer(metadata: Mapping[str, object], *, fallback: str) -> str:
