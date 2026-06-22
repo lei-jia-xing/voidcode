@@ -372,10 +372,6 @@ def _replace(
     if not content:
         raise ValueError("Content is empty; nothing to edit.")
 
-    if replace_all:
-        # For replaceAll we still need to verify at least one match exists via smart replacers
-        pass
-
     replacers = [
         SimpleReplacer,
         LineTrimmedReplacer,
