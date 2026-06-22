@@ -341,6 +341,9 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "user_request",
     ]
 
+    for fragment in fragments:
+        assert "priority" not in fragment
+
     rendered_payload = str(fragment_payload)
     assert "super-secret-token-value" not in rendered_payload
     assert "abcdefghijklmnop" not in rendered_payload
