@@ -9,6 +9,16 @@ from .policy import runtime_policy_snapshot_from_session_metadata
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed"]
 type SessionKind = Literal["top_level", "child"]
 
+SESSION_STATUSES: frozenset[SessionStatus] = frozenset(
+    (
+        "idle",
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+    )
+)
+
 _PERSISTED_STRING_LIMIT = 1_000
 _PERSISTED_LIST_LIMIT = 50
 _PERSISTED_DICT_LIMIT = 100

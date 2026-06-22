@@ -109,7 +109,7 @@ _DELEGATED_LIFECYCLE_STATUSES: frozenset[DelegatedLifecycleStatus] = frozenset(
         "interrupted",
     )
 )
-_EVENT_SOURCES: frozenset[EventSource] = frozenset(("runtime", "graph", "tool"))
+EVENT_SOURCES: frozenset[EventSource] = frozenset(("runtime", "graph", "tool"))
 
 
 def _parse_delegated_routing_mode(value: object) -> Literal["sync", "background"] | None:

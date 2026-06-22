@@ -22,6 +22,7 @@ from .contracts import (
 )
 from .events import (
     DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+    EVENT_SOURCES,
     RUNTIME_APPROVAL_REQUESTED,
     RUNTIME_QUESTION_REQUESTED,
     EventEnvelope,
@@ -32,6 +33,7 @@ from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import (
+    SESSION_STATUSES,
     SessionRef,
     SessionState,
     SessionStatus,
@@ -40,6 +42,8 @@ from .session import (
     session_metadata_for_persistence,
 )
 from .task import (
+    BACKGROUND_TASK_STATUSES,
+    CONTINUATION_LOOP_STATUSES,
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
@@ -1138,55 +1142,27 @@ class SqliteSessionStore:
 
     @staticmethod
     def _parse_session_status(value: str) -> SessionStatus:
-        if value == "idle":
-            return "idle"
-        if value == "running":
-            return "running"
-        if value == "waiting":
-            return "waiting"
-        if value == "completed":
-            return "completed"
-        if value == "failed":
-            return "failed"
-        raise ValueError(f"invalid session status: {value}")
+        if value not in SESSION_STATUSES:
+            raise ValueError(f"invalid session status: {value}")
+        return cast(SessionStatus, value)
 
     @staticmethod
     def _parse_event_source(value: str) -> EventSource:
-        if value == "runtime":
-            return "runtime"
-        if value == "graph":
-            return "graph"
-        if value == "tool":
-            return "tool"
-        raise ValueError(f"invalid event source: {value}")
+        if value not in EVENT_SOURCES:
+            raise ValueError(f"invalid event source: {value}")
+        return cast(EventSource, value)
 
     @staticmethod
     def _parse_background_task_status(value: str) -> BackgroundTaskStatus:
-        if value == "queued":
-            return "queued"
-        if value == "running":
-            return "running"
-        if value == "completed":
-            return "completed"
-        if value == "failed":
-            return "failed"
-        if value == "cancelled":
-            return "cancelled"
-        if value == "interrupted":
-            return "interrupted"
-        raise ValueError(f"invalid background task status: {value}")
+        if value not in BACKGROUND_TASK_STATUSES:
+            raise ValueError(f"invalid background task status: {value}")
+        return cast(BackgroundTaskStatus, value)
 
     @staticmethod
     def _parse_continuation_loop_status(value: str) -> ContinuationLoopStatus:
-        if value == "active":
-            return "active"
-        if value == "completed":
-            return "completed"
-        if value == "cancelled":
-            return "cancelled"
-        if value == "exhausted":
-            return "exhausted"
-        raise ValueError(f"invalid continuation loop status: {value}")
+        if value not in CONTINUATION_LOOP_STATUSES:
+            raise ValueError(f"invalid continuation loop status: {value}")
+        return cast(ContinuationLoopStatus, value)
 
     @classmethod
     def _parse_memory_kind(cls, value: str) -> MemoryKind:
