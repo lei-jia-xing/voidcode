@@ -18,6 +18,7 @@ from unittest.mock import Mock
 import pytest
 
 import voidcode.runtime.background_tasks as runtime_background_tasks_module
+import voidcode.runtime.provider_fallback as runtime_provider_fallback_module
 import voidcode.runtime.run_loop as runtime_run_loop_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
@@ -121,6 +122,12 @@ from voidcode.runtime.permission import (
     evaluate_pattern_permission_rules,
 )
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
+from voidcode.runtime.provider_fallback import (
+    ProviderFallbackDecision,
+    ProviderTerminalDecision,
+    ProviderTransientRetryDecision,
+    decide_provider_error_policy,
+)
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -164,6 +171,109 @@ _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "allow"},
     "external_directory_write": {"*": "allow"},
 }
+
+
+def test_provider_fallback_collaborator_prefers_retry_before_fallback() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="rate limited",
+            details={"request_id": "retry-1"},
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=0,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter=False,
+        ),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderTransientRetryDecision)
+    assert decision.event_payload() == {
+        "reason": "rate_limit",
+        "provider": "primary",
+        "model": "model-a",
+        "retry_attempt": 1,
+        "max_retries": 1,
+        "delay_ms": 0,
+        "provider_error_details": {"request_id": "retry-1"},
+    }
+
+
+def test_provider_fallback_collaborator_emits_fallback_after_retry_exhaustion() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="transient_failure",
+            provider_name="primary",
+            model_name="model-a",
+            message="still failing",
+            details={"request_id": "fallback-1"},
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=1,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter=False,
+        ),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderFallbackDecision)
+    assert decision.event_payload() == {
+        "reason": "transient_failure",
+        "from_provider": "primary",
+        "from_model": "model-a",
+        "to_provider": "fallback",
+        "to_model": "model-b",
+        "attempt": 1,
+        "provider_error_details": {"request_id": "fallback-1"},
+    }
+
+
+def test_provider_fallback_collaborator_marks_retry_exhausted_terminal() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="still failing",
+            details={"request_id": "terminal-1"},
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=1,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter=False,
+        ),
+        fallback_target_provider=None,
+        fallback_target_model=None,
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderTerminalDecision)
+    assert decision.kind == "fallback_exhausted"
+    assert decision.payload == {
+        "provider_error_kind": "rate_limit",
+        "provider": "primary",
+        "model": "model-a",
+        "fallback_exhausted": True,
+        "provider_retry_exhausted": True,
+        "provider_retry_attempts": 1,
+        "provider_error_details": {"request_id": "terminal-1"},
+    }
 
 
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
@@ -19956,8 +20066,8 @@ def test_runtime_provider_retry_attempt_resets_after_successful_provider_call(
     )
 
     monkeypatch.setattr(
-        runtime_run_loop_module,
-        "_provider_transient_retry_delay_ms",
+        runtime_provider_fallback_module,
+        "provider_transient_retry_delay_ms",
         lambda **_: 0,
     )
 
