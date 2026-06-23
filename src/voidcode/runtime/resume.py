@@ -104,7 +104,9 @@ class RuntimeResumeCoordinator:
                 output=output,
                 final_session=final_session,
             )
-            self._runtime._finalize_background_task_from_session_response(session_response=response)
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                session_response=response
+            )
 
     def resume_pending_approval_response(
         self,
@@ -180,7 +182,9 @@ class RuntimeResumeCoordinator:
                 output=output,
                 final_session=final_session,
             )
-            self._runtime._finalize_background_task_from_session_response(session_response=response)
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
+                session_response=response
+            )
 
     def answer_pending_question_response(
         self,
