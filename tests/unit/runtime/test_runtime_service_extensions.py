@@ -11390,13 +11390,8 @@ def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["missing"]}))
 
 
-@pytest.mark.parametrize(
-    "workflow_preset",
-    ("review", "research", "frontend", "git", "snapshot", "requires-docs", "scoped"),
-)
-def test_runtime_request_workflow_preset_metadata_is_rejected(
+def test_runtime_request_workflow_preset_metadata_materializes_workflow_snapshot(
     tmp_path: Path,
-    workflow_preset: str,
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -11405,19 +11400,22 @@ def test_runtime_request_workflow_preset_metadata_is_rejected(
     )
     _SkillCapturingStubGraph.last_request = None
 
-    with pytest.raises(
-        RuntimeRequestError,
-        match=runtime_config_materializer_module.WORKFLOW_PRESET_REQUEST_ERROR,
-    ):
-        _ = runtime.run(
-            RuntimeRequest(
-                prompt="legacy workflow preset",
-                session_id=f"legacy-workflow-{workflow_preset}",
-                metadata={"workflow_preset": workflow_preset},
-            )
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="review workflow preset",
+            session_id="workflow-review-preset",
+            metadata={"workflow_preset": "review"},
         )
+    )
 
-    assert _SkillCapturingStubGraph.last_request is None
+    assert response.session.status == "completed"
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert response.session.metadata["workflow_preset"] == "review"
+    assert response.session.metadata["workflow_mode"] == "review"
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+    assert workflow["selected_preset"] == "review"
+    assert workflow["read_only_default"] is True
 
 
 def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
@@ -11598,10 +11596,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     metadata = runtime._runtime_config_metadata(workflow_preset="scoped")
     effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
 
-    persisted_keys = cast(
-        frozenset[str],
-        _private_attr(runtime_service_module, "_PERSISTED_RUNTIME_CONFIG_KEYS"),
-    )
+    persisted_keys = runtime_config_materializer_module.PERSISTED_RUNTIME_CONFIG_KEYS
     assert set(metadata) <= persisted_keys
     assert {
         "approval_mode",
@@ -12230,14 +12225,14 @@ def test_runtime_rejects_unknown_workflow_preset_before_execution(tmp_path: Path
 
     with pytest.raises(
         RuntimeRequestError,
-        match=runtime_config_materializer_module.WORKFLOW_PRESET_REQUEST_ERROR,
+        match="request metadata 'workflow_preset' references unknown preset: missing",
     ):
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"workflow_preset": "missing"}))
 
     assert _SkillCapturingStubGraph.last_request is None
 
 
-def test_runtime_request_workflow_preset_rejected_before_agent_materialization(
+def test_runtime_request_workflow_preset_preserves_custom_agent_materialization(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -12261,25 +12256,33 @@ def test_runtime_request_workflow_preset_rejected_before_agent_materialization(
     )
     _SkillCapturingStubGraph.last_request = None
 
-    with pytest.raises(
-        RuntimeRequestError,
-        match=runtime_config_materializer_module.WORKFLOW_PRESET_REQUEST_ERROR,
-    ):
-        _ = runtime.run(
-            RuntimeRequest(
-                prompt="implement",
-                session_id="workflow-precedence",
-                metadata={
-                    "workflow_preset": "implementation",
-                    "agent": {"preset": "leader", "model": "request/model"},
-                },
-            )
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="implement",
+            session_id="workflow-precedence",
+            metadata={
+                "workflow_preset": "implementation",
+                "agent": {"preset": "leader", "model": "request/model"},
+            },
         )
+    )
 
-    assert _SkillCapturingStubGraph.last_request is None
+    assert response.session.status == "completed"
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert response.session.metadata["workflow_preset"] == "implementation"
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    agent = cast(dict[str, object], runtime_config["agent"])
+    assert agent["model"] == "request/model"
+    assert agent["prompt_materialization"] == {
+        "profile": "custom-leader",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Custom runtime materialization.",
+    }
 
 
-def test_runtime_request_workflow_preset_rejected_with_prompt_materialization_override(
+def test_runtime_request_workflow_preset_allows_prompt_materialization_override(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -12293,32 +12296,38 @@ def test_runtime_request_workflow_preset_rejected_with_prompt_materialization_ov
     )
     _SkillCapturingStubGraph.last_request = None
 
-    with pytest.raises(
-        RuntimeRequestError,
-        match=runtime_config_materializer_module.WORKFLOW_PRESET_REQUEST_ERROR,
-    ):
-        _ = runtime.run(
-            RuntimeRequest(
-                prompt="implement",
-                session_id="workflow-request-materialization",
-                metadata={
-                    "workflow_preset": "implementation",
-                    "agent": {
-                        "preset": "leader",
-                        "prompt_materialization": {
-                            "profile": "request-custom",
-                            "version": 1,
-                            "source": "custom_markdown",
-                            "format": "markdown",
-                            "body": "Request materialization.",
-                        },
-                        "prompt_source": "custom_markdown",
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="implement",
+            session_id="workflow-request-materialization",
+            metadata={
+                "workflow_preset": "implementation",
+                "agent": {
+                    "preset": "leader",
+                    "prompt_materialization": {
+                        "profile": "request-custom",
+                        "version": 1,
+                        "source": "custom_markdown",
+                        "format": "markdown",
+                        "body": "Request materialization.",
                     },
+                    "prompt_source": "custom_markdown",
                 },
-            )
+            },
         )
+    )
 
-    assert _SkillCapturingStubGraph.last_request is None
+    assert response.session.status == "completed"
+    assert _SkillCapturingStubGraph.last_request is not None
+    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
+    agent = cast(dict[str, object], runtime_config["agent"])
+    assert agent["prompt_materialization"] == {
+        "profile": "request-custom",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Request materialization.",
+    }
 
 
 def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
@@ -13817,6 +13826,7 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
                 "execution_engine": "provider",
                 "max_steps": None,
                 "tool_timeout_seconds": None,
+                "model": "primary/model-a",
                 "fallback_models": ["fallback/model-b"],
                 "resolved_provider": {
                     "active_target": {

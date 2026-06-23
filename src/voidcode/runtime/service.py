@@ -149,12 +149,9 @@ from .config import (
     serialize_runtime_categories_config,
 )
 from .config_materializer import (
-    PERSISTED_RUNTIME_CONFIG_KEYS,
     EffectiveRuntimeConfig,
     apply_request_runtime_config_overrides,
-    parse_persisted_provider_fallback,
     parse_persisted_runtime_config,
-    reject_legacy_workflow_preset_request,
     serialize_runtime_config_core,
 )
 from .context_transforms import (
@@ -291,11 +288,8 @@ from .permission_path_helpers import (
 )
 from .permission_policy import (
     approval_request_id_from_waiting_response,
-    operation_class_or_none,
-    path_scope_or_none,
     pending_approval_from_response,
     pending_question_from_response,
-    permission_decision_or_none,
     permission_policy_for_session,
     request_event_and_resolution_state,
     waiting_request_id_from_response,
@@ -423,19 +417,6 @@ _ACTIVE_SESSION_COMPAT_EXPORTS = (
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
 _EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
-_PERSISTED_RUNTIME_CONFIG_KEYS = PERSISTED_RUNTIME_CONFIG_KEYS
-
-
-def _permission_decision_or_none(value: object) -> PermissionDecision | None:
-    return permission_decision_or_none(value)
-
-
-def _execution_engine_or_none(value: object) -> ExecutionEngineName | None:
-    if value == "deterministic":
-        return "deterministic"
-    if value == "provider":
-        return "provider"
-    return None
 
 
 def _agent_effective_execution_engine(
@@ -447,14 +428,6 @@ def _agent_effective_execution_engine(
     if agent is not None and agent.execution_engine is not None:
         return agent.execution_engine
     return base_engine
-
-
-def _path_scope_or_none(value: object) -> PathScope | None:
-    return path_scope_or_none(value)
-
-
-def _operation_class_or_none(value: object) -> OperationClass | None:
-    return operation_class_or_none(value)
 
 
 _ACP_CONNECTIVITY_ERRORS = frozenset(
@@ -1025,7 +998,6 @@ class VoidCodeRuntime:
 
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._effective_runtime_config_from_metadata(None)
-        reject_legacy_workflow_preset_request(request.metadata)
         _ = self._workflow_mode_resolution_for_request_metadata(request.metadata)
         request_agent = request.metadata.get("agent")
         if request_agent is not None:
@@ -1128,6 +1100,10 @@ class VoidCodeRuntime:
         explicit_metadata_workflow_mode = metadata_workflow_mode is not None
         raw_workflow_preset = metadata.get("workflow_preset")
         workflow_preset = raw_workflow_preset if isinstance(raw_workflow_preset, str) else None
+        if workflow_preset is not None and self._workflow_preset(workflow_preset) is None:
+            raise RuntimeRequestError(
+                f"request metadata 'workflow_preset' references unknown preset: {workflow_preset}"
+            )
         if metadata_workflow_mode is None:
             raw_top_workflow_mode = metadata.get("workflow_mode")
             if isinstance(raw_top_workflow_mode, str):
@@ -4377,16 +4353,21 @@ class VoidCodeRuntime:
         payload = cast(dict[str, object], runtime_config)
         raw_model = payload.get("model")
         base_model = raw_model if isinstance(raw_model, str) else None
-        base_provider_fallback = None
-        if "fallback_models" in payload:
-            raw_fallback_models = payload.get("fallback_models")
-            if raw_fallback_models in (None, []):
-                raw_fallback_models = None
-            if raw_fallback_models is not None:
-                base_provider_fallback = parse_persisted_provider_fallback(
-                    payload,
-                    model=base_model,
-                )
+        materialized = parse_persisted_runtime_config(
+            payload,
+            default_approval_mode=self._config.approval_mode,
+            default_permission=self._config.permission,
+            default_policy=self._config.policy,
+            default_model=base_model,
+            default_execution_engine=self._config.execution_engine,
+            default_max_steps=self._config.max_steps,
+            default_tool_timeout_seconds=self._config.tool_timeout_seconds,
+            default_reasoning_effort=None,
+            default_providers=self._config.providers,
+            default_tools=self._config.tools,
+            default_context_window=self._config.context_window,
+        )
+        base_provider_fallback = materialized.provider_fallback
         categories = parse_runtime_categories_payload(
             payload.get("categories"),
             source="persisted runtime_config.categories",

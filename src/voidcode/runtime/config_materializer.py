@@ -24,7 +24,6 @@ from .config import (
     serialize_runtime_context_window_config,
     serialize_runtime_tools_config,
 )
-from .contracts import RuntimeRequestError
 from .permission import (
     ExternalDirectoryPolicy,
     PatternPermissionRule,
@@ -56,11 +55,6 @@ PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "mcp",
         "workflow",
     }
-)
-
-WORKFLOW_PRESET_REQUEST_ERROR = (
-    "request metadata 'workflow_preset' is no longer supported; use explicit "
-    "workflow_mode or runtime-owned workflow metadata"
 )
 
 
@@ -101,11 +95,6 @@ class PersistedRuntimeConfigMaterialization:
     raw_resolved_provider: object | None
 
 
-def reject_legacy_workflow_preset_request(metadata: Mapping[str, object]) -> None:
-    if metadata.get("workflow_preset") is not None:
-        raise RuntimeRequestError(WORKFLOW_PRESET_REQUEST_ERROR)
-
-
 def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, object]:
     runtime_config_metadata: dict[str, object] = {
         "approval_mode": config.approval_mode,
@@ -115,7 +104,7 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
         "tool_timeout_seconds": config.tool_timeout_seconds,
         "fallback_models": (
             list(config.provider_fallback.fallback_models)
-            if config.provider_fallback is not None
+            if config.provider_fallback is not None and config.model is not None
             else []
         ),
     }
