@@ -942,13 +942,19 @@ class VoidCodeRuntime:
             updated_session = self._session_with_current_acp_metadata(updated_session)
         return emitted, updated_session, last_sequence or sequence
 
-    def _build_graph_for_engine_from_config(self, config: EffectiveRuntimeConfig) -> RuntimeGraph:
+    def _build_graph_for_engine_from_config(
+        self,
+        config: EffectiveRuntimeConfig,
+        *,
+        use_cache: bool = True,
+    ) -> RuntimeGraph:
         cache_key = cache_key_for_effective_config(config)
-        if cache_key in self._graph_cache:
+        if use_cache and cache_key in self._graph_cache:
             return self._graph_cache[cache_key]
 
         graph = select_graph_for_effective_config(config=config).graph
-        self._graph_cache[cache_key] = graph
+        if use_cache:
+            self._graph_cache[cache_key] = graph
         return graph
 
     @staticmethod
@@ -8757,6 +8763,8 @@ class VoidCodeRuntime:
             return self._graph_override
 
         effective_config = self._effective_runtime_config_from_metadata(metadata)
+        if isinstance((metadata or {}).get("command"), dict):
+            return self._build_graph_for_engine_from_config(effective_config, use_cache=False)
 
         # Reuse self._graph if the session's config matches the runtime's config
         if (
