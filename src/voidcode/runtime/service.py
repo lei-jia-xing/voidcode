@@ -6,7 +6,7 @@ import os
 import subprocess
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 from uuid import uuid4
@@ -47,7 +47,7 @@ from ..provider.config import (
     DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG,
     ProviderTransientRetryConfig,
 )
-from ..provider.errors import format_invalid_provider_config_error, guidance_for_provider_error_kind
+from ..provider.errors import guidance_for_provider_error_kind
 from ..provider.model_catalog import (
     ProviderModelCatalog,
     ToolFeedbackMode,
@@ -130,34 +130,32 @@ from .bundle import (
 from .command_effects import apply_runtime_command_effects, session_with_command_artifacts
 from .config import (
     ExecutionEngineName,
-    ExternalDirectoryPermissionConfig,
     RuntimeAgentConfig,
     RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
     RuntimeProviderFallbackConfig,
-    RuntimeProvidersConfig,
     RuntimeSkillsConfig,
-    RuntimeToolsConfig,
     RuntimeWebSettings,
     load_global_web_settings,
     load_runtime_config,
-    parse_provider_configs_payload,
-    parse_provider_fallback_payload,
     parse_runtime_agent_payload,
     parse_runtime_agents_payload,
     parse_runtime_categories_payload,
-    parse_runtime_context_window_payload,
-    parse_runtime_policy_payload,
-    parse_runtime_tools_payload,
     save_global_web_settings,
-    serialize_provider_configs,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
     serialize_runtime_categories_config,
-    serialize_runtime_context_window_config,
-    serialize_runtime_tools_config,
+)
+from .config_materializer import (
+    PERSISTED_RUNTIME_CONFIG_KEYS,
+    EffectiveRuntimeConfig,
+    apply_request_runtime_config_overrides,
+    parse_persisted_provider_fallback,
+    parse_persisted_runtime_config,
+    reject_legacy_workflow_preset_request,
+    serialize_runtime_config_core,
 )
 from .context_transforms import (
     RuntimeContextTransformRegistry,
@@ -274,10 +272,8 @@ from .memory import MemoryConfig, MemoryKind, MemoryRecord, MemorySearchResult, 
 from .paths import provider_catalog_cache_path
 from .permission import (
     DelegationGovernance,
-    ExternalDirectoryPolicy,
     OperationClass,
     PathScope,
-    PatternPermissionRule,
     PendingApproval,
     PermissionDecision,
     PermissionPolicy,
@@ -307,7 +303,6 @@ from .permission_policy import (
 from .policy import (
     PRODUCT_DELEGATION_DENIAL_REASON,
     materialize_runtime_policy_snapshot,
-    serialize_runtime_policy_config,
 )
 from .provider_context import inspect_provider_context
 from .provider_execution_metadata import (
@@ -428,30 +423,7 @@ _ACTIVE_SESSION_COMPAT_EXPORTS = (
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
 _EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
-_PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
-    {
-        "approval_mode",
-        "permission",
-        "policy",
-        "execution_engine",
-        "max_steps",
-        "tool_timeout_seconds",
-        "reasoning_effort",
-        "model",
-        "fallback_models",
-        "providers",
-        "resolved_provider",
-        "resolved_hook_presets",
-        "tools",
-        "agent",
-        "agents",
-        "categories",
-        "context_window",
-        "lsp",
-        "mcp",
-        "workflow",
-    }
-)
+_PERSISTED_RUNTIME_CONFIG_KEYS = PERSISTED_RUNTIME_CONFIG_KEYS
 
 
 def _permission_decision_or_none(value: object) -> PermissionDecision | None:
@@ -1053,14 +1025,8 @@ class VoidCodeRuntime:
 
     def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
         resolved = self._effective_runtime_config_from_metadata(None)
+        reject_legacy_workflow_preset_request(request.metadata)
         _ = self._workflow_mode_resolution_for_request_metadata(request.metadata)
-        workflow_preset = request.metadata.get("workflow_preset")
-        if workflow_preset is not None:
-            assert isinstance(workflow_preset, str)
-            try:
-                resolved = self._config_with_workflow_preset(resolved, workflow_preset)
-            except ValueError as exc:
-                raise RuntimeRequestError(str(exc)) from exc
         request_agent = request.metadata.get("agent")
         if request_agent is not None:
             try:
@@ -1071,123 +1037,27 @@ class VoidCodeRuntime:
                 )
             except ValueError as exc:
                 raise RuntimeRequestError(str(exc)) from exc
-        request_max_steps = request.metadata.get("max_steps")
-        request_reasoning_effort = request.metadata.get("reasoning_effort")
-        if request_max_steps is not None:
-            assert isinstance(request_max_steps, int)
-            resolved = EffectiveRuntimeConfig(
-                approval_mode=resolved.approval_mode,
-                permission=resolved.permission,
-                model=resolved.model,
-                execution_engine=resolved.execution_engine,
-                max_steps=request_max_steps,
-                tool_timeout_seconds=resolved.tool_timeout_seconds,
-                reasoning_effort=resolved.reasoning_effort,
-                provider_fallback=resolved.provider_fallback,
-                providers=resolved.providers,
-                resolved_provider=resolved.resolved_provider,
-                agent=resolved.agent,
-                context_window=resolved.context_window,
-                tools=resolved.tools,
-                policy=resolved.policy,
-            )
-        if isinstance(request_reasoning_effort, str) and request_reasoning_effort:
-            resolved = EffectiveRuntimeConfig(
-                approval_mode=resolved.approval_mode,
-                permission=resolved.permission,
-                model=resolved.model,
-                execution_engine=resolved.execution_engine,
-                max_steps=resolved.max_steps,
-                tool_timeout_seconds=resolved.tool_timeout_seconds,
-                reasoning_effort=request_reasoning_effort,
-                provider_fallback=resolved.provider_fallback,
-                providers=resolved.providers,
-                resolved_provider=resolved.resolved_provider,
-                agent=resolved.agent,
-                context_window=resolved.context_window,
-                tools=resolved.tools,
-                policy=resolved.policy,
-            )
         request_context_transform_refs = request.metadata.get("context_transform_refs")
+        context_transform_refs: tuple[str, ...] | None = None
         if request_context_transform_refs is not None:
             assert isinstance(request_context_transform_refs, list)
-            refs = tuple(cast(list[str], request_context_transform_refs))
+            context_transform_refs = tuple(cast(list[str], request_context_transform_refs))
             validate_runtime_context_transform_refs(
-                refs,
+                context_transform_refs,
                 field_path="request metadata 'context_transform_refs'",
                 registry=self._context_transform_registry_for_agent(resolved.agent),
             )
-            resolved = EffectiveRuntimeConfig(
-                approval_mode=resolved.approval_mode,
-                permission=resolved.permission,
-                model=resolved.model,
-                execution_engine=resolved.execution_engine,
-                max_steps=resolved.max_steps,
-                tool_timeout_seconds=resolved.tool_timeout_seconds,
-                reasoning_effort=resolved.reasoning_effort,
-                provider_fallback=resolved.provider_fallback,
-                providers=resolved.providers,
-                resolved_provider=resolved.resolved_provider,
-                agent=(
-                    RuntimeAgentConfig(
-                        preset=resolved.agent.preset,
-                        prompt_profile=resolved.agent.prompt_profile,
-                        prompt=resolved.agent.prompt,
-                        prompt_append=resolved.agent.prompt_append,
-                        prompt_ref=resolved.agent.prompt_ref,
-                        prompt_source=resolved.agent.prompt_source,
-                        prompt_materialization=resolved.agent.prompt_materialization,
-                        manifest_source_scope=resolved.agent.manifest_source_scope,
-                        manifest_source_path=resolved.agent.manifest_source_path,
-                        manifest_tool_allowlist=resolved.agent.manifest_tool_allowlist,
-                        manifest_skill_refs=resolved.agent.manifest_skill_refs,
-                        manifest_hook_refs=resolved.agent.manifest_hook_refs,
-                        hook_refs=resolved.agent.hook_refs,
-                        context_transform_refs=refs,
-                        model=resolved.agent.model,
-                        execution_engine=resolved.agent.execution_engine,
-                        tools=resolved.agent.tools,
-                        skills=resolved.agent.skills,
-                        mcp_binding=resolved.agent.mcp_binding,
-                        provider_fallback=resolved.agent.provider_fallback,
-                    )
-                    if resolved.agent is not None
-                    else None
-                ),
-                context_window=resolved.context_window,
-                tools=resolved.tools,
-                policy=resolved.policy,
-            )
+        resolved = apply_request_runtime_config_overrides(
+            resolved,
+            max_steps=request.metadata.get("max_steps"),
+            reasoning_effort=request.metadata.get("reasoning_effort"),
+            context_transform_refs=context_transform_refs,
+        )
         try:
             self._validate_reasoning_effort_capability(resolved)
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         return resolved
-
-    def _config_with_workflow_preset(
-        self,
-        resolved: EffectiveRuntimeConfig,
-        preset_id: str,
-    ) -> EffectiveRuntimeConfig:
-        preset = self._workflow_preset(preset_id)
-        if preset is None:
-            raise ValueError(
-                f"request metadata 'workflow_preset' references unknown preset: {preset_id}"
-            )
-        if preset.default_agent not in self._agent_registry.executable_primary_ids():
-            return resolved
-
-        raw_agent: dict[str, object] = {"preset": preset.default_agent}
-        if preset.prompt_append is not None:
-            raw_agent["prompt_append"] = preset.prompt_append
-        if preset.hook_preset_refs:
-            raw_agent["hook_refs"] = list(preset.hook_preset_refs)
-        if preset.context_transform_refs:
-            raw_agent["context_transform_refs"] = list(preset.context_transform_refs)
-        return self._config_with_request_agent_override(
-            resolved,
-            raw_agent,
-        )
 
     def _workflow_preset_snapshot(
         self,
@@ -4513,29 +4383,9 @@ class VoidCodeRuntime:
             if raw_fallback_models in (None, []):
                 raw_fallback_models = None
             if raw_fallback_models is not None:
-                fallback_model_source = base_model
-                raw_resolved_provider_for_fallback = payload.get("resolved_provider")
-                if fallback_model_source is None and isinstance(
-                    raw_resolved_provider_for_fallback, dict
-                ):
-                    active_target = cast(dict[str, object], raw_resolved_provider_for_fallback).get(
-                        "active_target"
-                    )
-                    if isinstance(active_target, dict):
-                        raw_active_model = cast(dict[str, object], active_target).get("raw_model")
-                        if isinstance(raw_active_model, str) and raw_active_model:
-                            fallback_model_source = raw_active_model
-                if fallback_model_source is None:
-                    raise ValueError(
-                        "persisted runtime_config.model is required when "
-                        "fallback_models are present"
-                    )
-                base_provider_fallback = parse_provider_fallback_payload(
-                    {
-                        "preferred_model": fallback_model_source,
-                        "fallback_models": raw_fallback_models,
-                    },
-                    source="persisted runtime_config.fallback_models",
+                base_provider_fallback = parse_persisted_provider_fallback(
+                    payload,
+                    model=base_model,
                 )
         categories = parse_runtime_categories_payload(
             payload.get("categories"),
@@ -8134,41 +7984,10 @@ class VoidCodeRuntime:
         workflow_mode_resolution: WorkflowModeResolution | None = None,
     ) -> dict[str, object]:
         effective_config = config or self._effective_runtime_config_from_metadata(None)
-        runtime_config_metadata: dict[str, object] = {
-            "approval_mode": effective_config.approval_mode,
-            "permission": _serialize_external_permission_config(effective_config.permission),
-            "execution_engine": effective_config.execution_engine,
-            "max_steps": effective_config.max_steps,
-            "tool_timeout_seconds": effective_config.tool_timeout_seconds,
-            "fallback_models": (
-                list(effective_config.provider_fallback.fallback_models)
-                if effective_config.provider_fallback is not None
-                else []
-            ),
-            "resolved_provider": resolved_provider_snapshot(effective_config.resolved_provider),
-        }
-        serialized_policy = serialize_runtime_policy_config(effective_config.policy)
-        if serialized_policy is not None:
-            runtime_config_metadata["policy"] = serialized_policy
-        serialized_providers = serialize_provider_configs(effective_config.providers)
-        serialized_runtime_providers = _runtime_provider_config_metadata(serialized_providers)
-        if serialized_runtime_providers:
-            runtime_config_metadata["providers"] = serialized_runtime_providers
-        serialized_context_window = serialize_runtime_context_window_config(
-            effective_config.context_window
+        runtime_config_metadata = serialize_runtime_config_core(effective_config)
+        runtime_config_metadata["resolved_provider"] = resolved_provider_snapshot(
+            effective_config.resolved_provider
         )
-        if serialized_context_window is not None:
-            runtime_config_metadata["context_window"] = serialized_context_window
-        if effective_config.model is not None:
-            runtime_config_metadata["model"] = effective_config.model
-        if effective_config.reasoning_effort is not None:
-            runtime_config_metadata["reasoning_effort"] = effective_config.reasoning_effort
-        serialized_tools = serialize_runtime_tools_config(effective_config.tools)
-        if serialized_tools is not None:
-            runtime_config_metadata["tools"] = serialized_tools
-        serialized_agent = serialize_runtime_agent_config(effective_config.agent)
-        if serialized_agent is not None:
-            runtime_config_metadata["agent"] = serialized_agent
         resolved_hook_presets = self._build_hook_preset_snapshot(
             effective_config.agent,
             workflow_mode_resolution=workflow_mode_resolution,
@@ -8360,6 +8179,7 @@ class VoidCodeRuntime:
             agent=merged_agent,
             context_window=resolved.context_window,
             tools=resolved.tools,
+            policy=resolved.policy,
         )
 
     def _validate_runtime_agent_for_execution(
@@ -8872,127 +8692,35 @@ class VoidCodeRuntime:
             raise ValueError("persisted session metadata must include runtime_config")
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
-        unknown_runtime_config_keys = sorted(
-            key for key in runtime_config if key not in _PERSISTED_RUNTIME_CONFIG_KEYS
+        materialized = parse_persisted_runtime_config(
+            runtime_config,
+            default_approval_mode=approval_mode,
+            default_permission=self._config.permission,
+            default_policy=self._config.policy,
+            default_model=model,
+            default_execution_engine=execution_engine,
+            default_max_steps=max_steps,
+            default_tool_timeout_seconds=self._config.tool_timeout_seconds,
+            default_reasoning_effort=reasoning_effort,
+            default_providers=providers,
+            default_tools=self._config.tools,
+            default_context_window=context_window,
         )
-        if unknown_runtime_config_keys:
-            raise ValueError(
-                "persisted runtime_config field "
-                f"'{unknown_runtime_config_keys[0]}' is not supported"
-            )
-        persisted_approval_mode = runtime_config.get("approval_mode")
-        parsed_approval_mode = _permission_decision_or_none(persisted_approval_mode)
-        if parsed_approval_mode is not None:
-            approval_mode = parsed_approval_mode
-        permission = self._config.permission
-        if "permission" in runtime_config:
-            permission = _parse_persisted_external_permission_config(
-                runtime_config.get("permission")
-            )
-        policy = self._config.policy
-        if "policy" in runtime_config:
-            policy = parse_runtime_policy_payload(
-                runtime_config.get("policy"),
-                source="persisted runtime_config.policy",
-            )
-        persisted_model = runtime_config.get("model")
-        if persisted_model is None or isinstance(persisted_model, str):
-            model = persisted_model
-        if "max_steps" in runtime_config:
-            persisted_max_steps = runtime_config.get("max_steps")
-            if persisted_max_steps is None:
-                max_steps = None
-            elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
-                if persisted_max_steps < 0:
-                    raise ValueError(
-                        "persisted runtime_config max_steps must be a non-negative integer "
-                        "(0 = unlimited)"
-                    )
-                max_steps = persisted_max_steps
-        tool_timeout_seconds = self._config.tool_timeout_seconds
-        if "tool_timeout_seconds" in runtime_config:
-            persisted_tool_timeout = runtime_config.get("tool_timeout_seconds")
-            if persisted_tool_timeout is None:
-                tool_timeout_seconds = None
-            elif isinstance(persisted_tool_timeout, int) and not isinstance(
-                persisted_tool_timeout, bool
-            ):
-                if persisted_tool_timeout < 1:
-                    raise ValueError(
-                        "persisted runtime_config tool_timeout_seconds must be at least 1"
-                    )
-                tool_timeout_seconds = persisted_tool_timeout
-        if "reasoning_effort" in runtime_config:
-            persisted_reasoning_effort = runtime_config.get("reasoning_effort")
-            if persisted_reasoning_effort is None:
-                reasoning_effort = None
-            elif isinstance(persisted_reasoning_effort, str) and persisted_reasoning_effort:
-                reasoning_effort = persisted_reasoning_effort
-            else:
-                raise ValueError(
-                    "persisted runtime_config reasoning_effort must be a non-empty string"
-                )
-        if "providers" in runtime_config:
-            try:
-                providers = parse_provider_configs_payload(
-                    runtime_config.get("providers"),
-                    source="persisted runtime_config.providers",
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    format_invalid_provider_config_error(
-                        "persisted runtime_config.providers",
-                        str(exc),
-                    )
-                ) from exc
-        provider_fallback = None
-        if "fallback_models" in runtime_config:
-            raw_fallback_models = runtime_config.get("fallback_models")
-            if raw_fallback_models in (None, []):
-                raw_fallback_models = None
-            if raw_fallback_models is None:
-                provider_fallback = None
-            else:
-                fallback_model_source = model
-                raw_resolved_provider_for_fallback = runtime_config.get("resolved_provider")
-                if fallback_model_source is None and isinstance(
-                    raw_resolved_provider_for_fallback, dict
-                ):
-                    active_target = cast(dict[str, object], raw_resolved_provider_for_fallback).get(
-                        "active_target"
-                    )
-                    if isinstance(active_target, dict):
-                        raw_model = cast(dict[str, object], active_target).get("raw_model")
-                        if isinstance(raw_model, str) and raw_model:
-                            fallback_model_source = raw_model
-                if fallback_model_source is None:
-                    fallback_model_source = self._config.model
-                if fallback_model_source is None:
-                    raise ValueError(
-                        "persisted runtime_config.model is required when "
-                        "fallback_models are present"
-                    )
-                try:
-                    provider_fallback = parse_provider_fallback_payload(
-                        {
-                            "preferred_model": fallback_model_source,
-                            "fallback_models": raw_fallback_models,
-                        },
-                        source="persisted runtime_config.fallback_models",
-                    )
-                except ValueError as exc:
-                    raise ValueError(
-                        format_invalid_provider_config_error(
-                            "persisted runtime_config.fallback_models",
-                            str(exc),
-                        )
-                    ) from exc
-        tools = self._config.tools
-        if "tools" in runtime_config:
-            tools = _parse_persisted_runtime_tools_config(runtime_config.get("tools"))
-        if "agent" in runtime_config:
+        approval_mode = materialized.approval_mode
+        permission = materialized.permission
+        policy = materialized.policy
+        model = materialized.model
+        execution_engine = materialized.execution_engine
+        max_steps = materialized.max_steps
+        tool_timeout_seconds = materialized.tool_timeout_seconds
+        reasoning_effort = materialized.reasoning_effort
+        providers = materialized.providers
+        provider_fallback = materialized.provider_fallback
+        tools = materialized.tools
+        context_window = materialized.context_window
+        if materialized.has_agent:
             agent = parse_runtime_agent_payload(
-                runtime_config.get("agent"),
+                materialized.raw_agent,
                 source="persisted runtime_config.agent",
                 hooks=self._config.hooks,
                 agent_registry=self._agent_registry,
@@ -9005,25 +8733,7 @@ class VoidCodeRuntime:
                 )
         else:
             agent = None
-        if "context_window" in runtime_config:
-            try:
-                context_window = parse_runtime_context_window_payload(
-                    runtime_config.get("context_window"),
-                    source="persisted runtime_config.context_window",
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    format_invalid_provider_config_error(
-                        "persisted runtime_config.context_window",
-                        str(exc),
-                    )
-                ) from exc
-        persisted_execution_engine = _execution_engine_or_none(
-            runtime_config.get("execution_engine")
-        )
-        if persisted_execution_engine is not None:
-            execution_engine = persisted_execution_engine
-        raw_resolved_provider = runtime_config.get("resolved_provider")
+        raw_resolved_provider = materialized.raw_resolved_provider
         if raw_resolved_provider is not None:
             resolved_provider = parse_resolved_provider_snapshot(
                 raw_resolved_provider,
@@ -9229,187 +8939,6 @@ class VoidCodeRuntime:
         if response is None:
             return False
         return True
-
-
-def _serialize_external_permission_config(
-    permission: ExternalDirectoryPermissionConfig,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "external_directory_read": dict(permission.read.rules),
-        "external_directory_write": dict(permission.write.rules),
-    }
-    if permission.rules:
-        payload["rules"] = [
-            {
-                key: value
-                for key, value in {
-                    "tool": rule.tool,
-                    "path": rule.path,
-                    "command": rule.command,
-                    "decision": rule.decision,
-                }.items()
-                if value is not None
-            }
-            for rule in permission.rules
-        ]
-    return payload
-
-
-def _parse_persisted_external_permission_config(
-    raw_permission: object,
-) -> ExternalDirectoryPermissionConfig:
-    if not isinstance(raw_permission, dict):
-        raise ValueError("persisted runtime_config permission must be an object")
-    payload = cast(dict[object, object], raw_permission)
-    allowed_keys = {"external_directory_read", "external_directory_write", "rules"}
-    unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
-    if unknown_keys:
-        raise ValueError(
-            f"persisted runtime_config permission field '{unknown_keys[0]}' is not supported"
-        )
-    return ExternalDirectoryPermissionConfig(
-        read=ExternalDirectoryPolicy(
-            rules=_parse_persisted_external_permission_rules(
-                payload.get("external_directory_read"),
-                field_path="permission.external_directory_read",
-                default=(("*", "allow"),),
-            )
-        ),
-        write=ExternalDirectoryPolicy(
-            rules=_parse_persisted_external_permission_rules(
-                payload.get("external_directory_write"),
-                field_path="permission.external_directory_write",
-                default=(("*", "allow"),),
-            )
-        ),
-        rules=_parse_persisted_pattern_permission_rules(payload.get("rules")),
-    )
-
-
-def _parse_persisted_runtime_tools_config(raw_value: object) -> RuntimeToolsConfig | None:
-    try:
-        return parse_runtime_tools_payload(raw_value, source="persisted runtime_config.tools")
-    except ValueError as exc:
-        raise ValueError(
-            format_invalid_provider_config_error("persisted runtime_config.tools", str(exc))
-        ) from exc
-
-
-def _parse_persisted_external_permission_rules(
-    raw_rules: object,
-    *,
-    field_path: str,
-    default: tuple[tuple[str, PermissionDecision], ...],
-) -> tuple[tuple[str, PermissionDecision], ...]:
-    if raw_rules is None:
-        return default
-    if not isinstance(raw_rules, dict):
-        raise ValueError(f"persisted runtime_config {field_path} must be an object")
-    parsed: list[tuple[str, PermissionDecision]] = []
-    for raw_pattern, raw_decision in cast(dict[object, object], raw_rules).items():
-        if not isinstance(raw_pattern, str) or not raw_pattern.strip():
-            raise ValueError(f"persisted runtime_config {field_path} keys must be strings")
-        decision = _permission_decision_or_none(raw_decision)
-        if decision is None:
-            raise ValueError(
-                f"persisted runtime_config {field_path}.{raw_pattern} must be allow, deny, or ask"
-            )
-        parsed.append((raw_pattern, decision))
-    return tuple(parsed) if parsed else default
-
-
-def _parse_persisted_pattern_permission_rules(
-    raw_rules: object,
-) -> tuple[PatternPermissionRule, ...]:
-    if raw_rules is None:
-        return ()
-    if not isinstance(raw_rules, list):
-        raise ValueError("persisted runtime_config permission.rules must be an array")
-    parsed: list[PatternPermissionRule] = []
-    allowed_keys = {"tool", "path", "command", "decision"}
-    for index, raw_rule in enumerate(raw_rules):
-        field_path = f"permission.rules[{index}]"
-        if not isinstance(raw_rule, dict):
-            raise ValueError(f"persisted runtime_config {field_path} must be an object")
-        payload = cast(dict[object, object], raw_rule)
-        unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
-        if unknown_keys:
-            raise ValueError(
-                f"persisted runtime_config {field_path}.{unknown_keys[0]} is not supported"
-            )
-        raw_tool = payload.get("tool", "*")
-        if not isinstance(raw_tool, str) or not raw_tool.strip():
-            raise ValueError(f"persisted runtime_config {field_path}.tool must be a string")
-        raw_path = payload.get("path")
-        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path.strip()):
-            raise ValueError(f"persisted runtime_config {field_path}.path must be a string")
-        raw_command = payload.get("command")
-        if raw_command is not None and (
-            not isinstance(raw_command, str) or not raw_command.strip()
-        ):
-            raise ValueError(f"persisted runtime_config {field_path}.command must be a string")
-        decision = _permission_decision_or_none(payload.get("decision"))
-        if decision is None:
-            raise ValueError(
-                f"persisted runtime_config {field_path}.decision must be allow, deny, or ask"
-            )
-        parsed.append(
-            PatternPermissionRule(
-                tool=raw_tool,
-                path=raw_path,
-                command=raw_command,
-                decision=decision,
-            )
-        )
-    return tuple(parsed)
-
-
-def _runtime_provider_config_metadata(
-    serialized_providers: dict[str, object] | None,
-) -> dict[str, object] | None:
-    if not serialized_providers:
-        return None
-    retained: dict[str, object] = {}
-    for provider_name, raw_provider in serialized_providers.items():
-        if provider_name == "custom":
-            if not isinstance(raw_provider, dict):
-                continue
-            retained_custom: dict[str, object] = {}
-            for custom_name, raw_custom_provider in cast(dict[str, object], raw_provider).items():
-                if not isinstance(raw_custom_provider, dict):
-                    continue
-                custom_provider_payload = cast(dict[str, object], raw_custom_provider)
-                if "transient_retry" in custom_provider_payload:
-                    retained_custom[custom_name] = {
-                        "transient_retry": custom_provider_payload["transient_retry"]
-                    }
-            if retained_custom:
-                retained[provider_name] = retained_custom
-            continue
-        if not isinstance(raw_provider, dict):
-            continue
-        provider_payload = cast(dict[str, object], raw_provider)
-        if "transient_retry" in provider_payload:
-            retained[provider_name] = {"transient_retry": provider_payload["transient_retry"]}
-    return retained or None
-
-
-@dataclass(frozen=True, slots=True)
-class EffectiveRuntimeConfig:
-    approval_mode: PermissionDecision
-    permission: ExternalDirectoryPermissionConfig
-    model: str | None
-    execution_engine: ExecutionEngineName
-    max_steps: int | None
-    tool_timeout_seconds: int | None = None
-    reasoning_effort: str | None = None
-    provider_fallback: RuntimeProviderFallbackConfig | None = None
-    providers: RuntimeProvidersConfig | None = None
-    resolved_provider: ResolvedProviderConfig = field(default_factory=ResolvedProviderConfig)
-    agent: RuntimeAgentConfig | None = None
-    context_window: RuntimeContextWindowConfig | None = None
-    tools: RuntimeToolsConfig | None = None
-    policy: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
