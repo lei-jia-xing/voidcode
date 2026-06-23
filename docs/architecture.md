@@ -70,6 +70,8 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 `src/voidcode/runtime/service.py` 仍是这一控制面的主要热点。未来拆分应遵循 [`runtime/service.py` 安全拆分计划](./runtime-service-decomposition-plan.md)，先围绕已有测试保护的 background task lifecycle、provider fallback、approval resume、tool registry scoping 与 persisted runtime config replay 边界推进，并保持治理语义继续由 runtime 持有。
 
+同时，后续 runtime 重构应遵循 [`Runtime 架构重构计划`](./runtime-architecture-refactor-plan.md)：新增能力不得继续扩大 legacy compatibility、开放式 metadata 控制面或 `VoidCodeRuntime`/`SqliteSessionStore` 单体职责。旧路径应冻结、隔离并逐步删除，而不是继续获得新的 fallback 语义。
+
 ### `graph/`
 
 graph 是执行引擎和编排层，当前包含两条并行路径：
