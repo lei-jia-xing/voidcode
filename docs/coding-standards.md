@@ -13,6 +13,7 @@ VoidCode 当前更重视代码的清晰性、小规模变更以及可重复的�
 
 - 符合现有的运行时 (runtime)/图 (graph)/工具 (tools) 边界。
 - 在可行的情况下保持函数短小且确定性。
+- Runtime 新行为应遵循 [`runtime-architecture-refactor-plan.md`](./runtime-architecture-refactor-plan.md)：不要新增 legacy fallback、旧 metadata key 兼容层或让客户端/graph/tool 复制 runtime 治理状态。
 - 使用 Ruff 进行格式化/代码检查，并保持 ty 类型检查清理。
 - 当行为改变时增加或更新测试。
 - 除非必要，避免引入新的依赖。
