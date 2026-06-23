@@ -790,7 +790,7 @@ class RuntimeBackgroundTaskSupervisor:
                                 with self._queue_lock:
                                     self._release_slot(reserved_identity)
                             return
-                        runtime._run_background_task_worker(background_task_id)
+                        self.run_background_task_worker(background_task_id)
                     finally:
                         with self._queue_lock:
                             self._threads.pop(background_task_id, None)

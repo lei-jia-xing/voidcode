@@ -3824,7 +3824,7 @@ class VoidCodeRuntime:
         return self._background_task_supervisor.start_background_task(validated_request)
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
-        self._reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
         validate_background_task_id(task_id)
         task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
         return self._background_task_supervisor.task_with_observability(task)
@@ -3835,7 +3835,7 @@ class VoidCodeRuntime:
         *,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
-        self._reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
         return self._background_task_supervisor.load_background_task_result(
             task_id,
             emit_result_read_hook=emit_result_read_hook,
@@ -3847,7 +3847,7 @@ class VoidCodeRuntime:
         child_session_id: str,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult | None:
-        self._reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
         validated_child_session_id = validate_session_reference_id(
             child_session_id,
             field_name="child_session_id",
@@ -6142,7 +6142,9 @@ class VoidCodeRuntime:
                     workspace=self._workspace,
                     task_id=task_summary.task.id,
                 )
-                child_response = self._load_background_task_child_response(task=task)
+                child_response = (
+                    self._background_task_supervisor.load_background_task_child_response(task=task)
+                )
                 owned_request_id = (
                     self._waiting_request_id_from_response(
                         child_response,
@@ -8777,94 +8779,6 @@ class VoidCodeRuntime:
         request_kind: Literal["approval", "question"],
     ) -> str | None:
         return waiting_request_id_from_response(response, request_kind=request_kind)
-
-    def _load_background_task_child_response(
-        self,
-        *,
-        task: BackgroundTaskState,
-    ) -> RuntimeResponse | None:
-        # Compatibility wrapper for tests/callers.
-        return self._background_task_supervisor.load_background_task_child_response(task=task)
-
-    def _load_background_task_child_result(
-        self,
-        *,
-        task: BackgroundTaskState,
-    ) -> RuntimeSessionResult | None:
-        # Compatibility wrapper for tests/callers.
-        return self._background_task_supervisor.load_background_task_child_result(task=task)
-
-    def _background_task_result(self, *, task: BackgroundTaskState) -> BackgroundTaskResult:
-        # Compatibility wrapper for tests/callers.
-        return self._background_task_supervisor.background_task_result(task=task)
-
-    def _emit_background_task_parent_terminal_event(self, *, task: BackgroundTaskState) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.emit_background_task_parent_terminal_event(task=task)
-
-    def _backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.backfill_parent_background_task_event(task=task)
-
-    def _reconcile_parent_background_task_events_for_session(
-        self,
-        *,
-        parent_session_id: str,
-    ) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
-            parent_session_id=parent_session_id
-        )
-
-    def _emit_background_task_waiting_approval(
-        self,
-        *,
-        task: BackgroundTaskState,
-        child_response: RuntimeResponse,
-    ) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.emit_background_task_waiting_approval(
-            task=task,
-            child_response=child_response,
-        )
-
-    def _finalize_background_task_from_session_response(
-        self,
-        *,
-        session_response: RuntimeResponse,
-    ) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.finalize_background_task_from_session_response(
-            session_response=session_response
-        )
-
-    def _run_background_task_lifecycle_hook(self, task: BackgroundTaskState) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.run_background_task_lifecycle_hook(task)
-
-    def _run_background_task_lifecycle_surface(
-        self,
-        *,
-        task: BackgroundTaskState,
-        surface: RuntimeHookSurface,
-        session_id: str,
-        extra_payload: dict[str, object] | None = None,
-    ) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.run_background_task_lifecycle_surface(
-            task=task,
-            surface=surface,
-            session_id=session_id,
-            extra_payload=extra_payload,
-        )
-
-    def _reconcile_background_tasks_if_needed(self) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.reconcile_background_tasks_if_needed()
-
-    def _run_background_task_worker(self, task_id: str) -> None:
-        # Compatibility wrapper for tests/callers.
-        self._background_task_supervisor.run_background_task_worker(task_id)
 
     def _effective_runtime_config_from_metadata(
         self, metadata: dict[str, object] | None

@@ -2587,7 +2587,7 @@ def test_runtime_background_task_started_hook_runs_outside_queue_lock(
         assert cast(Any, supervisor._queue_lock)._is_owned() is False
         assert worker_started.is_set() is False
 
-    monkeypatch.setattr(runtime, "_run_background_task_worker", no_op_worker)
+    monkeypatch.setattr(supervisor, "run_background_task_worker", no_op_worker)
     monkeypatch.setattr(
         supervisor,
         "run_background_task_lifecycle_surface",
@@ -2621,7 +2621,7 @@ def test_runtime_exit_waits_for_background_task_worker(
         assert release_worker.wait(timeout=2.0)
         worker_finished.set()
 
-    monkeypatch.setattr(runtime, "_run_background_task_worker", blocking_worker)
+    monkeypatch.setattr(supervisor, "run_background_task_worker", blocking_worker)
 
     supervisor._drain_background_task_queue()
     assert worker_started.wait(timeout=2.0)
@@ -2652,7 +2652,7 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
         worker_started.set()
         assert release_worker.wait(timeout=2.0)
 
-    monkeypatch.setattr(runtime, "_run_background_task_worker", blocking_worker)
+    monkeypatch.setattr(supervisor, "run_background_task_worker", blocking_worker)
 
     supervisor._drain_background_task_queue()
     assert worker_started.wait(timeout=2.0)
@@ -2689,7 +2689,7 @@ def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
         runtime._background_task_shutdown_requested = True
 
     run_mock = Mock(side_effect=AssertionError("worker must not run after shutdown"))
-    cast(Any, runtime)._run_background_task_worker = run_mock
+    cast(Any, supervisor).run_background_task_worker = run_mock
     cast(Any, supervisor).run_background_task_lifecycle_surface = request_shutdown_from_started_hook
 
     supervisor._drain_background_task_queue()
@@ -7597,7 +7597,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         event.sequence for event in leader_response.events
     )
 
-    runtime._emit_background_task_waiting_approval(
+    runtime._background_task_supervisor.emit_background_task_waiting_approval(
         task=running,
         child_response=child_response,
     )
@@ -8535,7 +8535,7 @@ def test_runtime_background_task_waiting_approval_race_does_not_fail_child_task(
         "runtime.approval_requested",
     )
 
-    runtime._emit_background_task_waiting_approval(
+    runtime._background_task_supervisor.emit_background_task_waiting_approval(
         task=running,
         child_response=child_response,
     )
@@ -9111,7 +9111,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
     run_mock = Mock(side_effect=AssertionError("runtime.run must not be called"))
     cast(Any, runtime).run = run_mock
 
-    runtime._run_background_task_worker("task-race-cancel")
+    runtime._background_task_supervisor.run_background_task_worker("task-race-cancel")
 
     final_task = runtime.load_background_task("task-race-cancel")
     assert final_task.status == "cancelled"
@@ -9147,7 +9147,7 @@ def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path
     run_mock = Mock(side_effect=AssertionError("runtime.run must not be called"))
     cast(Any, runtime).run = run_mock
 
-    runtime._run_background_task_worker("task-dispatch-cancel")
+    runtime._background_task_supervisor.run_background_task_worker("task-dispatch-cancel")
 
     final_task = runtime.load_background_task("task-dispatch-cancel")
     assert final_task.status == "cancelled"
