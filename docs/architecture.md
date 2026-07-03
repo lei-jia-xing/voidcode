@@ -70,6 +70,8 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 `src/voidcode/runtime/service.py` 仍是这一控制面的主要热点。未来拆分应遵循 [`runtime/service.py` 安全拆分计划](./runtime-service-decomposition-plan.md)，先围绕已有测试保护的 background task lifecycle、provider fallback、approval resume、tool registry scoping 与 persisted runtime config replay 边界推进，并保持治理语义继续由 runtime 持有。
 
+当前已经落地的 runtime decision collaborator 只覆盖两个收敛点：`provider_fallback.py` 负责 provider 错误 retry、fallback 与终止 payload 的纯 decision，`run_loop.py` 继续拥有事件、metadata 和 fallback graph 切换；`config_materializer.py` 负责 persisted/request runtime config 的 parse/serialize decision，`service.py` 继续拥有 registry、capability snapshot、workflow snapshot、agent validation 与 request/session 权威性选择。Task 7 清理了不再需要的 private wrapper/call site，并把显示用 fallback 解析改为复用 `parse_persisted_runtime_config()`。这不是 provider backend 重写、storage schema migration、frontend 行为变更、workspace-scoped MCP 生命周期或任意拓扑 multi-agent 扩展。
+
 同时，后续 runtime 重构应遵循 [`Runtime 架构重构计划`](./runtime-architecture-refactor-plan.md)：新增能力不得继续扩大 legacy compatibility、开放式 metadata 控制面或 `VoidCodeRuntime`/`SqliteSessionStore` 单体职责。旧路径应冻结、隔离并逐步删除，而不是继续获得新的 fallback 语义。
 
 ### `graph/`

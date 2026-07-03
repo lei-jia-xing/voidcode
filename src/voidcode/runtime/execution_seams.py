@@ -17,8 +17,8 @@ from .config import (
 )
 
 if TYPE_CHECKING:
+    from .config_materializer import EffectiveRuntimeConfig
     from .contracts import RuntimeRequest
-    from .service import EffectiveRuntimeConfig
 
 
 @dataclass(frozen=True, slots=True)

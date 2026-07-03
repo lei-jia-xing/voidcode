@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import queue
-import random
 import threading
 import time
 from collections.abc import Generator, Iterator, Mapping
@@ -62,6 +61,13 @@ from .events import (
 )
 from .execution_seams import RuntimeGraphSelection
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
+from .provider_fallback import (
+    PROVIDER_TRANSIENT_RETRYABLE_KINDS,
+    ProviderFallbackDecision,
+    ProviderTerminalDecision,
+    ProviderTransientRetryDecision,
+    decide_provider_error_policy,
+)
 from .question import PendingQuestion
 from .session import SessionState
 from .session_metadata_helpers import todo_state_matches_payload
@@ -76,22 +82,8 @@ logger = logging.getLogger(__name__)
 
 _TOOL_PROGRESS_QUEUE_MAX_ITEMS = 128
 _TOOL_PROGRESS_POLL_SECONDS = 0.05
-_PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
 _STUCK_DETECTED_MIN_TURN = 25
 _STUCK_DETECTED_MIN_TOOL_RESULTS = 10
-
-
-def _provider_transient_retry_delay_ms(
-    *,
-    retry_attempt: int,
-    base_delay_ms: float,
-    max_delay_ms: float,
-    jitter: bool,
-) -> int:
-    capped_delay = min(base_delay_ms * (2 ** max(retry_attempt - 1, 0)), max_delay_ms)
-    if jitter and capped_delay > 0:
-        capped_delay = random.uniform(0, capped_delay)
-    return max(0, int(round(capped_delay)))
 
 
 def _tool_error_content(tool_name: str, error: str) -> str:
@@ -1568,62 +1560,59 @@ class RuntimeRunLoopCoordinator:
                 )
                 provider_error = exc if isinstance(exc, ProviderExecutionError) else None
                 if provider_error is not None:
-                    if provider_error.kind == "cancelled":
-                        yield runtime._failed_chunk(
-                            session=session,
-                            sequence=sequence + 1,
-                            error=str(provider_error),
-                            payload={
-                                "provider_error_kind": provider_error.kind,
-                                "provider": provider_error.provider_name,
-                                "model": provider_error.model_name,
-                                "cancelled": True,
-                            },
-                        )
-                        return
-                    if (
-                        provider_error.kind == "rate_limit"
-                        and active_graph_request.metadata.get("background_rate_limit_retry") is True
-                    ):
-                        yield runtime._failed_chunk(
-                            session=session,
-                            sequence=sequence + 1,
-                            error=str(provider_error),
-                            payload={
-                                "provider_error_kind": provider_error.kind,
-                                "provider": provider_error.provider_name,
-                                "model": provider_error.model_name,
-                                "background_retry_deferred_fallback": True,
-                                **(
-                                    {"provider_error_details": provider_error.details}
-                                    if provider_error.details is not None
-                                    else {}
-                                ),
-                            },
-                        )
-                        return
                     fallback_selection = runtime._fallback_graph_selection(
                         error=provider_error,
                         session_metadata=session.metadata,
                         provider_attempt=current_provider_attempt,
                     )
-                    next_attempt = current_provider_attempt + 1
                     transient_retry_config = runtime._provider_transient_retry_config(
                         provider_name=provider_error.provider_name,
                         session_metadata=session.metadata,
                     )
-                    current_provider_retry_attempt: int = int(provider_retry_attempt)
-                    if (
-                        provider_error.kind in _PROVIDER_TRANSIENT_RETRYABLE_KINDS
-                        and current_provider_retry_attempt < transient_retry_config.max_retries
+                    fallback_target = (
+                        fallback_selection.provider_target
+                        if fallback_selection is not None
+                        else None
+                    )
+                    provider_decision = decide_provider_error_policy(
+                        error=provider_error,
+                        current_provider_attempt=current_provider_attempt,
+                        provider_retry_attempt=int(provider_retry_attempt),
+                        transient_retry_config=transient_retry_config,
+                        fallback_target_provider=(
+                            fallback_target.selection.provider
+                            if fallback_target is not None
+                            else None
+                        ),
+                        fallback_target_model=(
+                            fallback_target.selection.model if fallback_target is not None else None
+                        ),
+                        background_rate_limit_retry=(
+                            active_graph_request.metadata.get("background_rate_limit_retry") is True
+                        ),
+                    )
+                    if isinstance(provider_decision, ProviderTerminalDecision) and (
+                        provider_decision.kind == "cancelled"
                     ):
-                        retry_attempt: int = current_provider_retry_attempt + 1
-                        delay_ms = _provider_transient_retry_delay_ms(
-                            retry_attempt=retry_attempt,
-                            base_delay_ms=transient_retry_config.base_delay_ms,
-                            max_delay_ms=transient_retry_config.max_delay_ms,
-                            jitter=transient_retry_config.jitter,
+                        yield runtime._failed_chunk(
+                            session=session,
+                            sequence=sequence + 1,
+                            error=str(provider_error),
+                            payload=provider_decision.payload,
                         )
+                        return
+                    if isinstance(provider_decision, ProviderTerminalDecision) and (
+                        provider_decision.kind == "background_rate_limit_retry"
+                    ):
+                        yield runtime._failed_chunk(
+                            session=session,
+                            sequence=sequence + 1,
+                            error=str(provider_error),
+                            payload=provider_decision.payload,
+                        )
+                        return
+                    if isinstance(provider_decision, ProviderTransientRetryDecision):
+                        delay_ms = provider_decision.delay_ms
                         logger.info(
                             (
                                 "provider transient retry for session %s: %s/%s "
@@ -1633,8 +1622,8 @@ class RuntimeRunLoopCoordinator:
                             provider_error.provider_name,
                             provider_error.model_name,
                             provider_error.kind,
-                            retry_attempt,
-                            transient_retry_config.max_retries,
+                            provider_decision.retry_attempt,
+                            provider_decision.max_retries,
                             delay_ms,
                         )
                         sequence += 1
@@ -1646,24 +1635,12 @@ class RuntimeRunLoopCoordinator:
                                 sequence=sequence,
                                 event_type=RUNTIME_PROVIDER_TRANSIENT_RETRY,
                                 source="runtime",
-                                payload={
-                                    "reason": provider_error.kind,
-                                    "provider": provider_error.provider_name,
-                                    "model": provider_error.model_name,
-                                    "retry_attempt": retry_attempt,
-                                    "max_retries": transient_retry_config.max_retries,
-                                    "delay_ms": delay_ms,
-                                    **(
-                                        {"provider_error_details": provider_error.details}
-                                        if provider_error.details is not None
-                                        else {}
-                                    ),
-                                },
+                                payload=provider_decision.event_payload(),
                             ),
                         )
                         if delay_ms > 0:
                             time.sleep(delay_ms / 1000.0)
-                        provider_retry_attempt = int(retry_attempt)
+                        provider_retry_attempt = int(provider_decision.retry_attempt)
                         retry_metadata: dict[str, object] = {
                             **current_metadata,
                             "provider_attempt": current_provider_attempt,
@@ -1689,7 +1666,8 @@ class RuntimeRunLoopCoordinator:
                             abort_signal=current_abort_signal,
                         )
                         continue
-                    if fallback_selection is not None:
+                    if isinstance(provider_decision, ProviderFallbackDecision):
+                        assert fallback_selection is not None
                         next_target = fallback_selection.provider_target
                         logger.info(
                             (
@@ -1702,7 +1680,7 @@ class RuntimeRunLoopCoordinator:
                             next_target.selection.provider,
                             next_target.selection.model,
                             provider_error.kind,
-                            next_attempt,
+                            provider_decision.attempt,
                         )
                         sequence += 1
                         yield RuntimeStreamChunk(
@@ -1713,19 +1691,7 @@ class RuntimeRunLoopCoordinator:
                                 sequence=sequence,
                                 event_type="runtime.provider_fallback",
                                 source="runtime",
-                                payload={
-                                    "reason": provider_error.kind,
-                                    "from_provider": provider_error.provider_name,
-                                    "from_model": provider_error.model_name,
-                                    "to_provider": next_target.selection.provider,
-                                    "to_model": next_target.selection.model,
-                                    "attempt": next_attempt,
-                                    **(
-                                        {"provider_error_details": provider_error.details}
-                                        if provider_error.details is not None
-                                        else {}
-                                    ),
-                                },
+                                payload=provider_decision.event_payload(),
                             ),
                         )
                         provider_attempt = fallback_selection.provider_attempt
@@ -1765,14 +1731,9 @@ class RuntimeRunLoopCoordinator:
                             abort_signal=fallback_abort_signal,
                         )
                         continue
-                    if provider_error.kind in {
-                        "missing_auth",
-                        "rate_limit",
-                        "invalid_model",
-                        "transient_failure",
-                        "unsupported_feature",
-                        "stream_tool_feedback_shape",
-                    }:
+                    if isinstance(provider_decision, ProviderTerminalDecision) and (
+                        provider_decision.kind == "fallback_exhausted"
+                    ):
                         yield runtime._failed_chunk(
                             session=session,
                             sequence=sequence + 1,
@@ -1782,49 +1743,23 @@ class RuntimeRunLoopCoordinator:
                                     model_name=provider_error.model_name,
                                     retry_attempts=provider_retry_attempt,
                                 )
-                                if provider_error.kind in _PROVIDER_TRANSIENT_RETRYABLE_KINDS
+                                if provider_error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
                                 else format_fallback_exhausted_error(
                                     provider_name=provider_error.provider_name,
                                     model_name=provider_error.model_name,
-                                    attempt=next_attempt,
+                                    attempt=current_provider_attempt + 1,
                                 )
                             ),
-                            payload={
-                                "provider_error_kind": provider_error.kind,
-                                "provider": provider_error.provider_name,
-                                "model": provider_error.model_name,
-                                "fallback_exhausted": True,
-                                **(
-                                    {
-                                        "provider_retry_exhausted": True,
-                                        "provider_retry_attempts": provider_retry_attempt,
-                                    }
-                                    if provider_error.kind in _PROVIDER_TRANSIENT_RETRYABLE_KINDS
-                                    else {}
-                                ),
-                                **(
-                                    {"provider_error_details": provider_error.details}
-                                    if provider_error.details is not None
-                                    else {}
-                                ),
-                            },
+                            payload=provider_decision.payload,
                         )
                         return
                 if provider_error is not None:
+                    assert isinstance(provider_decision, ProviderTerminalDecision)
                     yield runtime._failed_chunk(
                         session=session,
                         sequence=sequence + 1,
                         error=str(provider_error),
-                        payload={
-                            "provider_error_kind": provider_error.kind,
-                            "provider": provider_error.provider_name,
-                            "model": provider_error.model_name,
-                            **(
-                                {"provider_error_details": provider_error.details}
-                                if provider_error.details is not None
-                                else {}
-                            ),
-                        },
+                        payload=provider_decision.payload,
                     )
                     return
                 classified_error = classify_provider_error(exc)

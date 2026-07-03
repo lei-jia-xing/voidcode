@@ -18,6 +18,8 @@ from unittest.mock import Mock
 import pytest
 
 import voidcode.runtime.background_tasks as runtime_background_tasks_module
+import voidcode.runtime.config_materializer as runtime_config_materializer_module
+import voidcode.runtime.provider_fallback as runtime_provider_fallback_module
 import voidcode.runtime.run_loop as runtime_run_loop_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
@@ -120,6 +122,13 @@ from voidcode.runtime.permission import (
     PermissionPolicy,
     evaluate_pattern_permission_rules,
 )
+from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
+from voidcode.runtime.provider_fallback import (
+    ProviderFallbackDecision,
+    ProviderTerminalDecision,
+    ProviderTransientRetryDecision,
+    decide_provider_error_policy,
+)
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -150,7 +159,6 @@ from voidcode.runtime.task import (
     is_background_task_terminal,
 )
 from voidcode.runtime.workflow import (
-    WorkflowMcpBindingIntent,
     WorkflowPreset,
     WorkflowPresetRegistry,
 )
@@ -163,6 +171,109 @@ _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "allow"},
     "external_directory_write": {"*": "allow"},
 }
+
+
+def test_provider_fallback_collaborator_prefers_retry_before_fallback() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="rate limited",
+            details={"request_id": "retry-1"},
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=0,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter=False,
+        ),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderTransientRetryDecision)
+    assert decision.event_payload() == {
+        "reason": "rate_limit",
+        "provider": "primary",
+        "model": "model-a",
+        "retry_attempt": 1,
+        "max_retries": 1,
+        "delay_ms": 0,
+        "provider_error_details": {"request_id": "retry-1"},
+    }
+
+
+def test_provider_fallback_collaborator_emits_fallback_after_retry_exhaustion() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="transient_failure",
+            provider_name="primary",
+            model_name="model-a",
+            message="still failing",
+            details={"request_id": "fallback-1"},
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=1,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter=False,
+        ),
+        fallback_target_provider="fallback",
+        fallback_target_model="model-b",
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderFallbackDecision)
+    assert decision.event_payload() == {
+        "reason": "transient_failure",
+        "from_provider": "primary",
+        "from_model": "model-a",
+        "to_provider": "fallback",
+        "to_model": "model-b",
+        "attempt": 1,
+        "provider_error_details": {"request_id": "fallback-1"},
+    }
+
+
+def test_provider_fallback_collaborator_marks_retry_exhausted_terminal() -> None:
+    decision = decide_provider_error_policy(
+        error=ProviderExecutionError(
+            kind="rate_limit",
+            provider_name="primary",
+            model_name="model-a",
+            message="still failing",
+            details={"request_id": "terminal-1"},
+        ),
+        current_provider_attempt=0,
+        provider_retry_attempt=1,
+        transient_retry_config=ProviderTransientRetryConfig(
+            max_retries=1,
+            base_delay_ms=0,
+            max_delay_ms=0,
+            jitter=False,
+        ),
+        fallback_target_provider=None,
+        fallback_target_model=None,
+        background_rate_limit_retry=False,
+    )
+
+    assert isinstance(decision, ProviderTerminalDecision)
+    assert decision.kind == "fallback_exhausted"
+    assert decision.payload == {
+        "provider_error_kind": "rate_limit",
+        "provider": "primary",
+        "model": "model-a",
+        "fallback_exhausted": True,
+        "provider_retry_exhausted": True,
+        "provider_retry_attempts": 1,
+        "provider_error_details": {"request_id": "terminal-1"},
+    }
 
 
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
@@ -1592,6 +1703,37 @@ class _UnexpectedFallbackTurnProvider:
         _ = request
         self.model_provider.calls += 1
         return ProviderTurnResult(output="fallback used")
+
+
+class _RecordingScriptedModelProvider:
+    def __init__(self, *, name: str, outcomes: tuple[object, ...]) -> None:
+        self.name = name
+        self.outcomes = list(outcomes)
+        self.requests: list[ProviderTurnRequest] = []
+        self.calls = 0
+
+    def turn_provider(self) -> _RecordingScriptedTurnProvider:
+        return _RecordingScriptedTurnProvider(model_provider=self)
+
+
+@dataclass(slots=True)
+class _RecordingScriptedTurnProvider:
+    model_provider: _RecordingScriptedModelProvider
+
+    @property
+    def name(self) -> str:
+        return self.model_provider.name
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        turn_request = cast(ProviderTurnRequest, request)
+        self.model_provider.requests.append(turn_request)
+        self.model_provider.calls += 1
+        if not self.model_provider.outcomes:
+            return ProviderTurnResult(output="done")
+        outcome = self.model_provider.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return cast(ProviderTurnResult, outcome)
 
 
 class _TwoEpisodePrimaryModelProvider:
@@ -3173,6 +3315,286 @@ def test_runtime_provider_fallback_resets_after_successful_turn(tmp_path: Path) 
     assert "provider_attempt" not in response.session.metadata
 
 
+def test_runtime_provider_retry_then_fallback_preserves_error_details_and_resets_metadata(
+    tmp_path: Path,
+) -> None:
+    first_details: dict[str, object] = {"source": "stream", "request_id": "retry-1"}
+    fallback_details: dict[str, object] = {
+        "source": "api",
+        "request_id": "fallback-1",
+        "status_code": 503,
+    }
+    primary = _RecordingScriptedModelProvider(
+        name="primary",
+        outcomes=(
+            ProviderExecutionError(
+                kind="transient_failure",
+                provider_name="primary",
+                model_name="model-a",
+                message="first transient failure",
+                details=first_details,
+            ),
+            ProviderExecutionError(
+                kind="transient_failure",
+                provider_name="primary",
+                model_name="model-a",
+                message="second transient failure",
+                details=fallback_details,
+            ),
+        ),
+    )
+    fallback = _RecordingScriptedModelProvider(
+        name="fallback",
+        outcomes=(ProviderTurnResult(output="fallback recovered"),),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"primary": primary, "fallback": fallback}
+        ),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=("fallback/model-b",),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "primary": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(
+                            max_retries=1,
+                            base_delay_ms=0,
+                            max_delay_ms=0,
+                            jitter=False,
+                        )
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="provider retry then fallback"))
+
+    assert response.session.status == "completed"
+    assert response.output == "fallback recovered"
+    retry_event = next(
+        event for event in response.events if event.event_type == RUNTIME_PROVIDER_TRANSIENT_RETRY
+    )
+    fallback_event = next(
+        event for event in response.events if event.event_type == "runtime.provider_fallback"
+    )
+    assert retry_event.payload == {
+        "reason": "transient_failure",
+        "provider": "primary",
+        "model": "model-a",
+        "retry_attempt": 1,
+        "max_retries": 1,
+        "delay_ms": 0,
+        "provider_error_details": first_details,
+    }
+    assert fallback_event.payload == {
+        "reason": "transient_failure",
+        "from_provider": "primary",
+        "from_model": "model-a",
+        "to_provider": "fallback",
+        "to_model": "model-b",
+        "attempt": 1,
+        "provider_error_details": fallback_details,
+    }
+    assert [request.attempt for request in primary.requests] == [0, 0]
+    assert [request.attempt for request in fallback.requests] == [1]
+    assert "provider_attempt" not in response.session.metadata
+    assert response.session.metadata.get("provider_retry_attempt", 0) == 0
+
+
+def test_runtime_provider_retry_exhausted_without_fallback_emits_terminal_payload(
+    tmp_path: Path,
+) -> None:
+    exhausted_details: dict[str, object] = {
+        "source": "api",
+        "request_id": "retry-exhausted",
+    }
+    primary = _RecordingScriptedModelProvider(
+        name="primary",
+        outcomes=(
+            ProviderExecutionError(
+                kind="transient_failure",
+                provider_name="primary",
+                model_name="model-a",
+                message="first transient failure",
+                details={"source": "api", "request_id": "retry-start"},
+            ),
+            ProviderExecutionError(
+                kind="transient_failure",
+                provider_name="primary",
+                model_name="model-a",
+                message="second transient failure",
+                details=exhausted_details,
+            ),
+        ),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(providers={"primary": primary}),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "primary": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(
+                            max_retries=1,
+                            base_delay_ms=0,
+                            max_delay_ms=0,
+                            jitter=False,
+                        )
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="provider retry exhausted"))
+
+    assert response.session.status == "failed"
+    assert [event.event_type for event in response.events].count(
+        RUNTIME_PROVIDER_TRANSIENT_RETRY
+    ) == 1
+    assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
+    failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
+    assert failed_event.payload["provider_error_kind"] == "transient_failure"
+    assert failed_event.payload["provider"] == "primary"
+    assert failed_event.payload["model"] == "model-a"
+    assert failed_event.payload["fallback_exhausted"] is True
+    assert failed_event.payload["provider_retry_exhausted"] is True
+    assert failed_event.payload["provider_retry_attempts"] == 1
+    assert failed_event.payload["provider_error_details"] == exhausted_details
+
+
+def test_runtime_provider_fallback_exhausted_preserves_error_details_payload(
+    tmp_path: Path,
+) -> None:
+    auth_details: dict[str, object] = {
+        "source": "api",
+        "request_id": "auth-1",
+        "status_code": 401,
+    }
+    primary = _RecordingScriptedModelProvider(
+        name="primary",
+        outcomes=(
+            ProviderExecutionError(
+                kind="missing_auth",
+                provider_name="primary",
+                model_name="model-a",
+                message="missing provider auth",
+                details=auth_details,
+            ),
+        ),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(providers={"primary": primary}),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=(),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="fallback exhausted"))
+
+    assert response.session.status == "failed"
+    assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
+    failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
+    assert failed_event.payload["provider_error_kind"] == "missing_auth"
+    assert failed_event.payload["provider"] == "primary"
+    assert failed_event.payload["model"] == "model-a"
+    assert failed_event.payload["fallback_exhausted"] is True
+    assert failed_event.payload["provider_error_details"] == auth_details
+
+
+@pytest.mark.parametrize(
+    ("error_kind", "expected_payload"),
+    [
+        (
+            "cancelled",
+            {
+                "provider_error_kind": "cancelled",
+                "cancelled": True,
+            },
+        ),
+        (
+            "context_limit",
+            {
+                "provider_error_kind": "context_limit",
+                "provider_error_details": {"source": "api", "request_id": "context-1"},
+            },
+        ),
+    ],
+)
+def test_runtime_provider_fallback_skips_cancelled_and_context_limit_errors(
+    tmp_path: Path,
+    error_kind: ProviderErrorKind,
+    expected_payload: dict[str, object],
+) -> None:
+    details = expected_payload.get("provider_error_details")
+    primary = _RecordingScriptedModelProvider(
+        name="primary",
+        outcomes=(
+            ProviderExecutionError(
+                kind=error_kind,
+                provider_name="primary",
+                model_name="model-a",
+                message=f"{error_kind} terminal",
+                details=cast(dict[str, object] | None, details),
+            ),
+        ),
+    )
+    fallback = _RecordingScriptedModelProvider(
+        name="fallback",
+        outcomes=(ProviderTurnResult(output="should not fallback"),),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(
+            providers={"primary": primary, "fallback": fallback}
+        ),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=("fallback/model-b",),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "primary": LiteLLMProviderConfig(
+                        transient_retry=ProviderTransientRetryConfig(max_retries=0)
+                    )
+                }
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt=f"no fallback for {error_kind}"))
+
+    assert response.session.status == "failed"
+    assert fallback.calls == 0
+    assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
+    assert not any(
+        event.event_type == RUNTIME_PROVIDER_TRANSIENT_RETRY for event in response.events
+    )
+    failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
+    for key, value in expected_payload.items():
+        assert failed_event.payload[key] == value
+    assert failed_event.payload["provider"] == "primary"
+    assert failed_event.payload["model"] == "model-a"
+
+
 def test_runtime_background_fallback_reacquires_fallback_model_slot(
     tmp_path: Path,
 ) -> None:
@@ -4131,7 +4553,7 @@ def test_runtime_git_status_snapshot_handles_non_utf8_subprocess_output(
     monkeypatch.setattr(
         runtime_service_module.subprocess,
         "run",
-        lambda *args, **kwargs: _CompletedProcess(),
+        lambda *_args, **_kwargs: _CompletedProcess(),
     )
 
     snapshot = runtime._git_status_snapshot()  # pyright: ignore[reportPrivateUsage]
@@ -10968,7 +11390,7 @@ def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["missing"]}))
 
 
-def test_runtime_request_metadata_accepts_review_workflow_without_child_agent_promotion(
+def test_runtime_request_workflow_preset_metadata_materializes_workflow_snapshot(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -10976,84 +11398,24 @@ def test_runtime_request_metadata_accepts_review_workflow_without_child_agent_pr
         graph=_SkillCapturingStubGraph(),
         config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
     )
+    _SkillCapturingStubGraph.last_request = None
 
     response = runtime.run(
         RuntimeRequest(
-            prompt="review this",
-            session_id="workflow-review",
+            prompt="review workflow preset",
+            session_id="workflow-review-preset",
             metadata={"workflow_preset": "review"},
         )
     )
-    request = _SkillCapturingStubGraph.last_request
 
-    assert request is not None
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    agent_snapshot = cast(dict[str, object], runtime_config["agent"])
+    assert response.session.status == "completed"
+    assert _SkillCapturingStubGraph.last_request is not None
     assert response.session.metadata["workflow_preset"] == "review"
-    assert agent_snapshot["preset"] == "leader"
-    assert "prompt_append" not in agent_snapshot
-    hook_snapshot = cast(dict[str, object], runtime_config["resolved_hook_presets"])
-    assert hook_snapshot["refs"] == [
-        "role_reminder",
-        "delegation_guard",
-        "background_output_quality_guidance",
-        "delegated_retry_guidance",
-        "todo_continuation_guidance",
-    ]
-    assert request.metadata["workflow_preset"] == "review"
-
-
-def test_runtime_research_workflow_fresh_records_read_only_metadata_without_widening_tools(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="research this",
-            session_id="workflow-research-fresh",
-            metadata={"workflow_preset": "research"},
-        )
-    )
-    request = _SkillCapturingStubGraph.last_request
-
-    assert request is not None
+    assert response.session.metadata["workflow_mode"] == "review"
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
-    capability_snapshot = cast(
-        dict[str, object], response.session.metadata["agent_capability_snapshot"]
-    )
-    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
-    tool_snapshot = cast(dict[str, object], capability_snapshot["tools"])
-    effective_tool_names = cast(list[str], tool_snapshot["effective_names"])
-    request_workflow = cast(dict[str, object], request.metadata["workflow"])
-    assert response.session.metadata["workflow_preset"] == "research"
-    assert workflow_snapshot["selected_preset"] == "research"
-    assert workflow_snapshot["category"] == "research"
-    assert workflow_snapshot["read_only_default"] is True
-    assert workflow_snapshot["hook_preset_refs"] == [
-        "role_reminder",
-        "delegated_task_timing_guidance",
-        "background_output_quality_guidance",
-    ]
-    assert workflow_snapshot["skill_refs"] == []
-    research_mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
-    assert research_mcp_intents[0]["servers"] == ["context7", "websearch", "grep_app"]
-    assert research_mcp_intents[0]["required"] is False
-    assert workflow_snapshot["effective_agent"] is None
-    assert workflow_snapshot["default_agent_executable_top_level"] is False
-    assert capability_workflow["read_only_default"] is True
-    assert "write_file" not in effective_tool_names
-    assert "shell_exec" in effective_tool_names
-    assert "read_file" in effective_tool_names
-    assert tool_snapshot["request_allowlist"] is None
-    assert tool_snapshot["request_default"] is None
-    assert request_workflow["read_only_default"] is True
-    assert "arguments" not in workflow_snapshot
+    workflow = cast(dict[str, object], runtime_config["workflow"])
+    assert workflow["selected_preset"] == "review"
+    assert workflow["read_only_default"] is True
 
 
 def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
@@ -11074,7 +11436,6 @@ def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
                 prompt="research this",
                 session_id="workflow-forged-fresh",
                 metadata={
-                    "workflow_preset": "research",
                     "workflow": {
                         "selected_preset": "git",
                         "read_only_default": False,
@@ -11082,388 +11443,6 @@ def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
                 },
             )
         )
-
-
-def test_runtime_builtin_workflow_snapshots_expose_issue_405_capability_intents(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            mcp=RuntimeMcpConfig(
-                enabled=True,
-                servers={
-                    "playwright": RuntimeMcpServerConfig(command=("playwright-mcp",)),
-                    "context7": RuntimeMcpServerConfig(command=("context7-mcp",)),
-                    "websearch": RuntimeMcpServerConfig(command=("websearch-mcp",)),
-                    "grep_app": RuntimeMcpServerConfig(command=("grep-app-mcp",)),
-                },
-            ),
-        ),
-    )
-
-    expected: dict[str, dict[str, list[str]]] = {
-        "git": {"skills": ["git-master"], "servers": []},
-        "implementation": {"skills": [], "servers": []},
-        "frontend": {"skills": ["frontend-design", "playwright"], "servers": ["playwright"]},
-        "review": {
-            "skills": ["review-work"],
-            "servers": ["context7", "websearch", "grep_app"],
-        },
-        "research": {
-            "skills": [],
-            "servers": ["context7", "websearch", "grep_app"],
-        },
-    }
-
-    for preset_id, expected_capabilities in expected.items():
-        response = runtime.run(
-            RuntimeRequest(
-                prompt=f"snapshot {preset_id}",
-                session_id=f"workflow-issue-405-{preset_id}",
-                metadata={"workflow_preset": preset_id},
-            )
-        )
-        runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-        workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
-        capability_snapshot = cast(
-            dict[str, object], response.session.metadata["agent_capability_snapshot"]
-        )
-        capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
-        mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
-        servers = [
-            server
-            for intent in mcp_intents
-            for server in cast(list[str], intent.get("servers", []))
-        ]
-
-        assert workflow_snapshot == capability_workflow
-        assert workflow_snapshot["skill_refs"] == expected_capabilities["skills"]
-        assert servers == expected_capabilities["servers"]
-        assert all(intent["required"] is False for intent in mcp_intents)
-        for intent in mcp_intents:
-            availability = cast(dict[str, object], intent["availability"])
-            assert availability["missing_servers"] == []
-            assert availability["degraded"] is False
-            descriptors = cast(list[dict[str, object]], availability["descriptors"])
-            assert [descriptor["name"] for descriptor in descriptors] == expected_capabilities[
-                "servers"
-            ]
-
-
-def test_runtime_workflow_selected_builtin_skill_refs_are_catalog_visible_not_loaded(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="snapshot frontend workflow",
-            session_id="workflow-builtin-skill-catalog-visible",
-            metadata={"workflow_preset": "frontend"},
-        )
-    )
-
-    skills_loaded = next(
-        event for event in response.events if event.event_type == "runtime.skills_loaded"
-    )
-    assert skills_loaded.payload["skills"] == []
-    assert skills_loaded.payload["selected_skills"] == ["frontend-design", "playwright"]
-    assert cast(int, skills_loaded.payload["catalog_context_length"]) > 0
-    assert "applied_skills" not in response.session.metadata
-    assert "applied_skill_payloads" not in response.session.metadata
-    assert runtime._skill_registry.resolve("frontend-design").name == "frontend-design"
-    assert runtime._skill_registry.resolve("playwright").name == "playwright"
-
-
-def test_runtime_git_workflow_uses_generic_runtime_approval_without_bespoke_policy(
-    tmp_path: Path,
-) -> None:
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(
-                    ProviderTurnResult(
-                        tool_call=ToolCall(
-                            tool_name="shell_exec",
-                            arguments={"command": "pwd"},
-                        )
-                    ),
-                    ProviderTurnResult(output="done"),
-                ),
-            )
-        }
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            approval_mode="ask",
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-        ),
-        model_provider_registry=registry,
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="rewrite history",
-            session_id="workflow-git-fresh",
-            metadata={"workflow_preset": "git"},
-        )
-    )
-
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
-    capability_snapshot = cast(
-        dict[str, object], response.session.metadata["agent_capability_snapshot"]
-    )
-    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
-    approval_event = response.events[-1]
-    assert response.session.status == "waiting"
-    assert approval_event.event_type == "runtime.approval_requested"
-    assert approval_event.payload["tool"] == "shell_exec"
-    assert workflow_snapshot["selected_preset"] == "git"
-    assert workflow_snapshot["category"] == "git"
-    assert workflow_snapshot["permission_policy_ref"] == "runtime_default"
-    assert workflow_snapshot.get("tool_policy_ref") is None
-    assert workflow_snapshot["verification_guidance"] == (
-        "Check git status before and after the requested operation, preserve hooks, and "
-        "keep repository mutations behind explicit user intent plus runtime approval."
-    )
-    assert capability_workflow["permission_policy_ref"] == "runtime_default"
-    assert capability_workflow.get("tool_policy_ref") is None
-    assert approval_event.payload["decision"] == "ask"
-    assert approval_event.payload.get("policy_surface") is None
-    assert approval_event.payload.get("matched_rule") is None
-
-
-def test_runtime_workflow_snapshot_persists_policy_refs_mcp_intent_and_safe_metadata(
-    tmp_path: Path,
-) -> None:
-    _write_named_skill(
-        tmp_path / ".voidcode" / "skills" / "forced-skill",
-        name="forced-skill",
-        content="Forced workflow skill.",
-    )
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            skills=RuntimeSkillsConfig(enabled=True),
-            mcp=RuntimeMcpConfig(
-                enabled=True,
-                servers={"docs": RuntimeMcpServerConfig(command=("docs-server",))},
-            ),
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "snapshot": WorkflowPreset(
-                        id="snapshot",
-                        default_agent="leader",
-                        category="implementation",
-                        prompt_append="Snapshot append.",
-                        skill_refs=("catalog-skill",),
-                        force_load_skills=("forced-skill",),
-                        hook_preset_refs=("role_reminder",),
-                        mcp_binding_intents=(
-                            WorkflowMcpBindingIntent(servers=("docs", "missing"), required=False),
-                        ),
-                        tool_policy_ref="readonly-tools",
-                        permission_policy_ref="runtime_default",
-                        read_only_default=True,
-                        verification_guidance="Verify the persisted snapshot.",
-                    )
-                }
-            ),
-        ),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="snapshot please",
-            session_id="workflow-snapshot-safe",
-            metadata={"workflow_preset": "snapshot"},
-        )
-    )
-
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    workflow_snapshot = cast(dict[str, object], runtime_config["workflow"])
-    top_level_workflow = cast(dict[str, object], response.session.metadata["workflow"])
-    capability_snapshot = cast(
-        dict[str, object], response.session.metadata["agent_capability_snapshot"]
-    )
-    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
-    mcp_intents = cast(list[dict[str, object]], workflow_snapshot["mcp_binding_intents"])
-    availability = cast(dict[str, object], mcp_intents[0]["availability"])
-    serialized = json.dumps(workflow_snapshot, sort_keys=True)
-
-    assert workflow_snapshot == top_level_workflow == capability_workflow
-    assert workflow_snapshot["snapshot_version"] == 1
-    assert workflow_snapshot["preset_source"] == "runtime_config"
-    assert workflow_snapshot["tool_policy_ref"] == "readonly-tools"
-    assert workflow_snapshot["permission_policy_ref"] == "runtime_default"
-    assert workflow_snapshot["read_only_default"] is True
-    assert workflow_snapshot["skill_refs"] == ["catalog-skill"]
-    assert workflow_snapshot["force_load_skills"] == ["forced-skill"]
-    assert workflow_snapshot["hook_preset_refs"] == ["role_reminder"]
-    assert workflow_snapshot["verification_guidance"] == "Verify the persisted snapshot."
-    assert mcp_intents[0]["servers"] == ["docs", "missing"]
-    assert availability["configured_enabled"] is True
-    assert availability["available_servers"] == ["docs"]
-    assert availability["missing_servers"] == ["missing"]
-    assert availability["degraded"] is True
-    assert all(
-        forbidden not in serialized
-        for forbidden in ("arguments", "stdin", "env", "secret", "token", "password")
-    )
-
-
-def test_runtime_required_workflow_mcp_intent_fails_fresh_run_when_missing(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "requires-docs": WorkflowPreset(
-                        id="requires-docs",
-                        default_agent="leader",
-                        category="research",
-                        mcp_binding_intents=(
-                            WorkflowMcpBindingIntent(servers=("docs",), required=True),
-                        ),
-                    )
-                }
-            ),
-        ),
-    )
-
-    with pytest.raises(
-        RuntimeRequestError,
-        match=r"workflow preset 'requires-docs' requires unavailable MCP server\(s\): docs",
-    ):
-        _ = runtime.run(
-            RuntimeRequest(
-                prompt="docs required",
-                metadata={"workflow_preset": "requires-docs"},
-            )
-        )
-
-
-def test_runtime_required_workflow_mcp_intent_passes_when_configured(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            mcp=RuntimeMcpConfig(
-                enabled=False,
-                servers={"docs": RuntimeMcpServerConfig(command=("docs-mcp",))},
-            ),
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "requires-docs": WorkflowPreset(
-                        id="requires-docs",
-                        default_agent="leader",
-                        category="research",
-                        mcp_binding_intents=(
-                            WorkflowMcpBindingIntent(servers=("docs",), required=True),
-                        ),
-                    )
-                }
-            ),
-        ),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="docs required",
-            metadata={"workflow_preset": "requires-docs"},
-        )
-    )
-
-    workflow = cast(dict[str, object], response.session.metadata["workflow"])
-    intents = cast(list[dict[str, object]], workflow["mcp_binding_intents"])
-    availability = cast(dict[str, object], intents[0]["availability"])
-    assert availability["missing_servers"] == []
-
-
-def test_runtime_workflow_context_transform_refs_filter_runtime_registry(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "AGENTS.md").write_text("Project rules", encoding="utf-8")
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "scoped": WorkflowPreset(
-                        id="scoped",
-                        default_agent="leader",
-                        category="implementation",
-                        context_transform_refs=("runtime_file_rules",),
-                    )
-                }
-            ),
-        ),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="hello",
-            session_id="workflow-transform-scope",
-            metadata={"workflow_preset": "scoped"},
-        )
-    )
-    request = _SkillCapturingStubGraph.last_request
-
-    assert request is not None
-    system_sources = [
-        segment.metadata.get("source")
-        for segment in request.assembled_context.segments
-        if segment.role == "system" and segment.metadata is not None
-    ]
-    workflow_snapshot = cast(dict[str, object], response.session.metadata["workflow"])
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    runtime_agent = cast(dict[str, object], runtime_config["agent"])
-    assert workflow_snapshot["context_transform_refs"] == ["runtime_file_rules"]
-    assert runtime_agent["context_transform_refs"] == ["runtime_file_rules"]
-    assert "runtime_file_rules" in system_sources
-    assert "hook_preset_guidance" not in system_sources
-    assert request.assembled_context.metadata["context_transforms"] == {
-        "version": 1,
-        "failure_policy": "warn",
-        "applied": [
-            {
-                "provider_id": "runtime_file_rules",
-                "status": "ok",
-                "priority": 200,
-                "execution_index": 1,
-                "injection_count": 1,
-                "provider_order": ["runtime_file_rules"],
-                "sources": ["runtime_file_rules"],
-            }
-        ],
-    }
 
 
 def test_runtime_request_context_transform_refs_narrow_agent_scope(
@@ -11547,6 +11526,241 @@ def test_runtime_request_context_transform_refs_reject_unknown_provider(
                 session_id="request-transform-invalid",
                 metadata=validate_runtime_request_metadata({"context_transform_refs": ["unknown"]}),
             )
+        )
+
+
+def test_runtime_config_metadata_materializes_supported_persisted_fields(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="ask",
+            permission=ExternalDirectoryPermissionConfig(
+                read=ExternalDirectoryPolicy(rules=(("/var/log/**", "allow"), ("*", "ask"))),
+                write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
+                rules=(PatternPermissionRule(tool="read_file", path="docs/**", decision="allow"),),
+            ),
+            policy=RuntimePolicyConfig(
+                tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read_file",))
+            ),
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            max_steps=7,
+            tool_timeout_seconds=11,
+            reasoning_effort="high",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="opencode/gpt-5.4",
+                fallback_models=("opencode/gpt-5.3",),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={
+                    "local-openai": LiteLLMProviderConfig(
+                        base_url="http://localhost:11434/v1",
+                        auth_scheme="none",
+                        transient_retry=ProviderTransientRetryConfig(max_retries=2),
+                    )
+                }
+            ),
+            tools=RuntimeToolsConfig(
+                builtin=RuntimeToolsBuiltinConfig(enabled=True),
+                allowlist=("read_file", "grep"),
+            ),
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                hook_refs=("role_reminder",),
+                context_transform_refs=("runtime_file_rules",),
+                model="opencode/gpt-5.4",
+            ),
+            context_window=RuntimeContextWindowConfig(
+                auto_compaction=False,
+                max_tool_result_tokens=123,
+            ),
+            lsp=RuntimeLspConfig(enabled=True),
+            mcp=RuntimeMcpConfig(enabled=True),
+            agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode/gpt-5.4")},
+            categories={"quick": RuntimeCategoryConfig(model="opencode/gpt-5.4")},
+            workflows=WorkflowPresetRegistry(
+                presets={
+                    "scoped": WorkflowPreset(
+                        id="scoped",
+                        default_agent="leader",
+                        category="implementation",
+                        context_transform_refs=("runtime_file_rules",),
+                    )
+                }
+            ),
+        ),
+    )
+
+    metadata = runtime._runtime_config_metadata(workflow_preset="scoped")
+    effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
+
+    persisted_keys = runtime_config_materializer_module.PERSISTED_RUNTIME_CONFIG_KEYS
+    assert set(metadata) <= persisted_keys
+    assert {
+        "approval_mode",
+        "permission",
+        "policy",
+        "execution_engine",
+        "max_steps",
+        "tool_timeout_seconds",
+        "reasoning_effort",
+        "model",
+        "fallback_models",
+        "providers",
+        "resolved_provider",
+        "resolved_hook_presets",
+        "tools",
+        "agent",
+        "agents",
+        "categories",
+        "context_window",
+        "lsp",
+        "mcp",
+        "workflow",
+    } <= set(metadata)
+    assert effective.approval_mode == "ask"
+    assert effective.permission.read.rules == (("/var/log/**", "allow"), ("*", "ask"))
+    assert effective.permission.write.rules == (("*", "deny"),)
+    assert effective.permission.rules == (
+        PatternPermissionRule(tool="read_file", path="docs/**", decision="allow"),
+    )
+    assert effective.policy == RuntimePolicyConfig(
+        tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read_file",))
+    )
+    assert effective.execution_engine == "provider"
+    assert effective.model == "opencode/gpt-5.4"
+    assert effective.max_steps == 7
+    assert effective.tool_timeout_seconds == 11
+    assert effective.reasoning_effort == "high"
+    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
+        preferred_model="opencode/gpt-5.4",
+        fallback_models=("opencode/gpt-5.3",),
+    )
+    assert effective.providers == RuntimeProvidersConfig(
+        custom={
+            "local-openai": LiteLLMProviderConfig(
+                transient_retry=ProviderTransientRetryConfig(max_retries=2),
+            )
+        }
+    )
+    assert effective.tools == RuntimeToolsConfig(
+        builtin=RuntimeToolsBuiltinConfig(enabled=True),
+        allowlist=("read_file", "grep"),
+    )
+    assert effective.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        hook_refs=("role_reminder",),
+        context_transform_refs=("runtime_file_rules",),
+        model="opencode/gpt-5.4",
+        execution_engine="provider",
+    )
+    assert effective.context_window == RuntimeContextWindowConfig(
+        auto_compaction=False,
+        max_tool_result_tokens=123,
+    )
+    assert cast(dict[str, object], metadata["workflow"])["selected_preset"] == "scoped"
+
+
+def test_runtime_config_request_metadata_overrides_supported_fields(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/original",
+            max_steps=12,
+            reasoning_effort="low",
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                context_transform_refs=("hook_preset_guidance", "runtime_file_rules"),
+            ),
+        ),
+    )
+
+    resolved = cast(Any, runtime)._runtime_config_for_request(
+        RuntimeRequest(
+            prompt="hello",
+            metadata=validate_runtime_request_metadata(
+                {
+                    "agent": {"preset": "leader", "model": "opencode/gpt-5.4"},
+                    "max_steps": 3,
+                    "reasoning_effort": "medium",
+                    "context_transform_refs": ["runtime_file_rules"],
+                }
+            ),
+        )
+    )
+
+    assert resolved.model == "opencode/gpt-5.4"
+    assert resolved.max_steps == 3
+    assert resolved.reasoning_effort == "medium"
+    assert resolved.agent == RuntimeAgentConfig(
+        preset="leader",
+        prompt_profile="leader",
+        context_transform_refs=("runtime_file_rules",),
+        model="opencode/gpt-5.4",
+        execution_engine="provider",
+    )
+
+
+def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    runtime_config_metadata = runtime._runtime_config_metadata()
+    runtime_config_metadata["surprise"] = True
+
+    with pytest.raises(
+        ValueError,
+        match="persisted runtime_config field 'surprise' is not supported",
+    ):
+        _ = runtime._effective_runtime_config_from_metadata(
+            {"runtime_config": runtime_config_metadata}
+        )
+
+
+@pytest.mark.parametrize(
+    ("legacy_field", "legacy_value"),
+    (
+        ("workflow_preset", "implementation"),
+        ("context_transform_refs", ["runtime_file_rules"]),
+        ("agent_preset", "leader"),
+        ("provider", "openai"),
+    ),
+)
+def test_runtime_config_rejects_removed_legacy_persisted_shapes(
+    tmp_path: Path,
+    legacy_field: str,
+    legacy_value: object,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+    runtime_config_metadata = runtime._runtime_config_metadata()
+    runtime_config_metadata[legacy_field] = legacy_value
+
+    with pytest.raises(
+        ValueError,
+        match=rf"persisted runtime_config field '{legacy_field}' is not supported",
+    ):
+        _ = runtime._effective_runtime_config_from_metadata(
+            {"runtime_config": runtime_config_metadata}
+        )
+
+
+def test_runtime_config_rejects_legacy_top_level_metadata_without_runtime_config(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path)
+
+    with pytest.raises(ValueError, match="persisted session metadata must include runtime_config"):
+        _ = runtime._effective_runtime_config_from_metadata(
+            {
+                "agent": {"preset": "leader"},
+                "max_steps": 3,
+                "reasoning_effort": "medium",
+                "context_transform_refs": ["runtime_file_rules"],
+            }
         )
 
 
@@ -12018,16 +12232,9 @@ def test_runtime_rejects_unknown_workflow_preset_before_execution(tmp_path: Path
     assert _SkillCapturingStubGraph.last_request is None
 
 
-def test_runtime_workflow_preset_resolution_precedence_and_prompt_materialization(
+def test_runtime_request_workflow_preset_preserves_custom_agent_materialization(
     tmp_path: Path,
 ) -> None:
-    base_materialization = {
-        "profile": "custom-leader",
-        "version": 1,
-        "source": "custom_markdown",
-        "format": "markdown",
-        "body": "Custom runtime materialization.",
-    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
@@ -12036,22 +12243,18 @@ def test_runtime_workflow_preset_resolution_precedence_and_prompt_materializatio
             model="runtime/default",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                prompt_materialization=base_materialization,
                 prompt_source="custom_markdown",
-                model="manifest/model",
-            ),
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "implementation": WorkflowPreset(
-                        id="implementation",
-                        default_agent="leader",
-                        category="implementation",
-                        prompt_append="Preset append.",
-                    )
-                }
+                prompt_materialization={
+                    "profile": "custom-leader",
+                    "version": 1,
+                    "source": "custom_markdown",
+                    "format": "markdown",
+                    "body": "Custom runtime materialization.",
+                },
             ),
         ),
     )
+    _SkillCapturingStubGraph.last_request = None
 
     response = runtime.run(
         RuntimeRequest(
@@ -12063,49 +12266,35 @@ def test_runtime_workflow_preset_resolution_precedence_and_prompt_materializatio
             },
         )
     )
-    request = _SkillCapturingStubGraph.last_request
 
-    assert request is not None
+    assert response.session.status == "completed"
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert response.session.metadata["workflow_preset"] == "implementation"
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    assert runtime_config["model"] == "request/model"
-    agent_snapshot = cast(dict[str, object], runtime_config["agent"])
-    # Precedence is request metadata > workflow preset > agent manifest > runtime defaults.
-    assert agent_snapshot["model"] == "request/model"
-    assert agent_snapshot["prompt_append"] == "Preset append."
-    prompt_materialization = cast(dict[str, object], agent_snapshot["prompt_materialization"])
-    assert prompt_materialization == base_materialization
-    assert prompt_materialization["body"] == "Custom runtime materialization."
-
-
-def test_runtime_request_prompt_materialization_wins_over_workflow_preset(
-    tmp_path: Path,
-) -> None:
-    request_materialization = {
-        "profile": "request-custom",
+    agent = cast(dict[str, object], runtime_config["agent"])
+    assert agent["model"] == "request/model"
+    assert agent["prompt_materialization"] == {
+        "profile": "custom-leader",
         "version": 1,
         "source": "custom_markdown",
         "format": "markdown",
-        "body": "Request materialization.",
+        "body": "Custom runtime materialization.",
     }
+
+
+def test_runtime_request_workflow_preset_allows_prompt_materialization_override(
+    tmp_path: Path,
+) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
         config=RuntimeConfig(
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            agent=RuntimeAgentConfig(
-                preset="leader",
-                prompt_materialization={
-                    "profile": "base-custom",
-                    "version": 1,
-                    "source": "custom_markdown",
-                    "format": "markdown",
-                    "body": "Base materialization.",
-                },
-                prompt_source="custom_markdown",
-            ),
+            agent=RuntimeAgentConfig(preset="leader"),
         ),
     )
+    _SkillCapturingStubGraph.last_request = None
 
     response = runtime.run(
         RuntimeRequest(
@@ -12115,18 +12304,30 @@ def test_runtime_request_prompt_materialization_wins_over_workflow_preset(
                 "workflow_preset": "implementation",
                 "agent": {
                     "preset": "leader",
-                    "prompt_materialization": request_materialization,
+                    "prompt_materialization": {
+                        "profile": "request-custom",
+                        "version": 1,
+                        "source": "custom_markdown",
+                        "format": "markdown",
+                        "body": "Request materialization.",
+                    },
                     "prompt_source": "custom_markdown",
                 },
             },
         )
     )
 
+    assert response.session.status == "completed"
+    assert _SkillCapturingStubGraph.last_request is not None
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    agent_snapshot = cast(dict[str, object], runtime_config["agent"])
-    assert cast(dict[str, object], agent_snapshot["prompt_materialization"]) == (
-        request_materialization
-    )
+    agent = cast(dict[str, object], runtime_config["agent"])
+    assert agent["prompt_materialization"] == {
+        "profile": "request-custom",
+        "version": 1,
+        "source": "custom_markdown",
+        "format": "markdown",
+        "body": "Request materialization.",
+    }
 
 
 def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
@@ -13625,6 +13826,7 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
                 "execution_engine": "provider",
                 "max_steps": None,
                 "tool_timeout_seconds": None,
+                "model": "primary/model-a",
                 "fallback_models": ["fallback/model-b"],
                 "resolved_provider": {
                     "active_target": {
@@ -19406,8 +19608,8 @@ def test_runtime_provider_retry_attempt_resets_after_successful_provider_call(
     )
 
     monkeypatch.setattr(
-        runtime_run_loop_module,
-        "_provider_transient_retry_delay_ms",
+        runtime_provider_fallback_module,
+        "provider_transient_retry_delay_ms",
         lambda **_: 0,
     )
 

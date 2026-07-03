@@ -12,11 +12,11 @@
 
 ### 已经部分抽出的 collaborator
 
-- `RuntimeRunLoopCoordinator`：`src/voidcode/runtime/run_loop.py` 已承载工具执行、provider transient retry、provider fallback loop、上下文压力事件与 graph step 推进；`service.py` 的 `_execute_graph_loop()` 现在是兼容转发入口。
+- `RuntimeRunLoopCoordinator`：`src/voidcode/runtime/run_loop.py` 已承载工具执行、provider transient retry、provider fallback loop、上下文压力事件与 graph step 推进；provider 错误重试、fallback 与终止 payload 判断已收束到 `src/voidcode/runtime/provider_fallback.py`，但事件发射、sleep、session metadata 更新和 fallback graph 切换仍在 run loop 内；`service.py` 的 `_execute_graph_loop()` 现在是兼容转发入口。
 - `RuntimeResumeCoordinator`：`src/voidcode/runtime/resume.py` 已承载 approval/question/provider-failure resume 的主要恢复逻辑；`service.py` 仍保留 `resume()` / `resume_stream()` public surface、目标所有权校验与兼容转发入口。
 - `RuntimeBackgroundTaskSupervisor`：`src/voidcode/runtime/background_tasks.py` 已承载 background task queue、worker lifecycle、result view、parent notification、cancel、reconciliation 与 lifecycle hook 触发；`service.py` 仍保留 public surface 与测试兼容 wrapper。
 - `tool_provider.py`：已承载 builtin tool provider、agent allowlist/default scoping 与 local custom tool provider；`service.py` 仍组合 MCP/LSP/skill/task/question/background tools 并应用 workflow read-only policy。
-- `execution_seams.py`：已承载 graph selection、cache key、fallback graph selection 与 session routing seams；`service.py` 仍负责把 persisted metadata 还原成 `EffectiveRuntimeConfig`。
+- `execution_seams.py`：已承载 graph selection、cache key、fallback graph selection 与 session routing seams；`src/voidcode/runtime/config_materializer.py` 已承载 `EffectiveRuntimeConfig`、persisted runtime config parse/serialize、request override 和 persisted fallback model 显式错误判断，`service.py` 仍负责 registry、capability snapshot、workflow snapshot、agent validation 与配置优先级组合。
 
 ### 仍集中在 `service.py` 的高风险区域
 
@@ -66,7 +66,9 @@ No broad move is needed; the safe first slice is documentation plus tests for re
 
 ### 2. Separate provider fallback policy from run-loop mechanics
 
-`run_loop.py` already performs provider retry/fallback mechanics. The next boundary should isolate policy inputs: which errors are retryable, which fallback target is next, which metadata must be persisted, and which terminal error payload is emitted after exhaustion.
+当前状态：`src/voidcode/runtime/provider_fallback.py` 已实现该边界的安全子集。它只根据 `ProviderExecutionError`、provider attempt、retry attempt、transient retry config 和可用 fallback target 返回 typed decision。`run_loop.py` 仍负责发出 `runtime.provider_fallback` / `runtime.provider_transient_retry` 事件、等待 retry delay、写入 `provider_attempt` / `provider_retry_attempt` metadata、切换 fallback graph，并把终止 decision 映射为 runtime failure chunk。provider registry、auth resolver、config materialization 与 fallback graph selection 没有迁出 runtime ownership。
+
+剩余工作应继续保持这一分工：policy helper 只判断 which errors are retryable, which fallback target is next, and which terminal error payload is emitted after exhaustion；metadata 持久化、事件顺序和 graph rebuilding 仍留在 runtime run loop / execution seam 内。
 
 **保留在 `service.py`**
 
@@ -143,7 +145,9 @@ Tool scoping affects what schemas the provider sees and what raw tool calls runt
 
 ### 5. Move persisted runtime config replay behind a materializer only after the above
 
-`_effective_runtime_config_from_metadata()` is still the densest runtime truth function. It should not be the first extraction because every other slice depends on it. Once the other collaborators are stable, move parsing/validation into a `RuntimeConfigMaterializer` that is still owned by `runtime/`.
+当前状态：`src/voidcode/runtime/config_materializer.py` 已实现该边界的安全子集。它承载 `EffectiveRuntimeConfig`、`PERSISTED_RUNTIME_CONFIG_KEYS`、`serialize_runtime_config_core()`、`parse_persisted_runtime_config()`、request override helper、persisted permission/tools/provider fallback parsing，以及 `fallback_models` 缺少 persisted `model` 时的显式错误。`service.py` 仍负责读取 base `RuntimeConfig`、解析 provider registry target、验证 agent execution、生成 hook/LSP/MCP/workflow snapshots、组合 categories/agents，并决定 request metadata 或 persisted session metadata 何时具有权威性。
+
+剩余工作应避免把 materializer 扩大成新的 runtime owner。`service.py` 仍是配置优先级、registry/capability 快照和 workflow/agent validation 的组合点；materializer 只处理明确 payload 的 parse/serialize 与显式错误。
 
 **保留在 `service.py`**
 
