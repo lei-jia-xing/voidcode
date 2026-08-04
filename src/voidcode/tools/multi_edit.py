@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from ..formatter import (
     FormatterExecutionResult,
@@ -14,14 +14,34 @@ from ..formatter import (
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
-from ._pydantic_args import MultiEditArgs
 from ._repair import ToolDiagnosticError
 from .contracts import ToolCall, ToolDefinition, ToolResult
-from .edit import (
-    EditTool,
-    read_utf8_text,
-    summarize_diff,
-)
+from .edit import EditTool, read_utf8_text, summarize_diff
+
+
+class MultiEditItemArgs(BaseModel):
+    oldString: str
+    newString: str
+    replaceAll: bool = False
+
+
+class MultiEditArgs(BaseModel):
+    path: str
+    edits: list[MultiEditItemArgs]
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must not be empty")
+        return value
+
+    @field_validator("edits", mode="after")
+    @classmethod
+    def _validate_edits(cls, value: list[MultiEditItemArgs]) -> list[MultiEditItemArgs]:
+        if not value:
+            raise ValueError("edits must contain at least one edit")
+        return value
 
 
 class MultiEditTool:
@@ -36,6 +56,7 @@ class MultiEditTool:
             },
         },
         read_only=False,
+        path_argument_keys=("path",),
     )
 
     def __init__(

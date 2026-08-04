@@ -122,6 +122,8 @@ from voidcode.runtime.permission import (
     PermissionPolicy,
     evaluate_pattern_permission_rules,
 )
+from voidcode.runtime.permission_context import RuntimePermissionContextResolver
+from voidcode.runtime.permission_path_helpers import extract_paths_from_patch
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
 from voidcode.runtime.provider_fallback import (
     ProviderFallbackDecision,
@@ -162,6 +164,7 @@ from voidcode.runtime.workflow import (
     WorkflowPreset,
     WorkflowPresetRegistry,
 )
+from voidcode.security.shell_policy import extract_shell_path_candidates
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
 from voidcode.tools.contracts import ToolDefinition, ToolResult
@@ -442,29 +445,26 @@ def test_runtime_extracts_shell_external_path_candidates(
     command: str,
     expected: tuple[str, ...],
 ) -> None:
-    runtime_type = cast(Any, VoidCodeRuntime)
-    assert runtime_type._extract_shell_path_candidates(command) == expected
+    assert extract_shell_path_candidates(command) == expected
 
 
 def test_runtime_ignores_shell_executable_path_candidate() -> None:
     command = f'"{sys.executable}" -c "print(1)"'
 
-    runtime_type = cast(Any, VoidCodeRuntime)
-    assert runtime_type._extract_shell_path_candidates(command) == ()
+    assert extract_shell_path_candidates(command) == ()
 
 
 def test_runtime_shell_read_probe_external_path_stays_workspace_scoped(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
     shell_tool = ToolRegistry.with_defaults().resolve("shell_exec")
-
-    runtime_private = cast(Any, runtime)
-    context = runtime_private._permission_context_for_tool_call(
+    resolver = RuntimePermissionContextResolver(workspace=tmp_path)
+    context = resolver.permission_context_for_tool_call(
         tool=shell_tool.definition,
         tool_instance=shell_tool,
         tool_call=ToolCall(
             tool_name="shell_exec",
             arguments={"command": "test -f /usr/include/vulkan/vulkan.h"},
         ),
+        patch_path_extractor=extract_paths_from_patch,
     )
 
     assert context == ("workspace", None, "execute", ())
@@ -511,10 +511,8 @@ def test_pattern_permission_rule_matches_shell_exec_first_token_of_segment() -> 
 def test_runtime_canonicalize_candidate_path_handles_unknown_user_tilde(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
-
-    runtime_private = cast(Any, runtime)
-    canonical = runtime_private._canonicalize_candidate_path("~unknownuser/file.txt")
+    resolver = RuntimePermissionContextResolver(workspace=tmp_path)
+    canonical = resolver.canonicalize_candidate_path("~unknownuser/file.txt")
 
     assert canonical == (tmp_path / "~unknownuser/file.txt").resolve(strict=False)
 

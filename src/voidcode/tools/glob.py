@@ -46,6 +46,7 @@ class GlobTool:
             },
         },
         read_only=True,
+        path_argument_keys=("path",),
     )
 
     @staticmethod

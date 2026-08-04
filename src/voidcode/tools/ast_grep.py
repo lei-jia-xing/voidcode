@@ -5,11 +5,70 @@ import subprocess
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
-from ._pydantic_args import AstGrepReplaceArgs, AstGrepSearchArgs
 from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class AstGrepSearchArgs(BaseModel):
+    pattern: str
+    path: str
+    lang: str | None = None
+
+    @field_validator("pattern", mode="after")
+    @classmethod
+    def _validate_pattern(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("pattern must not be empty")
+        return value
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must be a non-empty string")
+        return value
+
+    @field_validator("lang", mode="after")
+    @classmethod
+    def _validate_lang(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("lang must not be empty")
+        return value
+
+
+class AstGrepReplaceArgs(BaseModel):
+    pattern: str
+    rewrite: str
+    path: str
+    lang: str | None = None
+    apply: bool = False
+
+    @field_validator("pattern", mode="after")
+    @classmethod
+    def _validate_pattern(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("pattern must not be empty")
+        return value
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must be a non-empty string")
+        return value
+
+    @field_validator("lang", mode="after")
+    @classmethod
+    def _validate_lang(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("lang must not be empty")
+        return value
 
 
 def _resolve_candidate(*, workspace: Path, path_text: str) -> tuple[Path, str]:

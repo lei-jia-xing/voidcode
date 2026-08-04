@@ -29,7 +29,7 @@ from ..runtime.events import (
     RUNTIME_TOOL_HOOK_PRE,
     RUNTIME_TURN_PROGRESS,
 )
-from ..security.shell_policy import non_interactive_shell_env, resolve_shell_command_policy
+from ..security.shell_policy import non_interactive_shell_env
 from .config import RuntimeHooksConfig, RuntimeHookSurface
 
 
@@ -393,29 +393,18 @@ def _hook_policy_decision(
     policy: HookExecutionPolicy,
 ) -> HookPolicyDecision:
     command_text = _hook_command_text(command)
-    shell_decision = resolve_shell_command_policy(
-        command_text,
-        read_only=policy.read_only,
-        non_interactive=True,
-    )
-    if not shell_decision.allowed:
-        return HookPolicyDecision(
-            allowed=False,
-            outcome="skipped" if policy.read_only else "denied",
-            reason=shell_decision.reason,
-            injected_env_keys=shell_decision.injected_env_keys,
-        )
+    env_keys = tuple(non_interactive_shell_env(command_text))
     if policy.read_only:
         return HookPolicyDecision(
             allowed=False,
             outcome="skipped",
             reason="read-only runtime policy skips executable hook commands",
-            injected_env_keys=shell_decision.injected_env_keys,
+            injected_env_keys=env_keys,
         )
     return HookPolicyDecision(
         allowed=True,
         outcome="allowed",
-        injected_env_keys=shell_decision.injected_env_keys,
+        injected_env_keys=env_keys,
     )
 
 

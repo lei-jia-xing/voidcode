@@ -559,6 +559,7 @@ class EditTool:
             },
         },
         read_only=False,
+        path_argument_keys=("path",),
     )
 
     def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:

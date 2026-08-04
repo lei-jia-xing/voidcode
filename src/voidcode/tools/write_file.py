@@ -4,15 +4,20 @@ import difflib
 from pathlib import Path
 from typing import ClassVar, final
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from ..formatter import FormatterExecutor, formatter_diagnostics, formatter_payload
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
-from ._pydantic_args import WriteFileArgs, format_validation_error
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_read_before_write
+
+
+class WriteFileArgs(BaseModel):
+    path: str
+    content: str
 
 
 @final
@@ -22,6 +27,7 @@ class WriteFileTool:
         description="Write a UTF-8 text file inside the current workspace.",
         input_schema={"path": {"type": "string"}, "content": {"type": "string"}},
         read_only=False,
+        path_argument_keys=("path",),
     )
 
     def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:

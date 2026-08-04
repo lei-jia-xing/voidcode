@@ -74,7 +74,6 @@ from ..provider.snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
-from ..security.shell_policy import resolve_shell_command_policy
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
@@ -269,23 +268,16 @@ from .memory import MemoryConfig, MemoryKind, MemoryRecord, MemorySearchResult, 
 from .paths import provider_catalog_cache_path
 from .permission import (
     DelegationGovernance,
-    OperationClass,
-    PathScope,
     PendingApproval,
     PermissionDecision,
     PermissionPolicy,
     PermissionResolution,
-    evaluate_external_directory_policy,
-    evaluate_pattern_permission_rules,
     execution_mode_from_metadata,
     resolve_permission,
 )
 from .permission_context import RuntimePermissionContextResolver
-from .permission_path_helpers import (
-    extract_paths_from_patch,
-    shell_command_for_tool_call,
-    shell_path_candidates,
-)
+from .permission_engine import PermissionEngine
+from .permission_path_helpers import extract_paths_from_patch
 from .permission_policy import (
     approval_request_id_from_waiting_response,
     pending_approval_from_response,
@@ -572,6 +564,11 @@ class VoidCodeRuntime:
         )
         self._agent_registry = self._runtime_agent_registry()
         self._config = config or load_runtime_config(self._workspace)
+        self._permission_engine = PermissionEngine(
+            _context_resolver=self._permission_context_resolver,
+            _permission_config=self._config.permission,
+            _patch_path_extractor=extract_paths_from_patch,
+        )
         self._model_provider_registry = (
             model_provider_registry
             or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
@@ -3238,71 +3235,22 @@ class VoidCodeRuntime:
         sequence: int,
         permission_policy: PermissionPolicy,
     ) -> _PermissionOutcome:
-        path_scope, canonical_path, operation_class, external_paths = (
-            self._permission_context_for_tool_call(
-                tool=tool,
-                tool_instance=tool_instance,
-                tool_call=tool_call,
-            )
-        )
-        external_decision: PermissionDecision | None = None
-        matched_rule: str | None = None
-        policy_surface: str | None = None
-        rule_decision: PermissionDecision | None = None
-        normalized_paths = self._normalized_permission_path_candidates(tool_call, external_paths)
-        shell_command = self._shell_command_for_tool_call(tool_call)
-        shell_policy = None
-        if shell_command is not None:
-            shell_policy = resolve_shell_command_policy(
-                shell_command,
-                read_only=self._effective_runtime_read_only_for_policy_metadata(session.metadata),
-                non_interactive=True,
-            )
-        pattern_match = evaluate_pattern_permission_rules(
-            rules=self._effective_runtime_config_from_metadata(session.metadata).permission.rules,
-            tool_name=tool_call.tool_name,
-            path_candidates=normalized_paths,
-            command=shell_command,
-        )
-        if path_scope == "external" and canonical_path is not None:
-            uses_write_policy = operation_class in ("write", "execute")
-            policy_surface = (
-                "external_directory_write" if uses_write_policy else "external_directory_read"
-            )
-            permission_config = self._effective_runtime_config_from_metadata(
+        eval_result = self._permission_engine.evaluate(
+            tool=tool,
+            tool_instance=tool_instance,
+            tool_call=tool_call,
+            permission_rules=self._effective_runtime_config_from_metadata(
                 session.metadata
-            ).permission
-            decisions: list[tuple[PermissionDecision, str, str]] = []
-            for external_path in external_paths:
-                decision, rule = evaluate_external_directory_policy(
-                    policy=permission_config.write if uses_write_policy else permission_config.read,
-                    canonical_path=Path(external_path),
-                )
-                decisions.append((decision, rule, external_path))
+            ).permission.rules,
+        )
 
-            deny_match = next((item for item in decisions if item[0] == "deny"), None)
-            ask_match = next((item for item in decisions if item[0] == "ask"), None)
-            allow_match = decisions[0] if decisions else None
-            selected = deny_match or ask_match or allow_match
-            if selected is not None:
-                external_decision, matched_rule, canonical_path = selected
-            if pattern_match is not None and external_decision is not None:
-                candidate_decision, candidate_rule = pattern_match
-                decision_rank = {"allow": 0, "ask": 1, "deny": 2}
-                if decision_rank[candidate_decision] > decision_rank[external_decision]:
-                    rule_decision = candidate_decision
-                    matched_rule = candidate_rule
-                    policy_surface = "permission.rules"
-        else:
-            if pattern_match is not None:
-                rule_decision, matched_rule = pattern_match
-                policy_surface = "permission.rules"
-                canonical_path = normalized_paths[0] if normalized_paths else None
-        if shell_policy is not None and not shell_policy.allowed:
-            rule_decision = "deny"
-            matched_rule = shell_policy.reason
-            policy_surface = "shell_policy"
-            canonical_path = None
+        path_scope = eval_result.path_scope
+        canonical_path = eval_result.canonical_path
+        operation_class = eval_result.operation_class
+        rule_decision = eval_result.rule_decision
+        matched_rule = eval_result.matched_rule
+        policy_surface = eval_result.policy_surface
+        external_decision = eval_result.external_decision
 
         # Referenced via extracted run-loop collaborator.
         permission = resolve_permission(
@@ -3477,69 +3425,6 @@ class VoidCodeRuntime:
             ),
             last_sequence=sequence,
         )
-
-    def _permission_context_for_tool_call(
-        self,
-        *,
-        tool: ToolDefinition,
-        tool_instance: Tool,
-        tool_call: ToolCall,
-    ) -> tuple[PathScope, str | None, OperationClass, tuple[str, ...]]:
-        return self._permission_context_resolver.permission_context_for_tool_call(
-            tool=tool,
-            tool_instance=tool_instance,
-            tool_call=tool_call,
-            patch_path_extractor=self._extract_paths_from_patch,
-        )
-
-    def _normalized_permission_path_candidates(
-        self,
-        tool_call: ToolCall,
-        external_paths: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        return self._permission_context_resolver.normalized_permission_path_candidates(
-            tool_call,
-            external_paths,
-            patch_path_extractor=self._extract_paths_from_patch,
-        )
-
-    @staticmethod
-    def _shell_command_for_tool_call(tool_call: ToolCall) -> str | None:
-        return shell_command_for_tool_call(tool_call)
-
-    @staticmethod
-    def _operation_class_for_tool(
-        tool_name: str,
-        read_only: bool,
-        *,
-        tool_instance: Tool,
-    ) -> OperationClass:
-        from .permission_context import operation_class_for_tool
-
-        return operation_class_for_tool(
-            tool_name,
-            read_only,
-            tool_instance=tool_instance,
-        )
-
-    @staticmethod
-    def _candidate_paths_for_tool_call(tool_call: ToolCall) -> tuple[str, ...]:
-        resolver = RuntimePermissionContextResolver(workspace=Path.cwd())
-        return resolver.candidate_paths_for_tool_call(
-            tool_call,
-            patch_path_extractor=VoidCodeRuntime._extract_paths_from_patch,
-        )
-
-    def _canonicalize_candidate_path(self, raw_path: str) -> Path | None:
-        return self._permission_context_resolver.canonicalize_candidate_path(raw_path)
-
-    @staticmethod
-    def _extract_paths_from_patch(patch_text: str) -> tuple[str, ...]:
-        return extract_paths_from_patch(patch_text)
-
-    @staticmethod
-    def _extract_shell_path_candidates(command: str) -> tuple[str, ...]:
-        return shell_path_candidates(command)
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)

@@ -8,10 +8,30 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
-from ._pydantic_args import WebSearchArgs, format_validation_error
+from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class WebSearchArgs(BaseModel):
+    query: str
+    numResults: int = 8
+
+    @field_validator("query", mode="after")
+    @classmethod
+    def _validate_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be empty")
+        return value
+
+    @field_validator("numResults", mode="after")
+    @classmethod
+    def _validate_num_results(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("numResults must be greater than or equal to 1")
+        return value
+
 
 DEFAULT_NUM_RESULTS = 8
 DEFAULT_TIMEOUT = 30

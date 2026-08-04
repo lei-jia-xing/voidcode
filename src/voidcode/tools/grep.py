@@ -6,12 +6,52 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast, final
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import GrepArgs, format_validation_error
+from ._pydantic_args import format_validation_error
 from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class GrepArgs(BaseModel):
+    pattern: str
+    path: str
+    regex: bool = False
+    context: int = 0
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+    @field_validator("pattern", mode="after")
+    @classmethod
+    def _validate_pattern(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("pattern must not be empty")
+        return value
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("path must not be empty")
+        return value
+
+    @field_validator("context", mode="after")
+    @classmethod
+    def _validate_context(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("context must be greater than or equal to 0")
+        return value
+
+    @field_validator("include", "exclude", mode="after")
+    @classmethod
+    def _validate_glob_patterns(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if not all(item.strip() for item in value):
+            raise ValueError("glob patterns must be non-empty strings")
+        return value
+
 
 MAX_MATCHES = 200
 DEFAULT_IGNORE_PATTERNS = frozenset(
@@ -51,6 +91,7 @@ class GrepTool:
             "exclude": {"type": "array", "items": {"type": "string"}},
         },
         read_only=True,
+        path_argument_keys=("path",),
     )
 
     @staticmethod

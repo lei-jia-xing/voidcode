@@ -1,151 +1,13 @@
 from __future__ import annotations
 
 import shlex
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 600
 
-type ShellCommandCategory = Literal[
-    "readonly",
-    "package_manager",
-    "build_or_test",
-    "interactive",
-    "mutating",
-    "destructive",
-    "unknown",
-]
-
-_READONLY_COMMANDS = frozenset(
-    {
-        "cat",
-        "dir",
-        "env",
-        "false",
-        "git diff",
-        "git log",
-        "git ls-files",
-        "git show",
-        "git status",
-        "grep",
-        "ls",
-        "pwd",
-        "rg",
-        "test",
-        "true",
-        "type",
-        "which",
-    }
-)
-_PACKAGE_MANAGER_COMMANDS = frozenset(
-    {
-        "apt",
-        "apt-get",
-        "brew",
-        "bun",
-        "cargo",
-        "composer",
-        "dnf",
-        "gem",
-        "go",
-        "mise",
-        "npm",
-        "pnpm",
-        "pip",
-        "pip3",
-        "poetry",
-        "uv",
-        "yarn",
-    }
-)
-_BUILD_OR_TEST_COMMANDS = frozenset(
-    {
-        "cmake",
-        "go test",
-        "make",
-        "ninja",
-        "pytest",
-        "tox",
-    }
-)
-_INTERACTIVE_COMMANDS = frozenset(
-    {
-        "htop",
-        "less",
-        "more",
-        "nano",
-        "nvim",
-        "ssh",
-        "sudo",
-        "top",
-        "vim",
-    }
-)
-_MUTATING_COMMANDS = frozenset(
-    {
-        "chmod",
-        "chown",
-        "cp",
-        "git add",
-        "git commit",
-        "git merge",
-        "git mv",
-        "git rebase",
-        "git restore",
-        "git stash",
-        "git switch",
-        "git checkout",
-        "install",
-        "mkdir",
-        "mv",
-        "patch",
-        "python -m pip",
-        "python3 -m pip",
-        "touch",
-    }
-)
-_DESTRUCTIVE_COMMANDS = frozenset(
-    {
-        "dd",
-        "mkfs",
-        "rm",
-        "rmdir",
-        "shred",
-    }
-)
 _SHELL_CONTROL_OPERATORS = frozenset({"&", "&&", ";", "|", "||"})
-
-
-@dataclass(frozen=True, slots=True)
-class ShellCommandSegment:
-    text: str
-    tokens: tuple[str, ...]
-    category: ShellCommandCategory
-
-
-@dataclass(frozen=True, slots=True)
-class ShellCommandClassification:
-    command: str
-    category: ShellCommandCategory
-    segments: tuple[ShellCommandSegment, ...]
-
-    @property
-    def interactive(self) -> bool:
-        return self.category == "interactive"
-
-    @property
-    def denied_in_read_only(self) -> bool:
-        return self.category in {"package_manager", "mutating", "destructive", "unknown"}
-
-
-@dataclass(frozen=True, slots=True)
-class ShellCommandPolicyDecision:
-    allowed: bool
-    reason: str | None = None
-    injected_env_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,65 +17,15 @@ class ShellExecutionPolicy:
     runtime_timeout_selected: bool
 
 
-def classify_shell_command(command: str) -> ShellCommandClassification:
-    command_text = command.strip()
-    segments = tuple(
-        segment
-        for segment in (_classify_shell_segment(text) for text in _command_segments(command_text))
-        if segment is not None
-    )
-    category = _highest_risk_category(segment.category for segment in segments)
-    return ShellCommandClassification(command=command_text, category=category, segments=segments)
-
-
-def resolve_shell_command_policy(
-    command: str,
-    *,
-    read_only: bool = False,
-    non_interactive: bool = True,
-) -> ShellCommandPolicyDecision:
-    classification = classify_shell_command(command)
-    if non_interactive and classification.interactive:
-        return ShellCommandPolicyDecision(
-            allowed=False,
-            reason=(
-                "shell_exec cannot run interactive/TUI commands in non-interactive execution; "
-                "use an interactive shell surface or choose a non-interactive command"
-            ),
-        )
-    if read_only and classification.denied_in_read_only:
-        return ShellCommandPolicyDecision(
-            allowed=False,
-            reason=(
-                "read-only runtime policy denies shell commands classified as "
-                f"{classification.category}"
-            ),
-        )
-    return ShellCommandPolicyDecision(
-        allowed=True,
-        injected_env_keys=non_interactive_shell_env_keys(classification),
-    )
-
-
 def non_interactive_shell_env(command: str) -> dict[str, str]:
-    classification = classify_shell_command(command)
-    return {
-        key: _NON_INTERACTIVE_PACKAGE_MANAGER_ENV[key]
-        for key in non_interactive_shell_env_keys(classification)
-    }
-
-
-def non_interactive_shell_env_keys(
-    classification: ShellCommandClassification,
-) -> tuple[str, ...]:
-    if classification.category != "package_manager":
-        return ()
-    if any(
-        _package_manager_receives_non_interactive_env(segment)
-        for segment in classification.segments
-    ):
-        return tuple(_NON_INTERACTIVE_PACKAGE_MANAGER_ENV)
-    return ()
+    for segment in _command_segments(command):
+        normalized = tuple(_normalize_command_token(token) for token in _shell_tokens(segment))
+        if any(
+            candidate in _PROJECT_PACKAGE_MANAGERS_WITH_PROMPTS
+            for candidate in _command_candidates(normalized)
+        ):
+            return dict(_NON_INTERACTIVE_PACKAGE_MANAGER_ENV)
+    return {}
 
 
 def extract_shell_path_candidates(command: str) -> tuple[str, ...]:
@@ -258,16 +70,6 @@ def resolve_shell_execution_policy(
     )
 
 
-def _classify_shell_segment(segment: str) -> ShellCommandSegment | None:
-    text = segment.strip()
-    if not text:
-        return None
-    tokens = tuple(_shell_tokens(text))
-    if not tokens:
-        return None
-    return ShellCommandSegment(text=text, tokens=tokens, category=_segment_category(tokens))
-
-
 _NON_INTERACTIVE_PACKAGE_MANAGER_ENV = {
     "CI": "1",
     "NPM_CONFIG_YES": "true",
@@ -282,51 +84,6 @@ _PROJECT_PACKAGE_MANAGERS_WITH_PROMPTS = frozenset(
         "yarn",
     }
 )
-
-
-def _package_manager_receives_non_interactive_env(segment: ShellCommandSegment) -> bool:
-    normalized = tuple(_normalize_command_token(token) for token in segment.tokens)
-    command_candidates = _command_candidates(normalized)
-    return any(
-        candidate in _PROJECT_PACKAGE_MANAGERS_WITH_PROMPTS for candidate in command_candidates
-    )
-
-
-def _segment_category(tokens: tuple[str, ...]) -> ShellCommandCategory:
-    normalized = tuple(_normalize_command_token(token) for token in tokens)
-    command_candidates = _command_candidates(normalized)
-    if any(candidate in _INTERACTIVE_COMMANDS for candidate in command_candidates):
-        return "interactive"
-    if any(candidate in _DESTRUCTIVE_COMMANDS for candidate in command_candidates):
-        return "destructive"
-    if _has_shell_mutation_tokens(tokens):
-        return "mutating"
-    if any(candidate in _MUTATING_COMMANDS for candidate in command_candidates):
-        return "mutating"
-    if any(candidate in _PACKAGE_MANAGER_COMMANDS for candidate in command_candidates):
-        return "package_manager"
-    if any(candidate in _BUILD_OR_TEST_COMMANDS for candidate in command_candidates):
-        return "build_or_test"
-    if any(candidate in _READONLY_COMMANDS for candidate in command_candidates):
-        return "readonly"
-    return "unknown"
-
-
-def _highest_risk_category(categories: Iterable[ShellCommandCategory]) -> ShellCommandCategory:
-    ranking: dict[ShellCommandCategory, int] = {
-        "readonly": 0,
-        "unknown": 1,
-        "build_or_test": 2,
-        "package_manager": 3,
-        "mutating": 4,
-        "destructive": 5,
-        "interactive": 6,
-    }
-    selected: ShellCommandCategory | None = None
-    for category in categories:
-        if selected is None or ranking[category] > ranking[selected]:
-            selected = category
-    return selected or "unknown"
 
 
 def _command_segments(command: str) -> tuple[str, ...]:
@@ -368,10 +125,6 @@ def _command_candidates(tokens: tuple[str, ...]) -> tuple[str, ...]:
 
 def _normalize_command_token(token: str) -> str:
     return token.strip().strip("\"'`").lower()
-
-
-def _has_shell_mutation_tokens(tokens: tuple[str, ...]) -> bool:
-    return any(_has_shell_output_redirection(token) for token in tokens)
 
 
 def _is_shell_explicit_output_path_candidate(tokens: list[str], index: int, value: str) -> bool:
@@ -443,15 +196,8 @@ def _looks_like_shell_executable(value: str) -> bool:
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
-    "ShellCommandCategory",
-    "ShellCommandClassification",
-    "ShellCommandPolicyDecision",
-    "ShellCommandSegment",
     "ShellExecutionPolicy",
-    "classify_shell_command",
     "extract_shell_path_candidates",
     "non_interactive_shell_env",
-    "non_interactive_shell_env_keys",
-    "resolve_shell_command_policy",
     "resolve_shell_execution_policy",
 ]

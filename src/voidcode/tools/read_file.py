@@ -8,12 +8,44 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast, final
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
-from ._pydantic_args import ReadFileArgs, format_validation_error
+from ._pydantic_args import format_validation_error
 from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
+
+
+class ReadFileArgs(BaseModel):
+    filePath: str
+    offset: int | None = None
+    limit: int | None = None
+
+    @field_validator("filePath", mode="after")
+    @classmethod
+    def _validate_file_path(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("filePath must not be empty")
+        return value
+
+    @field_validator("offset", mode="after")
+    @classmethod
+    def _validate_offset(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("offset must be greater than or equal to 1")
+        return value
+
+    @field_validator("limit", mode="after")
+    @classmethod
+    def _validate_limit(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 1:
+            raise ValueError("limit must be greater than or equal to 1")
+        return value
+
 
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
@@ -210,6 +242,7 @@ class ReadFileTool:
             "limit": {"type": "integer"},
         },
         read_only=True,
+        path_argument_keys=("filePath", "path"),
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:

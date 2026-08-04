@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 
 from ..security.shell_policy import extract_shell_path_candidates
 from ..tools.contracts import Tool, ToolCall, ToolDefinition
 from ..tools.local_custom import LocalCustomTool
 from .permission import OperationClass, PathScope
-
-EXTERNAL_PATH_PRECHECK_KEYS: Mapping[str, tuple[str, ...]] = {
-    "edit": ("path",),
-    "glob": ("path",),
-    "grep": ("path",),
-    "multi_edit": ("path", "filePath"),
-    "read_file": ("filePath", "path"),
-    "write_file": ("path",),
-}
 
 
 class RuntimePermissionContextResolver:
@@ -35,12 +26,11 @@ class RuntimePermissionContextResolver:
             tool.read_only,
             tool_instance=tool_instance,
         )
-        candidate_paths = ()
-        if tool_call.tool_name != "shell_exec":
-            candidate_paths = self.candidate_paths_for_tool_call(
-                tool_call,
-                patch_path_extractor=patch_path_extractor,
-            )
+        candidate_paths = self.candidate_paths_for_tool_call(
+            tool_call,
+            tool=tool,
+            patch_path_extractor=patch_path_extractor,
+        )
         workspace_root = self._workspace.resolve()
         external_paths: list[str] = []
         for raw_path in candidate_paths:
@@ -60,12 +50,14 @@ class RuntimePermissionContextResolver:
         external_paths: tuple[str, ...],
         *,
         patch_path_extractor: Callable[[str], tuple[str, ...]],
+        tool: ToolDefinition | None = None,
     ) -> tuple[str, ...]:
         normalized: list[str] = []
         for external_path in external_paths:
             normalized.append(Path(external_path).as_posix())
         for raw_path in self.candidate_paths_for_tool_call(
             tool_call,
+            tool=tool,
             patch_path_extractor=patch_path_extractor,
         ):
             canonical = self.canonicalize_candidate_path(raw_path)
@@ -85,14 +77,18 @@ class RuntimePermissionContextResolver:
         self,
         tool_call: ToolCall,
         *,
+        tool: ToolDefinition | None = None,
         patch_path_extractor: Callable[[str], tuple[str, ...]],
     ) -> tuple[str, ...]:
         arguments = tool_call.arguments
         candidates: list[str] = []
-        for key in EXTERNAL_PATH_PRECHECK_KEYS.get(tool_call.tool_name, ()):
-            value = arguments.get(key)
-            if isinstance(value, str) and value.strip():
-                candidates.append(value)
+
+        if tool is not None:
+            for key in tool.path_argument_keys:
+                value = arguments.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value)
+
         if tool_call.tool_name == "apply_patch":
             patch_text = arguments.get("patch")
             if isinstance(patch_text, str) and patch_text:

@@ -10,17 +10,36 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, cast, final
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from ..security.shell_policy import (
     DEFAULT_TIMEOUT_SECONDS,
     non_interactive_shell_env,
-    resolve_shell_command_policy,
     resolve_shell_execution_policy,
 )
-from ._pydantic_args import ShellExecArgs, format_validation_error
+from ._pydantic_args import format_validation_error
 from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
 from .runtime_context import current_runtime_tool_context
+
+
+class ShellExecArgs(BaseModel):
+    command: str
+    description: str | None = None
+
+    @field_validator("command", mode="after")
+    @classmethod
+    def _validate_command(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("command must not be empty")
+        return value
+
+    @field_validator("description", mode="after")
+    @classmethod
+    def _validate_description(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("description must not be empty when provided")
+        return value
+
 
 _SHELL_PROGRESS_CHUNK_BYTES = 8192
 _SHELL_PROGRESS_CHUNK_CHARS = 12_000
@@ -223,26 +242,23 @@ class ShellExecTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         command_text = args.command.strip()
-        command_policy = resolve_shell_command_policy(command_text, non_interactive=True)
-        if not command_policy.allowed:
-            raise ValueError(str(command_policy.reason))
         injected_env = non_interactive_shell_env(command_text)
-        injected_env_keys = command_policy.injected_env_keys
+        injected_env_keys = tuple(injected_env.keys())
 
         timeout_value = call.arguments.get("timeout", DEFAULT_TIMEOUT_SECONDS)
-        policy = resolve_shell_execution_policy(
+        exec_policy = resolve_shell_execution_policy(
             workspace=workspace,
             timeout_argument=timeout_value,
             runtime_timeout_seconds=runtime_timeout_seconds,
         )
-        timeout_seconds = policy.timeout_seconds
-        runtime_timeout_selected = policy.runtime_timeout_selected
+        timeout_seconds = exec_policy.timeout_seconds
+        runtime_timeout_selected = exec_policy.runtime_timeout_selected
 
         try:
             command_text = command_text.encode("utf-8", errors="replace").decode("utf-8")
             process = subprocess.Popen(
                 command_text,
-                cwd=policy.workspace_root,
+                cwd=exec_policy.workspace_root,
                 env={**os.environ, **injected_env} if injected_env else None,
                 shell=True,
                 stdout=subprocess.PIPE,
@@ -391,7 +407,7 @@ class ShellExecTool:
             content=output,
             data={
                 "command": command_text,
-                "cwd": str(policy.workspace_root),
+                "cwd": str(exec_policy.workspace_root),
                 "exit_code": process.returncode,
                 "stdout": stdout,
                 "stderr": stderr,

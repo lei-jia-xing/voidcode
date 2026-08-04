@@ -22,6 +22,7 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, object] = field(default_factory=dict)
     read_only: bool = True
+    path_argument_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
