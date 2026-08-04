@@ -4,6 +4,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
+from .mode import (
+    legacy_runtime_mode_from_metadata,
+    legacy_runtime_read_only_from_metadata,
+)
 from .policy import runtime_policy_snapshot_from_session_metadata
 
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed"]
@@ -28,7 +32,6 @@ _SECRET_VALUE_PATTERNS = (
     re.compile(r"Bearer\s+[A-Za-z0-9._\-]{6,}", re.IGNORECASE),
     re.compile(r"(?i)(api[_-]?key|token|secret|password)=([^\s&]+)"),
 )
-_RUNTIME_MODES = frozenset({"normal", "analyze", "plan"})
 _REDACTED_ENV_VALUE_KEYS = frozenset(
     {
         "env",
@@ -87,20 +90,6 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
     return value
 
 
-def _runtime_mode(metadata: dict[str, object]) -> str:
-    raw_mode = metadata.get("mode", "normal")
-    if raw_mode in _RUNTIME_MODES:
-        return cast(str, raw_mode)
-    return "normal"
-
-
-def _runtime_read_only(metadata: dict[str, object], *, mode: str) -> bool:
-    if mode in {"analyze", "plan"}:
-        return True
-    raw_read_only = metadata.get("read_only", False)
-    return raw_read_only if isinstance(raw_read_only, bool) else False
-
-
 def _workflow_effective_read_only(metadata: dict[str, object], read_only: bool) -> bool:
     raw_workflow = metadata.get("workflow")
     if not isinstance(raw_workflow, dict):
@@ -140,13 +129,13 @@ def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[st
     """Return persisted metadata with top-level runtime mode compatibility normalized."""
 
     normalized = dict(metadata)
-    mode = _runtime_mode(normalized)
-    if "mode" in normalized and normalized.get("mode") not in _RUNTIME_MODES:
+    mode = legacy_runtime_mode_from_metadata(normalized)
+    if "mode" in normalized and normalized.get("mode") != mode:
         normalized["mode"] = mode
     raw_runtime_policy = normalized.get("runtime_policy")
     if isinstance(raw_runtime_policy, dict):
         runtime_policy = dict(cast(dict[str, object], raw_runtime_policy))
-        if runtime_policy.get("mode") not in _RUNTIME_MODES:
+        if runtime_policy.get("mode") not in {"normal", "analyze", "plan"}:
             runtime_policy["mode"] = mode
         normalized["runtime_policy"] = runtime_policy
     return normalized
@@ -218,8 +207,8 @@ def session_metadata_for_persistence(
 
     persisted = cast(dict[str, object], _bounded_redacted(metadata))
     persisted.pop("_prompt_activation_this_run", None)
-    mode = _runtime_mode(persisted)
-    read_only = _runtime_read_only(persisted, mode=mode)
+    mode = legacy_runtime_mode_from_metadata(persisted)
+    read_only = legacy_runtime_read_only_from_metadata(persisted, mode=mode)
     read_only = _workflow_effective_read_only(persisted, read_only)
     observations = _policy_observations(events)
     raw_persisted_runtime_policy = persisted.get("runtime_policy")

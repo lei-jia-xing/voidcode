@@ -5,6 +5,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from .mode import (
+    legacy_runtime_mode_from_metadata,
+    legacy_runtime_read_only_from_metadata,
+    runtime_mode_from_metadata,
+    runtime_read_only_from_metadata,
+)
+
 POLICY_SCHEMA_VERSION = 1
 POLICY_VERSION = "v1"
 PRODUCT_DELEGATION_DENIAL_REASON = "delegation_denied_product_top_level_only"
@@ -380,8 +387,8 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
         _string(inputs.get("agent_preset")) or _agent_preset_from_config(runtime_config) or "leader"
     )
     agent_manifest_id = _string(inputs.get("agent_manifest_id")) or agent_preset
-    mode = _runtime_mode(request_metadata)
-    read_only = _runtime_read_only(request_metadata, mode=mode)
+    mode = runtime_mode_from_metadata(request_metadata)
+    read_only = runtime_read_only_from_metadata(request_metadata)
     tool_allowed = _tool_allowed(runtime_config, policy_config)
     delegation_allowed = _delegation_allowed(policy_config)
     hook_policy_request = _mapping(inputs.get("hook_policy_request"))
@@ -436,8 +443,8 @@ def synthesize_legacy_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySna
         or _agent_preset_from_config(session_metadata)
         or "leader"
     )
-    mode = _runtime_mode(request_metadata)
-    read_only = _runtime_read_only(request_metadata, mode=mode)
+    mode = legacy_runtime_mode_from_metadata(request_metadata)
+    read_only = legacy_runtime_read_only_from_metadata(request_metadata, mode=mode)
     trace = _base_precedence_trace(synthesized=True)
     trace.insert(
         0,
@@ -663,17 +670,6 @@ def _intent_metadata_trace() -> dict[str, object]:
         "matched_rule_ids": [],
         "reason": "neutral_bounded_metadata_only",
     }
-
-
-def _runtime_mode(metadata: Mapping[str, object]) -> str:
-    value = metadata.get("mode", "normal")
-    return cast(str, value) if value in {"normal", "analyze", "plan"} else "normal"
-
-
-def _runtime_read_only(metadata: Mapping[str, object], *, mode: str) -> bool:
-    if mode in {"analyze", "plan"}:
-        return True
-    return metadata.get("read_only") is True
 
 
 def _agent_preset_from_config(payload: Mapping[str, object]) -> str | None:

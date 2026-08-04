@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
+from . import mode as runtime_mode
 from .events import (
     DelegatedExecutionPayload,
     DelegatedLifecycleEventPayload,
@@ -74,7 +75,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     continuation_loop: RuntimeContinuationLoopMetadata
     delegation: RuntimeSubagentRoutingMetadata
     execution_mode: str
-    mode: RuntimeMode
+    mode: runtime_mode.RuntimeMode
     read_only: bool
     max_steps: int
     provider_stream: bool
@@ -96,8 +97,6 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
 
 
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata
-
-type RuntimeMode = Literal["normal", "analyze", "plan"]
 
 
 class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
@@ -155,36 +154,38 @@ def _validate_optional_runtime_metadata_string(
     return value
 
 
-def parse_runtime_mode(value: object) -> RuntimeMode:
-    if value == "normal":
-        return "normal"
-    if value == "analyze":
-        return "analyze"
-    if value == "plan":
-        return "plan"
-    raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'")
+def parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
+    try:
+        return runtime_mode.parse_runtime_mode(value)
+    except ValueError as exc:
+        raise RuntimeRequestError(
+            "request metadata 'mode' must be 'normal', 'analyze', or 'plan'"
+        ) from exc
 
 
 def runtime_mode_from_metadata(
     metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
-) -> RuntimeMode:
-    if metadata is None:
-        return "normal"
-    return parse_runtime_mode(metadata.get("mode", "normal"))
+) -> runtime_mode.RuntimeMode:
+    try:
+        return runtime_mode.runtime_mode_from_metadata(metadata)
+    except ValueError as exc:
+        raise RuntimeRequestError(
+            "request metadata 'mode' must be 'normal', 'analyze', or 'plan'"
+        ) from exc
 
 
 def runtime_read_only_from_metadata(
     metadata: RuntimeRequestMetadataPayload | dict[str, object] | None,
 ) -> bool:
-    if metadata is None:
-        return False
-    mode = runtime_mode_from_metadata(metadata)
-    if mode in {"analyze", "plan"}:
-        return True
-    read_only = metadata.get("read_only", False)
-    if not isinstance(read_only, bool):
-        raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
-    return read_only
+    try:
+        return runtime_mode.runtime_read_only_from_metadata(metadata)
+    except ValueError as exc:
+        message = str(exc)
+        if "mode" in message:
+            raise RuntimeRequestError(
+                "request metadata 'mode' must be 'normal', 'analyze', or 'plan'"
+            ) from exc
+        raise RuntimeRequestError("request metadata 'read_only' must be a boolean") from exc
 
 
 def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadata:
