@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
-import threading
 import time
 from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -25,7 +23,6 @@ from ..provider.protocol import (
 )
 from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
-    RuntimeTimeoutAwareTool,
     RuntimeToolTimeoutError,
     ToolCall,
     ToolDefinition,
@@ -39,7 +36,6 @@ from ..tools.output import (
     sanitize_tool_result_data,
 )
 from ..tools.question import QuestionTool
-from ..tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from .context_window import (
     RuntimeContextSegment,
     RuntimeContextWindow,
@@ -72,6 +68,7 @@ from .question import PendingQuestion
 from .session import SessionState
 from .session_metadata_helpers import todo_state_matches_payload
 from .tool_display import build_tool_display, build_tool_status
+from .tool_execution import RuntimeToolExecutor
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
@@ -80,8 +77,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TOOL_PROGRESS_QUEUE_MAX_ITEMS = 128
-_TOOL_PROGRESS_POLL_SECONDS = 0.05
 _STUCK_DETECTED_MIN_TURN = 25
 _STUCK_DETECTED_MIN_TOOL_RESULTS = 10
 
@@ -425,29 +420,11 @@ def _provider_attempt_reset_after_tool_result(
 
 
 @dataclass(frozen=True, slots=True)
-class _ToolProgressItem:
-    payload: dict[str, object]
-
-
-@dataclass(frozen=True, slots=True)
-class _ToolResultItem:
-    result: ToolResult
-
-
-@dataclass(frozen=True, slots=True)
-class _ToolExceptionItem:
-    exception: Exception
-
-
-@dataclass(frozen=True, slots=True)
 class _ProviderAttemptReset:
     provider_attempt: int
     graph: RuntimeGraph
     graph_request: GraphRunRequest
     session: SessionState
-
-
-type _ToolQueueItem = _ToolProgressItem | _ToolResultItem | _ToolExceptionItem
 
 
 def _is_tool_timeout_like_exception(exc: Exception) -> bool:
@@ -475,8 +452,9 @@ def _abort_reason(request: GraphRunRequest) -> str | None:
 
 
 class RuntimeRunLoopCoordinator:
-    def __init__(self, runtime: VoidCodeRuntime) -> None:
+    def __init__(self, runtime: VoidCodeRuntime, *, tool_executor: RuntimeToolExecutor) -> None:
         self._runtime = runtime
+        self._tool_executor = tool_executor
 
     def _started_tool_abort_chunks(
         self,
@@ -527,17 +505,12 @@ class RuntimeRunLoopCoordinator:
         )
         return completed_chunk, failed_chunk
 
-    @staticmethod
-    def _is_progress_capable_tool(tool_name: str) -> bool:
-        return tool_name == "shell_exec"
-
-    def _invoke_tool_with_progress_events(
+    def _invoke_tool(
         self,
         *,
         tool: Any,
         tool_call: ToolCall,
-        workspace: Any,
-        read_paths: frozenset[str] = frozenset(),
+        read_paths: frozenset[str],
         tool_timeout: int | None,
         session: SessionState,
         start_sequence: int,
@@ -547,137 +520,35 @@ class RuntimeRunLoopCoordinator:
         delegation_depth: int,
         remaining_spawn_budget: int | None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult | Exception, int]]:
-        progress_queue: queue.Queue[_ToolQueueItem] = queue.Queue(
-            maxsize=_TOOL_PROGRESS_QUEUE_MAX_ITEMS
-        )
-
-        def emit_tool_progress(payload: Mapping[str, object]) -> None:
-            progress_payload: dict[str, object] = {
-                "tool": tool_call.tool_name,
-                "tool_call_id": tool_call_id,
-                **dict(payload),
-            }
-            try:
-                progress_queue.put_nowait(_ToolProgressItem(progress_payload))
-            except queue.Full:
-                pass
-
-        def invoke_tool() -> None:
-            try:
-                with bind_runtime_tool_context(
-                    RuntimeToolInvocationContext(
-                        session_id=session.session.id,
-                        parent_session_id=parent_session_id,
-                        delegation_depth=delegation_depth,
-                        remaining_spawn_budget=remaining_spawn_budget,
-                        read_paths=read_paths,
-                        abort_signal=abort_signal,
-                        emit_tool_progress=emit_tool_progress,
-                        memory=self._runtime,
-                        lsp=self._runtime,
-                    )
-                ):
-                    if tool_timeout is None:
-                        result = tool.invoke(tool_call, workspace=workspace)
-                    elif isinstance(tool, RuntimeTimeoutAwareTool):
-                        result = tool.invoke_with_runtime_timeout(
-                            tool_call,
-                            workspace=workspace,
-                            timeout_seconds=tool_timeout,
-                        )
-                    else:
-                        result = tool.invoke(tool_call, workspace=workspace)
-                progress_queue.put(_ToolResultItem(result))
-            except Exception as exc:
-                progress_queue.put(_ToolExceptionItem(exc))
-
-        worker = threading.Thread(
-            target=invoke_tool,
-            name=f"runtime-tool-{tool_call.tool_name}-worker",
-            daemon=True,
-        )
-        worker.start()
-
         sequence = start_sequence - 1
-        terminal_item: _ToolResultItem | _ToolExceptionItem | None = None
-        deadline = (
-            time.monotonic() + tool_timeout
-            if tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
-            else None
+        execution = self._tool_executor.invoke(
+            tool=tool,
+            tool_call=tool_call,
+            read_paths=read_paths,
+            tool_timeout=tool_timeout,
+            session_id=session.session.id,
+            parent_session_id=parent_session_id,
+            delegation_depth=delegation_depth,
+            remaining_spawn_budget=remaining_spawn_budget,
+            abort_signal=abort_signal,
         )
-        while terminal_item is None:
-            try:
-                poll_timeout = _TOOL_PROGRESS_POLL_SECONDS
-                if deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        terminal_item = _ToolExceptionItem(
-                            RuntimeToolTimeoutError(
-                                f"tool '{tool_call.tool_name}' exceeded runtime timeout of "
-                                f"{tool_timeout}s"
-                            )
-                        )
-                        break
-                    poll_timeout = min(poll_timeout, remaining)
-                item = progress_queue.get(timeout=poll_timeout)
-            except queue.Empty:
-                if _is_abort_signal_requested(abort_signal):
-                    terminal_item = _ToolExceptionItem(
-                        RuntimeError(_abort_signal_reason(abort_signal) or "run interrupted")
-                    )
-                    break
-                if deadline is not None and time.monotonic() >= deadline:
-                    terminal_item = _ToolExceptionItem(
-                        RuntimeToolTimeoutError(
-                            f"tool '{tool_call.tool_name}' exceeded runtime timeout of "
-                            f"{tool_timeout}s"
-                        )
-                    )
-                    break
-                continue
-            if isinstance(item, _ToolProgressItem):
-                sequence += 1
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_TOOL_PROGRESS,
-                        source="tool",
-                        payload=item.payload,
-                    ),
-                )
-                continue
-            terminal_item = item
-
         while True:
             try:
-                item = progress_queue.get_nowait()
-            except queue.Empty:
-                break
-            if isinstance(item, _ToolProgressItem):
-                sequence += 1
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_TOOL_PROGRESS,
-                        source="tool",
-                        payload=item.payload,
-                    ),
-                )
-
-        if not (
-            isinstance(terminal_item, _ToolExceptionItem)
-            and isinstance(terminal_item.exception, RuntimeToolTimeoutError)
-        ):
-            worker.join(timeout=1)
-        if isinstance(terminal_item, _ToolExceptionItem):
-            return terminal_item.exception, sequence
-        return terminal_item.result, sequence
+                progress = next(execution)
+            except StopIteration as completed:
+                return completed.value, sequence
+            sequence += 1
+            yield RuntimeStreamChunk(
+                kind="event",
+                session=session,
+                event=EventEnvelope(
+                    session_id=session.session.id,
+                    sequence=sequence,
+                    event_type=RUNTIME_TOOL_PROGRESS,
+                    source="tool",
+                    payload={"tool_call_id": tool_call_id, **progress.payload},
+                ),
+            )
 
     def execute_approved_tool_call(
         self,
@@ -810,60 +681,27 @@ class RuntimeRunLoopCoordinator:
             == "provider"
         )
         try:
-            if self._is_progress_capable_tool(tool_call.tool_name) or (
-                tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
-            ):
-                tool_outcome, sequence = yield from self._invoke_tool_with_progress_events(
-                    tool=tool,
-                    tool_call=tool_call,
-                    workspace=runtime._workspace,
-                    read_paths=read_paths_for_tool_results(
-                        tool_results=tuple(tool_results),
-                        workspace=runtime._workspace,
-                    ),
-                    tool_timeout=tool_timeout,
-                    session=session,
-                    start_sequence=sequence + 1,
-                    tool_call_id=tool_call_id,
-                    abort_signal=abort_signal,
-                    parent_session_id=session.session.parent_id,
-                    delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
-                    remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
-                        session.metadata
-                    ),
-                )
-                if isinstance(tool_outcome, Exception):
-                    raise tool_outcome
-                tool_result = tool_outcome
-            else:
-                read_paths = read_paths_for_tool_results(
+            tool_outcome, sequence = yield from self._invoke_tool(
+                tool=tool,
+                tool_call=tool_call,
+                read_paths=read_paths_for_tool_results(
                     tool_results=tuple(tool_results),
                     workspace=runtime._workspace,
-                )
-                with bind_runtime_tool_context(
-                    RuntimeToolInvocationContext(
-                        session_id=session.session.id,
-                        parent_session_id=session.session.parent_id,
-                        delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
-                        remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
-                            session.metadata
-                        ),
-                        read_paths=read_paths,
-                        abort_signal=abort_signal,
-                        memory=runtime,
-                        lsp=runtime,
-                    )
-                ):
-                    if tool_timeout is None:
-                        tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
-                    elif isinstance(tool, RuntimeTimeoutAwareTool):
-                        tool_result = tool.invoke_with_runtime_timeout(
-                            tool_call,
-                            workspace=runtime._workspace,
-                            timeout_seconds=tool_timeout,
-                        )
-                    else:
-                        tool_result = tool.invoke(tool_call, workspace=runtime._workspace)
+                ),
+                tool_timeout=tool_timeout,
+                session=session,
+                start_sequence=sequence + 1,
+                tool_call_id=tool_call_id,
+                abort_signal=abort_signal,
+                parent_session_id=session.session.parent_id,
+                delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
+                remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
+                    session.metadata
+                ),
+            )
+            if isinstance(tool_outcome, Exception):
+                raise tool_outcome
+            tool_result = tool_outcome
         except Exception as exc:
             drained_chunks, session, sequence = self._drain_runtime_events(
                 session=session,
@@ -2159,62 +1997,27 @@ class RuntimeRunLoopCoordinator:
                 )
                 return
             try:
-                if self._is_progress_capable_tool(plan_tool_call.tool_name) or (
-                    tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
-                ):
-                    tool_outcome, sequence = yield from self._invoke_tool_with_progress_events(
-                        tool=tool,
-                        tool_call=plan_tool_call,
-                        workspace=runtime._workspace,
-                        read_paths=read_paths_for_tool_results(
-                            tool_results=tuple(tool_results),
-                            workspace=runtime._workspace,
-                        ),
-                        tool_timeout=tool_timeout,
-                        session=session,
-                        start_sequence=sequence + 1,
-                        tool_call_id=tool_call_id,
-                        abort_signal=active_graph_request.abort_signal,
-                        parent_session_id=session.session.parent_id,
-                        delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
-                        remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
-                            session.metadata
-                        ),
-                    )
-                    if isinstance(tool_outcome, Exception):
-                        raise tool_outcome
-                    tool_result = tool_outcome
-                else:
-                    read_paths = read_paths_for_tool_results(
+                tool_outcome, sequence = yield from self._invoke_tool(
+                    tool=tool,
+                    tool_call=plan_tool_call,
+                    read_paths=read_paths_for_tool_results(
                         tool_results=tuple(tool_results),
                         workspace=runtime._workspace,
-                    )
-                    with bind_runtime_tool_context(
-                        RuntimeToolInvocationContext(
-                            session_id=session.session.id,
-                            parent_session_id=session.session.parent_id,
-                            delegation_depth=runtime._delegation_depth_from_metadata(
-                                session.metadata
-                            ),
-                            remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
-                                session.metadata
-                            ),
-                            read_paths=read_paths,
-                            abort_signal=active_graph_request.abort_signal,
-                            memory=runtime,
-                            lsp=runtime,
-                        )
-                    ):
-                        if tool_timeout is None:
-                            tool_result = tool.invoke(plan_tool_call, workspace=runtime._workspace)
-                        elif isinstance(tool, RuntimeTimeoutAwareTool):
-                            tool_result = tool.invoke_with_runtime_timeout(
-                                plan_tool_call,
-                                workspace=runtime._workspace,
-                                timeout_seconds=tool_timeout,
-                            )
-                        else:
-                            tool_result = tool.invoke(plan_tool_call, workspace=runtime._workspace)
+                    ),
+                    tool_timeout=tool_timeout,
+                    session=session,
+                    start_sequence=sequence + 1,
+                    tool_call_id=tool_call_id,
+                    abort_signal=active_graph_request.abort_signal,
+                    parent_session_id=session.session.parent_id,
+                    delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
+                    remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
+                        session.metadata
+                    ),
+                )
+                if isinstance(tool_outcome, Exception):
+                    raise tool_outcome
+                tool_result = tool_outcome
             except Exception as exc:
                 drained_chunks, session, sequence = self._drain_runtime_events(
                     session=session,

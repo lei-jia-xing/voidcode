@@ -3,11 +3,10 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import cast
 
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
-from voidcode.runtime.session import SessionRef, SessionState
+from voidcode.runtime.tool_execution import RuntimeToolExecutor
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -46,21 +45,22 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
         tool_registry=ToolRegistry.from_tools([tool]),
         config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
     )
-    session = SessionState(SessionRef(id="tool-abort"), status="running")
-    stream = runtime._run_loop_coordinator._invoke_tool_with_progress_events(
+    stream = RuntimeToolExecutor(
+        workspace=tmp_path,
+        memory=runtime,
+        lsp=runtime,
+    ).invoke(
         tool=tool,
         tool_call=ToolCall(tool_name=tool.definition.name, arguments={}),
-        workspace=tmp_path,
+        read_paths=frozenset(),
         tool_timeout=None,
-        session=session,
-        start_sequence=1,
-        tool_call_id="tool-abort-call",
+        session_id="tool-abort",
         abort_signal=abort_signal,
         parent_session_id=None,
         delegation_depth=0,
         remaining_spawn_budget=None,
     )
-    tool_outcome: list[tuple[object, int]] = []
+    tool_outcome: list[object] = []
     errors: list[BaseException] = []
 
     def _consume_stream() -> None:
@@ -68,7 +68,7 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
             while True:
                 _ = next(stream)
         except StopIteration as exc:
-            tool_outcome.append(cast(tuple[object, int], exc.value))
+            tool_outcome.append(exc.value)
         except BaseException as exc:  # pragma: no cover - asserted via errors list
             errors.append(exc)
 
@@ -83,5 +83,5 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
     assert consumer.is_alive() is False
     assert errors == []
     assert tool_outcome
-    assert isinstance(tool_outcome[0][0], RuntimeError)
-    assert "stop tool" in str(tool_outcome[0][0])
+    assert isinstance(tool_outcome[0], RuntimeError)
+    assert "stop tool" in str(tool_outcome[0])

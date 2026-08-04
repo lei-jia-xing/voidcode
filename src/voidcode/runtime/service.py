@@ -373,6 +373,7 @@ from .task import (
     validate_background_task_id,
     validate_continuation_loop_id,
 )
+from .tool_execution import RuntimeToolExecutor
 from .tool_provider import (
     BUILTIN_TOOL_NAMES,
     MEMORY_TOOL_NAMES,
@@ -663,7 +664,14 @@ class VoidCodeRuntime:
             initial_context_window,
             resolved_provider=None,
         )
-        self._run_loop_coordinator = RuntimeRunLoopCoordinator(self)
+        self._run_loop_coordinator = RuntimeRunLoopCoordinator(
+            self,
+            tool_executor=RuntimeToolExecutor(
+                workspace=self._workspace,
+                memory=self,
+                lsp=self,
+            ),
+        )
         self._resume_coordinator = RuntimeResumeCoordinator(self)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(self)
         self._background_process_manager = BackgroundProcessManager()
