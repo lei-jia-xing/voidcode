@@ -213,6 +213,13 @@ def subagent_routing_identity_from_metadata(
     raw_routing = metadata.get("delegation")
     if raw_routing is None:
         return None
+    return parse_subagent_routing_identity(raw_routing)
+
+
+def parse_subagent_routing_identity(metadata: object) -> SubagentRoutingIdentity:
+    """Parse the shared identity fields from delegation metadata."""
+
+    raw_routing = metadata
     if not isinstance(raw_routing, Mapping):
         raise ValueError("delegation metadata must be an object")
 

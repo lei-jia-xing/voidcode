@@ -22,6 +22,7 @@ from .task import (
     StoredBackgroundTaskSummary,
     SubagentExecutionContract,
     SubagentRoutingIdentity,
+    parse_subagent_routing_identity,
     resolve_subagent_route,
 )
 
@@ -97,11 +98,10 @@ class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata
 
 type RuntimeMode = Literal["normal", "analyze", "plan"]
-type RuntimeSubagentMode = Literal["sync", "background"]
 
 
 class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
-    mode: RuntimeSubagentMode
+    mode: Literal["sync", "background"]
     category: str
     subagent_type: str
     description: str
@@ -110,14 +110,6 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     remaining_spawn_budget: int
     selected_preset: str
     selected_execution_engine: str
-
-
-def _parse_runtime_subagent_mode(value: object) -> RuntimeSubagentMode:
-    if value == "sync":
-        return "sync"
-    if value == "background":
-        return "background"
-    raise RuntimeRequestError("request metadata 'delegation.mode' must be 'sync' or 'background'")
 
 
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
@@ -404,37 +396,20 @@ def validate_runtime_subagent_routing_metadata(
         joined = ", ".join(unknown_keys)
         raise RuntimeRequestError(f"unsupported request metadata 'delegation' field(s): {joined}")
 
-    mode = _parse_runtime_subagent_mode(routing_metadata.get("mode"))
+    try:
+        identity = parse_subagent_routing_identity(routing_metadata)
+    except ValueError as exc:
+        raise RuntimeRequestError(str(exc)) from exc
 
-    category = routing_metadata.get("category")
-    subagent_type = routing_metadata.get("subagent_type")
-    if bool(category) == bool(subagent_type):
-        raise RuntimeRequestError(
-            "request metadata 'delegation' must provide exactly one of "
-            "'category' or 'subagent_type'"
-        )
-
-    normalized: RuntimeSubagentRoutingMetadata = {"mode": mode}
-    if category is not None:
-        normalized["category"] = _validate_optional_runtime_metadata_string(
-            category,
-            field_name="delegation.category",
-        )
-    if subagent_type is not None:
-        normalized["subagent_type"] = _validate_optional_runtime_metadata_string(
-            subagent_type,
-            field_name="delegation.subagent_type",
-        )
-    if "description" in routing_metadata:
-        normalized["description"] = _validate_optional_runtime_metadata_string(
-            routing_metadata["description"],
-            field_name="delegation.description",
-        )
-    if "command" in routing_metadata:
-        normalized["command"] = _validate_optional_runtime_metadata_string(
-            routing_metadata["command"],
-            field_name="delegation.command",
-        )
+    normalized: RuntimeSubagentRoutingMetadata = {"mode": identity.mode}
+    if identity.category is not None:
+        normalized["category"] = identity.category
+    if identity.subagent_type is not None:
+        normalized["subagent_type"] = identity.subagent_type
+    if identity.description is not None:
+        normalized["description"] = identity.description
+    if identity.command is not None:
+        normalized["command"] = identity.command
     if "depth" in routing_metadata:
         raw_depth = routing_metadata["depth"]
         if not isinstance(raw_depth, int) or isinstance(raw_depth, bool) or raw_depth < 1:
