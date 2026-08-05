@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from textual.widgets import Input, RichLog
 
 from voidcode.runtime.config import (
     RuntimeTuiConfig,
@@ -1041,3 +1042,125 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
                     app.query_one("#context-panel").content
                     == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
                 )
+
+
+@pytest.mark.anyio
+async def test_tui_tab_completes_slash_command(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                composer = app.query_one("#composer-input", Input)
+                composer.focus()
+                composer.value = "/exp"
+                await pilot.press("tab")
+                await pilot.pause()
+
+                assert composer.value == "/expand"
+
+
+@pytest.mark.anyio
+async def test_tui_shift_tab_exits_composer(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                composer = app.query_one("#composer-input", Input)
+                composer.focus()
+                await pilot.press("shift+tab")
+                await pilot.pause()
+
+                assert composer.has_focus is False
+
+
+@pytest.mark.anyio
+async def test_tui_widgets_have_tooltips(app_class: Any) -> None:
+    VoidCodeTUI, _, _ = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+                for selector in (
+                    "#composer-input",
+                    "#transcript-log",
+                    "#status-panel",
+                    "#session-panel",
+                ):
+                    widget = app.query_one(selector)
+                    assert widget.tooltip, f"{selector} missing accessibility tooltip"
+
+
+@pytest.mark.anyio
+async def test_tui_transcript_line_cap_prevents_unbounded_growth(app_class: Any) -> None:
+    """Perf regression: the transcript log must cap retained lines."""
+    VoidCodeTUI, _, _ = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                log = app.query_one("#transcript-log", RichLog)
+
+                assert log.max_lines == 2000
+
+                for i in range(3000):
+                    log.write(f"line {i}")
+                await pilot.pause()
+
+                assert len(log.lines) <= log.max_lines
+
+
+@pytest.mark.anyio
+async def test_tui_content_block_enforces_max_lines(app_class: Any) -> None:
+    """Large tool results are truncated to the head preview plus a hint line."""
+    VoidCodeTUI, _, _ = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                log = app.query_one("#transcript-log", RichLog)
+                before = len(log.lines)
+                long_content = "\n".join(f"line {i}" for i in range(1, 501))
+
+                app._write_content_block(log, long_content, "call-cap")
+                await pilot.pause()
+
+                written = len(log.lines) - before
+                assert written <= 10

@@ -11,6 +11,12 @@ class StreamChunkReceived(Message):
         self.chunk = chunk
 
 
+class ContextPanelUpdated(Message):
+    def __init__(self, label: str) -> None:
+        super().__init__()
+        self.label = label
+
+
 class StreamCompleted(Message):
     def __init__(self, final_status: str) -> None:
         super().__init__()

@@ -6,6 +6,7 @@ import os
 import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, TypedDict, TypeGuard, cast
 
@@ -185,6 +186,35 @@ def _close_runtime(runtime: object) -> None:
             print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
 
 
+@contextmanager
+def _runtime_session(
+    workspace: Path,
+    config: RuntimeConfig | None = None,
+) -> Iterator[VoidCodeRuntime]:
+    """Construct a runtime, yield it, and guarantee cleanup on exit."""
+    if config is not None:
+        runtime = VoidCodeRuntime(workspace=workspace, config=config)
+    else:
+        runtime = VoidCodeRuntime(workspace=workspace)
+    try:
+        yield runtime
+    finally:
+        _close_runtime(runtime)
+
+
+def _emit_output(
+    args: object,
+    payload: object,
+    plain_printer: Callable[[], object],
+) -> int:
+    """Emit handler output as JSON (when --json) or via the plain printer."""
+    if getattr(args, "json", False):
+        print_json(payload)
+    else:
+        plain_printer()
+    return EXIT_SUCCESS
+
+
 def _handle_run_command(args: RunArgs) -> int:
     workspace = args.workspace
     request_text = args.request
@@ -203,8 +233,7 @@ def _handle_run_command(args: RunArgs) -> int:
     if cli_model is not None:
         config_kwargs["model"] = cli_model
     config = load_runtime_config(workspace, **config_kwargs)
-    runtime = VoidCodeRuntime(workspace=workspace, config=config)
-    try:
+    with _runtime_session(workspace, config) as runtime:
         metadata: dict[str, object] = {}
         if args.agent is not None:
             metadata["agent"] = {"preset": args.agent}
@@ -282,8 +311,6 @@ def _handle_run_command(args: RunArgs) -> int:
             _print_runtime_failure_footer(runtime, result, workspace=workspace)
             if result.session.status == "failed":
                 return EXIT_RUNTIME_ERROR
-    finally:
-        _close_runtime(runtime)
     return EXIT_SUCCESS
 
 
@@ -293,12 +320,9 @@ def _handle_acp_command(args: AcpArgs) -> int:
         workspace,
         approval_mode=args.approval_mode,
     )
-    runtime = VoidCodeRuntime(workspace=workspace, config=config)
-    try:
+    with _runtime_session(workspace, config) as runtime:
         server = StdioAcpServer(runtime=runtime, workspace=workspace)
         return server.serve()
-    finally:
-        _close_runtime(runtime)
 
 
 def _run_with_inline_approval(
@@ -901,26 +925,21 @@ def _print_noninteractive_blocked(result: RuntimeStreamResult, event: EventEnvel
 
 def _handle_sessions_list_command(args: SessionsArgs) -> int:
     workspace = args.workspace
-    json_output = args.json
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         sessions = runtime.list_sessions()
-    finally:
-        _close_runtime(runtime)
 
-    if json_output:
-        print_json(
-            {
-                "workspace": str(workspace),
-                "sessions": [serialize_stored_session_summary(session) for session in sessions],
-            }
-        )
-        return EXIT_SUCCESS
+    def _print_sessions() -> None:
+        for session in sessions:
+            print(_format_session_summary(session))
 
-    for session in sessions:
-        print(_format_session_summary(session))
-
-    return EXIT_SUCCESS
+    return _emit_output(
+        args,
+        {
+            "workspace": str(workspace),
+            "sessions": [serialize_stored_session_summary(session) for session in sessions],
+        },
+        _print_sessions,
+    )
 
 
 def _format_session_summary(session: StoredSessionSummary) -> str:
@@ -993,10 +1012,6 @@ def _format_memory(memory: MemoryRecord) -> str:
     )
 
 
-def _memory_runtime(workspace: Path) -> VoidCodeRuntime:
-    return VoidCodeRuntime(workspace=workspace)
-
-
 def _handle_memory_add_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     content = args.content
@@ -1004,19 +1019,18 @@ def _handle_memory_add_command(args: MemoryArgs) -> int:
         raise CliError(code=EXIT_USAGE_ERROR, message="memory content cannot be empty")
     kind = _parse_memory_kind(args.kind)
     tags = tuple(args.tag)
-    runtime = _memory_runtime(workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             memory = runtime.add_memory(content=content, kind=kind, tags=tags)
         except ValueError as exc:
             raise CliError(code=EXIT_USAGE_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
-    if args.json:
-        print_json({"memory": _memory_payload(memory)})
-        return EXIT_SUCCESS
-    print(f"Added memory {memory.id} kind={memory.kind} tags={','.join(memory.tags) or '-'}")
-    return EXIT_SUCCESS
+    return _emit_output(
+        args,
+        {"memory": _memory_payload(memory)},
+        lambda: print(
+            f"Added memory {memory.id} kind={memory.kind} tags={','.join(memory.tags) or '-'}"
+        ),
+    )
 
 
 def _memory_filter_records(
@@ -1042,108 +1056,97 @@ def _memory_filter_records(
 
 def _handle_memory_list_command(args: MemoryArgs) -> int:
     workspace = args.workspace
-    runtime = _memory_runtime(workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         memories = runtime.list_memories()
-    finally:
-        _close_runtime(runtime)
     filtered = _memory_filter_records(
         memories,
         kind=args.kind,
         tags=tuple(args.tag),
         limit=args.limit,
     )
-    if args.json:
-        print_json(_memory_list_payload(filtered))
-        return EXIT_SUCCESS
-    if not filtered:
-        print("No memories found")
-        return EXIT_SUCCESS
-    for memory in filtered:
-        print(_format_memory(memory))
-    return EXIT_SUCCESS
+
+    def _print_memories() -> None:
+        if not filtered:
+            print("No memories found")
+            return
+        for memory in filtered:
+            print(_format_memory(memory))
+
+    return _emit_output(args, _memory_list_payload(filtered), _print_memories)
 
 
 def _handle_memory_search_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     query = args.query
-    runtime = _memory_runtime(workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         results = runtime.search_memories(query=query)
-    finally:
-        _close_runtime(runtime)
     filtered = _memory_filter_records(
         tuple(result.record for result in results),
         kind=args.kind,
         tags=tuple(args.tag),
         limit=args.limit,
     )
-    if args.json:
-        print_json({"query": query, **_memory_list_payload(filtered)})
-        return EXIT_SUCCESS
-    if not filtered:
-        print("No memories found")
-        return EXIT_SUCCESS
-    for memory in filtered:
-        print(_format_memory(memory))
-    return EXIT_SUCCESS
+
+    def _print_memory_results() -> None:
+        if not filtered:
+            print("No memories found")
+            return
+        for memory in filtered:
+            print(_format_memory(memory))
+
+    return _emit_output(
+        args,
+        {"query": query, **_memory_list_payload(filtered)},
+        _print_memory_results,
+    )
 
 
 def _handle_memory_show_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     memory_id = args.memory_id
-    runtime = _memory_runtime(workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         memory = runtime.get_memory(memory_id)
-    finally:
-        _close_runtime(runtime)
     if memory is None:
         raise CliError(code=EXIT_INVALID_RESOURCE, message=f"memory not found: {memory_id}")
-    if args.json:
-        print_json({"memory": _memory_payload(memory)})
-        return EXIT_SUCCESS
-    print(_format_memory(memory))
-    return EXIT_SUCCESS
+    return _emit_output(
+        args,
+        {"memory": _memory_payload(memory)},
+        lambda: print(_format_memory(memory)),
+    )
 
 
 def _handle_memory_delete_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     memory_id = args.memory_id
-    runtime = _memory_runtime(workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             memory = runtime.delete_memory(memory_id)
         except ValueError as exc:
             raise CliError(code=EXIT_INVALID_RESOURCE, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
-    if args.json:
-        print_json({"deleted": True, "id": memory.id})
-        return EXIT_SUCCESS
-    print(f"Deleted memory {memory.id}")
-    return EXIT_SUCCESS
+    return _emit_output(
+        args,
+        {"deleted": True, "id": memory.id},
+        lambda: print(f"Deleted memory {memory.id}"),
+    )
 
 
 def _handle_memory_status_command(args: MemoryArgs) -> int:
     workspace = args.workspace
-    runtime = _memory_runtime(workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         status = runtime.memory_status()
-    finally:
-        _close_runtime(runtime)
     payload = _memory_status_payload(status)
-    if args.json:
-        print_json(payload)
-        return EXIT_SUCCESS
-    print(
-        "Memory store status "
-        f"workspace={payload['workspace_id']} database={payload['database_path']} "
-        f"total={payload['total_memories']} deleted={payload['deleted_memories']} "
-        f"keyword_search={str(payload['keyword_search_available']).lower()} "
-        f"semantic_search={str(payload['semantic_search_available']).lower()} "
-        f"sqlite_vec_status={payload['sqlite_vec_status']} active session: no"
+    return _emit_output(
+        args,
+        payload,
+        lambda: print(
+            "Memory store status "
+            f"workspace={payload['workspace_id']} database={payload['database_path']} "
+            f"total={payload['total_memories']} deleted={payload['deleted_memories']} "
+            f"keyword_search={str(payload['keyword_search_available']).lower()} "
+            f"semantic_search={str(payload['semantic_search_available']).lower()} "
+            f"sqlite_vec_status={payload['sqlite_vec_status']} active session: no"
+        ),
     )
-    return EXIT_SUCCESS
 
 
 def _format_named_record(prefix: str, fields: Sequence[tuple[str, object]]) -> str:
@@ -1680,8 +1683,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
     dry_run = args.dry_run
     approval_decision = args.approval_decision
     show_thinking = args.show_thinking
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         if dry_run:
             try:
                 snapshot = runtime.session_debug_snapshot(session_id=session_id)
@@ -1704,8 +1706,6 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     _print_runtime_response(result, show_thinking=show_thinking)
     return 0
@@ -1716,7 +1716,6 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
     session_id = args.session_id
     question_request_id = args.question_request_id
     show_thinking = args.show_thinking
-    json_output = args.json
     try:
         responses = _parse_question_responses(
             response=args.response,
@@ -1727,8 +1726,7 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
     except (json.JSONDecodeError, ValueError) as exc:
         raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             result = runtime.answer_question(
                 session_id,
@@ -1737,23 +1735,19 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
             )
         except (ValueError, NoPendingQuestionError) as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
-    if json_output:
-        print_json(
-            {
-                "workspace": str(workspace),
-                "session": serialize_session_state(result.session),
-                "events": [
-                    serialize_event(event, show_thinking=show_thinking) for event in result.events
-                ],
-                "output": result.output,
-            }
-        )
-        return 0
-    _print_runtime_response(result, show_thinking=show_thinking)
-    return 0
+    return _emit_output(
+        args,
+        {
+            "workspace": str(workspace),
+            "session": serialize_session_state(result.session),
+            "events": [
+                serialize_event(event, show_thinking=show_thinking) for event in result.events
+            ],
+            "output": result.output,
+        },
+        lambda: _print_runtime_response(result, show_thinking=show_thinking),
+    )
 
 
 def _session_bundle_options_from_args(args: SessionsArgs) -> SessionBundleOptions:
@@ -1773,14 +1767,11 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
     output_path = args.output
     fmt = args.format
     options = _session_bundle_options_from_args(args)
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             bundle = runtime.export_session_bundle(session_id=session_id, options=options)
         except (ValueError, SessionBundleError) as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     if output_path is None and fmt == "json":
         print(json.dumps(bundle.to_payload(), sort_keys=True))
@@ -1806,8 +1797,7 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     bundle_path = args.bundle_path
     dry_run = args.dry_run
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             result = runtime.import_session_bundle_file(
                 bundle_path=bundle_path,
@@ -1815,8 +1805,6 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
             )
         except (ValueError, SessionBundleError) as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
     print_json({"workspace": str(workspace), "import": result.to_payload()})
     return 0
 
@@ -1825,14 +1813,11 @@ def _handle_sessions_debug_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
     show_thinking = args.show_thinking
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             snapshot = runtime.session_debug_snapshot(session_id=session_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     debug_payload = _serialize_session_debug_snapshot(
         snapshot,
@@ -1851,14 +1836,11 @@ def _serialize_revert_marker(marker: RuntimeSessionRevertMarker | None) -> dict[
 def _handle_sessions_undo_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             marker = runtime.undo_session(session_id=session_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
     print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
     return 0
 
@@ -1866,8 +1848,7 @@ def _handle_sessions_undo_command(args: SessionsArgs) -> int:
 def _handle_sessions_revert_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             marker = runtime.revert_session(
                 session_id=session_id,
@@ -1875,8 +1856,6 @@ def _handle_sessions_revert_command(args: SessionsArgs) -> int:
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
     print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
     return 0
 
@@ -1884,14 +1863,11 @@ def _handle_sessions_revert_command(args: SessionsArgs) -> int:
 def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             marker = runtime.unrevert_session(session_id=session_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
     print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
     return 0
 
@@ -1899,32 +1875,30 @@ def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
 def _handle_tasks_status_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
-    json_output = args.json
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             task = runtime.load_background_task(task_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     payload = _background_task_state_payload(task, workspace=workspace)
-    if json_output:
-        print_json({"workspace": str(workspace), "task": payload})
-        return 0
-    print(_format_background_task_state(task))
-    _print_background_task_guidance(payload)
-    return 0
+
+    def _print_task() -> None:
+        print(_format_background_task_state(task))
+        _print_background_task_guidance(payload)
+
+    return _emit_output(
+        args,
+        {"workspace": str(workspace), "task": payload},
+        _print_task,
+    )
 
 
 def _handle_tasks_output_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
-    json_output = args.json
-    runtime = VoidCodeRuntime(workspace=workspace)
-    session_output: str | None = None
-    try:
+    with _runtime_session(workspace) as runtime:
+        session_output: str | None = None
         try:
             task_result = runtime.load_background_task_result(task_id)
             if task_result.result_available and task_result.child_session_id is not None:
@@ -1937,8 +1911,6 @@ def _handle_tasks_output_command(args: TasksArgs) -> int:
                     session_output = None
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     fallback_output = (
         task_result.summary_output if task_result.summary_output is not None else task_result.error
@@ -1947,67 +1919,69 @@ def _handle_tasks_output_command(args: TasksArgs) -> int:
         print("warning: WARN: session output unavailable; using fallback output", file=sys.stderr)
     output = session_output if session_output is not None else fallback_output
     payload = _background_task_result_payload(task_result, workspace=workspace)
-    if json_output:
-        print_json({"workspace": str(workspace), "task": payload, "output": output})
-        return 0
-    print(_format_background_task_result(task_result))
-    _print_background_task_guidance(payload)
-    _print_runtime_output(output)
-    return 0
+
+    def _print_task_output() -> None:
+        print(_format_background_task_result(task_result))
+        _print_background_task_guidance(payload)
+        _print_runtime_output(output)
+
+    return _emit_output(
+        args,
+        {"workspace": str(workspace), "task": payload, "output": output},
+        _print_task_output,
+    )
 
 
 def _handle_tasks_cancel_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
-    json_output = args.json
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             task = runtime.cancel_background_task(task_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     payload = _background_task_state_payload(task, workspace=workspace)
-    if json_output:
-        print_json({"workspace": str(workspace), "task": payload})
-        return 0
-    print(_format_background_task_state(task))
-    _print_background_task_guidance(payload)
-    return 0
+
+    def _print_task() -> None:
+        print(_format_background_task_state(task))
+        _print_background_task_guidance(payload)
+
+    return _emit_output(
+        args,
+        {"workspace": str(workspace), "task": payload},
+        _print_task,
+    )
 
 
 def _handle_tasks_retry_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
-    json_output = args.json
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             task = runtime.retry_background_task(task_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     payload = _background_task_state_payload(task, workspace=workspace)
     payload["retry_of_task_id"] = task_id
-    if json_output:
-        print_json({"workspace": str(workspace), "task": payload})
-        return 0
-    print(_format_background_task_state(task))
-    print(f"RETRY previous_task_id={task_id} new_task_id={task.task.id}")
-    _print_background_task_guidance(payload)
-    return 0
+
+    def _print_retry_task() -> None:
+        print(_format_background_task_state(task))
+        print(f"RETRY previous_task_id={task_id} new_task_id={task.task.id}")
+        _print_background_task_guidance(payload)
+
+    return _emit_output(
+        args,
+        {"workspace": str(workspace), "task": payload},
+        _print_retry_task,
+    )
 
 
 def _handle_tasks_list_command(args: TasksArgs) -> int:
     workspace = args.workspace
     parent_session_id = args.parent_session_id
-    json_output = args.json
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             tasks = (
                 runtime.list_background_tasks_by_parent_session(parent_session_id=parent_session_id)
@@ -2016,39 +1990,33 @@ def _handle_tasks_list_command(args: TasksArgs) -> int:
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
-    if json_output:
-        print_json(
-            {
-                "workspace": str(workspace),
-                "parent_session_id": parent_session_id,
-                "tasks": [_background_task_summary_payload(task) for task in tasks],
-            }
-        )
-        return 0
+    def _print_tasks() -> None:
+        for task in tasks:
+            print(_format_background_task_summary(task))
 
-    for task in tasks:
-        print(_format_background_task_summary(task))
-    return 0
+    return _emit_output(
+        args,
+        {
+            "workspace": str(workspace),
+            "parent_session_id": parent_session_id,
+            "tasks": [_background_task_summary_payload(task) for task in tasks],
+        },
+        _print_tasks,
+    )
 
 
 def _handle_storage_diagnostics_command(args: StorageArgs) -> int:
     workspace = args.workspace
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         diagnostics = runtime.storage_diagnostics()
-    finally:
-        _close_runtime(runtime)
     print_json({"workspace": str(workspace), "storage": diagnostics})
     return EXIT_SUCCESS
 
 
 def _handle_storage_prune_command(args: StorageArgs) -> int:
     workspace = args.workspace
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             counts = runtime.prune_runtime_storage(
                 keep_sessions=args.keep_sessions,
@@ -2057,19 +2025,14 @@ def _handle_storage_prune_command(args: StorageArgs) -> int:
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
     print_json({"workspace": str(workspace), "pruned": counts})
     return EXIT_SUCCESS
 
 
 def _handle_storage_reset_command(args: StorageArgs) -> int:
     workspace = args.workspace
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         result = runtime.reset_runtime_storage()
-    finally:
-        _close_runtime(runtime)
     print_json({"storage": result})
     return EXIT_SUCCESS
 
@@ -2106,8 +2069,7 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
         raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
     session_id = args.session_id
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             effective_config = runtime.effective_runtime_config(session_id=session_id)
             readiness = runtime.provider_readiness(session_id=session_id)
@@ -2116,8 +2078,6 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
             status = runtime.current_status()
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     print_json(
         {
@@ -2176,36 +2136,32 @@ def _handle_agents_list_command(args: AgentsArgs) -> int:
     if not workspace.exists() or not workspace.is_dir():
         raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         summaries = runtime.list_agent_summaries()
-    finally:
-        _close_runtime(runtime)
 
     payload = {
         "workspace": str(workspace),
         "agents": [_serialize_agent_summary(summary) for summary in summaries],
     }
-    if args.json:
-        print_json(payload)
-        return EXIT_SUCCESS
 
-    for summary in summaries:
-        fields: list[tuple[str, object]] = [
-            ("id", summary.id),
-            ("label", summary.label),
-            ("mode", summary.mode),
-            ("selectable", summary.selectable),
-            ("configured", summary.configured),
-            ("model", summary.model),
-            ("provider", summary.provider),
-        ]
-        if summary.source_scope is not None:
-            fields.append(("source_scope", summary.source_scope))
-        if summary.source_path is not None:
-            fields.append(("source_path", summary.source_path))
-        print(_format_named_record("AGENT", fields))
-    return EXIT_SUCCESS
+    def _print_agents() -> None:
+        for summary in summaries:
+            fields: list[tuple[str, object]] = [
+                ("id", summary.id),
+                ("label", summary.label),
+                ("mode", summary.mode),
+                ("selectable", summary.selectable),
+                ("configured", summary.configured),
+                ("model", summary.model),
+                ("provider", summary.provider),
+            ]
+            if summary.source_scope is not None:
+                fields.append(("source_scope", summary.source_scope))
+            if summary.source_path is not None:
+                fields.append(("source_path", summary.source_path))
+            print(_format_named_record("AGENT", fields))
+
+    return _emit_output(args, payload, _print_agents)
 
 
 def _mcp_status_payload(snapshot: CapabilityStatusSnapshot) -> dict[str, object]:
@@ -2224,53 +2180,49 @@ def _handle_mcp_list_command(args: McpArgs) -> int:
     if not workspace.exists() or not workspace.is_dir():
         raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         status = runtime.current_status()
-    finally:
-        _close_runtime(runtime)
 
     payload = {
         "workspace": str(workspace),
         "mcp": _mcp_status_payload(status.mcp),
     }
-    if args.json:
-        print_json(payload)
-        return EXIT_SUCCESS
 
-    details = status.mcp.details
-    print(
-        _format_named_record(
-            "MCP",
-            [
-                ("state", status.mcp.state),
-                ("mode", details.get("mode", "disabled")),
-                ("configured", details.get("configured", False)),
-                ("configured_enabled", details.get("configured_enabled", False)),
-                ("configured_server_count", details.get("configured_server_count", 0)),
-                ("running_server_count", details.get("running_server_count", 0)),
-                ("failed_server_count", details.get("failed_server_count", 0)),
-            ],
-        )
-    )
-    servers = cast(list[object], details.get("servers", []))
-    for item in servers:
-        server = cast(dict[str, object], item)
+    def _print_mcp() -> None:
+        details = status.mcp.details
         print(
             _format_named_record(
-                "MCP_SERVER",
+                "MCP",
                 [
-                    ("name", server.get("server")),
-                    ("status", server.get("status")),
-                    ("scope", server.get("scope")),
-                    ("transport", server.get("transport")),
-                    ("command", repr(server.get("command", []))),
-                    ("stage", server.get("stage")),
-                    ("error", repr(server.get("error"))),
+                    ("state", status.mcp.state),
+                    ("mode", details.get("mode", "disabled")),
+                    ("configured", details.get("configured", False)),
+                    ("configured_enabled", details.get("configured_enabled", False)),
+                    ("configured_server_count", details.get("configured_server_count", 0)),
+                    ("running_server_count", details.get("running_server_count", 0)),
+                    ("failed_server_count", details.get("failed_server_count", 0)),
                 ],
             )
         )
-    return EXIT_SUCCESS
+        servers = cast(list[object], details.get("servers", []))
+        for item in servers:
+            server = cast(dict[str, object], item)
+            print(
+                _format_named_record(
+                    "MCP_SERVER",
+                    [
+                        ("name", server.get("server")),
+                        ("status", server.get("status")),
+                        ("scope", server.get("scope")),
+                        ("transport", server.get("transport")),
+                        ("command", repr(server.get("command", []))),
+                        ("stage", server.get("stage")),
+                        ("error", repr(server.get("error"))),
+                    ],
+                )
+            )
+
+    return _emit_output(args, payload, _print_mcp)
 
 
 def _handle_commands_list_command(args: CommandsArgs) -> int:
@@ -2281,28 +2233,28 @@ def _handle_commands_list_command(args: CommandsArgs) -> int:
         include_disabled=args.include_disabled,
     )
 
-    if args.json:
-        print_json(
-            {
-                "workspace": str(workspace),
-                "commands": [serialize_command_summary(command) for command in commands],
-            }
-        )
-        return EXIT_SUCCESS
-
-    for command in commands:
-        print(
-            _format_named_record(
-                "COMMAND",
-                [
-                    ("name", f"/{command.name}"),
-                    ("source", command.source),
-                    ("enabled", command.enabled),
-                    ("description", repr(command.description)),
-                ],
+    def _print_commands() -> None:
+        for command in commands:
+            print(
+                _format_named_record(
+                    "COMMAND",
+                    [
+                        ("name", f"/{command.name}"),
+                        ("source", command.source),
+                        ("enabled", command.enabled),
+                        ("description", repr(command.description)),
+                    ],
+                )
             )
-        )
-    return EXIT_SUCCESS
+
+    return _emit_output(
+        args,
+        {
+            "workspace": str(workspace),
+            "commands": [serialize_command_summary(command) for command in commands],
+        },
+        _print_commands,
+    )
 
 
 def _handle_commands_show_command(args: CommandsArgs) -> int:
@@ -2321,19 +2273,18 @@ def _handle_commands_show_command(args: CommandsArgs) -> int:
         raise CliError(code=EXIT_INVALID_COMMAND, message=f"command is disabled: /{command.name}")
 
     payload = serialize_command_definition(command)
-    if args.json:
-        print_json(payload)
-        return EXIT_SUCCESS
 
-    print(f"/{command.name}")
-    print(f"Source: {command.source}")
-    print(f"Enabled: {command.enabled}")
-    print(f"Description: {command.description}")
-    if command.path is not None:
-        print(f"Path: {command.path}")
-    print("Template:")
-    print(command.template, end="" if command.template.endswith("\n") else "\n")
-    return EXIT_SUCCESS
+    def _print_command() -> None:
+        print(f"/{command.name}")
+        print(f"Source: {command.source}")
+        print(f"Enabled: {command.enabled}")
+        print(f"Description: {command.description}")
+        if command.path is not None:
+            print(f"Path: {command.path}")
+        print("Template:")
+        print(command.template, end="" if command.template.endswith("\n") else "\n")
+
+    return _emit_output(args, payload, _print_command)
 
 
 def _load_cli_command_registry(args: CommandsArgs, *, workspace: Path) -> CommandRegistry:
@@ -2392,16 +2343,13 @@ def _handle_provider_models_command(args: ProviderArgs) -> int:
     workspace = args.workspace
     provider = args.provider
     refresh = args.refresh
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             if refresh:
                 _ = runtime.refresh_provider_models(provider)
             result = runtime.provider_models_result(provider)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     payload: dict[str, object] = {
         "workspace": str(workspace),
@@ -2534,14 +2482,11 @@ def _provider_inspect_payload(
 def _handle_provider_inspect_command(args: ProviderArgs) -> int:
     workspace = args.workspace
     provider = args.provider
-    runtime = VoidCodeRuntime(workspace=workspace)
-    try:
+    with _runtime_session(workspace) as runtime:
         try:
             result = runtime.inspect_provider(provider)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    finally:
-        _close_runtime(runtime)
 
     print(json.dumps(_provider_inspect_payload(result, workspace=workspace), sort_keys=True))
     return 0

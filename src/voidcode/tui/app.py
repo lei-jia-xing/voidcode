@@ -7,7 +7,7 @@ from typing import Literal, cast
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Input, RichLog, Static
@@ -28,7 +28,12 @@ from ..runtime.contracts import RuntimeRequest
 from ..runtime.events import EventEnvelope
 from ..runtime.permission import PermissionDecision
 from ..runtime.service import VoidCodeRuntime
-from .messages import StreamChunkReceived, StreamCompleted, StreamFailed
+from .messages import (
+    ContextPanelUpdated,
+    StreamChunkReceived,
+    StreamCompleted,
+    StreamFailed,
+)
 from .screens import (
     ApprovalModal,
     SessionListModal,
@@ -37,6 +42,38 @@ from .screens import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SLASH_COMMANDS: tuple[str, ...] = ("/expand",)
+
+
+class _ComposerInput(Input):
+    """Composer with keyboard accessibility helpers.
+
+    - ``Tab`` completes an in-progress slash command (e.g. ``/exp`` -> ``/expand``).
+    - ``Shift+Tab`` moves focus out of the composer so the user can reach other widgets.
+    """
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "tab":
+            if self.value.startswith("/"):
+                completed = self._complete_slash_command(self.value)
+                if completed is not None:
+                    self.value = completed
+                    self.cursor_position = len(completed)
+            event.stop()
+        elif event.key == "shift+tab":
+            event.stop()
+            self.screen.focus_next()
+
+    @staticmethod
+    def _complete_slash_command(value: str) -> str | None:
+        head, _, rest = value.partition(" ")
+        if not head.startswith("/"):
+            return None
+        candidates = [cmd for cmd in _SLASH_COMMANDS if cmd.startswith(head.lower())]
+        if len(candidates) == 1:
+            return candidates[0] + (" " + rest if rest else "")
+        return None
 
 
 class VoidCodeTUI(App[int]):
@@ -102,6 +139,8 @@ class VoidCodeTUI(App[int]):
         self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
         self._tool_content_by_call_id: dict[str, str] = {}
         self._tool_artifact_by_call_id: dict[str, str] = {}
+        self._pending_output: list[str] = []
+        self._preview_flush_scheduled = False
 
         if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
             merged_preferences = config.tui.preferences
@@ -116,20 +155,44 @@ class VoidCodeTUI(App[int]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-layout"):
             with Vertical(id="transcript-column"):
-                yield RichLog(id="transcript-log", markup=True, wrap=True)
+                transcript_log = RichLog(
+                    id="transcript-log", markup=True, wrap=True, max_lines=2000
+                )
+                transcript_log.tooltip = (
+                    "Session transcript; Tab completes /commands, "
+                    "Shift+Tab moves focus out of the composer"
+                )
+                yield transcript_log
                 yield Static("", id="current-response")
-                yield Input(placeholder="Ask voidcode...", id="composer-input")
+                yield _ComposerInput(
+                    placeholder="Ask voidcode...",
+                    id="composer-input",
+                    tooltip=(
+                        "Ask a question or type /expand <tool_call_id>. "
+                        "Tab completes slash commands; Shift+Tab exits the composer."
+                    ),
+                )
             with VerticalScroll(id="sidebar-column"):
                 yield Static("Status", classes="sidebar-header")
-                yield Static("Idle", id="status-panel")
+                status_panel = Static("Idle", id="status-panel")
+                status_panel.tooltip = "Current runtime state"
+                yield status_panel
                 yield Static("Session", classes="sidebar-header")
-                yield Static("None", id="session-panel")
+                session_panel = Static("None", id="session-panel")
+                session_panel.tooltip = "Active session id and prompt"
+                yield session_panel
                 yield Static("Workspace", classes="sidebar-header")
-                yield Static("Unknown", id="workspace-panel")
+                workspace_panel = Static("Unknown", id="workspace-panel")
+                workspace_panel.tooltip = "Workspace directory in use"
+                yield workspace_panel
                 yield Static("LSP", classes="sidebar-header")
-                yield Static("Disabled", id="lsp-panel")
+                lsp_panel = Static("Disabled", id="lsp-panel")
+                lsp_panel.tooltip = "Language server status"
+                yield lsp_panel
                 yield Static("Context", classes="sidebar-header")
-                yield Static("Unknown", id="context-panel")
+                context_panel = Static("Unknown", id="context-panel")
+                context_panel.tooltip = "Retained context and token budget"
+                yield context_panel
         yield Footer()
 
     def on_mount(self) -> None:
@@ -622,11 +685,16 @@ class VoidCodeTUI(App[int]):
         log.write(text)
 
     @staticmethod
-    def _write_content_block(log: RichLog, content: str, tool_call_id: str | None) -> None:
-        inline_max_lines = 10
-        preview_head_lines = 5
+    def _write_content_block(
+        log: RichLog,
+        content: str,
+        tool_call_id: str | None,
+        *,
+        max_lines: int = 10,
+        preview_head_lines: int = 5,
+    ) -> None:
         lines = content.splitlines()
-        if len(lines) <= inline_max_lines:
+        if len(lines) <= max_lines:
             log.write(Text(content))
             return
         head = "\n".join(lines[:preview_head_lines])
@@ -664,16 +732,13 @@ class VoidCodeTUI(App[int]):
         value = context_window.get(key, default)
         return value if isinstance(value, str) else default
 
-    def _update_context_panel(self, metadata: dict[str, object] | None) -> None:
-        context_panel = self.query_one("#context-panel", Static)
+    def _context_panel_label(self, metadata: dict[str, object] | None) -> str:
         if not metadata or "context_window" not in metadata:
-            context_panel.update("Unknown")
-            return
+            return "Unknown"
 
         cw = metadata["context_window"]
         if not isinstance(cw, dict):
-            context_panel.update("Unknown")
-            return
+            return "Unknown"
         context_window = cast(dict[str, object], cw)
 
         retained = self._context_int_value(context_window, "retained_tool_result_count")
@@ -690,7 +755,32 @@ class VoidCodeTUI(App[int]):
             reason = self._context_str_value(context_window, "compaction_reason")
             text += f"\n[Compacted: {reason}]"
 
-        context_panel.update(text)
+        return text
+
+    def _update_context_panel(self, metadata: dict[str, object] | None) -> None:
+        self.query_one("#context-panel", Static).update(self._context_panel_label(metadata))
+
+    @work(thread=True)
+    def _update_context_panel_worker(self, metadata: dict[str, object] | None) -> None:
+        label = self._context_panel_label(metadata)
+        self.post_message(ContextPanelUpdated(label))
+
+    def on_context_panel_updated(self, message: ContextPanelUpdated) -> None:
+        self.query_one("#context-panel", Static).update(message.label)
+
+    def _schedule_stream_preview_flush(self) -> None:
+        if self._preview_flush_scheduled:
+            return
+        self._preview_flush_scheduled = True
+        self.set_timer(0.1, self._flush_stream_preview)
+
+    def _flush_stream_preview(self) -> None:
+        self._preview_flush_scheduled = False
+        if not self._pending_output:
+            return
+        output = "".join(self._pending_output)
+        self._pending_output.clear()
+        self._write_output_line(output)
 
     def _set_state(self, state: str) -> None:
         self.current_state = state
@@ -769,9 +859,10 @@ class VoidCodeTUI(App[int]):
         self.session_id = chunk.session.session.id
 
         if hasattr(chunk.session, "metadata") and chunk.session.metadata:
-            self._update_context_panel(chunk.session.metadata)
+            self._update_context_panel_worker(chunk.session.metadata)
 
         if chunk.kind == "event" and chunk.event is not None:
+            self._flush_stream_preview()
             if self.session_id:
                 short_id = self.session_id.removeprefix("session-")[:8]
                 title = short_id
@@ -815,10 +906,12 @@ class VoidCodeTUI(App[int]):
                 self._set_state("Completed")
 
         elif chunk.kind == "output" and chunk.output is not None:
-            self._write_output_line(chunk.output)
+            self._pending_output.append(chunk.output)
+            self._schedule_stream_preview_flush()
             self._set_state("Completed")
 
     def on_stream_completed(self, message: StreamCompleted) -> None:
+        self._flush_stream_preview()
         if message.final_status == "waiting":
             self._set_state("Waiting approval")
             self._set_stream_active(False)
@@ -830,6 +923,7 @@ class VoidCodeTUI(App[int]):
         self._set_stream_active(False)
 
     def on_stream_failed(self, message: StreamFailed) -> None:
+        self._flush_stream_preview()
         self.query_one("#transcript-log", RichLog).write(
             Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red")
         )
