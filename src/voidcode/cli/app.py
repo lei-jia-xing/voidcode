@@ -8,7 +8,7 @@ import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Protocol, TypedDict, TypeGuard, cast
+from typing import Any, Protocol, TypedDict, TypeGuard, cast
 
 import click
 
@@ -48,7 +48,6 @@ from ..doctor import (
 from ..provider.snapshot import resolved_provider_snapshot
 from ..runtime.bundle import (
     SessionBundleError,
-    SessionBundleFormat,
     SessionBundleOptions,
     write_session_bundle,
 )
@@ -96,10 +95,53 @@ from ..runtime.task import (
     StoredBackgroundTaskSummary,
 )
 from ..server import serve, web
+from .handler_args import (
+    AcpArgs,
+    AgentsArgs,
+    CommandsArgs,
+    ConfigArgs,
+    DoctorArgs,
+    McpArgs,
+    MemoryArgs,
+    ProviderArgs,
+    RunArgs,
+    ServerArgs,
+    SessionsArgs,
+    StorageArgs,
+    TasksArgs,
+    TuiArgs,
+)
 
 print = _builtins.print
 
-Handler = Callable[[argparse.Namespace], int]
+Handler = Callable[[Any], int]
+
+_COMMAND_DATACLASS: dict[str, type] = {
+    "run": RunArgs,
+    "acp": AcpArgs,
+    "sessions": SessionsArgs,
+    "memory": MemoryArgs,
+    "tasks": TasksArgs,
+    "storage": StorageArgs,
+    "config": ConfigArgs,
+    "provider": ProviderArgs,
+    "commands": CommandsArgs,
+    "doctor": DoctorArgs,
+    "tui": TuiArgs,
+    "serve": ServerArgs,
+    "web": ServerArgs,
+    "agents": AgentsArgs,
+    "mcp": McpArgs,
+}
+
+
+def _namespace_to_handler_args(args: argparse.Namespace) -> object:
+    """Convert an argparse.Namespace to the typed handler dataclass."""
+    command: str | None = getattr(args, "command", None)
+    cls = _COMMAND_DATACLASS.get(command or "")
+    if cls is None:
+        raise _CliUsageError(f"unknown command: {command}")
+    return cls(**vars(args))
 
 
 class _CliUsageError(Exception):
@@ -148,7 +190,8 @@ def _build_click_command_context(
 
 def _invoke_handler_from_click(handler: Handler, args: argparse.Namespace) -> int:
     try:
-        return handler(args)
+        typed_args = _namespace_to_handler_args(args)
+        return handler(typed_args)
     except _CliUsageError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -211,17 +254,17 @@ def _close_runtime(runtime: object) -> None:
             print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
 
 
-def _handle_run_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    request_text = cast(str, args.request)
-    json_output = cast(bool, getattr(args, "json", False))
-    trace_output = cast(bool, getattr(args, "trace", False))
+def _handle_run_command(args: RunArgs) -> int:
+    workspace = args.workspace
+    request_text = args.request
+    json_output = args.json
+    trace_output = args.trace
     if json_output and trace_output:
         raise _CliUsageError("--json and --trace cannot be used together")
-    show_thinking = cast(bool, getattr(args, "show_thinking", False))
-    cli_reasoning_effort = cast(str | None, getattr(args, "reasoning_effort", None))
-    cli_model = cast(str | None, getattr(args, "model", None))
-    approval_mode = cast(PermissionDecision | None, getattr(args, "approval_mode", None))
+    show_thinking = args.show_thinking
+    cli_reasoning_effort = args.reasoning_effort
+    cli_model = args.model
+    approval_mode = args.approval_mode
     config_kwargs: _RunCommandConfigKwargs = {
         "approval_mode": approval_mode,
         "reasoning_effort": cli_reasoning_effort,
@@ -232,27 +275,27 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
         metadata: dict[str, object] = {}
-        if getattr(args, "agent", None) is not None:
-            metadata["agent"] = {"preset": cast(str, args.agent)}
-        if getattr(args, "skills", None):
-            metadata["skills"] = cast(list[str], args.skills)
-        runtime_mode = cast(str | None, getattr(args, "runtime_mode", None))
+        if args.agent is not None:
+            metadata["agent"] = {"preset": args.agent}
+        if args.skills:
+            metadata["skills"] = args.skills
+        runtime_mode = args.runtime_mode
         if runtime_mode is not None:
             metadata["mode"] = runtime_mode
-        if getattr(args, "read_only", False):
+        if args.read_only:
             metadata["read_only"] = True
-        if getattr(args, "max_steps", None) is not None:
-            metadata["max_steps"] = cast(int, args.max_steps)
+        if args.max_steps is not None:
+            metadata["max_steps"] = args.max_steps
         if cli_reasoning_effort is not None:
             metadata["reasoning_effort"] = cli_reasoning_effort
-        provider_stream = getattr(args, "provider_stream", None)
+        provider_stream = args.provider_stream
         if provider_stream is not None:
-            metadata["provider_stream"] = cast(bool, args.provider_stream)
+            metadata["provider_stream"] = args.provider_stream
         elif trace_output:
             metadata["provider_stream"] = True
         request = RuntimeRequest(
             prompt=request_text,
-            session_id=cast(str | None, args.session_id),
+            session_id=args.session_id,
             metadata=validate_runtime_request_metadata(metadata),
         )
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
@@ -313,11 +356,11 @@ def _handle_run_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_acp_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_acp_command(args: AcpArgs) -> int:
+    workspace = args.workspace
     config = load_runtime_config(
         workspace,
-        approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+        approval_mode=args.approval_mode,
     )
     runtime = VoidCodeRuntime(workspace=workspace, config=config)
     try:
@@ -925,9 +968,9 @@ def _print_noninteractive_blocked(result: RuntimeStreamResult, event: EventEnvel
     )
 
 
-def _handle_sessions_list_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_sessions_list_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    json_output = args.json
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         sessions = runtime.list_sessions()
@@ -1022,13 +1065,13 @@ def _memory_runtime(workspace: Path) -> VoidCodeRuntime:
     return VoidCodeRuntime(workspace=workspace)
 
 
-def _handle_memory_add_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    content = cast(str, args.content)
+def _handle_memory_add_command(args: MemoryArgs) -> int:
+    workspace = args.workspace
+    content = args.content
     if not content.strip():
         raise _CliUsageError("memory content cannot be empty")
-    kind = _parse_memory_kind(cast(str, args.kind))
-    tags = tuple(cast(tuple[str, ...], getattr(args, "tag", ())))
+    kind = _parse_memory_kind(args.kind)
+    tags = tuple(args.tag)
     runtime = _memory_runtime(workspace)
     try:
         try:
@@ -1037,7 +1080,7 @@ def _handle_memory_add_command(args: argparse.Namespace) -> int:
             raise _CliUsageError(str(exc)) from None
     finally:
         _close_runtime(runtime)
-    if cast(bool, args.json):
+    if args.json:
         print_json({"memory": _memory_payload(memory)})
         return EXIT_SUCCESS
     print(f"Added memory {memory.id} kind={memory.kind} tags={','.join(memory.tags) or '-'}")
@@ -1065,8 +1108,8 @@ def _memory_filter_records(
     return tuple(filtered)
 
 
-def _handle_memory_list_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_memory_list_command(args: MemoryArgs) -> int:
+    workspace = args.workspace
     runtime = _memory_runtime(workspace)
     try:
         memories = runtime.list_memories()
@@ -1074,11 +1117,11 @@ def _handle_memory_list_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
     filtered = _memory_filter_records(
         memories,
-        kind=cast(str | None, getattr(args, "kind", None)),
-        tags=tuple(cast(tuple[str, ...], getattr(args, "tag", ()))),
-        limit=cast(int | None, getattr(args, "limit", None)),
+        kind=args.kind,
+        tags=tuple(args.tag),
+        limit=args.limit,
     )
-    if cast(bool, args.json):
+    if args.json:
         print_json(_memory_list_payload(filtered))
         return EXIT_SUCCESS
     if not filtered:
@@ -1089,9 +1132,9 @@ def _handle_memory_list_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_memory_search_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    query = cast(str, args.query)
+def _handle_memory_search_command(args: MemoryArgs) -> int:
+    workspace = args.workspace
+    query = args.query
     runtime = _memory_runtime(workspace)
     try:
         results = runtime.search_memories(query=query)
@@ -1099,11 +1142,11 @@ def _handle_memory_search_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
     filtered = _memory_filter_records(
         tuple(result.record for result in results),
-        kind=cast(str | None, getattr(args, "kind", None)),
-        tags=tuple(cast(tuple[str, ...], getattr(args, "tag", ()))),
-        limit=cast(int | None, getattr(args, "limit", None)),
+        kind=args.kind,
+        tags=tuple(args.tag),
+        limit=args.limit,
     )
-    if cast(bool, args.json):
+    if args.json:
         print_json({"query": query, **_memory_list_payload(filtered)})
         return EXIT_SUCCESS
     if not filtered:
@@ -1114,9 +1157,9 @@ def _handle_memory_search_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_memory_show_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    memory_id = cast(str, args.memory_id)
+def _handle_memory_show_command(args: MemoryArgs) -> int:
+    workspace = args.workspace
+    memory_id = args.memory_id
     runtime = _memory_runtime(workspace)
     try:
         memory = runtime.get_memory(memory_id)
@@ -1124,16 +1167,16 @@ def _handle_memory_show_command(args: argparse.Namespace) -> int:
         _close_runtime(runtime)
     if memory is None:
         raise _CliUsageError(f"memory not found: {memory_id}", exit_code=EXIT_INVALID_RESOURCE)
-    if cast(bool, args.json):
+    if args.json:
         print_json({"memory": _memory_payload(memory)})
         return EXIT_SUCCESS
     print(_format_memory(memory))
     return EXIT_SUCCESS
 
 
-def _handle_memory_delete_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    memory_id = cast(str, args.memory_id)
+def _handle_memory_delete_command(args: MemoryArgs) -> int:
+    workspace = args.workspace
+    memory_id = args.memory_id
     runtime = _memory_runtime(workspace)
     try:
         try:
@@ -1142,22 +1185,22 @@ def _handle_memory_delete_command(args: argparse.Namespace) -> int:
             raise _CliUsageError(str(exc), exit_code=EXIT_INVALID_RESOURCE) from None
     finally:
         _close_runtime(runtime)
-    if cast(bool, args.json):
+    if args.json:
         print_json({"deleted": True, "id": memory.id})
         return EXIT_SUCCESS
     print(f"Deleted memory {memory.id}")
     return EXIT_SUCCESS
 
 
-def _handle_memory_status_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_memory_status_command(args: MemoryArgs) -> int:
+    workspace = args.workspace
     runtime = _memory_runtime(workspace)
     try:
         status = runtime.memory_status()
     finally:
         _close_runtime(runtime)
     payload = _memory_status_payload(status)
-    if cast(bool, args.json):
+    if args.json:
         print_json(payload)
         return EXIT_SUCCESS
     print(
@@ -1699,12 +1742,12 @@ def _serialize_session_debug_event(
     }
 
 
-def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
-    dry_run = cast(bool, getattr(args, "dry_run", False))
-    approval_decision = cast(PermissionResolution | None, getattr(args, "approval_decision", None))
-    show_thinking = cast(bool, getattr(args, "show_thinking", False))
+def _handle_sessions_resume_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    dry_run = args.dry_run
+    approval_decision = args.approval_decision
+    show_thinking = args.show_thinking
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         if dry_run:
@@ -1724,7 +1767,7 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
         try:
             result = runtime.resume(
                 session_id,
-                approval_request_id=cast(str | None, getattr(args, "approval_request_id", None)),
+                approval_request_id=args.approval_request_id,
                 approval_decision=approval_decision,
             )
         except ValueError as exc:
@@ -1736,16 +1779,16 @@ def _handle_sessions_resume_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_sessions_answer_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
-    question_request_id = cast(str, args.question_request_id)
-    show_thinking = cast(bool, getattr(args, "show_thinking", False))
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_sessions_answer_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    question_request_id = args.question_request_id
+    show_thinking = args.show_thinking
+    json_output = args.json
     try:
         responses = _parse_question_responses(
-            response=cast(tuple[str, ...], getattr(args, "response", ())),
-            response_json=cast(str | None, getattr(args, "response_json", None)),
+            response=args.response,
+            response_json=args.response_json,
         )
     except _CliUsageError:
         raise
@@ -1781,25 +1824,22 @@ def _handle_sessions_answer_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _session_bundle_options_from_args(args: argparse.Namespace) -> SessionBundleOptions:
-    if cast(bool, getattr(args, "support", False)):
+def _session_bundle_options_from_args(args: SessionsArgs) -> SessionBundleOptions:
+    if args.support:
         return SessionBundleOptions.support_artifact()
     return SessionBundleOptions(
-        redact=cast(bool, getattr(args, "redact", True)),
-        include_tool_output=cast(bool, getattr(args, "include_tool_output", False)),
-        include_raw_provider_messages=cast(
-            bool,
-            getattr(args, "include_raw_provider_messages", False),
-        ),
-        include_reasoning_text=cast(bool, getattr(args, "include_reasoning_text", False)),
+        redact=args.redact,
+        include_tool_output=args.include_tool_output,
+        include_raw_provider_messages=args.include_raw_provider_messages,
+        include_reasoning_text=args.include_reasoning_text,
     )
 
 
-def _handle_sessions_export_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
-    output_path = cast(Path | None, getattr(args, "output", None))
-    fmt = cast(SessionBundleFormat, getattr(args, "format", "zip"))
+def _handle_sessions_export_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    output_path = args.output
+    fmt = args.format
     options = _session_bundle_options_from_args(args)
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
@@ -1830,10 +1870,10 @@ def _handle_sessions_export_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_sessions_import_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    bundle_path = cast(Path, args.bundle_path)
-    dry_run = cast(bool, getattr(args, "dry_run", False))
+def _handle_sessions_import_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    bundle_path = args.bundle_path
+    dry_run = args.dry_run
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -1849,10 +1889,10 @@ def _handle_sessions_import_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_sessions_debug_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
-    show_thinking = cast(bool, getattr(args, "show_thinking", False))
+def _handle_sessions_debug_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
+    show_thinking = args.show_thinking
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -1876,9 +1916,9 @@ def _serialize_revert_marker(marker: RuntimeSessionRevertMarker | None) -> dict[
     return {"sequence": marker.sequence, "active": marker.active}
 
 
-def _handle_sessions_undo_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
+def _handle_sessions_undo_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -1891,15 +1931,15 @@ def _handle_sessions_undo_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_sessions_revert_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
+def _handle_sessions_revert_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
             marker = runtime.revert_session(
                 session_id=session_id,
-                sequence=cast(int, args.sequence),
+                sequence=args.sequence,
             )
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
@@ -1909,9 +1949,9 @@ def _handle_sessions_revert_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_sessions_unrevert_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    session_id = cast(str, args.session_id)
+def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
+    workspace = args.workspace
+    session_id = args.session_id
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -1924,10 +1964,10 @@ def _handle_sessions_unrevert_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_tasks_status_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    task_id = cast(str, args.task_id)
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_tasks_status_command(args: TasksArgs) -> int:
+    workspace = args.workspace
+    task_id = args.task_id
+    json_output = args.json
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -1946,10 +1986,10 @@ def _handle_tasks_status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_tasks_output_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    task_id = cast(str, args.task_id)
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_tasks_output_command(args: TasksArgs) -> int:
+    workspace = args.workspace
+    task_id = args.task_id
+    json_output = args.json
     runtime = VoidCodeRuntime(workspace=workspace)
     session_output: str | None = None
     try:
@@ -1984,10 +2024,10 @@ def _handle_tasks_output_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_tasks_cancel_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    task_id = cast(str, args.task_id)
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_tasks_cancel_command(args: TasksArgs) -> int:
+    workspace = args.workspace
+    task_id = args.task_id
+    json_output = args.json
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -2006,10 +2046,10 @@ def _handle_tasks_cancel_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_tasks_retry_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    task_id = cast(str, args.task_id)
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_tasks_retry_command(args: TasksArgs) -> int:
+    workspace = args.workspace
+    task_id = args.task_id
+    json_output = args.json
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -2030,10 +2070,10 @@ def _handle_tasks_retry_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_tasks_list_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    parent_session_id = cast(str | None, getattr(args, "parent_session_id", None))
-    json_output = cast(bool, getattr(args, "json", False))
+def _handle_tasks_list_command(args: TasksArgs) -> int:
+    workspace = args.workspace
+    parent_session_id = args.parent_session_id
+    json_output = args.json
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -2062,8 +2102,8 @@ def _handle_tasks_list_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_storage_diagnostics_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_storage_diagnostics_command(args: StorageArgs) -> int:
+    workspace = args.workspace
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         diagnostics = runtime.storage_diagnostics()
@@ -2073,15 +2113,15 @@ def _handle_storage_diagnostics_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_storage_prune_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_storage_prune_command(args: StorageArgs) -> int:
+    workspace = args.workspace
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
             counts = runtime.prune_runtime_storage(
-                keep_sessions=cast(int | None, args.keep_sessions),
-                keep_background_tasks=cast(int | None, args.keep_background_tasks),
-                older_than=cast(int | None, args.older_than),
+                keep_sessions=args.keep_sessions,
+                keep_background_tasks=args.keep_background_tasks,
+                older_than=args.older_than,
             )
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
@@ -2091,8 +2131,8 @@ def _handle_storage_prune_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_storage_reset_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_storage_reset_command(args: StorageArgs) -> int:
+    workspace = args.workspace
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         result = runtime.reset_runtime_storage()
@@ -2102,38 +2142,38 @@ def _handle_storage_reset_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_server_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_server_command(args: ServerArgs) -> int:
+    workspace = args.workspace
     config = load_runtime_config(
         workspace,
-        approval_mode=cast(PermissionDecision | None, getattr(args, "approval_mode", None)),
+        approval_mode=args.approval_mode,
     )
-    server_entry = cast(Callable[..., None], args.server_entry)
+    server_entry = args.server_entry
     if hasattr(args, "open_browser"):
         server_entry(
             workspace=workspace,
-            host=cast(str, args.host),
-            port=cast(int, args.port),
+            host=args.host,
+            port=args.port,
             config=config,
-            open_browser=cast(bool, args.open_browser),
+            open_browser=args.open_browser,
         )
     else:
         server_entry(
             workspace=workspace,
-            host=cast(str, args.host),
-            port=cast(int, args.port),
+            host=args.host,
+            port=args.port,
             config=config,
         )
 
     return 0
 
 
-def _handle_config_show_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_config_show_command(args: ConfigArgs) -> int:
+    workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
         raise SystemExit(f"error: workspace does not exist: {workspace}")
 
-    session_id = cast(str | None, getattr(args, "session_id", None))
+    session_id = args.session_id
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -2199,8 +2239,8 @@ def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
     return payload
 
 
-def _handle_agents_list_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_agents_list_command(args: AgentsArgs) -> int:
+    workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
         raise SystemExit(f"error: workspace does not exist: {workspace}")
 
@@ -2214,7 +2254,7 @@ def _handle_agents_list_command(args: argparse.Namespace) -> int:
         "workspace": str(workspace),
         "agents": [_serialize_agent_summary(summary) for summary in summaries],
     }
-    if cast(bool, args.json):
+    if args.json:
         print_json(payload)
         return EXIT_SUCCESS
 
@@ -2247,8 +2287,8 @@ def _mcp_status_payload(snapshot: CapabilityStatusSnapshot) -> dict[str, object]
     }
 
 
-def _handle_mcp_list_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_mcp_list_command(args: McpArgs) -> int:
+    workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
         raise SystemExit(f"error: workspace does not exist: {workspace}")
 
@@ -2262,7 +2302,7 @@ def _handle_mcp_list_command(args: argparse.Namespace) -> int:
         "workspace": str(workspace),
         "mcp": _mcp_status_payload(status.mcp),
     }
-    if cast(bool, args.json):
+    if args.json:
         print_json(payload)
         return EXIT_SUCCESS
 
@@ -2301,15 +2341,15 @@ def _handle_mcp_list_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_commands_list_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_commands_list_command(args: CommandsArgs) -> int:
+    workspace = args.workspace
     registry = _load_cli_command_registry(args, workspace=workspace)
     commands = registry.list(
-        include_hidden=cast(bool, args.include_hidden),
-        include_disabled=cast(bool, args.include_disabled),
+        include_hidden=args.include_hidden,
+        include_disabled=args.include_disabled,
     )
 
-    if cast(bool, args.json):
+    if args.json:
         print_json(
             {
                 "workspace": str(workspace),
@@ -2333,20 +2373,20 @@ def _handle_commands_list_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _handle_commands_show_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_commands_show_command(args: CommandsArgs) -> int:
+    workspace = args.workspace
     registry = _load_cli_command_registry(args, workspace=workspace)
-    command_name = cast(str, args.name)
+    command_name = args.name
     command = registry.get(command_name)
     if command is None:
         raise SystemExit(f"error: unknown command: /{command_name.removeprefix('/')}")
-    if command.hidden and not cast(bool, args.include_hidden):
+    if command.hidden and not args.include_hidden:
         raise SystemExit(f"error: unknown command: /{command.name}")
-    if not command.enabled and not cast(bool, args.include_disabled):
+    if not command.enabled and not args.include_disabled:
         raise SystemExit(f"error: command is disabled: /{command.name}")
 
     payload = serialize_command_definition(command)
-    if cast(bool, args.json):
+    if args.json:
         print_json(payload)
         return EXIT_SUCCESS
 
@@ -2361,40 +2401,40 @@ def _handle_commands_show_command(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
-def _load_cli_command_registry(args: argparse.Namespace, *, workspace: Path) -> CommandRegistry:
-    user_commands_dir = cast(Path | None, getattr(args, "user_commands_dir", None))
+def _load_cli_command_registry(args: CommandsArgs, *, workspace: Path) -> CommandRegistry:
+    user_commands_dir = args.user_commands_dir
     try:
         return load_command_registry(workspace=workspace, user_commands_dir=user_commands_dir)
     except ValueError as exc:
         raise SystemExit(f"error: {exc}") from None
 
 
-def _handle_config_schema_command(args: argparse.Namespace) -> int:
+def _handle_config_schema_command(args: ConfigArgs) -> int:
     _ = args
     print(json.dumps(runtime_config_json_schema(), indent=2, sort_keys=True))
     return 0
 
 
-def _handle_config_init_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
+def _handle_config_init_command(args: ConfigArgs) -> int:
+    workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
         raise SystemExit(f"error: workspace does not exist: {workspace}")
 
     try:
         payload = generate_starter_runtime_config(
-            approval_mode=cast(str, args.approval_mode),
-            model=cast(str | None, getattr(args, "model", None)),
-            max_steps=cast(int | None, getattr(args, "max_steps", None)),
-            include_examples=cast(bool, args.with_examples),
+            approval_mode=args.approval_mode,
+            model=args.model,
+            max_steps=args.max_steps,
+            include_examples=args.with_examples,
         )
     except ValueError as exc:
         raise SystemExit(f"error: {exc}") from None
-    if cast(bool, args.print):
+    if args.print:
         print(format_starter_runtime_config_json(payload), end="")
         return 0
 
     config_path = workspace.resolve() / RUNTIME_CONFIG_FILE_NAME
-    if config_path.exists() and not cast(bool, args.force):
+    if config_path.exists() and not args.force:
         raise SystemExit(
             f"error: runtime config already exists: {config_path}; pass --force to overwrite"
         )
@@ -2412,10 +2452,10 @@ def _handle_config_init_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_provider_models_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    provider = cast(str, args.provider)
-    refresh = cast(bool, args.refresh)
+def _handle_provider_models_command(args: ProviderArgs) -> int:
+    workspace = args.workspace
+    provider = args.provider
+    refresh = args.refresh
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -2555,9 +2595,9 @@ def _provider_inspect_payload(
     }
 
 
-def _handle_provider_inspect_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    provider = cast(str, args.provider)
+def _handle_provider_inspect_command(args: ProviderArgs) -> int:
+    workspace = args.workspace
+    provider = args.provider
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
         try:
@@ -2584,9 +2624,9 @@ class RuntimeResponseLike(Protocol):
     session: SessionState
 
 
-def _handle_tui_command(args: argparse.Namespace) -> int:
-    workspace = cast(Path, args.workspace)
-    approval_mode = cast(PermissionDecision | None, getattr(args, "approval_mode", None))
+def _handle_tui_command(args: TuiArgs) -> int:
+    workspace = args.workspace
+    approval_mode = args.approval_mode
 
     from ..tui import VoidCodeTUI
 
@@ -2595,11 +2635,11 @@ def _handle_tui_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_doctor_command(args: argparse.Namespace) -> int:
+def _handle_doctor_command(args: DoctorArgs) -> int:
     """Run the capability doctor to check external tool readiness."""
-    workspace = cast(Path, args.workspace)
-    verbose = cast(bool, args.verbose)
-    json_output = cast(bool, args.json)
+    workspace = args.workspace
+    verbose = args.verbose
+    json_output = args.json
 
     # Load runtime config to get all capability settings
     config_error: str | None = None
