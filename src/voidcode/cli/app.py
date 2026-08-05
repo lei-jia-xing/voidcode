@@ -47,6 +47,7 @@ from ..doctor import (
 from ..provider.snapshot import resolved_provider_snapshot
 from ..runtime.bundle import (
     SessionBundleError,
+    SessionBundleFormat,
     SessionBundleOptions,
     write_session_bundle,
 )
@@ -225,7 +226,7 @@ def _handle_run_command(args: RunArgs) -> int:
     show_thinking = args.show_thinking
     cli_reasoning_effort = args.reasoning_effort
     cli_model = args.model
-    approval_mode = args.approval_mode
+    approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
     config_kwargs: _RunCommandConfigKwargs = {
         "approval_mode": approval_mode,
         "reasoning_effort": cli_reasoning_effort,
@@ -238,7 +239,7 @@ def _handle_run_command(args: RunArgs) -> int:
         if args.agent is not None:
             metadata["agent"] = {"preset": args.agent}
         if args.skills:
-            metadata["skills"] = args.skills
+            metadata["skills"] = list(args.skills)
         runtime_mode = args.runtime_mode
         if runtime_mode is not None:
             metadata["mode"] = runtime_mode
@@ -316,9 +317,10 @@ def _handle_run_command(args: RunArgs) -> int:
 
 def _handle_acp_command(args: AcpArgs) -> int:
     workspace = args.workspace
+    acp_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
     config = load_runtime_config(
         workspace,
-        approval_mode=args.approval_mode,
+        approval_mode=acp_approval_mode,
     )
     with _runtime_session(workspace, config) as runtime:
         server = StdioAcpServer(runtime=runtime, workspace=workspace)
@@ -1015,6 +1017,8 @@ def _format_memory(memory: MemoryRecord) -> str:
 def _handle_memory_add_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     content = args.content
+    assert content is not None
+    assert args.kind is not None
     if not content.strip():
         raise CliError(code=EXIT_USAGE_ERROR, message="memory content cannot be empty")
     kind = _parse_memory_kind(args.kind)
@@ -1078,6 +1082,7 @@ def _handle_memory_list_command(args: MemoryArgs) -> int:
 def _handle_memory_search_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     query = args.query
+    assert query is not None
     with _runtime_session(workspace) as runtime:
         results = runtime.search_memories(query=query)
     filtered = _memory_filter_records(
@@ -1104,6 +1109,7 @@ def _handle_memory_search_command(args: MemoryArgs) -> int:
 def _handle_memory_show_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     memory_id = args.memory_id
+    assert memory_id is not None
     with _runtime_session(workspace) as runtime:
         memory = runtime.get_memory(memory_id)
     if memory is None:
@@ -1118,6 +1124,7 @@ def _handle_memory_show_command(args: MemoryArgs) -> int:
 def _handle_memory_delete_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     memory_id = args.memory_id
+    assert memory_id is not None
     with _runtime_session(workspace) as runtime:
         try:
             memory = runtime.delete_memory(memory_id)
@@ -1680,8 +1687,12 @@ def _serialize_session_debug_event(
 def _handle_sessions_resume_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
     dry_run = args.dry_run
     approval_decision = args.approval_decision
+    approval_decision_typed: PermissionResolution | None = (
+        cast(PermissionResolution | None, approval_decision)
+    )
     show_thinking = args.show_thinking
     with _runtime_session(workspace) as runtime:
         if dry_run:
@@ -1702,7 +1713,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
             result = runtime.resume(
                 session_id,
                 approval_request_id=args.approval_request_id,
-                approval_decision=approval_decision,
+                approval_decision=approval_decision_typed,
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
@@ -1714,7 +1725,9 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
 def _handle_sessions_answer_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
     question_request_id = args.question_request_id
+    assert question_request_id is not None
     show_thinking = args.show_thinking
     try:
         responses = _parse_question_responses(
@@ -1733,7 +1746,9 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
                 question_request_id=question_request_id,
                 responses=responses,
             )
-        except (ValueError, NoPendingQuestionError) as exc:
+        except NoPendingQuestionError as exc:
+            raise CliError(code=EXIT_INVALID_RESOURCE, message=str(exc)) from None
+        except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
     return _emit_output(
@@ -1764,6 +1779,7 @@ def _session_bundle_options_from_args(args: SessionsArgs) -> SessionBundleOption
 def _handle_sessions_export_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
     output_path = args.output
     fmt = args.format
     options = _session_bundle_options_from_args(args)
@@ -1779,7 +1795,7 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
 
     if output_path is None:
         output_path = Path(f"{session_id}.vcsession.zip")
-    written = write_session_bundle(bundle, path=output_path, fmt=fmt)
+    written = write_session_bundle(bundle, path=output_path, fmt=cast(SessionBundleFormat | None, fmt))
     print_json(
         {
             "workspace": str(workspace),
@@ -1796,6 +1812,7 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
 def _handle_sessions_import_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     bundle_path = args.bundle_path
+    assert bundle_path is not None
     dry_run = args.dry_run
     with _runtime_session(workspace) as runtime:
         try:
@@ -1812,6 +1829,7 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
 def _handle_sessions_debug_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
     show_thinking = args.show_thinking
     with _runtime_session(workspace) as runtime:
         try:
@@ -1836,6 +1854,7 @@ def _serialize_revert_marker(marker: RuntimeSessionRevertMarker | None) -> dict[
 def _handle_sessions_undo_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
     with _runtime_session(workspace) as runtime:
         try:
             marker = runtime.undo_session(session_id=session_id)
@@ -1848,11 +1867,14 @@ def _handle_sessions_undo_command(args: SessionsArgs) -> int:
 def _handle_sessions_revert_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
+    sequence = args.sequence
+    assert sequence is not None
     with _runtime_session(workspace) as runtime:
         try:
             marker = runtime.revert_session(
                 session_id=session_id,
-                sequence=args.sequence,
+                sequence=sequence,
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
@@ -1863,6 +1885,7 @@ def _handle_sessions_revert_command(args: SessionsArgs) -> int:
 def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
+    assert session_id is not None
     with _runtime_session(workspace) as runtime:
         try:
             marker = runtime.unrevert_session(session_id=session_id)
@@ -1875,6 +1898,7 @@ def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
 def _handle_tasks_status_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
+    assert task_id is not None
     with _runtime_session(workspace) as runtime:
         try:
             task = runtime.load_background_task(task_id)
@@ -1897,6 +1921,7 @@ def _handle_tasks_status_command(args: TasksArgs) -> int:
 def _handle_tasks_output_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
+    assert task_id is not None
     with _runtime_session(workspace) as runtime:
         session_output: str | None = None
         try:
@@ -1935,6 +1960,7 @@ def _handle_tasks_output_command(args: TasksArgs) -> int:
 def _handle_tasks_cancel_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
+    assert task_id is not None
     with _runtime_session(workspace) as runtime:
         try:
             task = runtime.cancel_background_task(task_id)
@@ -1957,6 +1983,7 @@ def _handle_tasks_cancel_command(args: TasksArgs) -> int:
 def _handle_tasks_retry_command(args: TasksArgs) -> int:
     workspace = args.workspace
     task_id = args.task_id
+    assert task_id is not None
     with _runtime_session(workspace) as runtime:
         try:
             task = runtime.retry_background_task(task_id)
@@ -2039,26 +2066,24 @@ def _handle_storage_reset_command(args: StorageArgs) -> int:
 
 def _handle_server_command(args: ServerArgs) -> int:
     workspace = args.workspace
+    server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
     config = load_runtime_config(
         workspace,
-        approval_mode=args.approval_mode,
+        approval_mode=server_approval_mode,
     )
     server_entry = args.server_entry
-    if hasattr(args, "open_browser"):
-        server_entry(
-            workspace=workspace,
-            host=args.host,
-            port=args.port,
-            config=config,
-            open_browser=args.open_browser,
-        )
+    if server_entry is None:
+        raise CliError(code=EXIT_RUNTIME_ERROR, message="server entry function is not configured")
+    common_kwargs: dict[str, object] = dict(
+        workspace=workspace,
+        host=args.host,
+        port=args.port,
+        config=config,
+    )
+    if args.command == "web":
+        server_entry(**common_kwargs, open_browser=args.open_browser)
     else:
-        server_entry(
-            workspace=workspace,
-            host=args.host,
-            port=args.port,
-            config=config,
-        )
+        server_entry(**common_kwargs)
 
     return 0
 
@@ -2261,6 +2286,7 @@ def _handle_commands_show_command(args: CommandsArgs) -> int:
     workspace = args.workspace
     registry = _load_cli_command_registry(args, workspace=workspace)
     command_name = args.name
+    assert command_name is not None
     command = registry.get(command_name)
     if command is None:
         raise CliError(
@@ -2342,6 +2368,7 @@ def _handle_config_init_command(args: ConfigArgs) -> int:
 def _handle_provider_models_command(args: ProviderArgs) -> int:
     workspace = args.workspace
     provider = args.provider
+    assert provider is not None
     refresh = args.refresh
     with _runtime_session(workspace) as runtime:
         try:
@@ -2482,6 +2509,7 @@ def _provider_inspect_payload(
 def _handle_provider_inspect_command(args: ProviderArgs) -> int:
     workspace = args.workspace
     provider = args.provider
+    assert provider is not None
     with _runtime_session(workspace) as runtime:
         try:
             result = runtime.inspect_provider(provider)
@@ -2507,7 +2535,7 @@ class RuntimeResponseLike(Protocol):
 
 def _handle_tui_command(args: TuiArgs) -> int:
     workspace = args.workspace
-    approval_mode = args.approval_mode
+    approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
 
     from ..tui import VoidCodeTUI
 
@@ -2743,7 +2771,7 @@ def run(
             approval_mode=approval_mode,
             agent=agent,
             model=model,
-            skills=list(skills),
+            skills=skills,
             max_steps=max_steps,
             reasoning_effort=reasoning_effort,
             show_thinking=show_thinking,

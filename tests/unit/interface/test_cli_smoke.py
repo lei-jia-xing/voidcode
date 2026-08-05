@@ -1026,6 +1026,7 @@ def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_fl
                     "deepseek/deepseek-v4-pro",
                     "--skills",
                     "demo",
+                    "--skills",
                     "review",
                     "--max-steps",
                     "7",

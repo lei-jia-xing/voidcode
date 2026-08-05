@@ -316,7 +316,7 @@ async def test_session_new_via_keybinding(app_class: Any) -> None:
         await pilot.pause()
 
         assert app.session_id is None
-        assert app.query_one("#session-panel").content == "None"
+        assert app.query_one("#session-panel").renderable == "None"
 
 
 @pytest.mark.anyio
