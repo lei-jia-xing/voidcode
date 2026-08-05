@@ -205,7 +205,10 @@ class TuiAppProtocol(Protocol):
 def _close_runtime(runtime: object) -> None:
     exit_method = getattr(runtime, "__exit__", None)
     if callable(exit_method):
-        exit_method(None, None, None)
+        try:
+            exit_method(None, None, None)
+        except Exception as exc:
+            print(f"warning: runtime cleanup error: {exc}", file=sys.stderr)
 
 
 def _handle_run_command(args: argparse.Namespace) -> int:
@@ -796,7 +799,8 @@ def _print_runtime_failure_footer(
         return
     try:
         snapshot = runtime.session_debug_snapshot(session_id=result.session.session.id)
-    except ValueError:
+    except ValueError as exc:
+        print(f"warning: session debug snapshot unavailable: {exc}", file=sys.stderr)
         snapshot = None
     workspace_arg = f"--workspace {shlex.quote(str(workspace))}"
     provider = failed_event.payload.get("provider")
@@ -1956,7 +1960,8 @@ def _handle_tasks_output_command(args: argparse.Namespace) -> int:
                     session_output = runtime.session_result(
                         session_id=task_result.child_session_id
                     ).output
-                except ValueError:
+                except ValueError as exc:
+                    print(f"warning: session result output unavailable: {exc}", file=sys.stderr)
                     session_output = None
         except ValueError as exc:
             raise SystemExit(f"error: {exc}") from None
@@ -1966,6 +1971,8 @@ def _handle_tasks_output_command(args: argparse.Namespace) -> int:
     fallback_output = (
         task_result.summary_output if task_result.summary_output is not None else task_result.error
     )
+    if session_output is None and fallback_output is not None:
+        print("warning: WARN: session output unavailable; using fallback output", file=sys.stderr)
     output = session_output if session_output is not None else fallback_output
     payload = _background_task_result_payload(task_result, workspace=workspace)
     if json_output:

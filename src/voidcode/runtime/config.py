@@ -757,13 +757,6 @@ def _load_repo_local_config(
     if raw_model is not None and not isinstance(raw_model, str):
         raise ValueError("runtime config field 'model' must be a string when provided")
 
-    raw_execution_engine = payload.get("execution_engine")
-    parsed_execution_engine = _parse_execution_engine(
-        raw_execution_engine,
-        source=f"runtime config field 'execution_engine' in {config_path}",
-        allow_none=True,
-    )
-
     parsed_max_steps = _parse_max_steps(
         payload.get("max_steps"),
         source=f"runtime config field 'max_steps' in {config_path}",
@@ -840,7 +833,6 @@ def _load_repo_local_config(
         permission=parsed_permission,
         policy=policy,
         model=raw_model,
-        execution_engine=parsed_execution_engine,
         max_steps=parsed_max_steps,
         tool_timeout_seconds=parsed_tool_timeout_seconds,
         tool_timeout_seconds_configured=tool_timeout_seconds_configured,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal, cast
 
@@ -33,6 +34,8 @@ from .screens import (
     ThemeModePickerModal,
     ThemePickerModal,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class VoidCodeTUI(App[int]):
@@ -130,22 +133,30 @@ class VoidCodeTUI(App[int]):
         self._apply_tui_preferences()
         self._update_context_panel(None)
 
-        lsp_state = self.runtime.current_lsp_state()
-        if lsp_state.mode == "managed":
-            active_servers = [
-                name for name, s in lsp_state.servers.items() if s.status == "running"
-            ]
-            if active_servers:
-                self.query_one("#lsp-panel", Static).update(f"Active: {len(active_servers)}")
-            else:
-                self.query_one("#lsp-panel", Static).update("No active servers")
+        try:
+            lsp_state = self.runtime.current_lsp_state()
+        except Exception as exc:
+            logger.error("Failed to query LSP state: %s", exc)
+            self.query_one("#lsp-panel", Static).update("LSP err")
         else:
-            self.query_one("#lsp-panel", Static).update("Disabled")
+            if lsp_state.mode == "managed":
+                active_servers = [
+                    name for name, s in lsp_state.servers.items() if s.status == "running"
+                ]
+                if active_servers:
+                    self.query_one("#lsp-panel", Static).update(f"Active: {len(active_servers)}")
+                else:
+                    self.query_one("#lsp-panel", Static).update("No active servers")
+            else:
+                self.query_one("#lsp-panel", Static).update("Disabled")
 
         self.query_one("#composer-input", Input).focus()
 
     def on_unmount(self) -> None:
-        self.runtime.__exit__(None, None, None)
+        try:
+            self.runtime.__exit__(None, None, None)
+        except Exception as exc:
+            logger.error("Failed to shut down runtime: %s", exc)
 
     def action_session_new(self) -> None:
         self._handle_command("session.new")
@@ -166,7 +177,11 @@ class VoidCodeTUI(App[int]):
             )
             self.query_one("#composer-input", Input).focus()
         elif command == "session.resume":
-            sessions = self.runtime.list_sessions()
+            try:
+                sessions = self.runtime.list_sessions()
+            except Exception as exc:
+                logger.error("Failed to list sessions: %s", exc)
+                sessions = ()
             self._session_titles = {s.session.id: s.prompt for s in sessions}
 
             def _handle_session(session_id: str | None) -> None:
