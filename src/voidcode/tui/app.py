@@ -29,7 +29,6 @@ from ..runtime.service import VoidCodeRuntime
 from .messages import StreamChunkReceived, StreamCompleted, StreamFailed
 from .screens import (
     ApprovalModal,
-    CommandPalette,
     SessionListModal,
     ThemeModePickerModal,
     ThemePickerModal,
@@ -101,15 +100,10 @@ class VoidCodeTUI(App[int]):
             if isinstance(merged_preferences, RuntimeTuiPreferences):
                 self._effective_preferences = merged_preferences
 
-        leader_key = "alt+x"
         if isinstance(config.tui, RuntimeTuiConfig):
-            if config.tui.leader_key:
-                leader_key = config.tui.leader_key
             if isinstance(config.tui.keymap, dict):
                 for k, action in config.tui.keymap.items():
                     self.bind(k, action)
-
-        self.bind(leader_key, "command_palette", description="Command Palette")
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-layout"):
@@ -152,9 +146,6 @@ class VoidCodeTUI(App[int]):
 
     def on_unmount(self) -> None:
         self.runtime.__exit__(None, None, None)
-
-    def action_command_palette(self) -> None:
-        self.push_screen(CommandPalette(), self._handle_command)
 
     def action_session_new(self) -> None:
         self._handle_command("session.new")

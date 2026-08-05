@@ -5,15 +5,11 @@ from typing import Literal
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.fuzzy import Matcher
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, OptionList, Static
+from textual.widgets import Button, Label, OptionList, Static
 
-from ..command.ui import DEFAULT_TUI_COMMANDS
 from ..runtime.events import EventEnvelope
 from ..runtime.session import StoredSessionSummary
-
-COMMAND_PALETTE_COMMANDS = DEFAULT_TUI_COMMANDS
 
 
 class ApprovalModal(ModalScreen[Literal["allow", "deny"]]):
@@ -79,75 +75,6 @@ class ApprovalModal(ModalScreen[Literal["allow", "deny"]]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss("allow" if event.button.id == "allow" else "deny")
-
-
-class CommandPalette(ModalScreen[str | None]):
-    CSS = """
-    CommandPalette {
-        align: center middle;
-    }
-    #palette-dialog {
-        padding: 1 2;
-        width: 60;
-        height: auto;
-        max-height: 20;
-        border: thick $surface;
-        background: $background;
-    }
-    #palette-input {
-        margin-bottom: 1;
-    }
-    """
-
-    BINDINGS = [Binding("escape", "dismiss_palette", "Dismiss", show=False)]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="palette-dialog"):
-            yield Label("Command Palette", classes="sidebar-header")
-            yield Input(placeholder="Search commands...", id="palette-input")
-            yield OptionList(
-                *(command.title for command in COMMAND_PALETTE_COMMANDS), id="palette-options"
-            )
-
-    def on_mount(self) -> None:
-        self.query_one(Input).focus()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        options = self.query_one(OptionList)
-        options.clear_options()
-        query = event.value.strip()
-        if not query:
-            options.add_options(command.title for command in COMMAND_PALETTE_COMMANDS)
-        else:
-            matcher = Matcher(query)
-            matches: list[tuple[float, str]] = []
-            for command in COMMAND_PALETTE_COMMANDS:
-                score = matcher.match(command.title)
-                if score > 0:
-                    matches.append((score, command.title))
-            matches.sort(key=lambda x: x[0], reverse=True)
-            options.add_options([cmd for _, cmd in matches])
-
-    def on_input_submitted(self, _: Input.Submitted) -> None:
-        options = self.query_one(OptionList)
-        if options.option_count > 0:
-            idx = options.highlighted if options.highlighted is not None else 0
-            if idx < options.option_count:
-                opt = options.get_option_at_index(idx)
-                self.dismiss(_command_id_for_title(str(opt.prompt)))
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(_command_id_for_title(str(event.option.prompt)))
-
-    def action_dismiss_palette(self) -> None:
-        self.dismiss(None)
-
-
-def _command_id_for_title(title: str) -> str | None:
-    for command in COMMAND_PALETTE_COMMANDS:
-        if command.title == title:
-            return command.id
-    return None
 
 
 class SessionListModal(ModalScreen[str | None]):
