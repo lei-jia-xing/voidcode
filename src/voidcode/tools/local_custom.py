@@ -6,6 +6,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from string import Template
 from typing import cast, final
@@ -233,6 +234,23 @@ class LocalCustomTool:
             input_schema=self._manifest.input_schema,
             read_only=False,
         )
+
+    @property
+    def source_fingerprint(self) -> str:
+        payload = {
+            "command": list(self._manifest.command),
+            "description": self._manifest.description,
+            "input_schema": self._manifest.input_schema,
+            "name": self._manifest.name,
+            "read_only": self._manifest.read_only,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return sha256(encoded).hexdigest()
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         return self._invoke(call, workspace=workspace, timeout_seconds=None)

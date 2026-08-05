@@ -39,8 +39,6 @@ from ..hook.presets import (
 from ..mcp.builtin import get_builtin_mcp_descriptor
 from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
-    ProviderAuthAuthorizeRequest,
-    ProviderAuthResolutionError,
     ProviderAuthResolver,
 )
 from ..provider.config import (
@@ -49,13 +47,8 @@ from ..provider.config import (
 )
 from ..provider.errors import guidance_for_provider_error_kind
 from ..provider.model_catalog import (
-    ProviderModelCatalog,
     ToolFeedbackMode,
     infer_model_metadata,
-    merge_model_metadata,
-)
-from ..provider.model_catalog import (
-    ProviderModelMetadata as CatalogProviderModelMetadata,
 )
 from ..provider.models import (
     ResolvedProviderChain,
@@ -114,6 +107,15 @@ from .active_session import (
 )
 from .active_session import (
     _ActiveSessionKey as _ActiveSessionKey,
+)
+from .agent_capability import (
+    AGENT_CAPABILITY_SNAPSHOT_VERSION,
+    agent_capability_agent_snapshot,
+    agent_capability_delegation_snapshot,
+    agent_capability_prompt_snapshot,
+    agent_capability_tool_snapshot,
+    agent_mcp_binding_payload,
+    validate_agent_capability_snapshot,
 )
 from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .bundle import (
@@ -290,6 +292,8 @@ from .policy import (
     PRODUCT_DELEGATION_DENIAL_REASON,
     materialize_runtime_policy_snapshot,
 )
+from .provider_catalog_cache import RuntimeProviderCatalogCache
+from .provider_catalog_query import RuntimeProviderCatalogQuery
 from .provider_context import inspect_provider_context
 from .provider_execution_metadata import (
     provider_attempt_from_metadata,
@@ -297,9 +301,15 @@ from .provider_execution_metadata import (
     run_id_from_session_metadata,
     session_with_provider_usage_metadata,
 )
+from .provider_inspection import (
+    ProviderReadinessFacts,
+    ProviderSummaryProjector,
+    ProviderValidationFacts,
+    RuntimeProviderAuthInspector,
+    RuntimeProviderReadinessProjector,
+    RuntimeProviderValidationProjector,
+)
 from .provider_metadata import (
-    catalog_metadata_from_payload,
-    contract_metadata_from_catalog,
     contract_metadata_from_payload,
     optional_bool,
     optional_positive_float,
@@ -374,14 +384,12 @@ from .task import (
     validate_continuation_loop_id,
 )
 from .tool_execution import RuntimeToolExecutor
+from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
 from .tool_provider import (
-    BUILTIN_TOOL_NAMES,
-    MEMORY_TOOL_NAMES,
     LocalCustomToolProvider,
-    scoped_tool_registry_for_agent,
-    tool_name_matches_patterns,
 )
 from .tool_registry import ToolPolicyDecision, ToolRegistry
+from .tool_scope import RuntimeToolScopeResolver
 from .workflow import (
     WorkflowModeResolution,
     WorkflowPreset,
@@ -444,8 +452,6 @@ _SKILL_BINDING_SCOPE_KEYS = (
     "lsp",
     "mcp",
 )
-
-_AGENT_CAPABILITY_SNAPSHOT_VERSION = 1
 
 
 def _provider_target_label(target: ResolvedProviderModel) -> str:
@@ -515,6 +521,8 @@ class VoidCodeRuntime:
     _workspace: Path
     _base_tool_registry: ToolRegistry
     _tool_registry: ToolRegistry
+    _tool_materializer: RuntimeToolMaterializer
+    _tool_materialization: RuntimeToolMaterialization
     _graph: RuntimeGraph | None
     _graph_override: RuntimeGraph | None
     _config: RuntimeConfig
@@ -565,6 +573,7 @@ class VoidCodeRuntime:
         )
         self._agent_registry = self._runtime_agent_registry()
         self._config = config or load_runtime_config(self._workspace)
+        self._bind_tool_scope_resolver()
         self._permission_engine = PermissionEngine(
             _context_resolver=self._permission_context_resolver,
             _permission_config=self._config.permission,
@@ -574,6 +583,8 @@ class VoidCodeRuntime:
             model_provider_registry
             or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
         )
+        self._bind_provider_catalog_collaborators()
+        self._provider_summary_projector = ProviderSummaryProjector()
         self._config_workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata(
             {}
         )
@@ -618,13 +629,16 @@ class VoidCodeRuntime:
             providers=self._config.providers,
             env=os.environ,
         )
+        self._bind_provider_auth_inspector()
         self._lsp_manager = lsp_manager or build_lsp_manager(self._config.lsp)
         self._mcp_manager_is_injected = mcp_manager is not None
         self._mcp_manager = mcp_manager or build_mcp_manager(self._config.mcp)
         self._skill_registry_is_injected = skill_registry is not None
         self._skill_registry = skill_registry or self._build_skill_registry(self._config.skills)
         self._base_tool_registry = tool_registry or self._build_base_tool_registry()
-        self._tool_registry = self._base_tool_registry
+        self._tool_materializer = RuntimeToolMaterializer(self._base_tool_registry)
+        self._tool_materialization = self._tool_materializer.base()
+        self._tool_registry = self._tool_materialization.registry
         self._graph_override = graph
         self._graph_cache = {}
         self._context_window_config_override = self._context_window_config_from_policy(
@@ -675,6 +689,27 @@ class VoidCodeRuntime:
         self._resume_coordinator = RuntimeResumeCoordinator(self)
         self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(self)
         self._background_process_manager = BackgroundProcessManager()
+
+    def _bind_provider_catalog_collaborators(self) -> None:
+        self._provider_catalog_cache = RuntimeProviderCatalogCache(
+            registry=self._model_provider_registry,
+            path=provider_catalog_cache_path(),
+        )
+        self._provider_catalog_query = RuntimeProviderCatalogQuery(
+            registry=self._model_provider_registry,
+        )
+
+    def _bind_provider_auth_inspector(self) -> None:
+        self._provider_auth_inspector = RuntimeProviderAuthInspector(
+            providers=self._config.providers,
+            resolver=self._provider_auth_resolver,
+            env=os.environ,
+        )
+
+    def _bind_tool_scope_resolver(self) -> None:
+        self._tool_scope_resolver = RuntimeToolScopeResolver(
+            memory_enabled=self._config.memory.enabled,
+        )
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -740,18 +775,25 @@ class VoidCodeRuntime:
     def background_process_manager(self) -> BackgroundProcessManager:
         return self._background_process_manager
 
-    def _tool_registry_with_effective_local_tools(
+    def _tool_materialization_with_effective_local_tools(
         self,
         effective_config: EffectiveRuntimeConfig,
-    ) -> ToolRegistry:
+    ) -> RuntimeToolMaterialization:
         local_config = effective_config.tools.local if effective_config.tools is not None else None
         local_tools = LocalCustomToolProvider(
             workspace=self._workspace,
             config=local_config,
         ).provide_tools()
-        if not local_tools:
-            return self._tool_registry
-        return ToolRegistry.from_tools((*self._tool_registry.tools.values(), *local_tools))
+        return self._tool_materializer.materialize_local_tools(
+            self._tool_materialization,
+            local_tools,
+        )
+
+    def _tool_registry_with_effective_local_tools(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> ToolRegistry:
+        return self._tool_materialization_with_effective_local_tools(effective_config).registry
 
     @staticmethod
     def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
@@ -1646,10 +1688,10 @@ class VoidCodeRuntime:
     def _refresh_mcp_tools(self) -> None:
         if self._mcp_manager.current_state().mode != "managed":
             return
-        merged_tools = dict(self._base_tool_registry.tools)
-        for tool in self._build_mcp_tools():
-            merged_tools[tool.definition.name] = tool
-        self._tool_registry = ToolRegistry(tools=merged_tools)
+        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(
+            self._build_mcp_tools()
+        )
+        self._tool_registry = self._tool_materialization.registry
 
     def _refresh_mcp_tools_for_session(
         self,
@@ -1661,10 +1703,10 @@ class VoidCodeRuntime:
         try:
             if self._mcp_manager.current_state().mode != "managed":
                 return (), session, sequence, None
-            merged_tools = dict(self._base_tool_registry.tools)
-            for tool in self._build_mcp_tools_for_owner(owner_session_id=session.session.id):
-                merged_tools[tool.definition.name] = tool
-            self._tool_registry = ToolRegistry(tools=merged_tools)
+            self._tool_materialization = self._tool_materializer.materialize_mcp_tools(
+                self._build_mcp_tools_for_owner(owner_session_id=session.session.id)
+            )
+            self._tool_registry = self._tool_materialization.registry
         except Exception:
             logger.info(
                 "continuing session %s after MCP tool refresh failure",
@@ -1750,9 +1792,23 @@ class VoidCodeRuntime:
         effective_config: EffectiveRuntimeConfig,
         metadata: dict[str, object] | None = None,
     ) -> ToolRegistry:
-        registry = self._tool_registry_with_effective_local_tools(effective_config)
-        scoped = scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
-        return scoped.allowed_by_policy(self._tool_policy_decisions(scoped, metadata))
+        return self._tool_materialization_for_effective_config(
+            effective_config,
+            metadata,
+        ).registry
+
+    def _tool_materialization_for_effective_config(
+        self,
+        effective_config: EffectiveRuntimeConfig,
+        metadata: dict[str, object] | None = None,
+    ) -> RuntimeToolMaterialization:
+        materialization = self._tool_materialization_with_effective_local_tools(effective_config)
+        registry = self._tool_scope_resolver.scope(
+            materialization.registry,
+            agent=effective_config.agent,
+            metadata=metadata,
+        )
+        return materialization.scoped(registry)
 
     @staticmethod
     def _read_only_workflow_tool_names(registry: ToolRegistry) -> tuple[str, ...]:
@@ -1763,17 +1819,14 @@ class VoidCodeRuntime:
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> ToolRegistry:
-        return registry.allowed_by_policy(self._tool_policy_decisions(registry, metadata))
+        return self._tool_scope_resolver.apply_policy(registry, metadata=metadata)
 
     def _tool_policy_decisions(
         self,
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> tuple[ToolPolicyDecision, ...]:
-        return tuple(
-            self._tool_policy_decision(tool_name=name, registry=registry, metadata=metadata)
-            for name in registry.tools
-        )
+        return self._tool_scope_resolver.decisions(registry, metadata=metadata)
 
     def _tool_policy_decision(
         self,
@@ -1782,97 +1835,28 @@ class VoidCodeRuntime:
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> ToolPolicyDecision:
-        mode = self._runtime_mode_for_policy_metadata(metadata)
-        read_only = self._effective_runtime_read_only_for_policy_metadata(metadata)
-        workflow = self._workflow_snapshot_from_metadata(metadata)
-        if workflow is not None and workflow.get("read_only_default") is True:
-            raw_mode = workflow.get("mode")
-            effective = workflow.get("effective")
-            if isinstance(effective, dict):
-                effective_payload = cast(dict[str, object], effective)
-                if isinstance(effective_payload.get("mode"), str):
-                    mode = cast(str, effective_payload["mode"])
-            elif isinstance(raw_mode, str):
-                mode = raw_mode
-
-        if tool_name in MEMORY_TOOL_NAMES and not self._memory_tools_allowed(metadata):
-            return ToolPolicyDecision(
-                tool_name=tool_name,
-                allowed=False,
-                mode=mode,
-                read_only=read_only,
-                decision="deny",
-                reason="memory tools require explicit runtime memory policy allowance",
-            )
-
-        tool = registry.tools.get(tool_name)
-        if read_only and tool_name == "shell_exec":
-            return ToolPolicyDecision(
-                tool_name=tool_name,
-                allowed=True,
-                mode=mode,
-                read_only=read_only,
-                decision="allow",
-            )
-
-        if read_only and tool is not None and not tool.definition.read_only:
-            return ToolPolicyDecision(
-                tool_name=tool_name,
-                allowed=False,
-                mode=mode,
-                read_only=read_only,
-                decision="deny",
-                reason="read-only runtime policy denies mutating tools",
-            )
-
-        return ToolPolicyDecision(
+        return self._tool_scope_resolver.decision(
             tool_name=tool_name,
-            allowed=True,
-            mode=mode,
-            read_only=read_only,
-            decision="allow",
+            registry=registry,
+            metadata=metadata,
         )
 
     @staticmethod
     def _runtime_mode_for_policy_metadata(metadata: dict[str, object] | None) -> str:
-        if metadata is None:
-            return "normal"
-        raw_mode = metadata.get("mode")
-        if raw_mode in {"normal", "analyze", "plan"}:
-            return cast(str, raw_mode)
-        return "normal"
+        return RuntimeToolScopeResolver.runtime_mode(metadata)
 
     @staticmethod
     def _runtime_read_only_for_policy_metadata(metadata: dict[str, object] | None) -> bool:
-        if metadata is None:
-            return False
-        raw_mode = metadata.get("mode")
-        if raw_mode in {"analyze", "plan"}:
-            return True
-        read_only = metadata.get("read_only", False)
-        if not isinstance(read_only, bool):
-            raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
-        return read_only
+        return RuntimeToolScopeResolver.runtime_read_only(metadata)
 
     def _effective_runtime_read_only_for_policy_metadata(
         self,
         metadata: dict[str, object] | None,
     ) -> bool:
-        read_only = self._runtime_read_only_for_policy_metadata(metadata)
-        workflow = self._workflow_snapshot_from_metadata(metadata)
-        if workflow is not None and workflow.get("read_only_default") is True:
-            return True
-        return read_only
+        return self._tool_scope_resolver.effective_read_only(metadata)
 
     def _memory_tools_allowed(self, metadata: dict[str, object] | None) -> bool:
-        if not self._config.memory.enabled:
-            return False
-        if metadata is None:
-            return False
-        command = metadata.get("command")
-        if isinstance(command, dict) and cast(dict[str, object], command).get("name") == "memory":
-            return True
-        return metadata.get("memory_tools_allowed") is True
+        return self._tool_scope_resolver.memory_tools_allowed(metadata)
 
     def _tool_policy_denial(
         self,
@@ -1882,15 +1866,12 @@ class VoidCodeRuntime:
     ) -> ToolPolicyDecision | None:
         effective_config = self._effective_runtime_config_from_metadata(session.metadata)
         registry = self._tool_registry_with_effective_local_tools(effective_config)
-        scoped = scoped_tool_registry_for_agent(registry, agent=effective_config.agent)
-        if tool_name not in scoped.tools:
-            return None
-        decision = self._tool_policy_decision(
-            tool_name=tool_name,
-            registry=scoped,
+        return self._tool_scope_resolver.denial(
+            registry,
+            agent=effective_config.agent,
             metadata=session.metadata,
+            tool_name=tool_name,
         )
-        return None if decision.allowed else decision
 
     @staticmethod
     def _tool_policy_error(decision: ToolPolicyDecision) -> str:
@@ -1906,28 +1887,19 @@ class VoidCodeRuntime:
         # Runtime-owned child preset governance: provider-visible schemas are already
         # narrowed, but malicious/raw provider tool calls still need a clear policy
         # denial before normal lookup can obscure the reason as an unknown tool.
-        if (
-            runtime_subagent_route_from_metadata(
-                session.metadata,
-                callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
-            )
-            is None
-        ):
+        route = runtime_subagent_route_from_metadata(
+            session.metadata,
+            callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
+        )
+        if route is None:
             return None
         effective_config = self._effective_runtime_config_from_metadata(session.metadata)
         agent = effective_config.agent
-        if agent is None:
-            return None
-        if not agent.manifest_tool_allowlist:
-            return None
-        if tool_name_matches_patterns(tool_name, agent.manifest_tool_allowlist):
-            return None
-        if tool_name not in self._base_tool_registry.tools:
-            return None
-        return (
-            "delegation policy denied tool "
-            f"'{tool_name}' for child preset '{agent.preset}'; this preset may only call "
-            "tools allowed by its manifest tool_allowlist"
+        return self._tool_scope_resolver.delegation_policy_error(
+            delegated_child=True,
+            agent=agent,
+            base_registry=self._base_tool_registry,
+            tool_name=tool_name,
         )
 
     def _workflow_tool_policy_error(
@@ -2649,7 +2621,8 @@ class VoidCodeRuntime:
             effective_config=effective_config,
             workflow_snapshot=workflow_snapshot_for_session,
         ):
-            self._tool_registry = self._base_tool_registry
+            self._tool_materialization = self._tool_materializer.base()
+            self._tool_registry = self._tool_materialization.registry
         else:
             (
                 mcp_startup_chunks,
@@ -2668,18 +2641,19 @@ class VoidCodeRuntime:
                 yield mcp_failed_chunk
                 return
 
+        tool_materialization = self._tool_materialization_for_effective_config(
+            effective_config,
+            session.metadata,
+        )
         session = self._session_with_agent_capability_snapshot(
             session=session,
             effective_config=effective_config,
             request_metadata=request_metadata,
             resolved_hook_presets=resolved_hook_presets,
             workflow_snapshot=workflow_snapshot_for_session,
+            tool_materialization=tool_materialization,
         )
-
-        tool_registry = self._tool_registry_for_effective_config(
-            effective_config,
-            session.metadata,
-        )
+        tool_registry = tool_materialization.registry
         skill_registry = self._skill_registry_for_effective_config(effective_config)
         skills_config = self._skills_config_for_effective_config(effective_config)
 
@@ -3806,6 +3780,9 @@ class VoidCodeRuntime:
             session_id=session_id,
         )
         self._validate_session_workspace(result.session, session_id=session_id)
+        raw_snapshot = result.session.metadata.get("agent_capability_snapshot")
+        if isinstance(raw_snapshot, dict):
+            validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
         return result
 
     def resolve_tool_output_artifact(
@@ -4288,202 +4265,21 @@ class VoidCodeRuntime:
         return models
 
     def provider_models(self, provider_name: str) -> tuple[str, ...]:
-        if not provider_name or "/" in provider_name:
-            raise ValueError("provider_name must be a non-empty provider id without '/'")
-        return self._model_provider_registry.available_models(provider_name)
+        return self._provider_catalog_query.models(provider_name)
 
     def provider_model_catalog(self, provider_name: str) -> dict[str, object] | None:
-        if not provider_name or "/" in provider_name:
-            raise ValueError("provider_name must be a non-empty provider id without '/'")
-        catalog = self._model_provider_registry.provider_catalog(provider_name)
-        if catalog is None:
-            return None
-        return {
-            "provider": catalog.provider,
-            "models": list(catalog.models),
-            "model_metadata": {
-                model: metadata.payload() for model, metadata in catalog.model_metadata.items()
-            },
-            "refreshed": catalog.refreshed,
-            "source": catalog.source,
-            "last_refresh_status": catalog.last_refresh_status,
-            "last_error": catalog.last_error,
-            "discovery_mode": catalog.discovery_mode,
-        }
-
-    @staticmethod
-    def _provider_model_catalog_cache_path() -> Path:
-        return provider_catalog_cache_path()
+        return self._provider_catalog_query.catalog_payload(provider_name)
 
     def _hydrate_provider_model_catalog_cache(self) -> None:
-        catalog = self._model_provider_registry.model_catalog
-        if catalog is None or catalog:
-            return
-        cache_path = self._provider_model_catalog_cache_path()
-        try:
-            raw_payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            return
-        if not isinstance(raw_payload, dict):
-            return
-        payload = cast(dict[str, object], raw_payload)
-        raw_providers = payload.get("providers")
-        if not isinstance(raw_providers, dict):
-            return
-
-        hydrated: dict[str, ProviderModelCatalog] = {}
-        for provider_name, raw_catalog in cast(dict[object, object], raw_providers).items():
-            if not isinstance(provider_name, str) or not provider_name or "/" in provider_name:
-                continue
-            if not isinstance(raw_catalog, dict):
-                continue
-            catalog_payload = cast(dict[str, object], raw_catalog)
-            raw_models = catalog_payload.get("models", [])
-            if not isinstance(raw_models, list):
-                continue
-            models = tuple(
-                raw_model
-                for raw_model in cast(list[object], raw_models)
-                if isinstance(raw_model, str) and raw_model
-            )
-            raw_metadata = catalog_payload.get("model_metadata", {})
-            metadata_payloads: dict[object, object] = (
-                cast(dict[object, object], raw_metadata) if isinstance(raw_metadata, dict) else {}
-            )
-            model_metadata = {
-                model: VoidCodeRuntime._catalog_metadata_from_payload(payload)
-                for model, raw_payload in metadata_payloads.items()
-                if isinstance(model, str) and isinstance(raw_payload, dict)
-                for payload in (cast(dict[str, object], raw_payload),)
-            }
-            raw_source = catalog_payload.get("source")
-            source = raw_source if isinstance(raw_source, str) else "remote"
-            raw_status = catalog_payload.get("last_refresh_status")
-            last_refresh_status = raw_status if isinstance(raw_status, str) else "ok"
-            raw_discovery_mode = catalog_payload.get("discovery_mode")
-            discovery_mode = (
-                cast(
-                    Literal[
-                        "configured_endpoint",
-                        "configured_base_url",
-                        "disabled",
-                        "unavailable",
-                    ],
-                    raw_discovery_mode,
-                )
-                if raw_discovery_mode
-                in {"configured_endpoint", "configured_base_url", "disabled", "unavailable"}
-                else "unavailable"
-            )
-            hydrated[provider_name] = ProviderModelCatalog(
-                provider=provider_name,
-                models=models,
-                refreshed=bool(catalog_payload.get("refreshed", False)),
-                model_metadata=model_metadata,
-                source=source,
-                last_refresh_status=last_refresh_status,
-                last_error=(
-                    cast(str, catalog_payload["last_error"])
-                    if isinstance(catalog_payload.get("last_error"), str)
-                    else None
-                ),
-                discovery_mode=discovery_mode,
-            )
-        catalog.update(hydrated)
+        self._provider_catalog_cache.hydrate()
 
     def _persist_provider_model_catalog_cache(self) -> None:
-        catalog = self._model_provider_registry.model_catalog
-        if catalog is None:
-            return
-        cache_path = self._provider_model_catalog_cache_path()
-        payload = {
-            "version": 1,
-            "providers": {
-                provider_name: {
-                    "provider": entry.provider,
-                    "models": list(entry.models),
-                    "model_metadata": {
-                        model: metadata.payload()
-                        for model, metadata in entry.model_metadata.items()
-                    },
-                    "refreshed": entry.refreshed,
-                    "source": entry.source,
-                    "last_refresh_status": entry.last_refresh_status,
-                    "last_error": entry.last_error,
-                    "discovery_mode": entry.discovery_mode,
-                }
-                for provider_name, entry in sorted(catalog.items())
-            },
-        }
-        try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        except OSError:
-            logger.debug("failed to persist provider model catalog cache", exc_info=True)
+        self._provider_catalog_cache.persist()
 
     def _metadata_for_provider_model(
         self, provider_name: str, model_name: str
     ) -> ProviderModelMetadata | None:
-        catalog = self.provider_model_catalog(provider_name)
-        raw_metadata = None if catalog is None else catalog.get("model_metadata")
-        if isinstance(raw_metadata, dict):
-            metadata_payloads = cast(dict[str, object], raw_metadata)
-            raw_payload = metadata_payloads.get(model_name)
-            if isinstance(raw_payload, dict):
-                payload = cast(dict[str, object], raw_payload)
-                return VoidCodeRuntime._contract_metadata_for_model_payload(
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    payload=payload,
-                )
-        inferred = infer_model_metadata(provider_name, model_name)
-        if inferred is None:
-            return None
-        return ProviderModelMetadata(
-            context_window=inferred.context_window,
-            max_input_tokens=inferred.max_input_tokens,
-            max_output_tokens=inferred.max_output_tokens,
-            supports_tools=inferred.supports_tools,
-            supports_vision=inferred.supports_vision,
-            supports_streaming=inferred.supports_streaming,
-            supports_reasoning=inferred.supports_reasoning,
-            supports_json_mode=inferred.supports_json_mode,
-            cost_per_input_token=inferred.cost_per_input_token,
-            cost_per_output_token=inferred.cost_per_output_token,
-            cost_per_cache_read_token=inferred.cost_per_cache_read_token,
-            cost_per_cache_write_token=inferred.cost_per_cache_write_token,
-            supports_reasoning_effort=inferred.supports_reasoning_effort,
-            default_reasoning_effort=inferred.default_reasoning_effort,
-            supports_reasoning_summary=inferred.supports_reasoning_summary,
-            supports_thinking_budget=inferred.supports_thinking_budget,
-            supports_interleaved_reasoning=inferred.supports_interleaved_reasoning,
-            reasoning_visibility=inferred.reasoning_visibility,
-            modalities_input=inferred.modalities_input,
-            modalities_output=inferred.modalities_output,
-            model_status=inferred.model_status,
-            tool_feedback_mode=inferred.tool_feedback_mode,
-        )
-
-    @staticmethod
-    def _contract_metadata_from_catalog(
-        catalog_metadata: CatalogProviderModelMetadata,
-    ) -> ProviderModelMetadata:
-        return contract_metadata_from_catalog(catalog_metadata)
-
-    @staticmethod
-    def _contract_metadata_for_model_payload(
-        *,
-        provider_name: str,
-        model_name: str,
-        payload: dict[str, object],
-    ) -> ProviderModelMetadata | None:
-        catalog_metadata = merge_model_metadata(
-            inferred=infer_model_metadata(provider_name, model_name),
-            override=VoidCodeRuntime._catalog_metadata_from_payload(payload),
-        )
-        if catalog_metadata is None:
-            return None
-        return VoidCodeRuntime._contract_metadata_from_catalog(catalog_metadata)
+        return self._provider_catalog_query.metadata_for_model(provider_name, model_name)
 
     def _context_window_policy_for_provider_attempt(
         self,
@@ -4509,56 +4305,21 @@ class VoidCodeRuntime:
         return replace(policy, model_context_window_tokens=metadata.context_window)
 
     def list_provider_summaries(self) -> tuple[ProviderSummary, ...]:
-        current_provider = self._current_provider_name()
-        providers: list[ProviderSummary] = []
-        for provider_name in self._model_provider_registry.providers:
-            providers.append(
-                ProviderSummary(
-                    name=provider_name,
-                    label=self._provider_label(provider_name),
-                    configured=self._provider_is_configured(provider_name),
-                    current=provider_name == current_provider,
-                )
-            )
-        providers.sort(key=lambda item: item.name)
-        return tuple(providers)
+        return self._provider_summary_projector.project_all(
+            self._model_provider_registry.providers,
+            current_provider=self._current_provider_name(),
+            label_for=self._provider_label,
+            is_configured=self._provider_is_configured,
+        )
 
     def provider_models_result(self, provider_name: str) -> ProviderModelsResult:
         configured = self._provider_is_configured(provider_name)
         catalog = self.provider_model_catalog(provider_name)
         if configured and catalog is None:
             _ = self.refresh_provider_models(provider_name)
-            catalog = self.provider_model_catalog(provider_name)
-        if catalog is None:
-            return ProviderModelsResult(
-                provider=provider_name,
-                configured=configured,
-                models=(),
-            )
-        return ProviderModelsResult(
-            provider=provider_name,
+        return self._provider_catalog_query.models_result(
+            provider_name,
             configured=configured,
-            models=tuple(cast(list[str], catalog["models"])),
-            model_metadata={
-                model: metadata
-                for model, raw_payload in cast(
-                    dict[str, object], catalog.get("model_metadata", {})
-                ).items()
-                if isinstance(raw_payload, dict)
-                for payload in (cast(dict[str, object], raw_payload),)
-                for metadata in (
-                    VoidCodeRuntime._contract_metadata_for_model_payload(
-                        provider_name=provider_name,
-                        model_name=model,
-                        payload=payload,
-                    ),
-                )
-                if metadata is not None
-            },
-            source=cast(str | None, catalog["source"]),
-            last_refresh_status=cast(str | None, catalog["last_refresh_status"]),
-            last_error=cast(str | None, catalog["last_error"]),
-            discovery_mode=cast(str | None, catalog["discovery_mode"]),
         )
 
     def provider_readiness(self, *, session_id: str | None = None) -> ProviderReadinessResult:
@@ -4592,47 +4353,25 @@ class VoidCodeRuntime:
                 max_output_tokens = effective_config.context_window.reserved_output_tokens
         configured = provider_name is not None and self._provider_is_configured(provider_name)
         auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
-        validation_status = "ready"
-        ok = configured and auth_present is not False
-        guidance = "Provider/model configuration is ready enough to run."
-        if provider_name is None or model_name is None:
-            validation_status = "missing_model"
-            ok = False
-            guidance = "Configure a provider/model, for example model: 'openai/gpt-4o'."
-        elif auth_present is False and auth_failure_kind == "invalid_model":
-            validation_status = auth_failure_kind
-            ok = False
-            guidance = auth_message or guidance_for_provider_error_kind("invalid_model")
-        elif not configured:
-            validation_status = "unconfigured"
-            ok = False
-            guidance = "Add provider credentials in environment variables or .voidcode.json."
-        elif auth_present is False:
-            validation_status = auth_failure_kind or "missing_auth"
-            ok = False
-            guidance = auth_message or guidance_for_provider_error_kind("missing_auth")
-        elif streaming_supported is False:
-            validation_status = "streaming_unsupported"
-            ok = False
-            guidance = guidance_for_provider_error_kind("unsupported_feature")
-        return ProviderReadinessResult(
-            provider=provider_name,
-            model=model_name,
-            configured=configured,
-            ok=ok,
-            status=validation_status,
-            guidance=guidance,
-            auth_present=auth_present,
-            streaming_configured=streaming_configured,
-            streaming_supported=streaming_supported,
-            context_window=context_window,
-            max_output_tokens=max_output_tokens,
-            fallback_chain=fallback_chain,
-            reasoning_controls=self._reasoning_controls_diagnostic(
-                effective_config=effective_config,
-                provider_name=provider_name,
-                model_name=model_name,
-            ),
+        return RuntimeProviderReadinessProjector.project(
+            ProviderReadinessFacts(
+                provider=provider_name,
+                model=model_name,
+                configured=configured,
+                auth_present=auth_present,
+                auth_failure_kind=auth_failure_kind,
+                auth_message=auth_message,
+                streaming_configured=streaming_configured,
+                streaming_supported=streaming_supported,
+                context_window=context_window,
+                max_output_tokens=max_output_tokens,
+                fallback_chain=fallback_chain,
+                reasoning_controls=self._reasoning_controls_diagnostic(
+                    effective_config=effective_config,
+                    provider_name=provider_name,
+                    model_name=model_name,
+                ),
+            )
         )
 
     def _reasoning_controls_diagnostic(
@@ -4705,11 +4444,11 @@ class VoidCodeRuntime:
                 for provider in self.list_provider_summaries()
                 if provider.name == provider_name
             ),
-            ProviderSummary(
-                name=provider_name,
-                label=self._provider_label(provider_name),
-                configured=self._provider_is_configured(provider_name),
-                current=provider_name == self._current_provider_name(),
+            self._provider_summary_projector.project_one(
+                provider_name,
+                current_provider=self._current_provider_name(),
+                label_for=self._provider_label,
+                is_configured=self._provider_is_configured,
             ),
         )
         validation = self.validate_provider_credentials(provider_name)
@@ -4736,118 +4475,44 @@ class VoidCodeRuntime:
     def validate_provider_credentials(self, provider_name: str) -> ProviderValidationResult:
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
-        if not self._provider_is_configured(provider_name):
-            result = self.provider_models_result(provider_name)
-            return ProviderValidationResult(
-                provider=provider_name,
-                configured=False,
-                ok=False,
-                status="unconfigured",
-                message="Provider is not configured.",
-                source=result.source,
-                last_error=result.last_error,
-                discovery_mode=result.discovery_mode,
-                failure_kind="missing_auth",
-                guidance="Add provider credentials in environment variables or .voidcode.json.",
+        configured = self._provider_is_configured(provider_name)
+        if not configured:
+            return RuntimeProviderValidationProjector.project(
+                ProviderValidationFacts(
+                    provider=provider_name,
+                    configured=False,
+                    auth_present=None,
+                    models=self.provider_models_result(provider_name),
+                )
             )
         auth_present, auth_failure_kind, auth_message = self._provider_auth_presence(provider_name)
         if auth_present is False:
-            return ProviderValidationResult(
-                provider=provider_name,
-                configured=True,
-                ok=False,
-                status=auth_failure_kind or "missing_auth",
-                message=auth_message or "Provider authentication is missing.",
-                failure_kind=auth_failure_kind or "missing_auth",
-                guidance=auth_message or guidance_for_provider_error_kind("missing_auth"),
+            return RuntimeProviderValidationProjector.project(
+                ProviderValidationFacts(
+                    provider=provider_name,
+                    configured=True,
+                    auth_present=auth_present,
+                    auth_failure_kind=auth_failure_kind,
+                    auth_message=auth_message,
+                )
             )
         _ = self.refresh_provider_models(provider_name)
         result = self.provider_models_result(provider_name)
-        if result.last_refresh_status == "failed":
-            return ProviderValidationResult(
+        return RuntimeProviderValidationProjector.project(
+            ProviderValidationFacts(
                 provider=provider_name,
                 configured=True,
-                ok=False,
-                status="failed",
-                message=result.last_error or "Provider credential validation failed.",
-                source=result.source,
-                last_error=result.last_error,
-                discovery_mode=result.discovery_mode,
-                failure_kind="transient_failure",
-                guidance=guidance_for_provider_error_kind("transient_failure"),
+                auth_present=auth_present,
+                auth_failure_kind=auth_failure_kind,
+                auth_message=auth_message,
+                models=result,
             )
-        status = result.last_refresh_status or "ok"
-        ok = status == "ok"
-        message = (
-            "Remote provider validation succeeded."
-            if ok
-            else "Provider credentials are configured; remote validation is unavailable."
-        )
-        return ProviderValidationResult(
-            provider=provider_name,
-            configured=True,
-            ok=ok,
-            status=status,
-            message=message,
-            source=result.source,
-            last_error=result.last_error,
-            discovery_mode=result.discovery_mode,
-            guidance=(
-                "Provider model discovery succeeded."
-                if ok
-                else "Credentials are present, but remote validation could not confirm readiness."
-            ),
         )
 
     def _provider_auth_presence(
         self, provider_name: str | None
     ) -> tuple[bool | None, str | None, str | None]:
-        if provider_name is None:
-            return None, None, None
-        oauth_presence = self._oauth_provider_auth_presence(provider_name)
-        if oauth_presence is not None:
-            return oauth_presence
-        try:
-            result = self._provider_auth_resolver.authorize(
-                ProviderAuthAuthorizeRequest(provider=provider_name)
-            )
-        except ProviderAuthResolutionError as exc:
-            if exc.code == "missing_credentials":
-                return False, "missing_auth", str(exc)
-            return False, exc.provider_error_kind, str(exc)
-        return result.status == "authorized", None, None
-
-    def _oauth_provider_auth_presence(
-        self, provider_name: str
-    ) -> tuple[bool | None, str | None, str | None] | None:
-        providers = self._config.providers
-        if providers is None:
-            return None
-        if provider_name == "google":
-            config = providers.google
-            auth = None if config is None else config.auth
-            if auth is None or auth.method != "oauth":
-                return None
-            if auth.access_token:
-                return True, None, None
-            return (
-                False,
-                "missing_auth",
-                "provider auth field 'google.access_token' must be provided for google oauth auth",
-            )
-        if provider_name == "copilot":
-            config = providers.copilot
-            auth = None if config is None else config.auth
-            if auth is None or auth.method != "oauth":
-                return None
-            if auth.token or (auth.token_env_var and os.environ.get(auth.token_env_var)):
-                return True, None, None
-            return (
-                False,
-                "missing_auth",
-                "provider auth field 'copilot.token' must be provided for copilot oauth auth",
-            )
-        return None
+        return self._provider_auth_inspector.presence(provider_name).as_tuple()
 
     @staticmethod
     def _optional_positive_int(value: object) -> int | None:
@@ -4874,12 +4539,6 @@ class VoidCodeRuntime:
         value: object,
     ) -> Literal["standard", "synthetic_user_message"] | None:
         return tool_feedback_mode(value)
-
-    @staticmethod
-    def _catalog_metadata_from_payload(
-        payload: dict[str, object],
-    ) -> CatalogProviderModelMetadata:
-        return catalog_metadata_from_payload(payload)
 
     @staticmethod
     def _contract_metadata_from_payload(payload: dict[str, object]) -> ProviderModelMetadata:
@@ -5266,36 +4925,7 @@ class VoidCodeRuntime:
         }.get(provider_name, provider_name)
 
     def _provider_is_configured(self, provider_name: str) -> bool:
-        providers = self._config.providers
-        if providers is None:
-            return False
-        if provider_name == "openai":
-            return providers.openai is not None
-        if provider_name == "anthropic":
-            return providers.anthropic is not None
-        if provider_name == "google":
-            return providers.google is not None
-        if provider_name == "copilot":
-            return providers.copilot is not None
-        if provider_name == "litellm":
-            return providers.litellm is not None
-        if provider_name == "deepseek":
-            return providers.deepseek is not None
-        if provider_name == "glm":
-            return providers.glm is not None
-        if provider_name == "grok":
-            return providers.grok is not None
-        if provider_name == "minimax":
-            return providers.minimax is not None
-        if provider_name == "kimi":
-            return providers.kimi is not None
-        if provider_name == "opencode":
-            return providers.opencode is not None
-        if provider_name == "opencode-go":
-            return providers.opencode_go is not None
-        if provider_name == "qwen":
-            return providers.qwen is not None
-        return provider_name in providers.custom
+        return self._provider_auth_inspector.is_configured(provider_name)
 
     def web_settings(self) -> dict[str, object]:
         settings = load_global_web_settings()
@@ -5339,13 +4969,16 @@ class VoidCodeRuntime:
     def _reload_runtime_config_state(self) -> None:
         self._agent_registry = self._runtime_agent_registry()
         self._config = load_runtime_config(self._workspace)
+        self._bind_tool_scope_resolver()
         self._model_provider_registry = ModelProviderRegistry.with_defaults(
             provider_configs=self._config.providers
         )
+        self._bind_provider_catalog_collaborators()
         self._provider_auth_resolver = ProviderAuthResolver(
             providers=self._config.providers,
             env=os.environ,
         )
+        self._bind_provider_auth_inspector()
         initial_agent = self._config.agent
         if initial_agent is None and self._config.execution_engine == "provider":
             initial_agent = RuntimeAgentConfig(preset="leader")
@@ -7423,6 +7056,7 @@ class VoidCodeRuntime:
         if metadata is not None:
             raw_capability_snapshot = metadata.get("agent_capability_snapshot")
             if isinstance(raw_capability_snapshot, dict):
+                validate_agent_capability_snapshot(cast(dict[str, object], raw_capability_snapshot))
                 return self._skill_binding_snapshot_from_agent_capability_snapshot(
                     cast(dict[str, object], raw_capability_snapshot)
                 )
@@ -7451,6 +7085,7 @@ class VoidCodeRuntime:
         self,
         *,
         effective_config: EffectiveRuntimeConfig,
+        tool_materialization: RuntimeToolMaterialization,
         metadata: dict[str, object],
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
@@ -7476,7 +7111,11 @@ class VoidCodeRuntime:
             request_skill_names=request_skill_names,
         )
         mcp_state = self._mcp_manager.current_state()
-        tool_snapshot = self._agent_capability_tool_snapshot(agent, manifest, metadata)
+        tool_snapshot = agent_capability_tool_snapshot(
+            tool_materialization.registry,
+            agent,
+            tool_materialization.generation,
+        )
         skill_snapshot = {
             "manifest_refs": list(agent.manifest_skill_refs) if agent is not None else [],
             "selected_names": list(selected_skills or ()),
@@ -7495,18 +7134,18 @@ class VoidCodeRuntime:
             "authority": "non_authoritative",
         }
         mcp_snapshot = {
-            "binding_intent": self._agent_mcp_binding_payload(agent, manifest),
+            "binding_intent": agent_mcp_binding_payload(agent, manifest),
             "configured_enabled": mcp_state.configuration.configured_enabled,
             "mode": mcp_state.mode,
             "configured_servers": list(mcp_state.configuration.servers),
             "governance": "runtime_session_scoped_config_gated",
         }
-        delegation_snapshot = self._agent_capability_delegation_snapshot(
+        delegation_snapshot = agent_capability_delegation_snapshot(
             metadata=metadata,
             parent_capability_snapshot=parent_capability_snapshot,
         )
         return {
-            "snapshot_version": _AGENT_CAPABILITY_SNAPSHOT_VERSION,
+            "snapshot_version": AGENT_CAPABILITY_SNAPSHOT_VERSION,
             "precedence": {
                 "order": [
                     "builtin_manifest_defaults",
@@ -7529,8 +7168,8 @@ class VoidCodeRuntime:
                     ),
                 },
             },
-            "agent": self._agent_capability_agent_snapshot(agent, manifest),
-            "prompt": self._agent_capability_prompt_snapshot(
+            "agent": agent_capability_agent_snapshot(agent, manifest),
+            "prompt": agent_capability_prompt_snapshot(
                 agent,
                 manifest,
                 runtime_config_payload,
@@ -7575,6 +7214,7 @@ class VoidCodeRuntime:
         effective_config: EffectiveRuntimeConfig,
         request_metadata: dict[str, object],
         resolved_hook_presets: ResolvedHookPresetSnapshot,
+        tool_materialization: RuntimeToolMaterialization,
         workflow_snapshot: dict[str, object] | None = None,
     ) -> SessionState:
         parent_capability_snapshot = self._parent_capability_snapshot_for_session(session)
@@ -7586,6 +7226,7 @@ class VoidCodeRuntime:
                 **session.metadata,
                 "agent_capability_snapshot": self._agent_capability_snapshot(
                     effective_config=effective_config,
+                    tool_materialization=tool_materialization,
                     metadata=session.metadata,
                     request_metadata=request_metadata,
                     resolved_hook_presets=resolved_hook_presets,
@@ -7606,133 +7247,9 @@ class VoidCodeRuntime:
         if parent_metadata is None:
             return None
         raw_snapshot = parent_metadata.get("agent_capability_snapshot")
-        return cast(dict[str, object], raw_snapshot) if isinstance(raw_snapshot, dict) else None
-
-    @staticmethod
-    def _agent_capability_agent_snapshot(
-        agent: RuntimeAgentConfig | None,
-        manifest: object | None,
-    ) -> dict[str, object]:
-        if agent is None:
-            return {"preset": None}
-        manifest_id = getattr(manifest, "id", None)
-        return {
-            "preset": agent.preset,
-            "manifest_id": manifest_id if isinstance(manifest_id, str) else None,
-            "mode": getattr(manifest, "mode", None),
-            "source": "manifest" if manifest is not None else "runtime_config",
-            "source_scope": agent.manifest_source_scope,
-            "source_path": agent.manifest_source_path,
-        }
-
-    @staticmethod
-    def _agent_capability_prompt_snapshot(
-        agent: RuntimeAgentConfig | None,
-        manifest: object | None,
-        runtime_config_payload: dict[str, object],
-    ) -> dict[str, object]:
-        prompt: dict[str, object] = {
-            "profile": agent.prompt_profile if agent is not None else None,
-            "ref": agent.prompt_ref if agent is not None else None,
-            "source": agent.prompt_source if agent is not None else None,
-        }
-        raw_agent = runtime_config_payload.get("agent")
-        if isinstance(raw_agent, dict):
-            raw_prompt_materialization = cast(dict[str, object], raw_agent).get(
-                "prompt_materialization"
-            )
-            if isinstance(raw_prompt_materialization, dict):
-                prompt["materialization"] = cast(dict[str, object], raw_prompt_materialization)
-        if "materialization" not in prompt and manifest is not None:
-            materialization = getattr(manifest, "prompt_materialization", None)
-            if materialization is not None:
-                prompt["materialization"] = materialization.to_payload(
-                    profile=agent.prompt_profile if agent is not None else None
-                )
-        if "materialization" not in prompt and agent is not None:
-            if agent.prompt_materialization is not None:
-                prompt["materialization"] = dict(agent.prompt_materialization)
-        return {key: value for key, value in prompt.items() if value is not None}
-
-    def _agent_capability_tool_snapshot(
-        self,
-        agent: RuntimeAgentConfig | None,
-        manifest: object | None,
-        metadata: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        _ = manifest
-        manifest_allowlist = agent.manifest_tool_allowlist if agent is not None else ()
-        effective_tool_names = sorted(
-            self._tool_registry_with_workflow_policy(
-                scoped_tool_registry_for_agent(self._tool_registry, agent=agent),
-                metadata,
-            ).tools
-        )
-        return {
-            "manifest_allowlist": list(manifest_allowlist),
-            "request_allowlist": list(agent.tools.allowlist)
-            if agent is not None and agent.tools is not None and agent.tools.allowlist is not None
-            else None,
-            "request_default": list(agent.tools.default)
-            if agent is not None and agent.tools is not None and agent.tools.default is not None
-            else None,
-            "builtin_tools_enabled": not (
-                agent is not None
-                and agent.tools is not None
-                and agent.tools.builtin is not None
-                and agent.tools.builtin.enabled is False
-            ),
-            "builtin_tool_names": sorted(BUILTIN_TOOL_NAMES),
-            "effective_names": effective_tool_names,
-        }
-
-    @staticmethod
-    def _agent_capability_delegation_snapshot(
-        *,
-        metadata: dict[str, object],
-        parent_capability_snapshot: dict[str, object] | None,
-    ) -> dict[str, object]:
-        raw_delegation = metadata.get("delegation")
-        delegation = (
-            cast(dict[str, object], raw_delegation) if isinstance(raw_delegation, dict) else {}
-        )
-        selected_preset = delegation.get("selected_preset")
-        parent_delegation = (
-            cast(dict[str, object], parent_capability_snapshot.get("delegation"))
-            if parent_capability_snapshot is not None
-            and isinstance(parent_capability_snapshot.get("delegation"), dict)
-            else {}
-        )
-        parent_allowed = parent_delegation.get("allowed_child_presets")
-        allowed_parent_presets = (
-            tuple(item for item in cast(list[object], parent_allowed) if isinstance(item, str))
-            if isinstance(parent_allowed, list)
-            else ("advisor", "explore", "researcher", "worker")
-        )
-        allowed_child_presets = [
-            preset
-            for preset in ("advisor", "explore", "researcher", "worker")
-            if preset in allowed_parent_presets
-        ]
-        return {
-            "selected_preset": selected_preset if isinstance(selected_preset, str) else None,
-            "allowed_child_presets": allowed_child_presets,
-            "denied": [
-                {"target": "product", "reason": PRODUCT_DELEGATION_DENIAL_REASON},
-            ],
-            "parent_bounded": parent_capability_snapshot is not None,
-            "can_expand_parent_policy": False,
-        }
-
-    @staticmethod
-    def _agent_mcp_binding_payload(
-        agent: RuntimeAgentConfig | None,
-        manifest: object | None,
-    ) -> dict[str, object]:
-        binding = agent.mcp_binding if agent is not None else None
-        if binding is None and manifest is not None:
-            binding = getattr(manifest, "mcp_binding", None)
-        return binding.to_payload() if binding is not None else {}
+        if not isinstance(raw_snapshot, dict):
+            return None
+        return validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
 
     @staticmethod
     def _skill_binding_mismatch_payload(
@@ -8697,6 +8214,9 @@ class VoidCodeRuntime:
             session_id=session_id,
         )
         self._validate_session_workspace(response.session, session_id=session_id)
+        raw_snapshot = response.session.metadata.get("agent_capability_snapshot")
+        if isinstance(raw_snapshot, dict):
+            validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
         return response
 
     def _load_replay_response(self, *, session_id: str) -> RuntimeResponse:

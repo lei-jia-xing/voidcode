@@ -19,10 +19,10 @@ runtime materialize agent capability 时按以下顺序收口：
 
 每次 run / delegated child session 会持久化 `agent_capability_snapshot`，包含：
 
-- `snapshot_version`：当前为 `1`；
+- `snapshot_version`：当前为 `2`；runtime 不迁移、不合成、也不接受旧版本；
 - `agent`：selected preset、manifest id、mode、来源、source scope/path；
 - `prompt`：profile/ref/source 与 prompt materialization metadata；builtin 使用 profile/version，custom markdown 使用 `source=custom_markdown`、`format=markdown`、持久化 markdown body 与可选 `prompt_append`；
-- `tools`：manifest allowlist、request allowlist/default、builtin-tool 开关、effective tool names；
+- `tools`：manifest allowlist、request allowlist/default、builtin-tool 开关、effective tool names，以及执行该 run 的 scoped tool materialization `generation`；
 - `skills`：manifest refs、selected names、force-loaded names、target-session scope；
 - `hooks`：manifest refs、resolved refs、resolved guidance snapshot、`guidance_only` materialization；
 - `mcp`：declarative binding intent、runtime configured state、configured server names、runtime/session-scoped governance label；
@@ -73,7 +73,7 @@ Agent declarations can only select or narrow capability intent before policy mat
 
 ## Replay 要求
 
-Replay/debug 应优先读取 persisted `agent_capability_snapshot`。旧 session 的能力解释不能因为 builtin manifest、hook catalog、skill registry 或 MCP config 后续变化而被静默改写。
+Replay/debug 必须读取 persisted `agent_capability_snapshot`。只有 version 2 且包含非空 `tools.generation` 的 snapshot 有效；缺失版本、旧版本、未来版本以及缺失 generation 都必须 fail-fast，不能回退到 runtime config、重新 materialize 当前 workspace，或合成兼容 snapshot。
 
 ## 非目标
 

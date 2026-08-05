@@ -33,6 +33,7 @@ from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
+    RuntimeResponse,
     SessionState,
     ToolRegistry,
     VoidCodeRuntime,
@@ -1195,6 +1196,92 @@ def test_runtime_includes_opted_in_local_custom_tools(tmp_path: Path) -> None:
 
     assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" in registry.tools
+
+
+def test_runtime_capability_snapshot_uses_the_executed_local_tool_registry(
+    tmp_path: Path,
+) -> None:
+    _write_local_tool_manifest(tmp_path)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go", session_id="local-tool-snapshot"))
+
+    capability_snapshot = cast(
+        dict[str, object], response.session.metadata["agent_capability_snapshot"]
+    )
+    tool_snapshot = cast(dict[str, object], capability_snapshot["tools"])
+    assert "local/echo" in cast(list[str], tool_snapshot["effective_names"])
+    assert isinstance(tool_snapshot["generation"], str)
+    assert response.output is not None
+    assert json.loads(response.output)["args"] == {"message": "hi"}
+
+
+def test_runtime_replay_keeps_local_capability_snapshot_after_source_drift(
+    tmp_path: Path,
+) -> None:
+    manifest = _write_local_tool_manifest(tmp_path)
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True)),
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="go", session_id="local-replay-snapshot"))
+    snapshot = response.session.metadata["agent_capability_snapshot"]
+    manifest.unlink()
+
+    replayed = runtime.session_result(session_id="local-replay-snapshot")
+
+    assert replayed.session.metadata["agent_capability_snapshot"] == snapshot
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"snapshot_version": 1, "tools": {}},
+        {"snapshot_version": 2, "tools": {}},
+    ],
+)
+def test_runtime_replay_rejects_non_current_capability_snapshot(
+    tmp_path: Path,
+    snapshot: dict[str, object],
+) -> None:
+    (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_StubGraph())
+    _ = runtime.run(RuntimeRequest(prompt="go", session_id="strict-capability-snapshot"))
+    stored = runtime._session_store.load_session_result(  # noqa: SLF001
+        workspace=tmp_path,
+        session_id="strict-capability-snapshot",
+    )
+    runtime._session_store.save_run(  # noqa: SLF001
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="go", session_id="strict-capability-snapshot"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=stored.session.session,
+                status=stored.session.status,
+                turn=stored.session.turn,
+                metadata={**stored.session.metadata, "agent_capability_snapshot": snapshot},
+            ),
+            events=stored.transcript,
+            output=stored.output,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="agent_capability_snapshot"):
+        runtime.session_result(session_id="strict-capability-snapshot")
 
 
 def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:

@@ -3908,13 +3908,16 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     capability_snapshot = cast(dict[str, object], metadata["agent_capability_snapshot"])
     skill_snapshot = cast(dict[str, object], metadata["skill_snapshot"])
 
-    assert capability_snapshot["snapshot_version"] == 1
+    assert capability_snapshot["snapshot_version"] == 2
     assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "leader"
     assert cast(dict[str, object], capability_snapshot["tools"])["effective_names"] == [
         "mcp/echo/echo",
         "read_file",
         "skill",
     ]
+    generation = cast(dict[str, object], capability_snapshot["tools"])["generation"]
+    assert isinstance(generation, str)
+    assert len(generation) == 64
     assert cast(dict[str, object], capability_snapshot["skills"])["force_loaded_names"] == ["demo"]
     assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == [
         "role_reminder"
