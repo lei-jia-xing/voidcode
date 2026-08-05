@@ -10,6 +10,22 @@ from .app import (
     serve,
     web,
 )
+from .handler_args import (
+    AcpArgs,
+    AgentsArgs,
+    CommandsArgs,
+    ConfigArgs,
+    DoctorArgs,
+    McpArgs,
+    MemoryArgs,
+    ProviderArgs,
+    RunArgs,
+    ServerArgs,
+    SessionsArgs,
+    StorageArgs,
+    TasksArgs,
+    TuiArgs,
+)
 
 __all__ = [
     "ProviderReadinessResult",
@@ -20,4 +36,18 @@ __all__ = [
     "root_cli",
     "serve",
     "web",
+    "AcpArgs",
+    "AgentsArgs",
+    "CommandsArgs",
+    "ConfigArgs",
+    "DoctorArgs",
+    "McpArgs",
+    "MemoryArgs",
+    "ProviderArgs",
+    "RunArgs",
+    "ServerArgs",
+    "SessionsArgs",
+    "StorageArgs",
+    "TasksArgs",
+    "TuiArgs",
 ]
