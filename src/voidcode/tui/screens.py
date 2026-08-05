@@ -26,8 +26,8 @@ class ApprovalModal(ModalScreen[Literal["allow", "deny"]]):
         width: 80;
         height: auto;
         max-height: 80%;
-        border: thick $background 80%;
-        background: $surface;
+        border: thick $surface;
+        background: $background;
     }
     #question {
         content-align: center middle;
@@ -91,8 +91,8 @@ class CommandPalette(ModalScreen[str | None]):
         width: 60;
         height: auto;
         max-height: 20;
-        border: thick $background 80%;
-        background: $surface;
+        border: thick $surface;
+        background: $background;
     }
     #palette-input {
         margin-bottom: 1;
@@ -160,8 +160,8 @@ class SessionListModal(ModalScreen[str | None]):
         width: 80;
         height: auto;
         max-height: 30;
-        border: thick $background 80%;
-        background: $surface;
+        border: thick $surface;
+        background: $background;
     }
     """
 
@@ -209,8 +209,8 @@ class ThemePickerModal(ModalScreen[str | None]):
         width: 60;
         height: auto;
         max-height: 20;
-        border: thick $background 80%;
-        background: $surface;
+        border: thick $surface;
+        background: $background;
     }
     """
     BINDINGS = [Binding("escape", "dismiss_modal", "Dismiss", show=False)]
@@ -244,8 +244,8 @@ class ThemeModePickerModal(ModalScreen[str | None]):
         width: 60;
         height: auto;
         max-height: 20;
-        border: thick $background 80%;
-        background: $surface;
+        border: thick $surface;
+        background: $background;
     }
     """
     BINDINGS = [Binding("escape", "dismiss_modal", "Dismiss", show=False)]
