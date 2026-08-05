@@ -655,6 +655,340 @@ async def test_tui_filters_transcript_events(app_class: Any) -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_tool_display_summary_rendered(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "graph.tool_request_created",
+                                tool="read_file",
+                                display={
+                                    "kind": "read",
+                                    "title": "Read",
+                                    "summary": "src/app.py",
+                                    "copyable": {"path": "src/app.py"},
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+                assert "▶ Read: src/app.py" in plain
+
+
+@pytest.mark.anyio
+async def test_tui_tool_result_content_inline_for_short_results(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "runtime.tool_completed",
+                                tool="shell_exec",
+                                tool_call_id="call-short",
+                                status="ok",
+                                content="line one\nline two\nline three",
+                                display={
+                                    "kind": "shell",
+                                    "title": "Shell",
+                                    "summary": "echo hello",
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+                assert "✔ Shell: echo hello" in plain
+                assert "line one" in plain
+                assert "line three" in plain
+                assert "more lines" not in plain
+
+
+@pytest.mark.anyio
+async def test_tui_tool_result_truncated_shows_expand_hint(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    long_content = "\n".join(f"line {i}" for i in range(1, 26))
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "runtime.tool_completed",
+                                tool="shell_exec",
+                                tool_call_id="call-long",
+                                status="ok",
+                                content=long_content,
+                                display={
+                                    "kind": "shell",
+                                    "title": "Shell",
+                                    "summary": "seq 25",
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+                assert "line 1" in plain
+                assert "line 5" in plain
+                assert "line 25" not in plain
+                assert "/expand call-long" in plain
+                assert "20 more lines" in plain
+
+
+@pytest.mark.anyio
+async def test_tui_tool_result_read_uses_syntax_renderable(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "runtime.tool_completed",
+                                tool="read_file",
+                                tool_call_id="call-read",
+                                status="ok",
+                                content="def foo():\n    return 42\n",
+                                display={
+                                    "kind": "read",
+                                    "title": "Read",
+                                    "summary": "src/foo.py",
+                                    "copyable": {"path": "src/foo.py"},
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+                assert "def foo():" in plain
+                assert "return 42" in plain
+
+
+@pytest.mark.anyio
+async def test_tui_tool_result_edit_diff_coloring(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    diff_content = (
+        "--- a/src/foo.py\n"
+        "+++ b/src/foo.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old_line\n"
+        "+new_line\n"
+        " context\n"
+    )
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "runtime.tool_completed",
+                                tool="edit",
+                                tool_call_id="call-edit",
+                                status="ok",
+                                content=diff_content,
+                                display={
+                                    "kind": "edit",
+                                    "title": "Edit",
+                                    "summary": "src/foo.py (1 change)",
+                                    "copyable": {"path": "src/foo.py"},
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                found_red = False
+                found_green = False
+                found_blue = False
+                for line in log.lines:
+                    for seg in line:
+                        style = str(seg.style or "")
+                        if "+new_line" in seg.text and "green" in style:
+                            found_green = True
+                        if "-old_line" in seg.text and "red" in style:
+                            found_red = True
+                        if seg.text.startswith("@@") and "blue" in style:
+                            found_blue = True
+                assert found_green, "expected + line styled green"
+                assert found_red, "expected - line styled red"
+                assert found_blue, "expected @@ header styled blue"
+
+
+@pytest.mark.anyio
+async def test_tui_expand_slash_command_writes_stored_content(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    long_content = "\n".join(f"row {i}" for i in range(1, 26))
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "runtime.tool_completed",
+                                tool="shell_exec",
+                                tool_call_id="call-expand",
+                                status="ok",
+                                content=long_content,
+                                display={
+                                    "kind": "shell",
+                                    "title": "Shell",
+                                    "summary": "seq 25",
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                app._handle_slash_command("/expand call-expand")
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+                assert "/expand call-expand" in plain
+                assert "row 25" in plain
+
+
+@pytest.mark.anyio
+async def test_tui_tool_progress_coalesces_same_stream_chunks(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    with patch(
+        "voidcode.tui.app.load_runtime_config",
+        autospec=True,
+        return_value=_mock_runtime_config(),
+    ):
+        with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
+            app = VoidCodeTUI(workspace=Path("."))
+
+            async with app.run_test() as pilot:
+                for chunk_text in ("Hello, ", "world", "!"):
+                    app.on_stream_chunk_received(
+                        StreamChunkReceived(
+                            _make_chunk(
+                                status="running",
+                                event=_runtime_event(
+                                    "runtime.tool_progress",
+                                    tool="shell_exec",
+                                    tool_call_id="call-prog",
+                                    stream="stdout",
+                                    chunk=chunk_text,
+                                ),
+                            )
+                        )
+                    )
+                app.on_stream_chunk_received(
+                    StreamChunkReceived(
+                        _make_chunk(
+                            status="running",
+                            event=_runtime_event(
+                                "runtime.tool_completed",
+                                tool="shell_exec",
+                                tool_call_id="call-prog",
+                                status="ok",
+                                content="done",
+                                display={
+                                    "kind": "shell",
+                                    "title": "Shell",
+                                    "summary": "echo",
+                                },
+                            ),
+                        )
+                    )
+                )
+                app.on_stream_completed(StreamCompleted("completed"))
+                await pilot.pause()
+
+                log = app.query_one("#transcript-log")
+                plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+                assert "Hello, world!" in plain
+                assert "stdout" in plain
+
+
+@pytest.mark.anyio
 async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
     VoidCodeTUI, StreamChunkReceived, _ = app_class
 

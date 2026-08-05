@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from rich.markdown import Markdown
+from rich.syntax import Syntax
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -97,6 +98,10 @@ class VoidCodeTUI(App[int]):
         self._workspace_tui_preferences = load_workspace_tui_preferences(workspace)
         self._effective_preferences = RuntimeTuiPreferences()
         self._tui_preferences = self._global_tui_preferences or RuntimeTuiPreferences()
+        self._pending_tool_progress: dict[str, dict[str, list[str]]] = {}
+        self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
+        self._tool_content_by_call_id: dict[str, str] = {}
+        self._tool_artifact_by_call_id: dict[str, str] = {}
 
         if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
             merged_preferences = config.tui.preferences
@@ -111,7 +116,7 @@ class VoidCodeTUI(App[int]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-layout"):
             with Vertical(id="transcript-column"):
-                yield RichLog(id="transcript-log", markup=False, wrap=True)
+                yield RichLog(id="transcript-log", markup=True, wrap=True)
                 yield Static("", id="current-response")
                 yield Input(placeholder="Ask voidcode...", id="composer-input")
             with VerticalScroll(id="sidebar-column"):
@@ -323,6 +328,12 @@ class VoidCodeTUI(App[int]):
         prompt = event.value.strip()
         if not prompt:
             return
+
+        if prompt.startswith("/"):
+            event.input.value = ""
+            self._handle_slash_command(prompt)
+            return
+
         if self._stream_active or self.pending_request_id is not None:
             return
 
@@ -335,12 +346,69 @@ class VoidCodeTUI(App[int]):
         request = RuntimeRequest(prompt=prompt, allocate_session_id=self.session_id is None)
         self._start_stream(request)
 
+    def _handle_slash_command(self, raw: str) -> None:
+        parts = raw.split(maxsplit=1)
+        command = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if command == "/expand":
+            self._handle_expand(arg)
+            return
+        self.query_one("#transcript-log", RichLog).write(
+            Text(f"Unknown command: {command}", style="bold red")
+        )
+
+    def _handle_expand(self, tool_call_id: str) -> None:
+        log = self.query_one("#transcript-log", RichLog)
+        if not tool_call_id:
+            log.write(Text("Usage: /expand <tool_call_id>", style="bold yellow"))
+            return
+
+        content: str | None = None
+        artifact_id = self._tool_artifact_by_call_id.get(tool_call_id)
+        if artifact_id is not None and self.session_id is not None:
+            try:
+                result = self.runtime.read_tool_output_artifact(
+                    session_id=self.session_id,
+                    tool_call_id=tool_call_id,
+                    limit=10000,
+                )
+            except Exception as exc:
+                logger.error("Failed to read tool output artifact: %s", exc)
+                result = None
+            if isinstance(result, dict):
+                status = result.get("status")
+                candidate = result.get("content")
+                if status == "available" and isinstance(candidate, str):
+                    content = candidate
+
+        if content is None:
+            content = self._tool_content_by_call_id.get(tool_call_id)
+
+        if content is None:
+            log.write(
+                Text(f"✖ No stored output for tool_call_id: {tool_call_id}", style="bold red")
+            )
+            return
+
+        log.write(Text(f"── /expand {tool_call_id} ──", style="bold cyan"))
+        display = self._tool_display_by_call_id.get(tool_call_id)
+        path = self._display_copyable_path(display)
+        kind = self._display_field(display, "kind") or ""
+        if kind in ("read", "search"):
+            syntax = self._build_syntax_for_path(path, content)
+            if syntax is not None:
+                log.write(syntax)
+                return
+        log.write(Text(content))
+
     def _write_user_prompt(self, prompt: str) -> None:
         self.query_one("#transcript-log", RichLog).write(Text(f"User: {prompt}"))
 
     def _write_event_line(self, event: EventEnvelope) -> None:
         if event.event_type not in (
             "graph.tool_request_created",
+            "runtime.tool_started",
+            "runtime.tool_progress",
             "runtime.tool_completed",
             "runtime.approval_requested",
             "runtime.failed",
@@ -349,13 +417,32 @@ class VoidCodeTUI(App[int]):
             return
 
         payload = event.payload or {}
-        tool_name = payload.get("tool", "unknown_tool")
+        raw_tool_name = payload.get("tool", "unknown_tool")
+        tool_name = raw_tool_name if isinstance(raw_tool_name, str) else "unknown_tool"
+        tool_call_id = payload.get("tool_call_id")
+        display = self._extract_display(payload)
 
         if event.event_type == "graph.tool_request_created":
-            text = Text(f"▶ Started tool: {tool_name}", style="bold blue")
-        elif event.event_type == "runtime.tool_completed":
-            text = Text(f"✔ Completed tool: {tool_name}", style="bold green")
-        elif event.event_type == "runtime.approval_requested":
+            text = self._render_tool_request_line(tool_name, display)
+            self.query_one("#transcript-log", RichLog).write(text)
+            return
+
+        if event.event_type == "runtime.tool_started":
+            if isinstance(tool_call_id, str) and display is not None:
+                self._tool_display_by_call_id[tool_call_id] = display
+            text = Text(f"◉ {tool_name}: starting...", style="dim")
+            self.query_one("#transcript-log", RichLog).write(text)
+            return
+
+        if event.event_type == "runtime.tool_progress":
+            self._buffer_tool_progress(payload)
+            return
+
+        if event.event_type == "runtime.tool_completed":
+            self._render_tool_completed(tool_name, payload, display)
+            return
+
+        if event.event_type == "runtime.approval_requested":
             text = Text(f"⚠ Approval requested for tool: {tool_name}", style="bold yellow")
         elif event.event_type == "runtime.approval_resolved":
             decision = payload.get("decision", "unknown")
@@ -368,6 +455,188 @@ class VoidCodeTUI(App[int]):
             text = Text(f"EVENT {event.event_type} source={event.source}", style="dim")
 
         self.query_one("#transcript-log", RichLog).write(text)
+
+    @staticmethod
+    def _extract_display(payload: dict[str, object]) -> dict[str, object] | None:
+        raw = payload.get("display")
+        if isinstance(raw, dict):
+            return cast(dict[str, object], raw)
+        return None
+
+    @staticmethod
+    def _display_field(display: dict[str, object] | None, key: str) -> str | None:
+        if display is None:
+            return None
+        value = display.get(key)
+        return value if isinstance(value, str) and value else None
+
+    @classmethod
+    def _display_copyable_path(cls, display: dict[str, object] | None) -> str | None:
+        if display is None:
+            return None
+        copyable = display.get("copyable")
+        if not isinstance(copyable, dict):
+            return None
+        path = cast(dict[str, object], copyable).get("path")
+        return path if isinstance(path, str) and path else None
+
+    def _render_tool_request_line(
+        self, tool_name: str, display: dict[str, object] | None
+    ) -> Text:
+        title = self._display_field(display, "title")
+        summary = self._display_field(display, "summary")
+        if title and summary:
+            text = Text(f"▶ {title}: {summary}", style="bold blue")
+        elif summary:
+            text = Text(f"▶ {summary}", style="bold blue")
+        else:
+            text = Text(f"▶ Started tool: {tool_name}", style="bold blue")
+        path = self._display_copyable_path(display)
+        if path:
+            text.append(f"\n  {path}", style="dim")
+        return text
+
+    def _buffer_tool_progress(self, payload: dict[str, object]) -> None:
+        tool_call_id = payload.get("tool_call_id")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return
+        chunk = payload.get("chunk")
+        if not isinstance(chunk, str) or not chunk:
+            return
+        stream = payload.get("stream")
+        stream_name = stream if isinstance(stream, str) and stream else "stdout"
+        streams = self._pending_tool_progress.setdefault(tool_call_id, {})
+        buffer = streams.setdefault(stream_name, [])
+        if buffer:
+            buffer[-1] = buffer[-1] + chunk
+        else:
+            buffer.append(chunk)
+
+    def _flush_tool_progress(self, tool_call_id: str | None) -> None:
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            return
+        streams = self._pending_tool_progress.pop(tool_call_id, None)
+        if not streams:
+            return
+        log = self.query_one("#transcript-log", RichLog)
+        for stream_name, chunks in streams.items():
+            body = "".join(chunks).rstrip()
+            if not body:
+                continue
+            style = "dim" if stream_name == "stdout" else "dim red"
+            log.write(Text(f"  ⎿ {stream_name}:", style=style))
+            log.write(Text(body, style=style))
+
+    def _render_tool_completed(
+        self,
+        tool_name: str,
+        payload: dict[str, object],
+        display: dict[str, object] | None,
+    ) -> None:
+        log = self.query_one("#transcript-log", RichLog)
+        tool_call_id = payload.get("tool_call_id")
+        tool_call_id_str = tool_call_id if isinstance(tool_call_id, str) else None
+
+        self._flush_tool_progress(tool_call_id_str)
+
+        if display is None and tool_call_id_str is not None:
+            display = self._tool_display_by_call_id.get(tool_call_id_str)
+
+        status = payload.get("status")
+        is_error = status == "error"
+        header_style = "bold red" if is_error else "bold green"
+        icon = "✖" if is_error else "✔"
+
+        title = self._display_field(display, "title")
+        summary = self._display_field(display, "summary")
+        if title and summary:
+            header = Text(f"{icon} {title}: {summary}", style=header_style)
+        elif summary:
+            header = Text(f"{icon} {summary}", style=header_style)
+        else:
+            header = Text(f"{icon} Completed tool: {tool_name}", style=header_style)
+        path = self._display_copyable_path(display)
+        if path:
+            header.append(f"\n  {path}", style="dim")
+        log.write(header)
+
+        kind = self._display_field(display, "kind") or ""
+        if kind in ("write",):
+            return
+
+        content = payload.get("content")
+        if not isinstance(content, str) or not content:
+            return
+
+        if tool_call_id_str is not None:
+            self._tool_content_by_call_id[tool_call_id_str] = content
+            artifact = payload.get("artifact_id")
+            if isinstance(artifact, str) and artifact:
+                self._tool_artifact_by_call_id[tool_call_id_str] = artifact
+
+        if kind == "edit":
+            self._write_diff_render(log, content)
+            return
+
+        if kind in ("read", "search"):
+            syntax = self._build_syntax_for_path(path, content)
+            if syntax is not None:
+                log.write(syntax)
+                return
+
+        self._write_content_block(log, content, tool_call_id_str)
+
+    @staticmethod
+    def _build_syntax_for_path(path: str | None, content: str) -> Syntax | None:
+        if not path:
+            return None
+        try:
+            lexer = Syntax.guess_lexer(path, code=content)
+        except Exception:
+            return None
+        try:
+            return Syntax(content, lexer, line_numbers=True, theme="monokai")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _write_diff_render(log: RichLog, content: str) -> None:
+        lines = content.splitlines()
+        if not any(line.startswith(("+++", "---", "@@")) for line in lines):
+            log.write(Text(content))
+            return
+        text = Text()
+        for line in lines:
+            if line.startswith("+++"):
+                text.append(line + "\n", style="bold green")
+            elif line.startswith("---"):
+                text.append(line + "\n", style="bold red")
+            elif line.startswith("+"):
+                text.append(line + "\n", style="green")
+            elif line.startswith("-"):
+                text.append(line + "\n", style="red")
+            elif line.startswith("@@"):
+                text.append(line + "\n", style="blue")
+            else:
+                text.append(line + "\n")
+        log.write(text)
+
+    @staticmethod
+    def _write_content_block(log: RichLog, content: str, tool_call_id: str | None) -> None:
+        inline_max_lines = 10
+        preview_head_lines = 5
+        lines = content.splitlines()
+        if len(lines) <= inline_max_lines:
+            log.write(Text(content))
+            return
+        head = "\n".join(lines[:preview_head_lines])
+        log.write(Text(head))
+        remaining = len(lines) - preview_head_lines
+        hint = f"[... {remaining} more lines"
+        if tool_call_id:
+            hint += f", /expand {tool_call_id}"
+        hint += "]"
+        log.write(Text(hint, style="dim"))
 
     def _write_output_line(self, output: str) -> None:
         self.query_one("#transcript-log", RichLog).write(Markdown(output))
