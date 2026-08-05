@@ -70,8 +70,6 @@ class MultiEditTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         raw_path_value = call.arguments.get("path")
-        if raw_path_value is None:
-            raw_path_value = call.arguments.get("filePath")
 
         try:
             args = MultiEditArgs.model_validate(

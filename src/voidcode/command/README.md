@@ -31,7 +31,7 @@ Review $1 with full context: $ARGUMENTS
 
 Templates currently support `$ARGUMENTS` and `$1` through `$9`. Argument splitting uses `shlex` so quoted arguments are preserved.
 
-Command frontmatter may also declare `workflow_mode` and legacy `workflow_preset`. `workflow_mode` is the public selector, while `workflow_preset` stays readable for compatibility with older commands and session metadata. When both are present, they must resolve to the same mode.
+Command frontmatter may declare `workflow_mode`. Unknown modes and removed workflow fields are rejected.
 
 ## Builtin prompt commands
 

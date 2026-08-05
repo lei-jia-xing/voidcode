@@ -140,7 +140,6 @@ from voidcode.runtime.provider_protocol import (
 )
 from voidcode.runtime.question import QuestionResponse
 from voidcode.runtime.service import (
-    BackgroundTaskResult,
     GraphRunRequest,
     RuntimeRequest,
     RuntimeRequestMetadataPayload,
@@ -159,10 +158,6 @@ from voidcode.runtime.task import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
-)
-from voidcode.runtime.workflow import (
-    WorkflowPreset,
-    WorkflowPresetRegistry,
 )
 from voidcode.security.shell_policy import extract_shell_path_candidates
 from voidcode.skills import SkillRegistry
@@ -361,7 +356,7 @@ def _assert_context_window_recomputed(
     assert context_window.original_tool_result_count == 1
 
 
-def _legacy_context_window_policy(**overrides: object) -> ContextWindowPolicy:
+def _context_window_policy(**overrides: object) -> ContextWindowPolicy:
     resolved = {"tokenizer_model": None, **overrides}
     return ContextWindowPolicy(**cast(Any, resolved))
 
@@ -2616,80 +2611,6 @@ def test_runtime_background_task_progress_hooks_skip_result_load_when_no_command
     )
 
 
-def test_runtime_background_lifecycle_hook_uses_workflow_read_only_policy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    marker = tmp_path / "background-hook-ran.txt"
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(
-            hooks=RuntimeHooksConfig(
-                enabled=True,
-                on_background_task_completed=(
-                    (
-                        sys.executable,
-                        "-c",
-                        "from pathlib import Path; Path('background-hook-ran.txt').write_text('bad')",  # noqa: E501
-                    ),
-                ),
-            )
-        ),
-    )
-    supervisor = runtime._background_task_supervisor
-    captured_policies: list[dict[str, object]] = []
-    task = BackgroundTaskState(
-        task=BackgroundTaskRef(id="task-workflow-readonly-hook"),
-        status="completed",
-        request=BackgroundTaskRequestSnapshot(
-            prompt="background readonly hook",
-            parent_session_id="leader-session",
-            metadata={
-                "workflow": {
-                    "read_only_default": True,
-                    "effective": {"mode": "review"},
-                }
-            },
-        ),
-        session_id="child-session",
-        result_available=True,
-    )
-    monkeypatch.setattr(
-        supervisor,
-        "background_task_result",
-        lambda *, task: BackgroundTaskResult(
-            task_id=task.task.id,
-            parent_session_id=task.parent_session_id,
-            child_session_id=task.session_id,
-            status=task.status,
-            result_available=True,
-        ),
-    )
-    original_run_lifecycle_hooks = runtime_background_tasks_module.run_lifecycle_hooks
-
-    def capture_lifecycle_policy(request: Any) -> object:
-        captured_policies.append(
-            {"mode": request.policy.mode, "read_only": request.policy.read_only}
-        )
-        return original_run_lifecycle_hooks(request)
-
-    monkeypatch.setattr(
-        runtime_background_tasks_module,
-        "run_lifecycle_hooks",
-        capture_lifecycle_policy,
-    )
-
-    supervisor.run_background_task_lifecycle_surface(
-        task=task,
-        surface="background_task_completed",
-        session_id="leader-session",
-    )
-
-    assert captured_policies == [{"mode": "review", "read_only": True}]
-    assert marker.exists() is False
-
-
 def test_runtime_background_task_started_hook_runs_outside_queue_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2769,8 +2690,8 @@ def test_runtime_exit_waits_for_background_task_worker(
     runtime.__exit__(None, None, None)
 
     assert worker_finished.is_set()
-    assert runtime._background_task_shutdown_requested is True
-    assert runtime._background_task_threads == {}
+    assert runtime._background_task_supervisor.shutdown_requested is True
+    assert runtime._background_task_supervisor.threads == {}
 
 
 def test_runtime_shutdown_terminalizes_unfinished_background_worker(
@@ -2826,7 +2747,7 @@ def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
         extra_payload: dict[str, object] | None = None,
     ) -> None:
         _ = task, surface, session_id, extra_payload
-        runtime._background_task_shutdown_requested = True
+        runtime._background_task_supervisor.shutdown_requested = True
 
     run_mock = Mock(side_effect=AssertionError("worker must not run after shutdown"))
     cast(Any, supervisor).run_background_task_worker = run_mock
@@ -2839,7 +2760,7 @@ def test_runtime_shutdown_after_mark_running_terminalizes_task_before_worker(
     assert final_task.error == (
         "runtime shutdown requested before delegated worker execution started"
     )
-    assert runtime._background_task_threads == {}
+    assert runtime._background_task_supervisor.threads == {}
     run_mock.assert_not_called()
 
 
@@ -2895,7 +2816,10 @@ def test_runtime_background_task_concurrency_limit_queues_and_drains(tmp_path: P
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=graph,
-        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+        config=RuntimeConfig(
+            background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
     )
 
     first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
@@ -2921,7 +2845,10 @@ def test_runtime_background_task_status_includes_queue_concurrency_observability
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=graph,
-        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+        config=RuntimeConfig(
+            background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
     )
 
     first = runtime.start_background_task(RuntimeRequest(prompt="first background task"))
@@ -4248,7 +4175,7 @@ def test_runtime_rejects_invalid_workflow_mode_before_provider_execution(
     assert all(provider.requests == [] for provider in created_providers)
 
 
-def test_runtime_rejects_conflicting_workflow_selectors_before_provider_execution(
+def test_runtime_rejects_removed_workflow_preset_before_provider_execution(
     tmp_path: Path,
 ) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
@@ -4267,13 +4194,13 @@ def test_runtime_rejects_conflicting_workflow_selectors_before_provider_executio
         model_provider_registry=registry,
     )
 
-    with pytest.raises(RuntimeRequestError, match="workflow_mode.*workflow_preset"):
+    with pytest.raises(RuntimeRequestError, match="unsupported request metadata field"):
         _ = runtime.run(
             RuntimeRequest(
                 prompt="hello",
                 metadata=cast(
                     RuntimeRequestMetadataPayload,
-                    {"workflow_mode": "review", "workflow_preset": "implementation"},
+                    {"workflow_preset": "implementation"},
                 ),
             )
         )
@@ -4740,7 +4667,7 @@ def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_
     assert snapshot.operator_guidance == "Inspect the persisted session state."
 
 
-def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permission(
+def test_runtime_denies_divergent_approval_replay_without_fresh_permission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -4767,7 +4694,7 @@ def test_runtime_denies_divergent_legacy_approval_replay_without_fresh_permissio
         "runtime_config": runtime_config_metadata(),
     }
     session = SessionState(
-        session=SessionRef(id="legacy-deny-divergent"),
+        session=SessionRef(id="divergent-deny"),
         status="running",
         turn=1,
         metadata=session_metadata,
@@ -7400,7 +7327,7 @@ def test_runtime_background_task_cancellation_emits_parent_session_event_once(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -9314,7 +9241,7 @@ def test_runtime_rejects_retry_for_non_terminal_background_task(tmp_path: Path) 
         idle_episode_id="child-session:1",
         idle_detected_at_unix_ms=111,
     )
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
 
     with pytest.raises(ValueError, match="requires a failed, cancelled, or interrupted task"):
         runtime.retry_background_task("task-retry-queued")
@@ -9412,7 +9339,10 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     first_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+        config=RuntimeConfig(
+            background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
     )
     parent = first_runtime.run(RuntimeRequest(prompt="parent"))
     store = _private_attr(first_runtime, "_session_store")
@@ -9465,14 +9395,17 @@ def test_runtime_drain_marks_invalid_queued_task_failed_and_continues(
     second_runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(background_task=RuntimeBackgroundTaskConfig(default_concurrency=1)),
+        config=RuntimeConfig(
+            background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
     )
     completed = _wait_for_background_task(second_runtime, "task-after-invalid")
     failed = second_runtime.load_background_task("task-invalid-metadata")
 
     assert failed.status == "failed"
     assert failed.error is not None
-    assert "delegation.mode" in failed.error
+    assert "delegation metadata mode" in failed.error
     assert completed.status == "completed"
 
 
@@ -9509,7 +9442,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -9544,7 +9477,7 @@ def test_runtime_background_task_worker_exits_when_task_is_cancelled_before_star
 
 def test_runtime_background_task_worker_rechecks_cancel_before_dispatch(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -11391,32 +11324,35 @@ def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["missing"]}))
 
 
-def test_runtime_request_workflow_preset_metadata_materializes_workflow_snapshot(
+def test_runtime_request_workflow_mode_materializes_workflow_snapshot(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
     )
     _SkillCapturingStubGraph.last_request = None
 
     response = runtime.run(
         RuntimeRequest(
-            prompt="review workflow preset",
-            session_id="workflow-review-preset",
-            metadata={"workflow_preset": "review"},
+            prompt="review workflow mode",
+            metadata={"workflow_mode": "review"},
         )
     )
 
     assert response.session.status == "completed"
     assert _SkillCapturingStubGraph.last_request is not None
-    assert response.session.metadata["workflow_preset"] == "review"
     assert response.session.metadata["workflow_mode"] == "review"
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     workflow = cast(dict[str, object], runtime_config["workflow"])
-    assert workflow["selected_preset"] == "review"
-    assert workflow["read_only_default"] is True
+    assert workflow["snapshot_version"] == 2
+    assert workflow["mode"] == "review"
+    assert workflow["requested"] == {"workflow_mode": "review"}
 
 
 def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
@@ -11438,8 +11374,10 @@ def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
                 session_id="workflow-forged-fresh",
                 metadata={
                     "workflow": {
-                        "selected_preset": "git",
-                        "read_only_default": False,
+                        "snapshot_version": 2,
+                        "requested": {"workflow_mode": "review"},
+                        "effective": {"mode": "review", "source": "workflow_mode"},
+                        "mode": "review",
                     },
                 },
             )
@@ -11581,20 +11519,10 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             mcp=RuntimeMcpConfig(enabled=True),
             agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode/gpt-5.4")},
             categories={"quick": RuntimeCategoryConfig(model="opencode/gpt-5.4")},
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "scoped": WorkflowPreset(
-                        id="scoped",
-                        default_agent="leader",
-                        category="implementation",
-                        context_transform_refs=("runtime_file_rules",),
-                    )
-                }
-            ),
         ),
     )
 
-    metadata = runtime._runtime_config_metadata(workflow_preset="scoped")
+    metadata = runtime._runtime_config_metadata()
     effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
 
     persisted_keys = runtime_config_materializer_module.PERSISTED_RUNTIME_CONFIG_KEYS
@@ -11619,7 +11547,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         "context_window",
         "lsp",
         "mcp",
-        "workflow",
     } <= set(metadata)
     assert effective.approval_mode == "ask"
     assert effective.permission.read.rules == (("/var/log/**", "allow"), ("*", "ask"))
@@ -11723,7 +11650,7 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("legacy_field", "legacy_value"),
+    ("removed_field", "removed_value"),
     (
         ("workflow_preset", "implementation"),
         ("context_transform_refs", ["runtime_file_rules"]),
@@ -11731,25 +11658,25 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
         ("provider", "openai"),
     ),
 )
-def test_runtime_config_rejects_removed_legacy_persisted_shapes(
+def test_runtime_config_rejects_removed_persisted_shapes(
     tmp_path: Path,
-    legacy_field: str,
-    legacy_value: object,
+    removed_field: str,
+    removed_value: object,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     runtime_config_metadata = runtime._runtime_config_metadata()
-    runtime_config_metadata[legacy_field] = legacy_value
+    runtime_config_metadata[removed_field] = removed_value
 
     with pytest.raises(
         ValueError,
-        match=rf"persisted runtime_config field '{legacy_field}' is not supported",
+        match=rf"persisted runtime_config field '{removed_field}' is not supported",
     ):
         _ = runtime._effective_runtime_config_from_metadata(
             {"runtime_config": runtime_config_metadata}
         )
 
 
-def test_runtime_config_rejects_legacy_top_level_metadata_without_runtime_config(
+def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_config(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
@@ -11763,246 +11690,6 @@ def test_runtime_config_rejects_legacy_top_level_metadata_without_runtime_config
                 "context_transform_refs": ["runtime_file_rules"],
             }
         )
-
-
-def test_runtime_workflow_resume_stable_debug_and_bundle_preserve_persisted_snapshot(
-    tmp_path: Path,
-) -> None:
-    _write_named_skill(
-        tmp_path / ".voidcode" / "skills" / "forced-original",
-        name="forced-original",
-        content="Original forced skill.",
-    )
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            approval_mode="ask",
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            skills=RuntimeSkillsConfig(enabled=True),
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "stable": WorkflowPreset(
-                        id="stable",
-                        default_agent="leader",
-                        category="implementation",
-                        prompt_append="Original append.",
-                        skill_refs=("original-skill",),
-                        force_load_skills=("forced-original",),
-                        hook_preset_refs=("role_reminder",),
-                        permission_policy_ref="original-permission",
-                        tool_policy_ref="original-tools",
-                        verification_guidance="Original verification.",
-                    )
-                }
-            ),
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = initial_runtime.run(
-        RuntimeRequest(
-            prompt="resume snapshot",
-            session_id="workflow-resume-stable",
-            metadata={"workflow_preset": "stable"},
-        )
-    )
-    approval_request_id = str(waiting.events[-1].payload["request_id"])
-    original_runtime_config = cast(dict[str, object], waiting.session.metadata["runtime_config"])
-    original_workflow = cast(dict[str, object], original_runtime_config["workflow"])
-
-    drifted_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            approval_mode="ask",
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            skills=RuntimeSkillsConfig(enabled=True),
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "stable": WorkflowPreset(
-                        id="stable",
-                        default_agent="leader",
-                        category="implementation",
-                        prompt_append="Drifted append.",
-                        skill_refs=("drifted-skill",),
-                        force_load_skills=("forced-drifted",),
-                        permission_policy_ref="drifted-permission",
-                        tool_policy_ref="drifted-tools",
-                        verification_guidance="Drifted verification.",
-                    )
-                }
-            ),
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = drifted_runtime.resume(
-        session_id="workflow-resume-stable",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-    debug_snapshot = drifted_runtime.session_debug_snapshot(session_id="workflow-resume-stable")
-    replay = drifted_runtime.resume("workflow-resume-stable")
-    bundle = drifted_runtime.export_session_bundle(session_id="workflow-resume-stable")
-    bundled_metadata = bundle.sessions[0].metadata
-    bundled_runtime_config = cast(dict[str, object], bundled_metadata["runtime_config"])
-
-    resumed_runtime_config = cast(dict[str, object], resumed.session.metadata["runtime_config"])
-    replay_runtime_config = cast(dict[str, object], replay.session.metadata["runtime_config"])
-    debug_runtime_config = cast(
-        dict[str, object], debug_snapshot.session.metadata["runtime_config"]
-    )
-
-    assert cast(dict[str, object], resumed_runtime_config["workflow"]) == original_workflow
-    assert cast(dict[str, object], replay_runtime_config["workflow"]) == original_workflow
-    assert cast(dict[str, object], debug_runtime_config["workflow"]) == original_workflow
-    assert cast(dict[str, object], bundled_runtime_config["workflow"]) == original_workflow
-    assert original_workflow["prompt_append"] == "Original append."
-    assert original_workflow["skill_refs"] == ["original-skill"]
-    assert original_workflow["force_load_skills"] == ["forced-original"]
-    assert original_workflow["permission_policy_ref"] == "original-permission"
-    assert original_workflow["tool_policy_ref"] == "original-tools"
-    assert original_workflow["verification_guidance"] == "Original verification."
-    assert "Drifted" not in json.dumps(resumed_runtime_config, sort_keys=True)
-
-
-def test_runtime_delegated_workflow_readonly_child_inherits_parent_restrictions(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_AdvisorTaskToolGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
-    )
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="delegate readonly review",
-            session_id="workflow-readonly-parent",
-            metadata={"workflow_preset": "review"},
-        )
-    )
-    tasks = runtime.list_background_tasks_by_parent_session(
-        parent_session_id="workflow-readonly-parent"
-    )
-
-    assert response.output == "delegation started"
-    assert len(tasks) == 1
-    task = runtime.load_background_task(tasks[0].task.id)
-    task_workflow = cast(dict[str, object], task.request.metadata["workflow"])
-    delegated_child = cast(dict[str, object], task_workflow["delegated_child"])
-    terminal_task = _wait_for_background_task(runtime, task.task.id)
-    child_session_id = cast(str, terminal_task.session_id)
-    child_result = runtime.session_result(session_id=child_session_id)
-    child_runtime_config = cast(dict[str, object], child_result.session.metadata["runtime_config"])
-    child_workflow = cast(dict[str, object], child_runtime_config["workflow"])
-    child_capability = cast(
-        dict[str, object], child_result.session.metadata["agent_capability_snapshot"]
-    )
-    child_capability_workflow = cast(dict[str, object], child_capability["workflow"])
-    child_tools = cast(dict[str, object], child_capability["tools"])
-
-    assert task_workflow["selected_preset"] == "review"
-    assert task_workflow["default_agent"] == "advisor"
-    assert task_workflow["read_only_default"] is True
-    assert delegated_child == {
-        "inherited_from_parent": True,
-        "selected_child_preset": "advisor",
-        "override": False,
-        "validation": "narrowed_to_selected_delegated_preset",
-        "policy_enforcement": "audit_metadata_only",
-    }
-    child_delegated = cast(dict[str, object], child_workflow["delegated_child"])
-    assert child_delegated == {
-        "inherited_from_parent": False,
-        "selected_child_preset": "advisor",
-        "override": True,
-        "validation": "narrowed_to_selected_delegated_preset",
-        "policy_enforcement": "audit_metadata_only",
-    }
-    assert child_workflow == child_capability_workflow
-    assert {key: value for key, value in child_workflow.items() if key != "delegated_child"} == {
-        key: value for key, value in task_workflow.items() if key != "delegated_child"
-    }
-    assert cast(dict[str, object], child_runtime_config["agent"])["preset"] == "advisor"
-    assert "write_file" not in cast(list[str], child_tools["effective_names"])
-
-
-def test_runtime_delegated_workflow_disallowed_preset_fails_before_child_execution(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="workflow-disallowed-parent"))
-
-    with pytest.raises(
-        RuntimeRequestError,
-        match=(
-            "request metadata 'workflow_preset' default_agent 'leader' is not allowed for "
-            "delegated child preset 'worker'"
-        ),
-    ):
-        _ = runtime.start_background_task(
-            RuntimeRequest(
-                prompt="child should fail before execution",
-                parent_session_id="workflow-disallowed-parent",
-                metadata={
-                    "workflow_preset": "implementation",
-                    "delegation": {"mode": "background", "category": "quick"},
-                },
-                allocate_session_id=True,
-            )
-        )
-
-    assert (
-        runtime.list_background_tasks_by_parent_session(
-            parent_session_id="workflow-disallowed-parent"
-        )
-        == ()
-    )
-    assert [
-        summary
-        for summary in runtime.list_sessions()
-        if summary.session.parent_id == "workflow-disallowed-parent"
-    ] == []
-
-
-def test_runtime_delegated_workflow_unknown_preset_fails_before_child_execution(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
-    )
-    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="workflow-unknown-parent"))
-
-    with pytest.raises(
-        RuntimeRequestError,
-        match="request metadata 'workflow_preset' references unknown preset: missing",
-    ):
-        _ = runtime.start_background_task(
-            RuntimeRequest(
-                prompt="child should fail before execution",
-                parent_session_id="workflow-unknown-parent",
-                metadata={
-                    "workflow_preset": "missing",
-                    "delegation": {"mode": "background", "category": "quick"},
-                },
-                allocate_session_id=True,
-            )
-        )
-
-    assert (
-        runtime.list_background_tasks_by_parent_session(parent_session_id="workflow-unknown-parent")
-        == ()
-    )
 
 
 def test_runtime_background_product_delegation_fails_before_side_effects(
@@ -12121,214 +11808,6 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     assert {"target": "product", "reason": "delegation_denied_product_top_level_only"} in cast(
         list[dict[str, object]], child_delegation["denied"]
     )
-
-
-def test_runtime_delegated_workflow_child_resume_uses_child_snapshot_after_registry_drift(
-    tmp_path: Path,
-) -> None:
-    initial_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            approval_mode="ask",
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "child-review": WorkflowPreset(
-                        id="child-review",
-                        default_agent="worker",
-                        category="review",
-                        prompt_append="Original child review.",
-                        read_only_default=False,
-                        tool_policy_ref="original-readonly-tools",
-                        verification_guidance="Original child verification.",
-                    )
-                }
-            ),
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-    _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="workflow-child-parent"))
-
-    started = initial_runtime.start_background_task(
-        RuntimeRequest(
-            prompt="child waits",
-            parent_session_id="workflow-child-parent",
-            metadata={
-                "workflow_preset": "child-review",
-                "delegation": {"mode": "background", "subagent_type": "worker"},
-            },
-            allocate_session_id=True,
-        )
-    )
-    running = _wait_for_background_task_session(initial_runtime, started.task.id)
-    child_session_id = cast(str, running.session_id)
-    child_waiting = _wait_for_session_event(
-        initial_runtime,
-        child_session_id,
-        "runtime.approval_requested",
-    )
-    approval_request_id = cast(str, child_waiting.events[-1].payload["request_id"])
-    original_runtime_config = cast(
-        dict[str, object], child_waiting.session.metadata["runtime_config"]
-    )
-    original_workflow = cast(dict[str, object], original_runtime_config["workflow"])
-
-    drifted_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ApprovalThenCaptureSkillGraph(),
-        config=RuntimeConfig(
-            approval_mode="ask",
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "child-review": WorkflowPreset(
-                        id="child-review",
-                        default_agent="worker",
-                        category="review",
-                        prompt_append="Drifted child review.",
-                        read_only_default=False,
-                        tool_policy_ref="drifted-tools",
-                        verification_guidance="Drifted child verification.",
-                    )
-                }
-            ),
-        ),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = drifted_runtime.resume(
-        child_session_id,
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-    replay = drifted_runtime.resume(child_session_id)
-
-    resumed_runtime_config = cast(dict[str, object], resumed.session.metadata["runtime_config"])
-    replay_runtime_config = cast(dict[str, object], replay.session.metadata["runtime_config"])
-    assert cast(dict[str, object], resumed_runtime_config["workflow"]) == original_workflow
-    assert cast(dict[str, object], replay_runtime_config["workflow"]) == original_workflow
-    assert original_workflow["prompt_append"] == "Original child review."
-    assert original_workflow["tool_policy_ref"] == "original-readonly-tools"
-    assert original_workflow["verification_guidance"] == "Original child verification."
-    assert "Drifted" not in json.dumps(resumed_runtime_config, sort_keys=True)
-
-
-def test_runtime_rejects_unknown_workflow_preset_before_execution(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
-    )
-    _SkillCapturingStubGraph.last_request = None
-
-    with pytest.raises(
-        RuntimeRequestError,
-        match="request metadata 'workflow_preset' references unknown preset: missing",
-    ):
-        _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"workflow_preset": "missing"}))
-
-    assert _SkillCapturingStubGraph.last_request is None
-
-
-def test_runtime_request_workflow_preset_preserves_custom_agent_materialization(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="runtime/default",
-            agent=RuntimeAgentConfig(
-                preset="leader",
-                prompt_source="custom_markdown",
-                prompt_materialization={
-                    "profile": "custom-leader",
-                    "version": 1,
-                    "source": "custom_markdown",
-                    "format": "markdown",
-                    "body": "Custom runtime materialization.",
-                },
-            ),
-        ),
-    )
-    _SkillCapturingStubGraph.last_request = None
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="implement",
-            session_id="workflow-precedence",
-            metadata={
-                "workflow_preset": "implementation",
-                "agent": {"preset": "leader", "model": "request/model"},
-            },
-        )
-    )
-
-    assert response.session.status == "completed"
-    assert _SkillCapturingStubGraph.last_request is not None
-    assert response.session.metadata["workflow_preset"] == "implementation"
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    agent = cast(dict[str, object], runtime_config["agent"])
-    assert agent["model"] == "request/model"
-    assert agent["prompt_materialization"] == {
-        "profile": "custom-leader",
-        "version": 1,
-        "source": "custom_markdown",
-        "format": "markdown",
-        "body": "Custom runtime materialization.",
-    }
-
-
-def test_runtime_request_workflow_preset_allows_prompt_materialization_override(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(
-            execution_engine="provider",
-            model="opencode/gpt-5.4",
-            agent=RuntimeAgentConfig(preset="leader"),
-        ),
-    )
-    _SkillCapturingStubGraph.last_request = None
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="implement",
-            session_id="workflow-request-materialization",
-            metadata={
-                "workflow_preset": "implementation",
-                "agent": {
-                    "preset": "leader",
-                    "prompt_materialization": {
-                        "profile": "request-custom",
-                        "version": 1,
-                        "source": "custom_markdown",
-                        "format": "markdown",
-                        "body": "Request materialization.",
-                    },
-                    "prompt_source": "custom_markdown",
-                },
-            },
-        )
-    )
-
-    assert response.session.status == "completed"
-    assert _SkillCapturingStubGraph.last_request is not None
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    agent = cast(dict[str, object], runtime_config["agent"])
-    assert agent["prompt_materialization"] == {
-        "profile": "request-custom",
-        "version": 1,
-        "source": "custom_markdown",
-        "format": "markdown",
-        "body": "Request materialization.",
-    }
 
 
 def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
@@ -15070,7 +14549,7 @@ def test_runtime_distillation_uses_recency_projection_split(tmp_path: Path) -> N
             ToolResult(tool_name="read_file", status="ok", content="content-5", data={"index": 5}),
         ),
         session_metadata={},
-        policy=_legacy_context_window_policy(
+        policy=_context_window_policy(
             max_tool_result_tokens=100,
             continuity_distillation_enabled=True,
             default_tool_result_tokens=None,
@@ -16339,7 +15818,11 @@ def test_runtime_start_work_command_selects_implementation_workflow(tmp_path: Pa
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
         model_provider_registry=registry,
     )
 
@@ -16354,11 +15837,11 @@ def test_runtime_start_work_command_selects_implementation_workflow(tmp_path: Pa
         "raw_arguments": "plan from previous session",
         "original_prompt": "/start-work plan from previous session",
     }
-    assert response.session.metadata["workflow_preset"] == "implementation"
+    assert response.session.metadata["workflow_mode"] == "sustain"
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     workflow = cast(dict[str, object], runtime_config["workflow"])
-    assert workflow["selected_preset"] == "implementation"
-    assert workflow["read_only_default"] is False
+    assert workflow["snapshot_version"] == 2
+    assert workflow["mode"] == "sustain"
 
 
 def test_runtime_start_work_hydrates_plan_artifact_from_session(tmp_path: Path) -> None:
@@ -16439,16 +15922,6 @@ def test_runtime_start_work_uses_resumed_plan_artifact(tmp_path: Path) -> None:
             approval_mode="ask",
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            workflows=WorkflowPresetRegistry(
-                presets={
-                    "review": WorkflowPreset(
-                        id="review",
-                        default_agent="advisor",
-                        category="review",
-                        permission_policy_ref="runtime_default",
-                    )
-                }
-            ),
         ),
         model_provider_registry=registry,
     )
@@ -17435,7 +16908,7 @@ def test_runtime_effective_runtime_config_recovers_provider_fallback_chain(tmp_p
     )
 
 
-def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fallback_as_none(
+def test_runtime_effective_runtime_config_rejects_missing_persisted_fallback_models(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -17468,7 +16941,7 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
         assert isinstance(metadata, dict)
         metadata_dict = cast(dict[str, object], metadata)
         runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
-        runtime_config.pop("provider_fallback", None)
+        runtime_config.pop("fallback_models")
         _ = connection.execute(
             "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
             (
@@ -17491,15 +16964,8 @@ def test_runtime_effective_runtime_config_treats_missing_persisted_provider_fall
             ),
         ),
     )
-    effective = resumed_runtime.effective_runtime_config(session_id="fallback-config-missing-key")
-
-    assert effective.approval_mode == "allow"
-    assert effective.execution_engine == "provider"
-    assert effective.model == "opencode/gpt-5.4"
-    assert effective.provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="opencode/gpt-5.4",
-        fallback_models=("opencode/gpt-5.3", "custom/demo"),
-    )
+    with pytest.raises(ValueError, match="missing required field.*fallback_models"):
+        resumed_runtime.effective_runtime_config(session_id="fallback-config-missing-key")
 
 
 def test_runtime_persists_resolved_provider_snapshot_in_runtime_metadata(tmp_path: Path) -> None:
@@ -18354,7 +17820,7 @@ def test_runtime_resume_emits_skill_binding_mismatch_event_when_checkpoint_bindi
     assert actual_binding["approval_mode"] == "ask"
 
 
-def test_runtime_resume_falls_back_when_skill_snapshot_hash_mismatches_checkpoint(
+def test_runtime_resume_rejects_skill_snapshot_hash_mismatch_with_checkpoint(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -18401,17 +17867,18 @@ def test_runtime_resume_falls_back_when_skill_snapshot_hash_mismatches_checkpoin
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-hash-mismatch",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
+    with pytest.raises(
+        ValueError,
+        match="checkpoint skill snapshot hash does not match session",
+    ):
+        resumed_runtime.resume(
+            session_id="checkpoint-hash-mismatch",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
-    assert resumed.session.status == "completed"
-    assert resumed.output == "done"
 
-
-def test_runtime_resume_falls_back_when_persisted_checkpoint_is_missing(tmp_path: Path) -> None:
+def test_runtime_resume_rejects_missing_persisted_checkpoint(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
@@ -18440,14 +17907,12 @@ def test_runtime_resume_falls_back_when_persisted_checkpoint_is_missing(tmp_path
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-fallback-session",
-        approval_request_id=approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert resumed.output == "done"
+    with pytest.raises(ValueError, match="persisted resume checkpoint is required"):
+        resumed_runtime.resume(
+            session_id="checkpoint-fallback-session",
+            approval_request_id=approval_request_id,
+            approval_decision="allow",
+        )
 
 
 def test_runtime_resume_rejects_persisted_checkpoint_json_is_corrupt(
@@ -18795,141 +18260,6 @@ def test_runtime_answer_question_rejects_checkpoint_kind_mismatch(tmp_path: Path
             question_request_id=question_request_id,
             responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
         )
-
-
-def test_runtime_resume_fallback_keeps_successful_tool_results_with_null_error(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-null-error-session"))
-    first_approval_request_id = str(waiting.events[-1].payload["request_id"])
-
-    second_waiting = runtime.resume(
-        session_id="checkpoint-null-error-session",
-        approval_request_id=first_approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert second_waiting.session.status == "waiting"
-    second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = NULL WHERE session_id = ?",
-            ("checkpoint-null-error-session",),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-null-error-session",
-        approval_request_id=second_approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert resumed.output == "done"
-
-
-def test_runtime_resume_fallback_preserves_successful_null_tool_content(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-
-    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="checkpoint-null-content-session"))
-    first_approval_request_id = str(waiting.events[-1].payload["request_id"])
-    second_waiting = runtime.resume(
-        session_id="checkpoint-null-content-session",
-        approval_request_id=first_approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert second_waiting.session.status == "waiting"
-    second_approval_request_id = str(second_waiting.events[-1].payload["request_id"])
-    alpha_tool_sequence = next(
-        event.sequence
-        for event in second_waiting.events
-        if event.event_type == "runtime.tool_completed" and event.payload.get("path") == "alpha.txt"
-    )
-
-    database_path = sessions_db_path()
-    connection = sqlite3.connect(database_path)
-    try:
-        _ = connection.execute(
-            "UPDATE sessions SET resume_checkpoint_json = NULL WHERE session_id = ?",
-            ("checkpoint-null-content-session",),
-        )
-        _ = connection.execute(
-            (
-                "UPDATE session_events SET payload_json = ? "
-                "WHERE session_id = ? AND event_type = ? AND sequence = ?"
-            ),
-            (
-                json.dumps(
-                    {
-                        "tool": "write_file",
-                        "status": "ok",
-                        "content": None,
-                        "error": None,
-                        "path": "alpha.txt",
-                    },
-                    sort_keys=True,
-                ),
-                "checkpoint-null-content-session",
-                "runtime.tool_completed",
-                alpha_tool_sequence,
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    resumed_runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_MultiStepStubGraph(),
-        config=RuntimeConfig(approval_mode="ask"),
-        permission_policy=PermissionPolicy(mode="ask"),
-    )
-    resumed = resumed_runtime.resume(
-        session_id="checkpoint-null-content-session",
-        approval_request_id=second_approval_request_id,
-        approval_decision="allow",
-    )
-
-    assert resumed.session.status == "completed"
-    assert resumed.output == "done"
-    alpha_tool_events = [
-        event
-        for event in resumed.events
-        if event.event_type == "runtime.tool_completed" and event.payload.get("path") == "alpha.txt"
-    ]
-    assert alpha_tool_events[-1].payload["content"] is None
-    persisted = resumed_runtime.resume("checkpoint-null-content-session")
-    tool_completed_events = [
-        event for event in persisted.events if event.event_type == "runtime.tool_completed"
-    ]
-    assert tool_completed_events[0].payload["content"] is None
 
 
 @pytest.mark.parametrize(
@@ -20959,7 +20289,7 @@ def test_runtime_executes_background_task_cancelled_hook_for_queued_cancel(
             )
         ),
     )
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(

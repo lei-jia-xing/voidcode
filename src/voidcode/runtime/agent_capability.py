@@ -23,12 +23,41 @@ def validate_agent_capability_snapshot(
             "unsupported agent_capability_snapshot snapshot_version: "
             f"{version!r}; expected {AGENT_CAPABILITY_SNAPSHOT_VERSION!r}"
         )
-    tools = snapshot.get("tools")
-    if not isinstance(tools, dict):
+    object_fields = (
+        "precedence",
+        "agent",
+        "prompt",
+        "tools",
+        "skills",
+        "hooks",
+        "mcp",
+        "delegation",
+        "workflow",
+        "runtime",
+        "execution",
+    )
+    for field in object_fields:
+        if not isinstance(snapshot.get(field), dict):
+            raise AgentCapabilitySnapshotVersionError(
+                f"agent_capability_snapshot v2 requires a {field} object"
+            )
+    tools = cast(dict[str, object], snapshot["tools"])
+    required_tool_fields = {
+        "manifest_allowlist",
+        "request_allowlist",
+        "request_default",
+        "builtin_tools_enabled",
+        "builtin_tool_names",
+        "effective_names",
+        "generation",
+    }
+    missing_tool_fields = sorted(required_tool_fields - tools.keys())
+    if missing_tool_fields:
         raise AgentCapabilitySnapshotVersionError(
-            "agent_capability_snapshot v2 requires a tools object"
+            "agent_capability_snapshot v2 tools is missing required fields: "
+            f"{missing_tool_fields!r}"
         )
-    generation = cast(dict[str, object], tools).get("generation")
+    generation = tools["generation"]
     if not isinstance(generation, str) or not generation:
         raise AgentCapabilitySnapshotVersionError(
             "agent_capability_snapshot v2 requires tools.generation"

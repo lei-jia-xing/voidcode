@@ -29,7 +29,7 @@ from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.protocol import (
-    ModelProvider,
+    ModelTurnProvider,
     ProviderAssembledContext,
     ProviderContextSegment,
     ProviderContextSegmentLike,
@@ -72,7 +72,7 @@ class _StubAssembledContext:
     metadata: dict[str, object]
 
 
-def _assembled_from_legacy(
+def _assembled_context(
     *,
     prompt: str,
     tool_results: tuple[ToolResult, ...],
@@ -163,7 +163,7 @@ def _build_turn_request(
 ) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt="read sample.txt",
             tool_results=tool_results,
             context_window=_StubContextWindow(prompt="read sample.txt", tool_results=tool_results),
@@ -184,7 +184,7 @@ def _build_turn_request(
 def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt="summarize sample.txt",
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -212,7 +212,7 @@ def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
 def _build_turn_request_with_continuity(*, model_name: str) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt="summarize sample.txt",
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -396,7 +396,7 @@ _LAST_REQUEST_PAYLOAD: dict[str, object] = {}
 def test_provider_adapter_stream_turn_emits_happy_path_chunks(
     monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
-    provider: ModelProvider,
+    provider: ModelTurnProvider,
 ) -> None:
     turn_provider = provider.turn_provider()
     assert isinstance(turn_provider, StreamableTurnProvider)
@@ -431,7 +431,7 @@ def test_provider_adapter_wraps_internal_tool_property_schema(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -485,7 +485,7 @@ def test_provider_adapter_wraps_property_schema_with_description_argument(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -533,7 +533,7 @@ def test_provider_adapter_wraps_task_tool_description_argument(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -589,7 +589,7 @@ def test_provider_adapter_preserves_object_schema_without_explicit_type(
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -652,7 +652,7 @@ def test_provider_adapter_preserves_object_schema_without_explicit_type(
 def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_error(
     monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
-    provider: ModelProvider,
+    provider: ModelTurnProvider,
 ) -> None:
     turn_provider = provider.turn_provider()
     assert isinstance(turn_provider, StreamableTurnProvider)
@@ -681,7 +681,7 @@ def test_provider_adapter_stream_turn_maps_http_error_to_provider_execution_erro
 def test_provider_adapter_propose_turn_returns_text_output(
     monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
-    provider: ModelProvider,
+    provider: ModelTurnProvider,
 ) -> None:
     turn_provider: TurnProvider = provider.turn_provider()
 
@@ -784,7 +784,7 @@ def test_provider_adapter_stream_turn_consumes_trailing_usage_chunk(
 def test_provider_adapter_injects_applied_skills_into_system_messages(
     monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
-    provider: ModelProvider,
+    provider: ModelTurnProvider,
 ) -> None:
     turn_provider: TurnProvider = provider.turn_provider()
 
@@ -825,7 +825,7 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
     provider = provider.turn_provider()
     request = _build_turn_request_with_skill(model_name="openai")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -873,7 +873,7 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
 def test_provider_adapter_injects_continuity_summary_into_system_messages(
     monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
-    provider: ModelProvider,
+    provider: ModelTurnProvider,
 ) -> None:
     turn_provider: TurnProvider = provider.turn_provider()
 
@@ -915,7 +915,7 @@ def test_provider_adapter_omits_continuity_message_without_summary_text(
     provider = provider.turn_provider()
     request = _build_turn_request(model_name="openai")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=_StubContextWindow(
@@ -956,7 +956,7 @@ def test_provider_adapter_includes_tool_result_context(
     request = _build_turn_request(model_name="openai")
     tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1033,7 +1033,7 @@ def test_provider_adapter_includes_truncated_tool_reference_without_full_output(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1090,7 +1090,7 @@ def test_provider_adapter_sanitizes_tool_arguments_and_inline_blobs(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1161,7 +1161,7 @@ def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1221,7 +1221,7 @@ def test_provider_adapter_preserves_truncated_safe_argument_previews(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1287,7 +1287,7 @@ def test_provider_adapter_preserves_custom_metadata_shaped_arguments(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1335,7 +1335,7 @@ def test_provider_adapter_includes_tool_result_errors(
         ToolResult(tool_name="read_file", status="error", error="sample.txt not found"),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1393,7 +1393,7 @@ def test_provider_adapter_preserves_tool_call_id_and_arguments_in_tool_history(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1458,7 +1458,7 @@ def test_opencode_go_openai_compatible_provider_uses_tool_call_pairing(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1527,7 +1527,7 @@ def test_opencode_go_openai_compatible_provider_sanitizes_tool_messages(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1583,7 +1583,7 @@ def test_opencode_go_mimo_preserves_standard_tool_pairing_with_model_metadata(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1639,7 +1639,7 @@ def test_opencode_go_deepseek_reinjects_reasoning_content_for_tool_history(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1693,7 +1693,7 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1735,7 +1735,7 @@ def test_provider_adapter_synthetic_tool_feedback_policy_is_provider_agnostic(
 def test_opencode_zen_provider_sends_raw_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = OpenCodeModelProvider().turn_provider()
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt="read sample.txt",
             tool_results=(),
             context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
@@ -1785,7 +1785,7 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -1830,7 +1830,7 @@ def test_provider_adapter_sanitizes_provider_tool_schema_and_decodes_runtime_too
     provider = LiteLLMBackendSingleAgentProvider(name="deepseek", config=None)
     request = _build_turn_request(model_name="deepseek")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -1956,7 +1956,7 @@ def test_provider_adapter_caps_long_sanitized_tool_names_to_provider_limit(
     long_tool_name = "mcp/" + "very-long-server-name-" * 3 + "tool/" + "search-github-results-" * 2
     request = _build_turn_request(model_name="deepseek")
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=request.tool_results,
             context_window=request.context_window,
@@ -2029,7 +2029,7 @@ def test_deepseek_provider_reinjects_reasoning_content_for_tool_history(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt="build the triangle app",
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -2083,7 +2083,7 @@ def test_deepseek_provider_falls_back_to_blank_reasoning_content_for_tool_histor
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt="build the triangle app",
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -2132,7 +2132,7 @@ def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -2188,7 +2188,7 @@ def test_provider_adapter_infers_tool_feedback_from_mapped_model_alias(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -2241,7 +2241,7 @@ def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -2296,7 +2296,7 @@ def test_provider_adapter_logs_bounded_request_diagnostics(
         ),
     )
     request = ProviderTurnRequest(
-        assembled_context=_assembled_from_legacy(
+        assembled_context=_assembled_context(
             prompt=request.prompt,
             tool_results=tool_results,
             context_window=_StubContextWindow(
@@ -2621,7 +2621,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
 
     result = provider.propose_turn(
         ProviderTurnRequest(
-            assembled_context=_assembled_from_legacy(
+            assembled_context=_assembled_context(
                 prompt="read sample.txt",
                 tool_results=(),
                 context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
@@ -2698,7 +2698,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
     events = list(
         turn_provider.stream_turn(
             ProviderTurnRequest(
-                assembled_context=_assembled_from_legacy(
+                assembled_context=_assembled_context(
                     prompt="read README.md",
                     tool_results=(),
                     context_window=_StubContextWindow(prompt="read README.md", tool_results=()),
@@ -3418,7 +3418,7 @@ def test_litellm_backend_marks_debug_enabled_without_private_hook(
 def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     monkeypatch: pytest.MonkeyPatch,
     provider_name: str,
-    provider: ModelProvider,
+    provider: ModelTurnProvider,
 ) -> None:
     turn_provider: TurnProvider = provider.turn_provider()
 

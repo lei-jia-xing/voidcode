@@ -60,7 +60,7 @@ runtime 可以从两个位置看到 agent hook preset refs：
 1. builtin manifest refs 与 runtime config refs 都只能引用 catalog 中存在的 preset；
 2. runtime 会把 resolved preset snapshot 持久化到 session metadata 或 provider context，但不能让 agent 层决定执行时机；
 3. materialized guidance 只能收窄或提醒角色行为，不能扩大 tool allowlist、permission 或 delegation budget；
-4. replay 应展示历史 truth，不能用新的 hook preset catalog 重新解释旧 session；
+4. replay 应展示已持久化的 session truth，不能用新的 hook preset catalog 重新解释它；
 5. 如果未来支持用户自定义 hook preset，必须先定义独立 schema 与 precedence，不能复用 formatter preset 命名空间。
 
 ## Runtime Harness Policy hook semantics

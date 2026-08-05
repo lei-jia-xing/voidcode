@@ -21,8 +21,10 @@ def plan_state_from_metadata(
     error: str | None = None,
 ) -> dict[str, object] | None:
     existing_plan_state = metadata.get("plan_state")
-    if not isinstance(existing_plan_state, dict):
+    if existing_plan_state is None:
         return None
+    if not isinstance(existing_plan_state, dict):
+        raise ValueError("persisted plan_state must be an object")
     plan_state: dict[str, object] = dict(cast(dict[str, object], existing_plan_state))
 
     if status is not None:
@@ -51,11 +53,9 @@ def session_with_context_window_payload_metadata(
     context_window_payload: dict[str, object],
 ) -> SessionState:
     raw_runtime_state = session.metadata.get("runtime_state")
-    runtime_state = (
-        dict(cast(dict[str, object], raw_runtime_state))
-        if isinstance(raw_runtime_state, dict)
-        else {}
-    )
+    if raw_runtime_state is not None and not isinstance(raw_runtime_state, dict):
+        raise ValueError("persisted runtime_state must be an object")
+    runtime_state = dict(cast(dict[str, object], raw_runtime_state or {}))
     continuity_payload_raw = context_window_payload.get("continuity_state")
     continuity_payload = (
         cast(dict[str, object], continuity_payload_raw)

@@ -85,27 +85,6 @@ def test_tool_scope_resolver_preserves_shell_for_command_level_classification() 
     assert "write_file" not in scoped.tools
 
 
-def test_tool_scope_resolver_honors_workflow_read_only_default_and_mode() -> None:
-    resolver = RuntimeToolScopeResolver(memory_enabled=True)
-    metadata = {
-        "workflow": {
-            "read_only_default": True,
-            "effective": {"mode": "review"},
-        }
-    }
-
-    denial = resolver.denial(
-        _registry(),
-        agent=None,
-        metadata=metadata,
-        tool_name="write_file",
-    )
-
-    assert denial is not None
-    assert denial.mode == "review"
-    assert denial.read_only is True
-
-
 def test_tool_scope_resolver_exposes_memory_only_in_explicit_memory_context() -> None:
     resolver = RuntimeToolScopeResolver(memory_enabled=True)
 

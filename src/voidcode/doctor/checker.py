@@ -249,7 +249,7 @@ class LspServerChecker:
             )
 
         if shutil.which(executable) is not None:
-            preset_id = self._preset.id if hasattr(self._preset, "id") else None
+            preset_id = self._preset.id
             if preset_id == self._server_name:
                 preset_id = None
             return CapabilityCheckResult(
@@ -304,8 +304,7 @@ class McpServerChecker:
                 details={
                     "server_name": self._server_name,
                     "transport": self._config.transport,
-                    "scope": getattr(self._config, "scope", "runtime"),
-                    "url": getattr(self._config, "url", None),
+                    "url": self._config.url,
                 },
             )
         if not command:
@@ -316,7 +315,6 @@ class McpServerChecker:
                 details={
                     "server_name": self._server_name,
                     "transport": self._config.transport,
-                    "scope": getattr(self._config, "scope", "runtime"),
                 },
                 error_message=f"MCP server '{self._server_name}' has no command configured",
             )
@@ -329,7 +327,6 @@ class McpServerChecker:
                 check_type=DoctorCheckType.MCP_SERVER.value,
                 details={
                     "server_name": self._server_name,
-                    "scope": getattr(self._config, "scope", "runtime"),
                 },
                 error_message=f"MCP server '{self._server_name}' has empty command",
             )
@@ -343,7 +340,6 @@ class McpServerChecker:
                     "server_name": self._server_name,
                     "command": redact_mcp_command(command),
                     "transport": self._config.transport,
-                    "scope": getattr(self._config, "scope", "runtime"),
                     "has_env": bool(self._config.env),
                 },
             )
@@ -356,7 +352,6 @@ class McpServerChecker:
                 "server_name": self._server_name,
                 "command": redact_mcp_command(command),
                 "transport": self._config.transport,
-                "scope": getattr(self._config, "scope", "runtime"),
             },
             error_message=(
                 f"MCP server '{self._server_name}' command '{executable}' not found in PATH. "

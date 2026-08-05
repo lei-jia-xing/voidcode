@@ -293,6 +293,5 @@ lifecycle hook 的 payload 通过环境变量注入，当前约定如下：
 - `VOIDCODE_HOOK_SURFACE`：当前 surface 名称
 - `VOIDCODE_SESSION_ID`：触发该 hook 的 session id
 - `VOIDCODE_HOOK_PAYLOAD_JSON`：完整、权威、无损的 payload JSON
-- `VOIDCODE_*` convenience env：把 payload key 做大写与非字母数字转 `_` 后得到的兼容变量
 
-其中 `VOIDCODE_HOOK_PAYLOAD_JSON` 是权威 contract；逐字段 `VOIDCODE_*` 变量仅作为兼容与易用镜像，可能出现 lossy key transform。
+hook payload 只通过 `VOIDCODE_HOOK_PAYLOAD_JSON` 传递，不生成逐字段环境变量镜像。

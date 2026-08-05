@@ -11,6 +11,7 @@ from typing import Protocol, TextIO, cast
 from uuid import uuid4
 
 from .. import __version__
+from ..runtime.active_session import ActiveRunInterruptResult
 from ..runtime.contracts import (
     RuntimeRequest,
     RuntimeStreamChunk,
@@ -42,7 +43,7 @@ class AcpRuntime(Protocol):
         *,
         run_id: str | None = None,
         reason: str | None = None,
-    ) -> object: ...
+    ) -> ActiveRunInterruptResult: ...
 
 
 @dataclass(slots=True)
@@ -322,18 +323,12 @@ class StdioAcpServer:
             and binding.active_run_id is not None
         )
         if can_cancel_runtime:
-            cancel_session = getattr(self.runtime, "cancel_session", None)
-            if callable(cancel_session):
-                result = cancel_session(
-                    binding.runtime_session_id,
-                    run_id=binding.active_run_id,
-                    reason="acp session/cancel",
-                )
-                as_payload = getattr(result, "as_payload", None)
-                if callable(as_payload):
-                    cancel_payload = cast(dict[str, object], as_payload())
-                elif isinstance(result, dict):
-                    cancel_payload = cast(dict[str, object], result)
+            result = self.runtime.cancel_session(
+                binding.runtime_session_id,
+                run_id=binding.active_run_id,
+                reason="acp session/cancel",
+            )
+            cancel_payload = result.as_payload()
         interrupted = (
             bool(cancel_payload.get("interrupted")) if cancel_payload is not None else False
         )

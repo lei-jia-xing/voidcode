@@ -479,6 +479,20 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
 
 
+def test_injected_graph_skips_eager_default_remote_mcp_discovery(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
+        graph=_StubGraph(),
+    )
+    effective_config = runtime._effective_runtime_config_from_metadata(None)
+
+    assert runtime._should_skip_mcp_startup_for_request(
+        request_metadata={},
+        effective_config=effective_config,
+    )
+
+
 def test_disabled_memory_runtime_does_not_expose_memory_tools(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -582,7 +596,7 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
         graph=_ToolCallGraph(
             ToolCall(
                 tool_name="read_file",
-                arguments={"path": "sample.txt"},
+                arguments={"filePath": "sample.txt"},
             )
         ),
         config=RuntimeConfig(
@@ -623,7 +637,7 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
             "outcome": "skipped",
             "mode": "plan",
             "read_only": True,
-            "reason": "read-only runtime policy denies shell commands classified as unknown",
+            "reason": "read-only runtime policy skips executable hook commands",
         },
     }
 
@@ -1252,6 +1266,7 @@ def test_runtime_replay_keeps_local_capability_snapshot_after_source_drift(
     [
         {"snapshot_version": 1, "tools": {}},
         {"snapshot_version": 2, "tools": {}},
+        {"snapshot_version": 2, "tools": {"generation": "materialization:test"}},
     ],
 )
 def test_runtime_replay_rejects_non_current_capability_snapshot(
@@ -1345,21 +1360,17 @@ def test_local_custom_tool_provider_rejects_null_input_schema_type(tmp_path: Pat
         ).provide_tools()
 
 
-def test_local_custom_tool_provider_normalizes_missing_input_schema_type(tmp_path: Path) -> None:
+def test_local_custom_tool_provider_rejects_missing_input_schema_type(tmp_path: Path) -> None:
     manifest = _write_local_tool_manifest(tmp_path)
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload["input_schema"] = {"properties": {"message": {"type": "string"}}}
     manifest.write_text(json.dumps(payload), encoding="utf-8")
 
-    tool = LocalCustomToolProvider(
-        workspace=tmp_path,
-        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
-    ).provide_tools()[0]
-
-    assert tool.definition.input_schema == {
-        "type": "object",
-        "properties": {"message": {"type": "string"}},
-    }
+    with pytest.raises(ValueError, match="input_schema.type must be 'object'"):
+        _ = LocalCustomToolProvider(
+            workspace=tmp_path,
+            config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+        ).provide_tools()
 
 
 class _LocalToolGraph:

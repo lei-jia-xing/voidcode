@@ -83,8 +83,8 @@ class McpConfigState:
         if config is None:
             return cls()
         return cls(
-            configured_enabled=bool(getattr(config, "enabled", None)),
-            servers=dict(getattr(config, "servers", None) or {}),
+            configured_enabled=config.enabled,
+            servers=dict(config.servers or {}),
         )
 
 
@@ -147,6 +147,15 @@ class McpManager(Protocol):
     def drain_events(self) -> tuple[McpRuntimeEvent, ...]: ...
 
     def retry_connections(self, *, workspace: Any) -> None: ...
+
+    def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]: ...
+
+    def cleanup_idle_session_servers(
+        self,
+        *,
+        max_idle_seconds: float,
+        active_session_ids: set[str] | None = None,
+    ) -> tuple[McpRuntimeEvent, ...]: ...
 
 
 # Constants

@@ -2527,7 +2527,7 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
                 "provider_stream": True,
                 "max_steps": 6,
                 "skills": ["demo"],
-                "workflow_preset": "review",
+                "workflow_mode": "review",
             }
             yield runtime_stream_chunk(
                 kind="event",
@@ -2569,7 +2569,7 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
                     "provider_stream": True,
                     "max_steps": 6,
                     "skills": ["demo"],
-                    "workflow_preset": "review",
+                    "workflow_mode": "review",
                 },
             }
         ).encode("utf-8"),
@@ -3864,7 +3864,7 @@ def test_transport_allows_parent_session_while_parent_stream_request_is_active(
     _, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     service_module = importlib.import_module("voidcode.runtime.service")
-    active_registry = service_module._ACTIVE_SESSION_REGISTRY
+    active_registry = service_module.ACTIVE_SESSION_REGISTRY
 
     app = create_runtime_app(
         workspace=tmp_path,

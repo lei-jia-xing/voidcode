@@ -176,7 +176,8 @@ def _build_copyable(
         return payload if payload else None
 
     # Path-based tools
-    path = _first_primitive(arguments, "filePath", "path")
+    path_key = "filePath" if tool_name in {"read_file", "lsp"} else "path"
+    path = _first_primitive(arguments, path_key)
     if path is not None:
         payload["path"] = path
 
@@ -249,8 +250,8 @@ def build_tool_display(
             copyable = {"path": path}
 
     elif tool_name in {"edit", "multi_edit", "apply_patch", "ast_grep_replace", "format_file"}:
-        path = _first_primitive(arguments, "filePath", "path")
-        file_path_label = _first_primitive(arguments, "filePath", "path")
+        path = _first_primitive(arguments, "path")
+        file_path_label = _first_primitive(arguments, "path")
         edit_count = 0
         if result_data is not None:
             raw_edits = result_data.get("edit_count")
@@ -262,7 +263,7 @@ def build_tool_display(
             summary = file_path_label
         else:
             summary = "Edit"
-        args = _extract_primitive_args(arguments, "filePath", "path")
+        args = _extract_primitive_args(arguments, "path")
         if path:
             copyable = {"path": path}
 
@@ -300,14 +301,14 @@ def build_tool_display(
         args = _extract_primitive_args(arguments, "task_id")
 
     elif tool_name == "background_cancel":
-        task_id = _first_primitive(arguments, "taskId", "task_id")
+        task_id = _first_primitive(arguments, "taskId")
         summary = task_id if task_id else title
-        args = _extract_primitive_args(arguments, "taskId", "task_id")
+        args = _extract_primitive_args(arguments, "taskId")
 
     elif tool_name == "skill":
-        skill_name = _first_primitive(arguments, "name", "skill")
+        skill_name = _first_primitive(arguments, "name")
         summary = skill_name if skill_name else "Skill"
-        args = _extract_primitive_args(arguments, "name", "skill")
+        args = _extract_primitive_args(arguments, "name")
 
     elif tool_name == "question":
         header = _first_primitive(arguments, "header")
@@ -361,36 +362,34 @@ def build_tool_display(
 
 def build_tool_status(
     tool_name: str,
-    tool_call_id: str | None,
+    tool_call_id: str,
     *,
     phase: str,
     status: str,
-    display: dict[str, object] | None = None,
+    display: dict[str, object],
 ) -> dict[str, object]:
     """Build an additive ``ToolStatusPayload`` for a tool event.
 
     Args:
         tool_name: The runtime-resolved tool name.
-        tool_call_id: The invocation ID (may be None for deterministic).
+        tool_call_id: The invocation ID.
         phase: Lifecycle phase (``"requested"``, ``"running"``,
                ``"completed"``, ``"failed"``).
         status: Execution status (``"pending"``, ``"running"``,
                 ``"completed"``, ``"failed"``).
-        display: Optional ``ToolDisplay`` to nest inside ``tool_status``.
+        display: ``ToolDisplay`` to nest inside ``tool_status``.
 
     Returns:
         A dict conforming to the ``ToolStatusPayload`` schema.
     """
     payload: dict[str, object] = {
         "tool_name": tool_name,
+        "invocation_id": tool_call_id,
         "phase": phase,
         "status": status,
     }
-    if tool_call_id is not None:
-        payload["invocation_id"] = tool_call_id
-    if display is not None:
-        label = cast(str, display.get("summary", ""))
-        if label:
-            payload["label"] = label
-        payload["display"] = display
+    label = cast(str, display.get("summary", ""))
+    if label:
+        payload["label"] = label
+    payload["display"] = display
     return payload

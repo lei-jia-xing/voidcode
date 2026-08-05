@@ -716,7 +716,6 @@ class RuntimeRunLoopCoordinator:
                 if isinstance(partial_result, ToolResult):
                     capped_partial = cap_tool_result_output(
                         partial_result,
-                        workspace=runtime._workspace,
                         session_id=session.session.id,
                         tool_call_id=tool_call_id,
                     )
@@ -851,7 +850,6 @@ class RuntimeRunLoopCoordinator:
         sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
         tool_result = cap_tool_result_output(
             tool_result,
-            workspace=runtime._workspace,
             session_id=session.session.id,
             tool_call_id=tool_call_id,
         )
@@ -2032,7 +2030,6 @@ class RuntimeRunLoopCoordinator:
                     if isinstance(partial_result, ToolResult):
                         capped_partial = cap_tool_result_output(
                             partial_result,
-                            workspace=runtime._workspace,
                             session_id=session.session.id,
                             tool_call_id=tool_call_id,
                         )
@@ -2196,7 +2193,6 @@ class RuntimeRunLoopCoordinator:
             sanitized_arguments = sanitize_tool_arguments(dict(plan_tool_call.arguments))
             tool_result = cap_tool_result_output(
                 tool_result,
-                workspace=runtime._workspace,
                 session_id=session.session.id,
                 tool_call_id=tool_call_id,
             )

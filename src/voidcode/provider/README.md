@@ -80,7 +80,7 @@ VoidCode 遵循严格的优先级阶梯来确定最终生效的模型和供应�
 
 | Provider | 配置 Key | 默认 Base URL | 默认环境变量 |
 | :--- | :--- | :--- | :--- |
-| **GLM** (智谱 AI) | `glm` | `https://open.bigmodel.cn/api/paas/v4` | `GLM_API_KEY` |
+| **GLM** (智谱 AI) | `glm` | `https://open.bigmodel.cn/api/paas/v4` | `ZAI_API_KEY` / `ZHIPU_API_KEY` |
 | **MiniMax** | `minimax` | `https://api.minimax.io` | `MINIMAX_API_KEY` |
 | **Kimi** (Moonshot AI) | `kimi` | `https://api.moonshot.ai` | `KIMI_API_KEY` |
 | **OpenCode Go** | `opencode-go` | `https://opencode.ai/zen/go` | `OPENCODE_API_KEY` |
@@ -124,7 +124,7 @@ VoidCode 遵循严格的优先级阶梯来确定最终生效的模型和供应�
 
 OpenCode Go 的用户可见模型引用始终保持 `opencode-go/<model-id>`，例如
 `opencode-go/glm-5.1`。后端调用 `https://opencode.ai/zen/go/v1` 时只把下游模型名交给
-LiteLLM，并按 OpenCode Go 模型族选择兼容 SDK 适配器：
+LiteLLM，并按 OpenCode Go 模型族选择对应 SDK 适配器：
 
 - GLM / Kimi / MiMo：OpenAI-compatible chat completions
 - MiniMax M2.5 / M2.7：Anthropic-compatible messages
@@ -166,7 +166,7 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id
 
 - 使用 `providers.custom.<provider_name>` 定义任意自定义 provider（名称必须不包含 `/`）。
 - `providers.custom.<provider_name>` 不能与内置 provider 名称冲突（包括 `openai` / `anthropic` / `google` / `copilot` / `litellm` / `opencode` / `opencode-go` / `deepseek` / `glm` / `grok` / `minimax` / `kimi` / `qwen`）。
-- 对用户可见配置，给真实后端起一个明确名称放在 `providers.custom` 下；LiteLLM 只是内部兼容调用层，不作为推荐的用户配置入口。
+- 对用户可见配置，给真实后端起一个明确名称放在 `providers.custom` 下；LiteLLM 只是内部调用层，不作为推荐的用户配置入口。
 - 每个自定义 provider 都复用 OpenAI-compatible 后端调用路径，支持：
   - `api_key` / `api_key_env_var`
   - `base_url`

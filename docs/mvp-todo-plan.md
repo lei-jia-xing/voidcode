@@ -243,7 +243,7 @@ VoidCode 已经拥有扎实的基础：
 - [x] 为运行时/客户端流式传输编写事件模式文档
 - [x] 为前端/TUI 集成编写 API 契约文档
 - [x] 为运行时/会话设置添加可配置性设计笔记
-- [x] 完成 issue #70 的第一实现切片：为 waiting / terminal session 落地内部 resume checkpoint groundwork，并保持 replay / resume 兼容
+- [x] 完成 issue #70 的第一实现切片：为 waiting / terminal session 落地内部 resume checkpoint groundwork，并验证 replay / resume 连续性
 - [x] 完成 issue #82：定义 retention / compaction / checkpoint invalidation 语义
 - [x] 完成 issue #84：为 cold-session archive / replay strategy 落地后续实现入口
 - [x] 完成 issue #122：为外部工具与运行环境提供 capability doctor，降低首次使用门槛

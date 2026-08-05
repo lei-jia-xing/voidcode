@@ -32,7 +32,6 @@ from ..lsp import LspServerConfigOverride as RuntimeLspServerConfig
 from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..mcp.builtin import get_builtin_mcp_descriptor, list_builtin_mcp_descriptors
 from ..provider import config as provider_config
-from ..skills import SkillRegistry, list_builtin_skills
 from .context_transforms import validate_runtime_context_transform_refs
 from .memory import (
     MemoryConfig,
@@ -52,7 +51,6 @@ from .policy import (
     validate_runtime_policy_config_payload,
 )
 from .task import supported_subagent_categories
-from .workflow import WorkflowPresetRegistry, workflow_presets_from_payload
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
 RuntimeProvidersConfig = provider_config.ProviderConfigs
@@ -122,7 +120,6 @@ _REPO_CONFIG_KEYS = frozenset(
         "agent",
         "agents",
         "categories",
-        "workflows",
     }
 )
 _USER_CONFIG_KEYS = frozenset({"$schema", "tui", "web", "providers"})
@@ -529,7 +526,6 @@ class RuntimeConfig:
     agent: RuntimeAgentConfig | None = None
     agents: Mapping[str, RuntimeAgentConfig] | None = None
     categories: Mapping[str, RuntimeCategoryConfig] | None = None
-    workflows: WorkflowPresetRegistry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,7 +555,6 @@ class RuntimeConfigOverrides:
     agent: RuntimeAgentConfig | None = None
     agents: Mapping[str, RuntimeAgentConfig] | None = None
     categories: Mapping[str, RuntimeCategoryConfig] | None = None
-    workflows: WorkflowPresetRegistry | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,7 +716,6 @@ def load_runtime_config(
         agent=resolved_agent,
         agents=repo_local.agents,
         categories=repo_local.categories,
-        workflows=repo_local.workflows,
     )
 
 
@@ -730,35 +724,6 @@ def _derive_workspace_lsp_config(workspace: Path) -> RuntimeLspConfig | None:
     if not derived_servers:
         return None
     return RuntimeLspConfig(enabled=True, servers=derived_servers)
-
-
-def _discover_runtime_skill_names(
-    workspace: Path,
-    skills: RuntimeSkillsConfig | None,
-) -> tuple[str, ...]:
-    builtin_names = tuple(skill.name for skill in list_builtin_skills())
-    search_paths = skills.paths if skills is not None and skills.paths else None
-    registry = (
-        SkillRegistry.discover(workspace=workspace, search_paths=search_paths)
-        if search_paths is not None
-        else SkillRegistry.discover(workspace=workspace)
-    )
-    return tuple(dict.fromkeys((*builtin_names, *registry.skills)))
-
-
-def _available_agent_mcp_profiles(
-    workspace: Path,
-    *,
-    env: Mapping[str, str],
-    agent_registry: AgentManifestRegistry | None,
-) -> tuple[str, ...]:
-    registry = agent_registry or load_agent_manifest_registry(workspace, env=env)
-    profiles = (
-        manifest.mcp_binding.profile
-        for manifest in registry.list_manifests()
-        if manifest.mcp_binding is not None and manifest.mcp_binding.profile is not None
-    )
-    return tuple(dict.fromkeys(profiles))
 
 
 def _load_repo_local_config(
@@ -861,28 +826,6 @@ def _load_repo_local_config(
     agents = _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
     raw_categories = payload.get("categories")
     categories = _parse_categories_config(raw_categories)
-    raw_workflows = payload.get("workflows")
-    available_skill_names = (
-        _discover_runtime_skill_names(workspace, skills) if raw_workflows is not None else ()
-    )
-    workflows = workflow_presets_from_payload(
-        raw_workflows,
-        field_path="runtime config field 'workflows'",
-        available_skill_names=available_skill_names,
-        available_mcp_profiles=(
-            _available_agent_mcp_profiles(
-                workspace,
-                env=env,
-                agent_registry=agent_registry,
-            )
-            if raw_workflows is not None
-            else ()
-        ),
-        available_mcp_servers=mcp.servers.keys()
-        if mcp is not None and mcp.servers is not None
-        else (),
-    )
-
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -917,7 +860,6 @@ def _load_repo_local_config(
         agent=agent,
         agents=agents,
         categories=categories,
-        workflows=workflows,
     )
 
 

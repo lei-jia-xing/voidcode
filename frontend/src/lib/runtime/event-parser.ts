@@ -30,10 +30,6 @@ export interface ChatMessage {
     summary?: string;
     display?: ToolDisplay;
     copyable?: Record<string, unknown>;
-    legacy?: {
-      label: string;
-      summary: string;
-    };
     status: "pending" | "running" | "completed" | "failed";
     arguments?: Record<string, unknown>;
     result?: Record<string, unknown>;
@@ -46,8 +42,6 @@ export interface ChatMessage {
     }[];
   }[];
   // Populated by deriveChatMessages with the model's actual emission order.
-  // When absent (legacy hand-built fixtures), the renderer falls back to the
-  // historical "tools → thinking → text" layout.
   parts?: MessagePart[];
   approval: {
     requestId: string;
@@ -69,38 +63,6 @@ export type MessagePart =
   | { kind: "tool"; sequence: number; toolKey: string };
 
 type ChatTool = ChatMessage["tools"][number];
-
-const LEGACY_TOOL_LABELS: Record<string, string> = {
-  read: "Read",
-  read_file: "Read",
-  write: "Write",
-  write_file: "Write",
-  edit: "Edit",
-  multi_edit: "Multi-edit",
-  apply_patch: "Apply patch",
-  ast_grep_replace: "AST replace",
-  ast_grep_search: "AST search",
-  ast_grep_preview: "AST preview",
-  format_file: "Format file",
-  shell_exec: "Command",
-  interactive_shell: "Interactive shell",
-  grep: "Search",
-  glob: "Find files",
-  todo_write: "Update todos",
-  task: "Start subagent",
-  skill: "Load skill",
-  web_fetch: "Fetch URL",
-  web_search: "Web search",
-  lsp: "LSP",
-  mcp: "MCP",
-  question: "Ask user",
-  background_process_start: "Start background process",
-  background_process_stop: "Stop background process",
-  background_process_logs: "Read process logs",
-  background_output: "Read background output",
-  background_cancel: "Cancel background task",
-  background_retry: "Retry background task",
-};
 
 function objectPayload(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
@@ -138,49 +100,6 @@ function parseToolDisplay(value: unknown): ToolDisplay | undefined {
     ...(copyable ? { copyable } : {}),
     ...(typeof record.hidden === "boolean" ? { hidden: record.hidden } : {}),
   };
-}
-
-function firstPayloadString(
-  payload: Record<string, unknown>,
-  keys: string[],
-): string | undefined {
-  for (const key of keys) {
-    const value = nonEmptyString(payload[key]);
-    if (value) return value;
-  }
-  return undefined;
-}
-
-function legacyToolMetadata(
-  name: string,
-  payload: Record<string, unknown>,
-): { label: string; summary: string } {
-  const base = LEGACY_TOOL_LABELS[name] ?? name;
-  const target =
-    firstPayloadString(payload, [
-      "target_summary",
-      "description",
-      "path",
-      "filePath",
-      "pattern",
-      "query",
-      "url",
-      "command",
-      "name",
-    ]) ??
-    firstPayloadString(objectPayload(payload.arguments) ?? {}, [
-      "description",
-      "path",
-      "filePath",
-      "pattern",
-      "query",
-      "url",
-      "command",
-      "name",
-    ]);
-
-  const summary = target ? `${base}: ${target}` : base;
-  return { label: summary, summary };
 }
 
 function hasOwnPayloadKey(payload: Record<string, unknown>, key: string) {
@@ -247,7 +166,6 @@ function upsertTool(
   existing.summary = tool.summary ?? existing.summary;
   existing.display = tool.display ?? existing.display;
   existing.copyable = tool.copyable ?? existing.copyable;
-  existing.legacy = tool.legacy ?? existing.legacy;
   existing.arguments = tool.arguments ?? existing.arguments;
   existing.result = tool.result ?? existing.result;
   if (tool.content !== undefined) existing.content = tool.content;
@@ -367,7 +285,25 @@ function parseQuestionPrompts(value: unknown): QuestionPrompt[] {
 function getToolStatusPayload(event: EventEnvelope): ToolStatusPayload | null {
   const toolStatus = event.payload?.tool_status;
   if (!toolStatus || typeof toolStatus !== "object") return null;
-  return toolStatus as ToolStatusPayload;
+  const payload = toolStatus as Record<string, unknown>;
+  const display = parseToolDisplay(payload.display);
+  if (
+    typeof payload.invocation_id !== "string" ||
+    typeof payload.tool_name !== "string" ||
+    typeof payload.phase !== "string" ||
+    typeof payload.status !== "string" ||
+    !display
+  ) {
+    return null;
+  }
+  return {
+    invocation_id: payload.invocation_id,
+    tool_name: payload.tool_name,
+    phase: payload.phase,
+    status: payload.status,
+    ...(typeof payload.label === "string" ? { label: payload.label } : {}),
+    display,
+  };
 }
 
 function responseTextFromPayload(
@@ -390,17 +326,11 @@ function applyToolStatus(
 ) {
   if (!currentAssistant) return;
 
-  const name =
-    typeof toolStatus.tool_name === "string" ? toolStatus.tool_name : "unknown";
-  const id =
-    typeof toolStatus.invocation_id === "string"
-      ? toolStatus.invocation_id
-      : undefined;
-  const display =
-    parseToolDisplay(toolStatus.display) ??
-    parseToolDisplay(eventPayload?.display);
-  const label = nonEmptyString(toolStatus.label) ?? display?.summary;
-  const summary = display?.summary ?? label;
+  const name = toolStatus.tool_name;
+  const id = toolStatus.invocation_id;
+  const display = toolStatus.display;
+  const label = nonEmptyString(toolStatus.label) ?? display.summary;
+  const summary = display.summary;
   const content =
     eventPayload && hasOwnPayloadKey(eventPayload, "content")
       ? (nonEmptyString(eventPayload.content) ?? null)
@@ -461,32 +391,6 @@ function isReasoningEvent(event: EventEnvelope): boolean {
     event.event_type === "graph.provider_stream" &&
     event.payload?.channel === "reasoning"
   );
-}
-
-function streamedToolCallFromEvent(event: EventEnvelope): {
-  id?: string;
-  name: string;
-  arguments?: Record<string, unknown>;
-} | null {
-  if (event.event_type !== "graph.provider_stream") return null;
-  if (event.payload?.channel !== "tool" || event.payload?.kind !== "content") {
-    return null;
-  }
-  const text = event.payload?.text;
-  if (typeof text !== "string" || !text.trim()) return null;
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    const name = nonEmptyString(parsed.tool_name);
-    if (!name) return null;
-    const id = nonEmptyString(parsed.tool_call_id);
-    return {
-      id,
-      name,
-      arguments: objectPayload(parsed.arguments),
-    };
-  } catch {
-    return null;
-  }
 }
 
 export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
@@ -743,28 +647,6 @@ export function deriveChatMessages(
           appendTextDeltaPart(currentAssistant, event.sequence, delta);
         }
       }
-    } else if (event.event_type === "graph.provider_stream") {
-      if (currentAssistant) {
-        const streamedToolCall = streamedToolCallFromEvent(event);
-        if (streamedToolCall) {
-          const legacy = legacyToolMetadata(streamedToolCall.name, {
-            arguments: streamedToolCall.arguments,
-          });
-          upsertTool(
-            currentAssistant,
-            {
-              id: streamedToolCall.id,
-              name: streamedToolCall.name,
-              label: legacy.label,
-              summary: legacy.summary,
-              legacy,
-              status: "pending",
-              arguments: streamedToolCall.arguments,
-            },
-            event.sequence,
-          );
-        }
-      }
     } else if (event.event_type === "graph.tool_request_created") {
       if (currentAssistant) {
         if (toolStatus) {
@@ -776,28 +658,6 @@ export function deriveChatMessages(
           );
           continue;
         }
-        const toolName =
-          typeof event.payload?.tool === "string"
-            ? event.payload.tool
-            : "unknown";
-        const toolCallId =
-          typeof event.payload?.tool_call_id === "string"
-            ? event.payload.tool_call_id
-            : undefined;
-        const legacy = legacyToolMetadata(toolName, event.payload);
-        upsertTool(
-          currentAssistant,
-          {
-            id: toolCallId,
-            name: toolName,
-            label: legacy.label,
-            summary: legacy.summary,
-            legacy,
-            status: "running",
-            arguments: objectPayload(event.payload?.arguments),
-          },
-          event.sequence,
-        );
       }
     } else if (event.event_type === "runtime.tool_completed") {
       if (currentAssistant) {
@@ -809,37 +669,6 @@ export function deriveChatMessages(
             event.payload,
           );
           continue;
-        }
-        const toolName =
-          typeof event.payload?.tool === "string" ? event.payload.tool : null;
-        if (toolName) {
-          const toolCallId =
-            typeof event.payload?.tool_call_id === "string"
-              ? event.payload.tool_call_id
-              : undefined;
-          const legacy = legacyToolMetadata(toolName, event.payload);
-          upsertTool(
-            currentAssistant,
-            {
-              id: toolCallId,
-              name: toolName,
-              label: legacy.label,
-              summary: legacy.summary,
-              legacy,
-              status: toolStatusFromPayload(event.payload?.status),
-              arguments: objectPayload(event.payload?.arguments),
-              result: event.payload,
-              content:
-                typeof event.payload?.content === "string"
-                  ? event.payload.content
-                  : null,
-              error:
-                typeof event.payload?.error === "string"
-                  ? event.payload.error
-                  : null,
-            },
-            event.sequence,
-          );
         }
       }
     } else if (event.event_type === "runtime.approval_requested") {

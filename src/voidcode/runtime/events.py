@@ -7,7 +7,7 @@ from typing import Final, Literal, cast
 
 type EventSource = Literal["runtime", "graph", "tool"]
 
-type ExistingEventType = Literal[
+type CoreEventType = Literal[
     "runtime.request_received",
     "runtime.skills_loaded",
     "runtime.skills_applied",
@@ -47,7 +47,7 @@ type ExistingEventType = Literal[
     "runtime.question_answered",
     "runtime.failed",
 ]
-type PrototypeAdditiveEventType = Literal[
+type RuntimeEventType = Literal[
     "runtime.memory_refreshed",
     "runtime.memory_added",
     "runtime.memory_deleted",
@@ -96,7 +96,7 @@ type DelegatedLifecycleStatus = Literal[
     "cancelled",
     "interrupted",
 ]
-type KnownEventType = ExistingEventType | PrototypeAdditiveEventType
+type KnownEventType = CoreEventType | RuntimeEventType
 
 
 def _parse_delegated_routing_mode(value: object) -> Literal["sync", "background"] | None:
@@ -125,108 +125,88 @@ def _parse_delegated_lifecycle_status(value: object) -> DelegatedLifecycleStatus
     return None
 
 
-RUNTIME_REQUEST_RECEIVED: Final[ExistingEventType] = "runtime.request_received"
-RUNTIME_SKILLS_LOADED: Final[ExistingEventType] = "runtime.skills_loaded"
-RUNTIME_SKILLS_APPLIED: Final[ExistingEventType] = "runtime.skills_applied"
-RUNTIME_HOOK_PRESETS_LOADED: Final[ExistingEventType] = "runtime.hook_presets_loaded"
-RUNTIME_PROVIDER_FALLBACK: Final[ExistingEventType] = "runtime.provider_fallback"
-RUNTIME_PROVIDER_TRANSIENT_RETRY: Final[ExistingEventType] = "runtime.provider_transient_retry"
-RUNTIME_CATEGORY_MODEL_DIAGNOSTIC: Final[ExistingEventType] = "runtime.category_model_diagnostic"
-RUNTIME_ACP_CONNECTED: Final[ExistingEventType] = "runtime.acp_connected"
-RUNTIME_ACP_DISCONNECTED: Final[ExistingEventType] = "runtime.acp_disconnected"
-RUNTIME_ACP_FAILED: Final[ExistingEventType] = "runtime.acp_failed"
-RUNTIME_ACP_DELEGATED_LIFECYCLE: Final[ExistingEventType] = "runtime.acp_delegated_lifecycle"
-RUNTIME_LSP_SERVER_STARTED: Final[ExistingEventType] = "runtime.lsp_server_started"
-RUNTIME_LSP_SERVER_REUSED: Final[ExistingEventType] = "runtime.lsp_server_reused"
-RUNTIME_LSP_SERVER_STARTUP_REJECTED: Final[ExistingEventType] = (
-    "runtime.lsp_server_startup_rejected"
-)
-RUNTIME_LSP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.lsp_server_stopped"
-RUNTIME_LSP_SERVER_FAILED: Final[ExistingEventType] = "runtime.lsp_server_failed"
-RUNTIME_MCP_SERVER_STARTED: Final[ExistingEventType] = "runtime.mcp_server_started"
-RUNTIME_MCP_SERVER_REUSED: Final[ExistingEventType] = "runtime.mcp_server_reused"
-RUNTIME_MCP_SERVER_ACQUIRED: Final[ExistingEventType] = "runtime.mcp_server_acquired"
-RUNTIME_MCP_SERVER_RELEASED: Final[ExistingEventType] = "runtime.mcp_server_released"
-RUNTIME_MCP_SERVER_STOPPED: Final[ExistingEventType] = "runtime.mcp_server_stopped"
-RUNTIME_MCP_SERVER_IDLE_CLEANED: Final[ExistingEventType] = "runtime.mcp_server_idle_cleaned"
-RUNTIME_MCP_SERVER_FAILED: Final[ExistingEventType] = "runtime.mcp_server_failed"
-GRAPH_LOOP_STEP: Final[ExistingEventType] = "graph.loop_step"
-GRAPH_MODEL_TURN: Final[ExistingEventType] = "graph.model_turn"
-GRAPH_TOOL_REQUEST_CREATED: Final[ExistingEventType] = "graph.tool_request_created"
-RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[ExistingEventType] = "runtime.tool_lookup_succeeded"
-RUNTIME_TOOL_STARTED: Final[ExistingEventType] = "runtime.tool_started"
-RUNTIME_PERMISSION_RESOLVED: Final[ExistingEventType] = "runtime.permission_resolved"
-RUNTIME_TOOL_HOOK_PRE: Final[ExistingEventType] = "runtime.tool_hook_pre"
-RUNTIME_TOOL_HOOK_POST: Final[ExistingEventType] = "runtime.tool_hook_post"
-RUNTIME_TOOL_COMPLETED: Final[ExistingEventType] = "runtime.tool_completed"
-GRAPH_RESPONSE_READY: Final[ExistingEventType] = "graph.response_ready"
-RUNTIME_APPROVAL_REQUESTED: Final[ExistingEventType] = "runtime.approval_requested"
-RUNTIME_APPROVAL_RESOLVED: Final[ExistingEventType] = "runtime.approval_resolved"
-RUNTIME_QUESTION_REQUESTED: Final[ExistingEventType] = "runtime.question_requested"
-RUNTIME_QUESTION_ANSWERED: Final[ExistingEventType] = "runtime.question_answered"
-RUNTIME_FAILED: Final[ExistingEventType] = "runtime.failed"
+RUNTIME_REQUEST_RECEIVED: Final[CoreEventType] = "runtime.request_received"
+RUNTIME_SKILLS_LOADED: Final[CoreEventType] = "runtime.skills_loaded"
+RUNTIME_SKILLS_APPLIED: Final[CoreEventType] = "runtime.skills_applied"
+RUNTIME_HOOK_PRESETS_LOADED: Final[CoreEventType] = "runtime.hook_presets_loaded"
+RUNTIME_PROVIDER_FALLBACK: Final[CoreEventType] = "runtime.provider_fallback"
+RUNTIME_PROVIDER_TRANSIENT_RETRY: Final[CoreEventType] = "runtime.provider_transient_retry"
+RUNTIME_CATEGORY_MODEL_DIAGNOSTIC: Final[CoreEventType] = "runtime.category_model_diagnostic"
+RUNTIME_ACP_CONNECTED: Final[CoreEventType] = "runtime.acp_connected"
+RUNTIME_ACP_DISCONNECTED: Final[CoreEventType] = "runtime.acp_disconnected"
+RUNTIME_ACP_FAILED: Final[CoreEventType] = "runtime.acp_failed"
+RUNTIME_ACP_DELEGATED_LIFECYCLE: Final[CoreEventType] = "runtime.acp_delegated_lifecycle"
+RUNTIME_LSP_SERVER_STARTED: Final[CoreEventType] = "runtime.lsp_server_started"
+RUNTIME_LSP_SERVER_REUSED: Final[CoreEventType] = "runtime.lsp_server_reused"
+RUNTIME_LSP_SERVER_STARTUP_REJECTED: Final[CoreEventType] = "runtime.lsp_server_startup_rejected"
+RUNTIME_LSP_SERVER_STOPPED: Final[CoreEventType] = "runtime.lsp_server_stopped"
+RUNTIME_LSP_SERVER_FAILED: Final[CoreEventType] = "runtime.lsp_server_failed"
+RUNTIME_MCP_SERVER_STARTED: Final[CoreEventType] = "runtime.mcp_server_started"
+RUNTIME_MCP_SERVER_REUSED: Final[CoreEventType] = "runtime.mcp_server_reused"
+RUNTIME_MCP_SERVER_ACQUIRED: Final[CoreEventType] = "runtime.mcp_server_acquired"
+RUNTIME_MCP_SERVER_RELEASED: Final[CoreEventType] = "runtime.mcp_server_released"
+RUNTIME_MCP_SERVER_STOPPED: Final[CoreEventType] = "runtime.mcp_server_stopped"
+RUNTIME_MCP_SERVER_IDLE_CLEANED: Final[CoreEventType] = "runtime.mcp_server_idle_cleaned"
+RUNTIME_MCP_SERVER_FAILED: Final[CoreEventType] = "runtime.mcp_server_failed"
+GRAPH_LOOP_STEP: Final[CoreEventType] = "graph.loop_step"
+GRAPH_MODEL_TURN: Final[CoreEventType] = "graph.model_turn"
+GRAPH_TOOL_REQUEST_CREATED: Final[CoreEventType] = "graph.tool_request_created"
+RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[CoreEventType] = "runtime.tool_lookup_succeeded"
+RUNTIME_TOOL_STARTED: Final[CoreEventType] = "runtime.tool_started"
+RUNTIME_PERMISSION_RESOLVED: Final[CoreEventType] = "runtime.permission_resolved"
+RUNTIME_TOOL_HOOK_PRE: Final[CoreEventType] = "runtime.tool_hook_pre"
+RUNTIME_TOOL_HOOK_POST: Final[CoreEventType] = "runtime.tool_hook_post"
+RUNTIME_TOOL_COMPLETED: Final[CoreEventType] = "runtime.tool_completed"
+GRAPH_RESPONSE_READY: Final[CoreEventType] = "graph.response_ready"
+RUNTIME_APPROVAL_REQUESTED: Final[CoreEventType] = "runtime.approval_requested"
+RUNTIME_APPROVAL_RESOLVED: Final[CoreEventType] = "runtime.approval_resolved"
+RUNTIME_QUESTION_REQUESTED: Final[CoreEventType] = "runtime.question_requested"
+RUNTIME_QUESTION_ANSWERED: Final[CoreEventType] = "runtime.question_answered"
+RUNTIME_FAILED: Final[CoreEventType] = "runtime.failed"
 
-RUNTIME_MEMORY_REFRESHED: Final[PrototypeAdditiveEventType] = "runtime.memory_refreshed"
-RUNTIME_MEMORY_ADDED: Final[PrototypeAdditiveEventType] = "runtime.memory_added"
-RUNTIME_MEMORY_DELETED: Final[PrototypeAdditiveEventType] = "runtime.memory_deleted"
-RUNTIME_MEMORY_SEARCHED: Final[PrototypeAdditiveEventType] = "runtime.memory_searched"
-RUNTIME_MEMORY_STATUS_CHECKED: Final[PrototypeAdditiveEventType] = "runtime.memory_status_checked"
-RUNTIME_CONTEXT_PRESSURE: Final[PrototypeAdditiveEventType] = "runtime.context_pressure"
-RUNTIME_CONTEXT_TRANSFORM_APPLIED: Final[PrototypeAdditiveEventType] = (
-    "runtime.context_transform_applied"
-)
-RUNTIME_SESSION_STARTED: Final[PrototypeAdditiveEventType] = "runtime.session_started"
-RUNTIME_SESSION_ENDED: Final[PrototypeAdditiveEventType] = "runtime.session_ended"
-RUNTIME_SESSION_IDLE: Final[PrototypeAdditiveEventType] = "runtime.session_idle"
-RUNTIME_SKILLS_BINDING_MISMATCH: Final[PrototypeAdditiveEventType] = (
-    "runtime.skills_binding_mismatch"
-)
-RUNTIME_BACKGROUND_TASK_REGISTERED: Final[PrototypeAdditiveEventType] = (
-    "runtime.background_task_registered"
-)
-RUNTIME_BACKGROUND_TASK_STARTED: Final[PrototypeAdditiveEventType] = (
-    "runtime.background_task_started"
-)
-RUNTIME_BACKGROUND_TASK_PROGRESS: Final[PrototypeAdditiveEventType] = (
-    "runtime.background_task_progress"
-)
-RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: Final[PrototypeAdditiveEventType] = (
+RUNTIME_MEMORY_REFRESHED: Final[RuntimeEventType] = "runtime.memory_refreshed"
+RUNTIME_MEMORY_ADDED: Final[RuntimeEventType] = "runtime.memory_added"
+RUNTIME_MEMORY_DELETED: Final[RuntimeEventType] = "runtime.memory_deleted"
+RUNTIME_MEMORY_SEARCHED: Final[RuntimeEventType] = "runtime.memory_searched"
+RUNTIME_MEMORY_STATUS_CHECKED: Final[RuntimeEventType] = "runtime.memory_status_checked"
+RUNTIME_CONTEXT_PRESSURE: Final[RuntimeEventType] = "runtime.context_pressure"
+RUNTIME_CONTEXT_TRANSFORM_APPLIED: Final[RuntimeEventType] = "runtime.context_transform_applied"
+RUNTIME_SESSION_STARTED: Final[RuntimeEventType] = "runtime.session_started"
+RUNTIME_SESSION_ENDED: Final[RuntimeEventType] = "runtime.session_ended"
+RUNTIME_SESSION_IDLE: Final[RuntimeEventType] = "runtime.session_idle"
+RUNTIME_SKILLS_BINDING_MISMATCH: Final[RuntimeEventType] = "runtime.skills_binding_mismatch"
+RUNTIME_BACKGROUND_TASK_REGISTERED: Final[RuntimeEventType] = "runtime.background_task_registered"
+RUNTIME_BACKGROUND_TASK_STARTED: Final[RuntimeEventType] = "runtime.background_task_started"
+RUNTIME_BACKGROUND_TASK_PROGRESS: Final[RuntimeEventType] = "runtime.background_task_progress"
+RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: Final[RuntimeEventType] = (
     "runtime.background_task_idle_reminder"
 )
-RUNTIME_TOOL_PROGRESS: Final[PrototypeAdditiveEventType] = "runtime.tool_progress"
-RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[PrototypeAdditiveEventType] = (
+RUNTIME_TOOL_PROGRESS: Final[RuntimeEventType] = "runtime.tool_progress"
+RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[RuntimeEventType] = (
     "runtime.background_task_waiting_approval"
 )
-RUNTIME_BACKGROUND_TASK_COMPLETED: Final[PrototypeAdditiveEventType] = (
-    "runtime.background_task_completed"
-)
-RUNTIME_BACKGROUND_TASK_FAILED: Final[PrototypeAdditiveEventType] = "runtime.background_task_failed"
-RUNTIME_BACKGROUND_TASK_CANCELLED: Final[PrototypeAdditiveEventType] = (
-    "runtime.background_task_cancelled"
-)
-RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[PrototypeAdditiveEventType] = (
+RUNTIME_BACKGROUND_TASK_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_completed"
+RUNTIME_BACKGROUND_TASK_FAILED: Final[RuntimeEventType] = "runtime.background_task_failed"
+RUNTIME_BACKGROUND_TASK_CANCELLED: Final[RuntimeEventType] = "runtime.background_task_cancelled"
+RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[RuntimeEventType] = (
     "runtime.background_task_notification_enqueued"
 )
-RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[PrototypeAdditiveEventType] = (
-    "runtime.background_task_result_read"
-)
-RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[PrototypeAdditiveEventType] = (
-    "runtime.delegated_result_available"
-)
-RUNTIME_SKILL_LOADED: Final[PrototypeAdditiveEventType] = "runtime.skill_loaded"
-RUNTIME_POLICY_MATERIALIZED: Final[PrototypeAdditiveEventType] = "runtime.policy_materialized"
-RUNTIME_TODO_UPDATED: Final[PrototypeAdditiveEventType] = "runtime.todo_updated"
-RUNTIME_REASONING_PART: Final[PrototypeAdditiveEventType] = "runtime.reasoning_part"
-RUNTIME_REASONING_DIAGNOSTIC: Final[PrototypeAdditiveEventType] = "runtime.reasoning_diagnostic"
-RUNTIME_TURN_PROGRESS: Final[PrototypeAdditiveEventType] = "runtime.turn_progress"
-RUNTIME_STUCK_DETECTED: Final[PrototypeAdditiveEventType] = "runtime.stuck_detected"
+RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[RuntimeEventType] = "runtime.background_task_result_read"
+RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[RuntimeEventType] = "runtime.delegated_result_available"
+RUNTIME_SKILL_LOADED: Final[RuntimeEventType] = "runtime.skill_loaded"
+RUNTIME_POLICY_MATERIALIZED: Final[RuntimeEventType] = "runtime.policy_materialized"
+RUNTIME_TODO_UPDATED: Final[RuntimeEventType] = "runtime.todo_updated"
+RUNTIME_REASONING_PART: Final[RuntimeEventType] = "runtime.reasoning_part"
+RUNTIME_REASONING_DIAGNOSTIC: Final[RuntimeEventType] = "runtime.reasoning_diagnostic"
+RUNTIME_TURN_PROGRESS: Final[RuntimeEventType] = "runtime.turn_progress"
+RUNTIME_STUCK_DETECTED: Final[RuntimeEventType] = "runtime.stuck_detected"
 
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
 _SAFE_PROVIDER_REASONING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"source"})
 POLICY_OBSERVABILITY_LIST_LIMIT: Final[int] = 32
 POLICY_OBSERVABILITY_TRACE_LIMIT: Final[int] = 16
 
-EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
+EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_REQUEST_RECEIVED,
     RUNTIME_SKILLS_LOADED,
     RUNTIME_SKILLS_APPLIED,
@@ -266,7 +246,7 @@ EMITTED_EVENT_TYPES: Final[tuple[ExistingEventType, ...]] = (
     RUNTIME_QUESTION_ANSWERED,
     RUNTIME_FAILED,
 )
-PROTOTYPE_ADDITIVE_EVENT_TYPES: Final[tuple[PrototypeAdditiveEventType, ...]] = (
+RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_MEMORY_ADDED,
     RUNTIME_MEMORY_DELETED,
@@ -522,7 +502,7 @@ def redact_reasoning_payload(
 
 KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
     *EMITTED_EVENT_TYPES,
-    *PROTOTYPE_ADDITIVE_EVENT_TYPES,
+    *RUNTIME_EVENT_TYPES,
 )
 DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
@@ -563,7 +543,7 @@ ACP_DELEGATED_EXECUTION_FIELDS: Final[tuple[str, ...]] = (
 )
 
 _DELEGATED_EVENT_STATUS_BY_TYPE: Final[
-    dict[DelegatedBackgroundTaskEventType | ExistingEventType, DelegatedLifecycleStatus]
+    dict[DelegatedBackgroundTaskEventType | CoreEventType, DelegatedLifecycleStatus]
 ] = {
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: "waiting_approval",
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: "running",
@@ -606,15 +586,7 @@ def _mapping_or_none(value: object) -> Mapping[str, object] | None:
 def _delegated_lifecycle_message_payload(
     payload: Mapping[str, object],
 ) -> Mapping[str, object] | None:
-    message_payload = _mapping_or_none(payload.get("message"))
-    if message_payload is not None:
-        return message_payload
-    fallback_payload = {
-        key: payload[key]
-        for key in ("summary_output", "error", "approval_blocked", "result_available")
-        if key in payload
-    }
-    return fallback_payload or None
+    return _mapping_or_none(payload.get("message"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -779,11 +751,13 @@ class DelegatedLifecycleEventPayload:
         ):
             return None
         default_status = _DELEGATED_EVENT_STATUS_BY_TYPE.get(
-            cast(DelegatedBackgroundTaskEventType | ExistingEventType, event.event_type)
+            cast(DelegatedBackgroundTaskEventType | CoreEventType, event.event_type)
         )
         payload = event.payload
         delegation_payload = _mapping_or_none(payload.get("delegation")) or {}
         message_payload = _delegated_lifecycle_message_payload(payload)
+        if event.event_type == RUNTIME_ACP_DELEGATED_LIFECYCLE and message_payload is None:
+            raise ValueError("runtime.acp_delegated_lifecycle requires message object")
         delegation = DelegatedExecutionPayload.from_payload(
             delegation_payload,
             lifecycle_status=default_status,

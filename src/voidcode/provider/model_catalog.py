@@ -268,7 +268,7 @@ def discover_available_models(
 
     model_metadata: dict[str, ProviderModelMetadata] = {}
     for model in deduped:
-        metadata = _merge_model_metadata(
+        metadata = merge_model_metadata(
             inferred=infer_model_metadata(provider_name, model),
             override=discovered_metadata.get(model),
         )
@@ -436,9 +436,6 @@ def merge_model_metadata(
             inferred.tool_feedback_mode, override.tool_feedback_mode
         ),
     )
-
-
-_merge_model_metadata = merge_model_metadata
 
 
 def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:

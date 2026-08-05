@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import subprocess
 from collections.abc import Mapping
@@ -341,19 +340,11 @@ def _event_type_for_surface(surface: RuntimeHookSurface) -> str:
 
 
 def _lifecycle_hook_environment(request: LifecycleHookExecutionRequest) -> dict[str, str]:
-    environment = {
+    return {
         "VOIDCODE_HOOK_SURFACE": request.surface,
         "VOIDCODE_SESSION_ID": request.session_id,
         "VOIDCODE_HOOK_PAYLOAD_JSON": json.dumps(dict(request.payload), sort_keys=True),
     }
-    for key, value in request.payload.items():
-        if value is None:
-            continue
-        env_key = "VOIDCODE_" + re.sub(r"[^A-Z0-9]+", "_", key.upper()).strip("_")
-        if env_key == "VOIDCODE_":
-            continue
-        environment[env_key] = str(value)
-    return environment
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,7 +4,7 @@
 
 ## 目标
 
-`src/voidcode/runtime/service.py` 仍是 runtime control plane 的主入口，但它同时承载执行入口、provider fallback、审批恢复、工具注册收窄、background task 兼容 wrapper、配置 replay 与 capability 生命周期集成。拆分目标不是为了追求更小文件，而是在不改变 runtime 语义的前提下，把已经有测试保护的行为边界继续收敛到更明确的 runtime-owned collaborator。
+`src/voidcode/runtime/service.py` 仍是 runtime control plane 的主入口，但它同时承载执行入口、provider fallback、审批恢复、工具注册收窄、background task facade、配置 replay 与 capability 生命周期集成。拆分目标不是为了追求更小文件，而是把已经有测试保护的行为边界继续收敛到更明确的 runtime-owned collaborator。
 
 本计划只定义安全拆分顺序、验收测试与禁止跨越的所有权边界。除非某个 slice 已经只剩 wrapper 清理，否则不把大规模实现重构列为本 issue 的交付要求。
 
@@ -12,12 +12,12 @@
 
 ### 已经部分抽出的 collaborator
 
-- `RuntimeRunLoopCoordinator`：`src/voidcode/runtime/run_loop.py` 已承载工具执行、provider transient retry、provider fallback loop、上下文压力事件与 graph step 推进；provider 错误重试、fallback 与终止 payload 判断已收束到 `src/voidcode/runtime/provider_fallback.py`，但事件发射、sleep、session metadata 更新和 fallback graph 切换仍在 run loop 内；`service.py` 的 `_execute_graph_loop()` 现在是兼容转发入口。
-- `RuntimeResumeCoordinator`：`src/voidcode/runtime/resume.py` 已承载 approval/question/provider-failure resume 的主要恢复逻辑；`service.py` 仍保留 `resume()` / `resume_stream()` public surface、目标所有权校验与兼容转发入口。
-- `RuntimeBackgroundTaskSupervisor`：`src/voidcode/runtime/background_tasks.py` 已承载 background task queue、worker lifecycle、result view、parent notification、cancel、reconciliation 与 lifecycle hook 触发；`service.py` 仍保留 public surface 与测试兼容 wrapper。
+- `RuntimeRunLoopCoordinator`：`src/voidcode/runtime/run_loop.py` 已承载工具执行、provider transient retry、provider fallback loop、上下文压力事件与 graph step 推进；provider 错误重试、fallback 与终止 payload 判断已收束到 `src/voidcode/runtime/provider_fallback.py`。
+- `RuntimeResumeCoordinator`：`src/voidcode/runtime/resume.py` 已承载 approval/question/provider-failure resume 的主要恢复逻辑；`service.py` 保留 `resume()` / `resume_stream()` public surface 与目标所有权校验。
+- `RuntimeBackgroundTaskSupervisor`：`src/voidcode/runtime/background_tasks.py` 已承载 background task queue、worker lifecycle、result view、parent notification、cancel、reconciliation 与 lifecycle hook 触发；`service.py` 仅保留 public facade。
 - `tool_provider.py`：已承载 builtin tool provider、agent allowlist/default scoping 与 local custom tool provider；`service.py` 仍组合 MCP/LSP/skill/task/question/background tools 并应用 workflow read-only policy。
 - `execution_seams.py`：已承载 graph selection、cache key、fallback graph selection 与 session routing seams；`src/voidcode/runtime/config_materializer.py` 已承载 `EffectiveRuntimeConfig`、persisted runtime config parse/serialize、request override 和 persisted fallback model 显式错误判断，`service.py` 仍负责 registry、capability snapshot、workflow snapshot、agent validation 与配置优先级组合。
-- `provider_catalog_cache.py`：已承载 provider model catalog cache 的 JSON hydrate/persist、坏条目容错与“不覆盖活跃 catalog”规则；它只依赖 provider registry 和 cache path，`service.py` 保留构造与兼容转发入口。
+- `provider_catalog_cache.py`：已承载 provider model catalog cache 的 JSON hydrate/persist、坏条目容错与“不覆盖活跃 catalog”规则；它只依赖 provider registry 和 cache path。
 - `provider_catalog_query.py`：已承载 provider model catalog 的只读 models/catalog projection、catalog override 与 inferred metadata 合并，以及 `ProviderModelsResult` 构造；refresh、auth presence 与 readiness 判断仍由 runtime service 组合。Runtime config reload 替换 provider registry 时必须重绑定 cache/query collaborator，避免持有旧 registry。
 - `provider_inspection.py`：统一承载 provider summary projection、resolved readiness facts 的 status/ok/guidance 决策表、validation result projection、configured-provider 判断、API-key auth presence 与 Google/Copilot OAuth presence 特例；runtime service 仍拥有 effective config/catalog/reasoning facts、remote validation/refresh 与 inspect 调用顺序。Runtime config reload 替换 resolver/config 时必须同步重绑定 inspector。
 - `tool_scope.py`：已承载 agent scoping 后的 runtime/workflow/memory tool policy materialization、delegated child manifest allowlist denial，并让 provider-visible registry 与 raw-call denial 查询共享同一 policy decision 来源；runtime service 仍拥有 builtin/local/MCP/LSP tool construction、effective config、session routing truth 与 execution ordering。Runtime config reload 改变 memory capability 时必须同步重绑定 resolver。
@@ -29,7 +29,7 @@
 - Public runtime entry/replay：`run_stream()`, `resume()`, `resume_stream()`, `session_result()` 仍决定何时 replay、何时恢复 provider failure、何时 reconcile parent background notifications。
 - Runtime config truth：`_runtime_config_for_request()`, `_runtime_config_metadata()`, `_effective_runtime_config_from_metadata()`, `_config_with_request_agent_override()` 仍共同决定 request overrides、persisted replay、agent defaults、fallback chain 与 capability snapshots。
 - Tool registry scoping：`_tool_registry_for_effective_config()`, `_tool_registry_with_workflow_policy()`, `_delegation_tool_policy_error()`, `_workflow_tool_policy_error()` 仍是 provider-visible schema 与 raw tool-call guardrail 的最后 runtime enforcement。
-- Background task compatibility seam：`start_background_task()`, `load_background_task_result()`, `cancel_background_task()`, `_run_background_task_worker()` 等已经是 wrapper，但其调用方依赖这些 public/private names，不能直接删除。
+- Background task public facade：`start_background_task()`, `load_background_task_result()`, `cancel_background_task()` 保持 public API；内部 worker state 只通过 supervisor 访问。
 - Provider fallback metadata：`run_loop.py` 执行 fallback，但 fallback chain、persisted target、provider attempt 与 transient retry config 仍依赖 `service.py` 的 config/materialization helpers。
 
 ## 拆分原则
@@ -37,8 +37,8 @@
 1. Runtime 继续拥有治理：权限、审批、工具注册、hook lifecycle、session truth、background task truth、provider fallback 与 capability lifecycle 都不能迁移到 graph、CLI、HTTP、Web/TUI 或 hook 脚本。
 2. Graph 只推进执行步骤：新增 collaborator 可以服务 graph loop，但不应让 graph 直接知道 client/session persistence/tool registry ownership。
 3. Clients 只消费契约：CLI/HTTP/Web/TUI 可以调用 runtime public surface 或 contract payload，不能自己拼接 background/result/approval/fallback truth。
-4. 每个 slice 先建立 characterization tests，再移动代码；移动后 public payload、事件顺序、session metadata、SQLite truth 和 error text 必须保持可重放兼容。
-5. 保留兼容 wrapper 至少一个 PR：先让 collaborator 承载实现，再在后续 PR 评估是否删除 private wrapper；不要在同一个 PR 内移动逻辑又大面积改调用方。
+4. 每个 slice 先建立 contract tests，再移动代码；移动后 public payload、事件顺序、session metadata 和 SQLite truth 必须满足当前版本契约。
+5. collaborator 接管实现时同步迁移所有调用方并删除 private proxy。
 
 ## 建议拆分顺序
 
@@ -50,7 +50,7 @@
 
 - Public methods：`start_background_task()`, `load_background_task()`, `load_background_task_result()`, `list_background_tasks()`, `cancel_background_task()`。
 - Runtime-owned request validation、workspace validation 与 session store ownership。
-- Compatibility wrappers for tests/callers until all internal references stop depending on private `service.py` names.
+- Tests and callers access the owning collaborator or public runtime facade directly.
 
 **留在 / 移入 `background_tasks.py`**
 
@@ -115,7 +115,7 @@ No broad move is needed; the safe first slice is documentation plus tests for re
 
 **行为保护测试计划**
 
-- Keep: resume checkpoint tests in `tests/unit/runtime/test_runtime_service_extensions.py` covering persisted checkpoint creation, restart resume, checkpoint missing fallback, corrupt JSON rejection, payload/kind/version mismatch rejection, malformed tool result rejection, null successful tool content preservation, skill binding mismatch event, and no duplicate session_start hooks.
+- Keep: resume checkpoint tests in `tests/unit/runtime/test_runtime_service_extensions.py` covering persisted checkpoint creation, restart resume, required-checkpoint enforcement, corrupt JSON rejection, payload/kind/version mismatch rejection, malformed tool result rejection, strict skill binding validation, and no duplicate session_start hooks.
 - Keep: approval/question notification tests covering approval-blocked notifications, superseded approval blockers, session idle hook preservation, and end-hook failure not overriding terminal truth.
 - Add before deduplication: a characterization test asserting approval resume and question resume both preserve MCP release ordering and do not re-emit `runtime.session_started`.
 - Add before moving target-ownership code: a test where a parent session tries to approve a child-owned pending approval and receives the existing ownership error.
@@ -139,7 +139,7 @@ Generation 没有使用进程内自增计数：该计数跨 restart 不稳定，
 
 **提取候选**
 
-- Capability snapshot contract 已升级为 version 2，并持久化当前 run 的 scoped materialization generation；旧 snapshot 没有兼容路径。不要加入 watcher、隐式热更新或公开 plugin contract。
+- Capability snapshot contract 固定为 version 2，并持久化当前 run 的 scoped materialization generation；其他版本直接失败。不要加入 watcher、隐式热更新或公开 plugin contract。
 - `tool_provider.py` 继续提供 builtin/local tools；materializer 不扩展为通用 plugin loader，resolver 也不复制工具构造。
 
 **行为保护测试计划**

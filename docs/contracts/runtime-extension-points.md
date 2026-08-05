@@ -23,7 +23,7 @@ extension point 只能通过类型化 input/output contract 转换或校验 runt
 3. 非交互式执行必须 fail fast，不接受会卡住的默认行为；shell command classification、timeout 选择与 package-manager non-interactive env injection 都属于 runtime/security policy，而不是 CLI 文案。
 4. prompt stack 和 observability 必须可重放、可解释，并且保持 redacted；可观测 payload 只暴露有界 fragment metadata / redacted preview，不暴露完整 prompt、skill body、secret-like values 或注入 env values。
 5. registry 只能做受控解析，不能绕开 runtime policy。
-6. 默认行为保持 backward-compatible，现有请求仍然是 action-capable，除非显式选择 analyze、plan 或 read-only policy。
+6. 未显式选择 mode 的新请求使用当前 `normal` 默认值；runtime 不解析已移除的旧 mode 或 execution 字段。
 
 这不意味着复制 OpenHands、Continue、Aider 或 Open Interpreter，也不意味着引入任意多智能体拓扑、插件市场、云端执行、IDE 插件执行路径，或者把 AGPL 实现代码搬进来。
 
@@ -87,15 +87,11 @@ Runtime attaches a `runtime_policy` object to `runtime.request_received`, and ad
 
 Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`. Prompt activation persists inside `RuntimePolicySnapshot.prompt_activation`; replay/resume may show historical activation records but must project run-local `activated_this_turn` as false unless the current run actually activated it.
 
-Legacy sessions without a stored snapshot synthesize a conservative v1 snapshot on replay/debug surfaces. Unsupported stored snapshot/schema versions fail fast rather than being silently migrated or widened.
+Sessions must contain a stored v1 runtime policy snapshot on replay and debug surfaces. Missing snapshots and unsupported snapshot/schema versions fail fast.
 
 ### Product non-delegation invariant
 
 `product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, category mapping, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_retry`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
-
-### Legacy snapshot synthesis
-
-Legacy sessions and bundles without `RuntimePolicySnapshot` remain resumable/importable. The runtime must synthesize a conservative v1 snapshot using persisted session/config truth and hard denials, record the synthesis in `precedence_trace`, and keep product delegation denied. It must not recompute historical sessions from mutable live defaults when a stored snapshot exists.
 
 ### v1 non-goals
 

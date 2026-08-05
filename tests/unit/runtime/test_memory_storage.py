@@ -232,7 +232,7 @@ def test_memory_storage_rejects_version_mismatch_without_migration(tmp_path: Pat
 def test_memory_storage_rejects_unversioned_non_canonical_memory_schema_without_stamping(
     tmp_path: Path,
 ) -> None:
-    database_path = tmp_path / "legacy-runtime.sqlite3"
+    database_path = tmp_path / "unsupported-runtime.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute(
             "CREATE TABLE memories (id TEXT PRIMARY KEY, workspace TEXT NOT NULL)"
@@ -243,7 +243,7 @@ def test_memory_storage_rejects_unversioned_non_canonical_memory_schema_without_
 
     with pytest.raises(
         RuntimeError,
-        match=r"table 'memories' missing columns: .*workspace_id.*legacy-runtime\.sqlite3",
+        match=r"table 'memories' missing columns: .*workspace_id.*unsupported-runtime\.sqlite3",
     ):
         _list_memories(store, workspace=tmp_path)
 

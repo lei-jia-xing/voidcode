@@ -87,25 +87,15 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
 def test_session_storage_roundtrips_snapshot_first_workflow_metadata(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "workflow_preset": "research",
         "workflow": {
             "snapshot_version": 2,
-            "requested": {"workflow_mode": "deep_work", "workflow_preset": "research"},
+            "requested": {"workflow_mode": "deep_work"},
             "effective": {
                 "mode": "deep_work",
-                "legacy_preset": "research",
                 "source": "workflow_mode",
-                "category": "research",
-                "default_agent": "researcher",
-                "effective_agent": "researcher",
-                "read_only_default": True,
-                "prompt_append": "Stored prompt guidance.",
-                "hook_preset_refs": ["role_reminder"],
-                "skill_refs": ["review-work"],
-                "force_load_skills": ["git-master"],
-                "mcp_binding_intents": [{"servers": ["context7"], "required": False}],
-                "verification_guidance": "Stored verification guidance.",
             },
+            "mode": "deep_work",
+            "source": "workflow_mode",
         },
     }
     request = RuntimeRequest(prompt="persist workflow", session_id="workflow-session")
@@ -139,47 +129,6 @@ def test_session_storage_roundtrips_snapshot_first_workflow_metadata(tmp_path: P
     )
 
 
-def test_session_storage_loads_legacy_workflow_preset_only_metadata(tmp_path: Path) -> None:
-    store = SqliteSessionStore()
-    metadata: dict[str, object] = {"workflow_preset": "implementation"}
-    request = RuntimeRequest(prompt="persist legacy workflow", session_id="legacy-workflow-session")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="legacy-workflow-session"),
-            status="completed",
-            turn=1,
-            metadata=metadata,
-        ),
-        events=(
-            EventEnvelope(
-                session_id="legacy-workflow-session",
-                sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
-            ),
-        ),
-        output="done",
-    )
-
-    store.save_run(workspace=tmp_path, request=request, response=response)
-
-    loaded = store.load_session(workspace=tmp_path, session_id="legacy-workflow-session")
-    loaded_snapshot = workflow_snapshot_from_metadata(loaded.session.metadata)
-
-    assert loaded.session.metadata == metadata
-    assert loaded_snapshot is not None
-    assert loaded_snapshot["requested"] == {
-        "workflow_mode": None,
-        "workflow_preset": "implementation",
-    }
-    assert loaded_snapshot["effective"] == {
-        "mode": None,
-        "legacy_preset": "implementation",
-        "source": None,
-    }
-    assert loaded_snapshot["selected_preset"] == "implementation"
-
-
 def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
     tmp_path: Path,
 ) -> None:
@@ -188,22 +137,13 @@ def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
         "workflow_mode": "sustain",
         "workflow": {
             "snapshot_version": 2,
-            "requested": {"workflow_mode": "sustain", "workflow_preset": "implementation"},
+            "requested": {"workflow_mode": "sustain"},
             "effective": {
                 "mode": "sustain",
-                "legacy_preset": "implementation",
                 "source": "workflow_mode",
-                "category": "implementation",
-                "default_agent": "leader",
-                "effective_agent": "leader",
-                "read_only_default": False,
-                "prompt_append": "Stored sustain guidance.",
-                "hook_preset_refs": ["role_reminder"],
-                "skill_refs": [],
-                "force_load_skills": ["git-master"],
-                "mcp_binding_intents": [],
-                "verification_guidance": "Use stored sustain checks.",
             },
+            "mode": "sustain",
+            "source": "workflow_mode",
         },
     }
     request = RuntimeRequest(prompt="persist new workflow", session_id="new-workflow-session")
@@ -237,155 +177,7 @@ def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
     assert loaded.session.metadata.get("mode") != "sustain"
 
 
-def test_session_storage_workflow_read_only_default_does_not_pollute_runtime_mode(
-    tmp_path: Path,
-) -> None:
-    store = SqliteSessionStore()
-    metadata: dict[str, object] = {
-        "workflow": {
-            "snapshot_version": 2,
-            "requested": {"workflow_mode": "deep_work", "workflow_preset": "research"},
-            "effective": {
-                "mode": "deep_work",
-                "legacy_preset": "research",
-                "source": "workflow_mode",
-                "read_only_default": True,
-            },
-        },
-    }
-    request = RuntimeRequest(prompt="persist readonly workflow", session_id="readonly-workflow")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="readonly-workflow"),
-            status="completed",
-            turn=1,
-            metadata=metadata,
-        ),
-        events=(
-            EventEnvelope(
-                session_id="readonly-workflow",
-                sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
-            ),
-        ),
-        output="done",
-    )
-
-    store.save_run(workspace=tmp_path, request=request, response=response)
-
-    loaded = store.load_session(workspace=tmp_path, session_id="readonly-workflow")
-    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="readonly-workflow")
-    workflow = cast(dict[str, object], loaded.session.metadata["workflow"])
-    effective = cast(dict[str, object], workflow["effective"])
-    runtime_policy = cast(dict[str, object], loaded.session.metadata["runtime_policy"])
-
-    assert loaded.session.metadata["mode"] == "normal"
-    assert loaded.session.metadata["read_only"] is True
-    assert effective["mode"] == "deep_work"
-    assert runtime_policy["mode"] == "normal"
-    assert runtime_policy["read_only"] is True
-    assert checkpoint is not None
-    checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
-    assert checkpoint_metadata["mode"] == "normal"
-    assert cast(dict[str, object], checkpoint_metadata["runtime_policy"])["mode"] == "normal"
-
-
-def test_session_storage_load_normalizes_legacy_workflow_mode_pollution(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "legacy-mode-pollution.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    request = RuntimeRequest(prompt="legacy polluted", session_id="legacy-polluted")
-    response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="legacy-polluted"),
-            status="completed",
-            turn=1,
-            metadata={
-                "workflow": {
-                    "snapshot_version": 2,
-                    "effective": {"mode": "sustain", "read_only_default": False},
-                },
-            },
-        ),
-        events=(
-            EventEnvelope(
-                session_id="legacy-polluted",
-                sequence=1,
-                event_type="graph.response_ready",
-                source="graph",
-            ),
-        ),
-        output="done",
-    )
-    store.save_run(workspace=tmp_path, request=request, response=response)
-    polluted_metadata = {
-        "mode": "sustain",
-        "read_only": False,
-        "workflow": {
-            "snapshot_version": 2,
-            "effective": {"mode": "sustain", "read_only_default": False},
-        },
-        "runtime_policy": {"version": 1, "mode": "sustain", "read_only": False},
-    }
-    with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute(
-            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
-            (json.dumps(polluted_metadata, sort_keys=True), "legacy-polluted"),
-        )
-        connection.commit()
-
-    loaded = store.load_session(workspace=tmp_path, session_id="legacy-polluted")
-    result = store.load_session_result(workspace=tmp_path, session_id="legacy-polluted")
-
-    assert loaded.session.metadata["mode"] == "normal"
-    assert result.session.metadata["mode"] == "normal"
-    assert cast(dict[str, object], loaded.session.metadata["runtime_policy"])["mode"] == "normal"
-    workflow = cast(dict[str, object], loaded.session.metadata["workflow"])
-    assert cast(dict[str, object], workflow["effective"])["mode"] == "sustain"
-
-
-def test_session_storage_load_background_task_normalizes_legacy_workflow_mode_pollution(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "legacy-task-mode-pollution.sqlite3"
-    store = SqliteSessionStore(database_path=database_path)
-    metadata: dict[str, object] = {
-        "mode": "product",
-        "workflow": {
-            "snapshot_version": 2,
-            "effective": {"mode": "product", "read_only_default": False},
-        },
-        "runtime_policy": {"version": 1, "mode": "product", "read_only": False},
-    }
-    store.create_background_task(
-        workspace=tmp_path,
-        task=BackgroundTaskState(
-            task=BackgroundTaskRef(id="legacy-task"),
-            request=BackgroundTaskRequestSnapshot(
-                prompt="legacy task",
-                parent_session_id="parent-session",
-                metadata=metadata,
-            ),
-        ),
-    )
-    with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute(
-            "UPDATE background_tasks SET request_metadata_json = ? WHERE task_id = ?",
-            (json.dumps(metadata, sort_keys=True), "legacy-task"),
-        )
-        connection.commit()
-
-    task = store.load_background_task(workspace=tmp_path, task_id="legacy-task")
-
-    assert task.request.metadata["mode"] == "normal"
-    assert cast(dict[str, object], task.request.metadata["runtime_policy"])["mode"] == "normal"
-    workflow = cast(dict[str, object], task.request.metadata["workflow"])
-    assert cast(dict[str, object], workflow["effective"])["mode"] == "product"
-
-
-def test_session_storage_roundtrips_redacted_runtime_policy_metadata(tmp_path: Path) -> None:
+def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
         "mode": "analyze",
@@ -441,19 +233,7 @@ def test_session_storage_roundtrips_redacted_runtime_policy_metadata(tmp_path: P
 
     assert loaded.session.metadata["mode"] == "analyze"
     assert loaded.session.metadata["read_only"] is True
-    runtime_policy = cast(dict[str, object], loaded.session.metadata["runtime_policy"])
-    assert runtime_policy["mode"] == "analyze"
-    assert runtime_policy["read_only"] is True
-    assert runtime_policy["delegation_policy"] == {
-        "allowed_presets": ["advisor", "explore", "researcher", "worker"],
-        "denied": [
-            {
-                "target": "product",
-                "reason": "delegation_denied_product_top_level_only",
-            }
-        ],
-        "product_denial_reason": "delegation_denied_product_top_level_only",
-    }
+    assert "runtime_policy" not in loaded.session.metadata
     policy_observations = cast(dict[str, object], loaded.session.metadata["policy_observations"])
     tool_policy_denial = cast(dict[str, object], policy_observations["tool_policy_denial"])
     assert tool_policy_denial["tool"] == "write_file"
@@ -462,11 +242,7 @@ def test_session_storage_roundtrips_redacted_runtime_policy_metadata(tmp_path: P
     assert 'NPM_CONFIG_YES": "true' not in encoded
     assert checkpoint is not None
     checkpoint_metadata = cast(dict[str, object], checkpoint["session_metadata"])
-    checkpoint_runtime_policy = dict(cast(dict[str, object], checkpoint_metadata["runtime_policy"]))
-    loaded_runtime_policy = dict(cast(dict[str, object], loaded.session.metadata["runtime_policy"]))
-    checkpoint_runtime_policy.pop("created_at", None)
-    loaded_runtime_policy.pop("created_at", None)
-    assert checkpoint_runtime_policy == loaded_runtime_policy
+    assert "runtime_policy" not in checkpoint_metadata
 
 
 def test_tool_results_from_events_preserves_raw_read_file_content() -> None:
@@ -1466,7 +1242,7 @@ def test_session_storage_reports_corrupt_pending_approval_payload(tmp_path: Path
         )
         connection.commit()
 
-    with pytest.raises(RuntimeError, match="invalid request_id/tool_name types"):
+    with pytest.raises(RuntimeError, match="is missing required fields"):
         _ = store.load_pending_approval(workspace=tmp_path, session_id="approval-session")
 
 
@@ -1488,7 +1264,7 @@ def test_session_storage_reports_corrupt_pending_question_payload(tmp_path: Path
         )
         connection.commit()
 
-    with pytest.raises(RuntimeError, match=r"prompts\[0\]\.question/header"):
+    with pytest.raises(RuntimeError, match="is missing required fields"):
         _ = store.load_pending_question(workspace=tmp_path, session_id="question-session")
 
 

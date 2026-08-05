@@ -165,7 +165,6 @@ class TestMcpServerChecker:
         assert result.status == CapabilityCheckStatus.READY
         assert result.name == "mcp:test-mcp"
         assert result.check_type == DoctorCheckType.MCP_SERVER.value
-        assert result.details["scope"] == "runtime"
         assert result.details["command"] == ["python", "--api-key", "<redacted>"]
         assert "secret-token" not in str(result.details)
 
@@ -182,7 +181,6 @@ class TestMcpServerChecker:
 
         assert result.status == CapabilityCheckStatus.NOT_FOUND
         assert result.error_message is not None
-        assert result.details["scope"] == "runtime"
         assert result.details["command"] == [
             "missing-mcp-server-xyz",
             "--token=<redacted>",

@@ -38,21 +38,16 @@ class LspOperation(enum.Enum):
     OUTGOING_CALLS = "callHierarchy/outgoingCalls"
 
 
-_LSP_OPERATION_ALIASES: dict[str, LspOperation] = {
+_LSP_OPERATIONS: dict[str, LspOperation] = {
     "diagnostics": LspOperation.DIAGNOSTICS,
-    "diagnostic": LspOperation.DIAGNOSTICS,
-    "gotodefinition": LspOperation.GO_TO_DEFINITION,
-    "definition": LspOperation.GO_TO_DEFINITION,
-    "findreferences": LspOperation.FIND_REFERENCES,
-    "references": LspOperation.FIND_REFERENCES,
+    "goToDefinition": LspOperation.GO_TO_DEFINITION,
+    "findReferences": LspOperation.FIND_REFERENCES,
     "hover": LspOperation.HOVER,
-    "documentsymbol": LspOperation.DOCUMENT_SYMBOL,
-    "symbol": LspOperation.DOCUMENT_SYMBOL,
-    "workspacesymbol": LspOperation.WORKSPACE_SYMBOL,
-    "gotoimplementation": LspOperation.GO_TO_IMPLEMENTATION,
-    "implementation": LspOperation.GO_TO_IMPLEMENTATION,
-    "incomingcalls": LspOperation.INCOMING_CALLS,
-    "outgoingcalls": LspOperation.OUTGOING_CALLS,
+    "documentSymbol": LspOperation.DOCUMENT_SYMBOL,
+    "workspaceSymbol": LspOperation.WORKSPACE_SYMBOL,
+    "goToImplementation": LspOperation.GO_TO_IMPLEMENTATION,
+    "incomingCalls": LspOperation.INCOMING_CALLS,
+    "outgoingCalls": LspOperation.OUTGOING_CALLS,
 }
 
 
@@ -66,9 +61,7 @@ class LspTool:
                 "description": (
                     "LSP operation. Preferred names include diagnostics, goToDefinition, "
                     "findReferences, hover, documentSymbol, workspaceSymbol, "
-                    "goToImplementation, incomingCalls, and outgoingCalls. "
-                    "Protocol method strings like textDocument/definition "
-                    "also work."
+                    "goToImplementation, incomingCalls, and outgoingCalls."
                 ),
             },
             "filePath": {
@@ -108,22 +101,11 @@ class LspTool:
 
     @staticmethod
     def _parse_operation(value: object) -> LspOperation:
-        if isinstance(value, LspOperation):
-            return value
         if not isinstance(value, str):
             raise ValueError(f"Unsupported LSP operation: {value}")
-        try:
-            return LspOperation(value)
-        except Exception:
-            pass
-        try:
-            return LspOperation[value]
-        except Exception:
-            pass
-        normalized = "".join(character for character in value if character.isalnum()).lower()
-        alias = _LSP_OPERATION_ALIASES.get(normalized)
-        if alias is not None:
-            return alias
+        operation = _LSP_OPERATIONS.get(value)
+        if operation is not None:
+            return operation
         raise ValueError(f"Unsupported LSP operation: {value}")
 
     @staticmethod

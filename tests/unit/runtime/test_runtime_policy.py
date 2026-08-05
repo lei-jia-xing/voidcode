@@ -18,6 +18,9 @@ _REQUIRED_SNAPSHOT_FIELDS = {
     "prompt_activation",
     "precedence_trace",
     "diagnostics",
+    "created_at",
+    "mode",
+    "read_only",
 }
 
 
@@ -79,6 +82,16 @@ def test_runtime_policy_snapshot_schema_contains_required_v1_fields() -> None:
     assert "metadata" not in snapshot
 
 
+def test_runtime_policy_config_requires_explicit_current_version() -> None:
+    module = _runtime_policy_module()
+
+    with pytest.raises(ValueError, match=r"policy\.version must be 'v1'"):
+        _ = module.validate_runtime_policy_config_payload(
+            {"enabled": True},
+            source="policy",
+        )
+
+
 def test_runtime_policy_precedence_trace_orders_authoritative_sources() -> None:
     snapshot = _materialize_sample_snapshot(
         runtime_config={
@@ -103,6 +116,7 @@ def test_runtime_policy_precedence_trace_orders_authoritative_sources() -> None:
         "intent_metadata",
         "runtime_defaults",
     ]
+    assert trace[1].get("applied") is False
     assert any(entry.get("reason") == "delegation_denied_product_top_level_only" for entry in trace)
 
 
@@ -198,28 +212,12 @@ def test_runtime_policy_product_is_hard_denied_for_delegation() -> None:
     )
 
 
-def test_runtime_policy_legacy_sessions_synthesize_conservative_v1_snapshot() -> None:
+def test_runtime_policy_requires_persisted_snapshot() -> None:
     module = _runtime_policy_module()
-    synthesize_legacy_policy_snapshot = getattr(
-        module,
-        "synthesize_legacy_runtime_policy_snapshot",
-        None,
-    )
-    if synthesize_legacy_policy_snapshot is None:
-        pytest.fail("synthesize_legacy_runtime_policy_snapshot() is not implemented yet")
+    error_type = module.RuntimePolicySnapshotVersionError
 
-    snapshot = synthesize_legacy_policy_snapshot(
-        session_metadata={"runtime_config": {"agent": {"preset": "leader"}}},
-        bundle_metadata={},
-    )
-    if hasattr(snapshot, "as_payload"):
-        snapshot = snapshot.as_payload()
-    assert isinstance(snapshot, Mapping)
-    assert snapshot["schema_version"] == 1
-    delegation_policy = cast(Mapping[str, object], snapshot["delegation_policy"])
-    assert "product" not in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
-    trace = cast(Sequence[Mapping[str, object]], snapshot["precedence_trace"])
-    assert any(entry.get("source") == "legacy_policy_synthesis" for entry in trace)
+    with pytest.raises(error_type, match="runtime_policy snapshot is required"):
+        module.runtime_policy_snapshot_from_session_metadata({})
 
 
 @pytest.mark.parametrize(
@@ -242,6 +240,17 @@ def test_runtime_policy_rejects_unsupported_explicit_snapshot_versions(
     with pytest.raises(error_type, match="unsupported runtime_policy"):
         module.runtime_policy_snapshot_from_session_metadata(
             {"runtime_policy": unsupported_snapshot}
+        )
+
+
+def test_runtime_policy_rejects_current_version_with_incomplete_shape() -> None:
+    module = _runtime_policy_module()
+    error_type = getattr(module, "RuntimePolicySnapshotVersionError", None)
+    assert error_type is not None
+
+    with pytest.raises(error_type, match="missing required fields"):
+        module.runtime_policy_snapshot_from_session_metadata(
+            {"runtime_policy": {"schema_version": 1, "policy_version": "v1"}}
         )
 
 

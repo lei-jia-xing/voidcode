@@ -175,7 +175,7 @@ def test_run_tool_hooks_skips_executable_commands_under_read_only_policy(
             "outcome": "skipped",
             "mode": "analyze",
             "read_only": True,
-            "reason": "read-only runtime policy denies shell commands classified as unknown",
+            "reason": "read-only runtime policy skips executable hook commands",
         },
     }
 
@@ -319,7 +319,6 @@ def test_run_lifecycle_hooks_preserves_payload_env_while_injected_env_wins(
                 "NPM_CONFIG_YES": "caller-request",
                 "YARN_ENABLE_IMMUTABLE_INSTALLS": "caller-request",
                 "VOIDCODE_HOOK_SURFACE": "caller-request",
-                "VOIDCODE_PROMPT": "caller-request",
             },
             sequence_start=11,
             payload={"prompt": "hello"},
@@ -332,7 +331,7 @@ def test_run_lifecycle_hooks_preserves_payload_env_while_injected_env_wins(
     assert resolved_env["NPM_CONFIG_YES"] == "true"
     assert resolved_env["YARN_ENABLE_IMMUTABLE_INSTALLS"] == "false"
     assert resolved_env["VOIDCODE_HOOK_SURFACE"] == "session_start"
-    assert resolved_env["VOIDCODE_PROMPT"] == "hello"
+    assert json.loads(resolved_env["VOIDCODE_HOOK_PAYLOAD_JSON"]) == {"prompt": "hello"}
     assert resolved_env["VOIDCODE_RUNNING_TOOL_HOOK"] == "1"
 
 
@@ -508,10 +507,12 @@ def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> N
             (
                 sys.executable,
                 "-c",
-                "import os, pathlib; "
+                "import json, os, pathlib; "
                 "pathlib.Path('hook-env.txt').write_text("
                 "os.environ['VOIDCODE_HOOK_SURFACE'] + ':' + "
-                "os.environ['VOIDCODE_BACKGROUND_TASK_ID'])",
+                "json.loads(os.environ['VOIDCODE_HOOK_PAYLOAD_JSON'])"
+                "['background_task_id'] + ':' + "
+                "str('VOIDCODE_BACKGROUND_TASK_ID' in os.environ))",
             ),
         ),
     )
@@ -530,7 +531,7 @@ def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> N
     )
 
     assert outcome.failed_error is None
-    assert output_path.read_text() == "background_task_completed:task-1"
+    assert output_path.read_text() == "background_task_completed:task-1:False"
 
 
 def test_run_lifecycle_hooks_skips_shell_policy_denied_command_under_plan_mode(
@@ -564,7 +565,7 @@ def test_run_lifecycle_hooks_skips_shell_policy_denied_command_under_plan_mode(
             "outcome": "skipped",
             "mode": "plan",
             "read_only": True,
-            "reason": "read-only runtime policy denies shell commands classified as destructive",
+            "reason": "read-only runtime policy skips executable hook commands",
         },
     }
 

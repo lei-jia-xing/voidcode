@@ -263,7 +263,7 @@ scheduled runs 应尽量复用当前 runtime event model，而不是过早推动
 - session metadata 应足以标识 schedule provenance
 - scheduler-specific 的可观测性增强可以先停留在 runtime-internal 或 design-level guidance 层，再决定何时进入稳定的 client-facing contracts
 
-这一点很重要，因为 `docs/contracts/runtime-events.md` 当前定义的是一个以 session 为作用域的稳定事件词汇表。scheduler 设计的第一落地切片应与这个模型兼容。
+这一点很重要，因为 `docs/contracts/runtime-events.md` 当前定义的是一个以 session 为作用域的稳定事件词汇表。scheduler 设计的第一落地切片必须遵守这个模型。
 
 ## Client 与 transport 的关系
 
@@ -336,7 +336,7 @@ Phase 1 应明确把 **多个本地 scheduler hosts 同时操作同一个 worksp
 5. single-flight overlap policy 能阻止同一 schedule 的并发运行。
 6. 本地 scheduler host 重启后，默认不会回放无界 backlog 的 missed fires。
 7. session replay 足以检查 scheduled execution，而不需要额外的 scheduler-specific replay pipeline。
-8. scheduler 行为与当前 execution engine selection 兼容，而不会被绑定到单一 engine 上。
+8. scheduler 行为遵守当前 execution engine selection contract，而不会被绑定到单一 engine 上。
 
 合适的验证落点，大概率仍然是 runtime-focused unit tests，以及围绕 storage、dispatch、approval continuity 和 replay 的 integration coverage。
 

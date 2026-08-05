@@ -139,29 +139,23 @@ class TestBuiltinCommandDiscovery:
         plan = [c for c in builtin_commands() if c.name == "plan"][0]
         assert plan.agent == "product", f"/plan agent should be product, got {plan.agent}"
         assert plan.workflow_mode == "product"
-        assert plan.workflow_preset is None
 
     def test_start_work_command_targets_implementation_workflow(self) -> None:
         start_work = [c for c in builtin_commands() if c.name == "start-work"][0]
 
         assert start_work.agent is None
         assert start_work.workflow_mode == "sustain"
-        assert start_work.workflow_preset == "implementation"
 
     def test_review_command_targets_review_workflow_mode(self) -> None:
         review = [c for c in builtin_commands() if c.name == "review"][0]
 
         assert review.workflow_mode == "review"
-        assert review.workflow_preset is None
 
     def test_continuation_loop_commands_target_runtime_owned_flow(self) -> None:
         commands = {c.name: c for c in builtin_commands()}
 
         assert commands["continuation-loop"].workflow_mode == "sustain"
-        assert commands["continuation-loop"].workflow_preset == "implementation"
         assert commands["intensive-loop"].workflow_mode == "deep_work"
-        assert commands["intensive-loop"].workflow_preset == "research"
-        assert commands["cancel-continuation"].workflow_preset is None
         assert "runtime-owned" in commands["continuation-loop"].template
         assert "intensive=true" in commands["intensive-loop"].template
         assert "verification_status" in commands["intensive-loop"].template
@@ -221,32 +215,6 @@ class TestMarkdownCommandWorkflowMode:
         assert resolution is not None
         assert resolution.definition.workflow_mode == "review"
         assert resolution.invocation.rendered_prompt == "Review src/app.py carefully"
-
-    def test_legacy_workflow_preset_frontmatter_is_loaded_and_resolved(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        commands_dir = tmp_path / "commands"
-        commands_dir.mkdir()
-        (commands_dir / "start.md").write_text(
-            "---\n"
-            "description: Start legacy workflow\n"
-            "workflow_preset: implementation\n"
-            "---\n"
-            "Start $ARGUMENTS\n",
-            encoding="utf-8",
-        )
-
-        registry = load_command_registry(workspace=tmp_path)
-        command = registry.get("start")
-
-        assert command is not None
-        assert command.workflow_mode is None
-        assert command.workflow_preset == "implementation"
-        resolution = resolve_prompt_command("/start accepted plan", registry)
-        assert resolution is not None
-        assert resolution.definition.workflow_preset == "implementation"
-        assert resolution.invocation.rendered_prompt == "Start accepted plan"
 
 
 class TestBuiltinCommandRendering:

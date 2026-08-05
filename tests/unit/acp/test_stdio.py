@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import patch
 
 from voidcode.acp.stdio import StdioAcpServer
+from voidcode.runtime.active_session import ActiveRunInterruptResult
 from voidcode.runtime.contracts import RuntimeRequest
 
 
@@ -27,6 +28,7 @@ class _StubEvent:
 @dataclass(frozen=True, slots=True)
 class _StubSessionRef:
     id: str
+    parent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,16 +66,14 @@ class _StubRuntime:
         *,
         run_id: str | None = None,
         reason: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ActiveRunInterruptResult:
         self.cancel_calls.append((session_id, run_id, reason))
-        return {
-            "session_id": session_id,
-            "status": "interrupted",
-            "interrupted": True,
-            "cancelled": True,
-            "run_id": run_id,
-            "reason": reason,
-        }
+        return ActiveRunInterruptResult(
+            session_id=session_id,
+            status="interrupted",
+            run_id=run_id,
+            reason=reason,
+        )
 
 
 class _SlowRuntime:
@@ -109,16 +109,14 @@ class _SlowRuntime:
         *,
         run_id: str | None = None,
         reason: str | None = None,
-    ) -> dict[str, object]:
+    ) -> ActiveRunInterruptResult:
         self.cancel_calls.append((session_id, run_id, reason))
-        return {
-            "session_id": session_id,
-            "status": "interrupted",
-            "interrupted": True,
-            "cancelled": True,
-            "run_id": run_id,
-            "reason": reason,
-        }
+        return ActiveRunInterruptResult(
+            session_id=session_id,
+            status="interrupted",
+            run_id=run_id,
+            reason=reason,
+        )
 
 
 def _request(method: str, request_id: int, params: dict[str, object] | None = None) -> str:
@@ -608,7 +606,7 @@ def test_invalid_protocol_inputs_return_json_rpc_errors() -> None:
 
 
 def test_cli_acp_loads_config_constructs_runtime_and_keeps_stdout_protocol_clean() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     stdout = io.StringIO()
     stderr = io.StringIO()
     stdin = io.StringIO(_request("initialize", 1) + "\n")

@@ -161,6 +161,20 @@ def test_runtime_context_from_payload_rejects_empty_required_fields() -> None:
                 "name": "demo",
                 "description": "Demo",
                 "content": "   ",
+                "prompt_context": "Skill: demo",
+                "execution_notes": "Use it.",
+                "source_path": "file:///demo/SKILL.md",
+            }
+        )
+
+
+def test_runtime_context_from_payload_rejects_missing_materialized_fields() -> None:
+    with pytest.raises(ValueError, match="prompt_context, execution_notes, source_path"):
+        _ = runtime_context_from_payload(
+            {
+                "name": "demo",
+                "description": "Demo",
+                "content": "Use it.",
             }
         )
 
@@ -205,7 +219,16 @@ def test_snapshot_roundtrip_from_payload() -> None:
     assert restored.snapshot_hash == snapshot.snapshot_hash
 
 
-def test_snapshot_from_payload_recomputes_stale_hash() -> None:
+def test_snapshot_from_payload_requires_explicit_current_version() -> None:
+    snapshot = build_skill_execution_snapshot((), source="run")
+    payload = snapshot_payload(snapshot)
+    payload.pop("snapshot_version")
+
+    with pytest.raises(ValueError, match="snapshot version must be 1"):
+        _ = snapshot_from_payload(payload)
+
+
+def test_snapshot_from_payload_rejects_stale_hash() -> None:
     contexts = (
         SkillRuntimeContext(
             name="demo",
@@ -220,6 +243,5 @@ def test_snapshot_from_payload_recomputes_stale_hash() -> None:
     payload = snapshot_payload(snapshot)
     payload["snapshot_hash"] = "stale-hash"
 
-    restored = snapshot_from_payload(payload)
-
-    assert restored.snapshot_hash == snapshot.snapshot_hash
+    with pytest.raises(ValueError, match="snapshot hash does not match"):
+        _ = snapshot_from_payload(payload)

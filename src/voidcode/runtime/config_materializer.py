@@ -133,18 +133,6 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
 
 def parse_persisted_runtime_config(
     runtime_config: Mapping[str, object],
-    *,
-    default_approval_mode: PermissionDecision,
-    default_permission: ExternalDirectoryPermissionConfig,
-    default_policy: object | None,
-    default_model: str | None,
-    default_execution_engine: ExecutionEngineName,
-    default_max_steps: int | None,
-    default_tool_timeout_seconds: int | None,
-    default_reasoning_effort: str | None,
-    default_providers: RuntimeProvidersConfig | None,
-    default_tools: RuntimeToolsConfig | None,
-    default_context_window: RuntimeContextWindowConfig | None,
 ) -> PersistedRuntimeConfigMaterialization:
     unknown_runtime_config_keys = sorted(
         key for key in runtime_config if key not in PERSISTED_RUNTIME_CONFIG_KEYS
@@ -153,54 +141,64 @@ def parse_persisted_runtime_config(
         raise ValueError(
             f"persisted runtime_config field '{unknown_runtime_config_keys[0]}' is not supported"
         )
+    required_runtime_config_keys = {
+        "approval_mode",
+        "permission",
+        "execution_engine",
+        "max_steps",
+        "tool_timeout_seconds",
+        "fallback_models",
+    }
+    missing_runtime_config_keys = sorted(required_runtime_config_keys - runtime_config.keys())
+    if missing_runtime_config_keys:
+        raise ValueError(
+            "persisted runtime_config is missing required field(s): "
+            + ", ".join(missing_runtime_config_keys)
+        )
 
-    approval_mode = default_approval_mode
-    parsed_approval_mode = permission_decision_or_none(runtime_config.get("approval_mode"))
-    if parsed_approval_mode is not None:
-        approval_mode = parsed_approval_mode
+    approval_mode = permission_decision_or_none(runtime_config["approval_mode"])
+    if approval_mode is None:
+        raise ValueError("persisted runtime_config approval_mode is invalid")
 
-    permission = default_permission
-    if "permission" in runtime_config:
-        permission = parse_persisted_external_permission_config(runtime_config.get("permission"))
+    permission = parse_persisted_external_permission_config(runtime_config["permission"])
 
-    policy = default_policy
+    policy = None
     if "policy" in runtime_config:
         policy = parse_runtime_policy_payload(
             runtime_config.get("policy"),
             source="persisted runtime_config.policy",
         )
 
-    model = default_model
+    model = None
     persisted_model = runtime_config.get("model")
     if persisted_model is None or isinstance(persisted_model, str):
         model = persisted_model
+    else:
+        raise ValueError("persisted runtime_config model must be a string or null")
 
-    max_steps = default_max_steps
-    if "max_steps" in runtime_config:
-        persisted_max_steps = runtime_config.get("max_steps")
-        if persisted_max_steps is None:
-            max_steps = None
-        elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
-            if persisted_max_steps < 0:
-                raise ValueError(
-                    "persisted runtime_config max_steps must be a non-negative integer "
-                    "(0 = unlimited)"
-                )
-            max_steps = persisted_max_steps
+    persisted_max_steps = runtime_config["max_steps"]
+    if persisted_max_steps is None:
+        max_steps = None
+    elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
+        if persisted_max_steps < 0:
+            raise ValueError(
+                "persisted runtime_config max_steps must be a non-negative integer (0 = unlimited)"
+            )
+        max_steps = persisted_max_steps
+    else:
+        raise ValueError("persisted runtime_config max_steps must be an integer or null")
 
-    tool_timeout_seconds = default_tool_timeout_seconds
-    if "tool_timeout_seconds" in runtime_config:
-        persisted_tool_timeout = runtime_config.get("tool_timeout_seconds")
-        if persisted_tool_timeout is None:
-            tool_timeout_seconds = None
-        elif isinstance(persisted_tool_timeout, int) and not isinstance(
-            persisted_tool_timeout, bool
-        ):
-            if persisted_tool_timeout < 1:
-                raise ValueError("persisted runtime_config tool_timeout_seconds must be at least 1")
-            tool_timeout_seconds = persisted_tool_timeout
+    persisted_tool_timeout = runtime_config["tool_timeout_seconds"]
+    if persisted_tool_timeout is None:
+        tool_timeout_seconds = None
+    elif isinstance(persisted_tool_timeout, int) and not isinstance(persisted_tool_timeout, bool):
+        if persisted_tool_timeout < 1:
+            raise ValueError("persisted runtime_config tool_timeout_seconds must be at least 1")
+        tool_timeout_seconds = persisted_tool_timeout
+    else:
+        raise ValueError("persisted runtime_config tool_timeout_seconds must be an integer or null")
 
-    reasoning_effort = default_reasoning_effort
+    reasoning_effort = None
     if "reasoning_effort" in runtime_config:
         persisted_reasoning_effort = runtime_config.get("reasoning_effort")
         if persisted_reasoning_effort is None:
@@ -210,7 +208,7 @@ def parse_persisted_runtime_config(
         else:
             raise ValueError("persisted runtime_config reasoning_effort must be a non-empty string")
 
-    providers = default_providers
+    providers = None
     if "providers" in runtime_config:
         try:
             providers = parse_provider_configs_payload(
@@ -227,11 +225,11 @@ def parse_persisted_runtime_config(
 
     provider_fallback = parse_persisted_provider_fallback(runtime_config, model=model)
 
-    tools = default_tools
+    tools = None
     if "tools" in runtime_config:
         tools = parse_persisted_runtime_tools_config(runtime_config.get("tools"))
 
-    context_window = default_context_window
+    context_window = None
     if "context_window" in runtime_config:
         try:
             context_window = parse_runtime_context_window_payload(
@@ -246,8 +244,9 @@ def parse_persisted_runtime_config(
                 )
             ) from exc
 
-    persisted_execution_engine = execution_engine_or_none(runtime_config.get("execution_engine"))
-    execution_engine = persisted_execution_engine or default_execution_engine
+    execution_engine = execution_engine_or_none(runtime_config["execution_engine"])
+    if execution_engine is None:
+        raise ValueError("persisted runtime_config execution_engine is invalid")
 
     return PersistedRuntimeConfigMaterialization(
         approval_mode=approval_mode,
@@ -274,9 +273,9 @@ def parse_persisted_provider_fallback(
     model: str | None,
 ) -> RuntimeProviderFallbackConfig | None:
     if "fallback_models" not in runtime_config:
-        return None
-    raw_fallback_models = runtime_config.get("fallback_models")
-    if raw_fallback_models in (None, []):
+        raise ValueError("persisted runtime_config.fallback_models is required")
+    raw_fallback_models = runtime_config["fallback_models"]
+    if raw_fallback_models == []:
         return None
     if model is None:
         raise ValueError(
@@ -421,19 +420,24 @@ def parse_persisted_external_permission_config(
         raise ValueError(
             f"persisted runtime_config permission field '{unknown_keys[0]}' is not supported"
         )
+    required_keys = {"external_directory_read", "external_directory_write"}
+    missing_keys = sorted(required_keys - payload.keys())
+    if missing_keys:
+        raise ValueError(
+            "persisted runtime_config permission is missing required field(s): "
+            + ", ".join(missing_keys)
+        )
     return ExternalDirectoryPermissionConfig(
         read=ExternalDirectoryPolicy(
             rules=parse_persisted_external_permission_rules(
-                payload.get("external_directory_read"),
+                payload["external_directory_read"],
                 field_path="permission.external_directory_read",
-                default=(("*", "allow"),),
             )
         ),
         write=ExternalDirectoryPolicy(
             rules=parse_persisted_external_permission_rules(
-                payload.get("external_directory_write"),
+                payload["external_directory_write"],
                 field_path="permission.external_directory_write",
-                default=(("*", "allow"),),
             )
         ),
         rules=parse_persisted_pattern_permission_rules(payload.get("rules")),
@@ -453,10 +457,7 @@ def parse_persisted_external_permission_rules(
     raw_rules: object,
     *,
     field_path: str,
-    default: tuple[tuple[str, PermissionDecision], ...],
 ) -> tuple[tuple[str, PermissionDecision], ...]:
-    if raw_rules is None:
-        return default
     if not isinstance(raw_rules, dict):
         raise ValueError(f"persisted runtime_config {field_path} must be an object")
     parsed: list[tuple[str, PermissionDecision]] = []
@@ -469,7 +470,7 @@ def parse_persisted_external_permission_rules(
                 f"persisted runtime_config {field_path}.{raw_pattern} must be allow, deny, or ask"
             )
         parsed.append((raw_pattern, decision))
-    return tuple(parsed) if parsed else default
+    return tuple(parsed)
 
 
 def parse_persisted_pattern_permission_rules(
@@ -491,7 +492,9 @@ def parse_persisted_pattern_permission_rules(
             raise ValueError(
                 f"persisted runtime_config {field_path}.{unknown_keys[0]} is not supported"
             )
-        raw_tool = payload.get("tool", "*")
+        if "tool" not in payload:
+            raise ValueError(f"persisted runtime_config {field_path}.tool is required")
+        raw_tool = payload["tool"]
         if not isinstance(raw_tool, str) or not raw_tool.strip():
             raise ValueError(f"persisted runtime_config {field_path}.tool must be a string")
         raw_path = payload.get("path")

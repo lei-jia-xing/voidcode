@@ -59,7 +59,7 @@ def test_sqlite_vec_capability_reports_available_when_extension_loads(
     monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: FakeConnection())
     monkeypatch.setitem(sys.modules, "sqlite_vec", FakeSqliteVecModule)
 
-    capability = _detect_sqlite_vec_capability()
+    capability = _detect_sqlite_vec_capability()()
 
     assert capability == _sqlite_vec_capability()(status="available", detail=None)
     assert len(loaded_connections) == 1
@@ -79,7 +79,7 @@ def test_sqlite_vec_capability_reports_not_installed_without_import(
     monkeypatch.setattr(builtins, "__import__", missing_sqlite_vec)
     monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 41, 0))
 
-    capability = _detect_sqlite_vec_capability()
+    capability = _detect_sqlite_vec_capability()()
 
     assert capability.status == "not_installed"
     assert "sqlite_vec" in capability.detail
@@ -161,7 +161,7 @@ def test_sqlite_vec_capability_reports_injected_load_failure(
     monkeypatch.setattr(sqlite3, "connect", lambda *_args, **_kwargs: FakeConnection())
     monkeypatch.setitem(sys.modules, "sqlite_vec", FakeSqliteVecModule)
 
-    capability = _detect_sqlite_vec_capability()
+    capability = _detect_sqlite_vec_capability()()
 
     assert capability.status == "extension_loading_unavailable"
     assert "loadable extensions" in capability.detail
@@ -176,7 +176,7 @@ def test_sqlite_vec_capability_reports_sqlite_version_unsupported(
     monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 40, 1))
     monkeypatch.setitem(sys.modules, "sqlite_vec", FakeSqliteVecModule)
 
-    capability = _detect_sqlite_vec_capability()
+    capability = _detect_sqlite_vec_capability()()
 
     assert capability.status == "sqlite_version_unsupported"
     assert "3.41" in capability.detail

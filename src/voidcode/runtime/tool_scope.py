@@ -7,7 +7,6 @@ from .config import RuntimeAgentConfig
 from .contracts import RuntimeRequestError
 from .tool_provider import MEMORY_TOOL_NAMES, scoped_tool_registry_for_agent
 from .tool_registry import ToolPolicyDecision, ToolRegistry
-from .workflow_snapshot import workflow_snapshot_from_metadata
 
 
 class RuntimeToolScopeResolver:
@@ -54,16 +53,6 @@ class RuntimeToolScopeResolver:
     ) -> ToolPolicyDecision:
         mode = self.runtime_mode(metadata)
         read_only = self.effective_read_only(metadata)
-        workflow = workflow_snapshot_from_metadata(metadata)
-        if workflow is not None and workflow.get("read_only_default") is True:
-            raw_mode = workflow.get("mode")
-            effective = workflow.get("effective")
-            if isinstance(effective, dict):
-                effective_payload = cast(dict[str, object], effective)
-                if isinstance(effective_payload.get("mode"), str):
-                    mode = cast(str, effective_payload["mode"])
-            elif isinstance(raw_mode, str):
-                mode = raw_mode
 
         if tool_name in MEMORY_TOOL_NAMES and not self.memory_tools_allowed(metadata):
             return ToolPolicyDecision(
@@ -163,11 +152,7 @@ class RuntimeToolScopeResolver:
         return read_only
 
     def effective_read_only(self, metadata: dict[str, object] | None) -> bool:
-        read_only = self.runtime_read_only(metadata)
-        workflow = workflow_snapshot_from_metadata(metadata)
-        if workflow is not None and workflow.get("read_only_default") is True:
-            return True
-        return read_only
+        return self.runtime_read_only(metadata)
 
     def memory_tools_allowed(self, metadata: dict[str, object] | None) -> bool:
         if not self._memory_enabled or metadata is None:

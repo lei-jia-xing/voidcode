@@ -221,7 +221,7 @@ def _capability_for_config(config: MemoryConfig) -> SqliteVecCapability:
     return detect_sqlite_vec_capability()
 
 
-def _detect_sqlite_vec_capability() -> SqliteVecCapability:
+def detect_sqlite_vec_capability() -> SqliteVecCapability:
     if sqlite3.sqlite_version_info < (3, 41, 0):
         return SqliteVecCapability(
             status="sqlite_version_unsupported",
@@ -254,20 +254,6 @@ def _detect_sqlite_vec_capability() -> SqliteVecCapability:
             close()
 
     return SqliteVecCapability(status="available", detail=None)
-
-
-class _SqliteVecCapabilityDetector:
-    def __call__(self) -> SqliteVecCapability:
-        return _detect_sqlite_vec_capability()
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self(), name)
-
-    def __eq__(self, other: object) -> bool:
-        return self() == other
-
-
-detect_sqlite_vec_capability = _SqliteVecCapabilityDetector()
 
 
 def build_memory_manager(

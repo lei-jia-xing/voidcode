@@ -66,6 +66,11 @@ describe("Tool Status Contract", () => {
             phase: "running",
             status: "running",
             label: "Reading file...",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Reading file...",
+            },
           },
         },
       },
@@ -81,6 +86,11 @@ describe("Tool Status Contract", () => {
             phase: "completed",
             status: "completed",
             label: "Read 10 lines",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read 10 lines",
+            },
           },
         },
       },
@@ -120,6 +130,11 @@ describe("Tool Status Contract", () => {
             phase: "running",
             status: "running",
             label: "Reading file",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Reading file",
+            },
           },
         },
       },
@@ -205,6 +220,13 @@ describe("Tool Status Contract", () => {
           tool: "write_file",
           tool_call_id: "call_write",
           arguments: { path: "note.txt", content: "new" },
+          tool_status: {
+            invocation_id: "call_write",
+            tool_name: "write_file",
+            phase: "running",
+            status: "running",
+            display: { kind: "file", title: "Write", summary: "note.txt" },
+          },
         },
       },
       {
@@ -222,6 +244,13 @@ describe("Tool Status Contract", () => {
           diff: "--- a/note.txt\n+++ b/note.txt\n@@ -0,0 +1 @@\n+new",
           content: "Wrote file successfully: note.txt",
           error: null,
+          tool_status: {
+            invocation_id: "call_write",
+            tool_name: "write_file",
+            phase: "completed",
+            status: "completed",
+            display: { kind: "file", title: "Write", summary: "note.txt" },
+          },
         },
       },
     ];
@@ -263,6 +292,13 @@ describe("Tool Status Contract", () => {
           tool: "shell_exec",
           tool_call_id: "shell-approval-1",
           arguments: { command: "npm test" },
+          tool_status: {
+            invocation_id: "shell-approval-1",
+            tool_name: "shell_exec",
+            phase: "running",
+            status: "running",
+            display: { kind: "shell", title: "Shell", summary: "npm test" },
+          },
         },
       },
       {
@@ -308,6 +344,13 @@ describe("Tool Status Contract", () => {
         payload: {
           tool: "shell_exec",
           tool_call_id: "shell-deny-1",
+          tool_status: {
+            invocation_id: "shell-deny-1",
+            tool_name: "shell_exec",
+            phase: "running",
+            status: "running",
+            display: { kind: "shell", title: "Shell", summary: "rm -rf build" },
+          },
           arguments: { command: "rm -rf build" },
         },
       },
@@ -345,7 +388,7 @@ describe("Tool Status Contract", () => {
     });
   });
 
-  it("treats runtime.tool_completed without explicit status as completed", () => {
+  it("ignores runtime.tool_completed without tool_status", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "test",
@@ -371,11 +414,7 @@ describe("Tool Status Contract", () => {
     const messages = deriveChatMessages(events, null);
     const assistantMessage = messages.find((m) => m.role === "assistant");
 
-    expect(assistantMessage?.tools[0]).toMatchObject({
-      id: "call_read",
-      name: "read_file",
-      status: "completed",
-    });
+    expect(assistantMessage?.tools).toEqual([]);
   });
 
   it("records frontend receive time for reasoning duration when present", () => {
@@ -498,53 +537,7 @@ describe("Tool Display Metadata Contract", () => {
     expect(tool.status).toBe("completed");
   });
 
-  it("provides curated fallback for old tool_completed without tool_status", () => {
-    const events: EventEnvelope[] = [
-      {
-        session_id: "test",
-        sequence: 1,
-        event_type: "runtime.request_received",
-        source: "runtime",
-        payload: { prompt: "Read the file" },
-      },
-      {
-        session_id: "test",
-        sequence: 2,
-        event_type: "runtime.tool_completed",
-        source: "tool",
-        payload: {
-          tool: "read_file",
-          tool_call_id: "call_read",
-          path: "README.md",
-          content: "contents",
-        },
-      },
-    ];
-
-    const messages = deriveChatMessages(events, null);
-    const assistantMessage = messages.find((m) => m.role === "assistant");
-    expect(assistantMessage?.tools).toHaveLength(1);
-    const tool = assistantMessage!.tools[0];
-
-    expect(tool.id).toBe("call_read");
-    expect(tool.name).toBe("read_file");
-    expect(tool.status).toBe("completed");
-    expect(tool.summary).toBe("Read: README.md");
-    expect(tool.legacy).toEqual({
-      label: "Read: README.md",
-      summary: "Read: README.md",
-    });
-
-    // RED: legacy events without tool_status must not leak raw JSON as label.
-    const label = tool.label;
-    if (label !== undefined) {
-      expect(label).not.toContain("{");
-      expect(label).not.toContain('"tool"');
-      expect(label).not.toContain("arguments");
-    }
-  });
-
-  it("prefers explicit tool_status.label over display.summary for compatibility", () => {
+  it("prefers explicit tool_status.label over display.summary", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "test",
@@ -562,6 +555,7 @@ describe("Tool Display Metadata Contract", () => {
           tool_status: {
             invocation_id: "call_xyz",
             tool_name: "read",
+            phase: "running",
             status: "running",
             label: "Explicit label",
             display: {
@@ -668,6 +662,7 @@ describe("Tool Display Metadata Contract", () => {
           tool_status: {
             invocation_id: "read-a",
             tool_name: "read_file",
+            phase: "running",
             status: "running",
             display: {
               kind: "context",
@@ -688,6 +683,7 @@ describe("Tool Display Metadata Contract", () => {
           tool_status: {
             invocation_id: "read-b",
             tool_name: "read_file",
+            phase: "running",
             status: "running",
             display: {
               kind: "context",
@@ -709,6 +705,7 @@ describe("Tool Display Metadata Contract", () => {
           tool_status: {
             invocation_id: "read-b",
             tool_name: "read_file",
+            phase: "completed",
             status: "completed",
             display: {
               kind: "context",
@@ -730,6 +727,7 @@ describe("Tool Display Metadata Contract", () => {
           tool_status: {
             invocation_id: "read-a",
             tool_name: "read_file",
+            phase: "completed",
             status: "completed",
             display: {
               kind: "context",

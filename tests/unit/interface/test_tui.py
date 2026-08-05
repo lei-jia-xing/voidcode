@@ -25,6 +25,7 @@ class _StubEvent:
 @dataclass(frozen=True)
 class _StubSessionRef:
     id: str
+    parent_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -470,15 +470,12 @@ def search_tool_output_artifact(
 def cap_tool_result_output(
     result: ToolResult,
     *,
-    workspace: Path,
     session_id: str | None = None,
     tool_call_id: str | None = None,
     max_lines: int = MAX_TOOL_OUTPUT_LINES,
     max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
 ) -> ToolResult:
     """Cap model-visible tool output/error text and save the full text as a temp artifact."""
-
-    _ = workspace  # kept for compatibility with existing tool-output capping call sites
 
     if result.content is None or result.content == "":
         if result.error is None or result.error == "":

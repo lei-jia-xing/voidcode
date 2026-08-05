@@ -55,14 +55,14 @@ CLI 的默认输出面向人工阅读：`run` 会隐藏原始事件转储，只�
 - `mise run lint` → `uv run ruff check .`
 - `mise run format` → `uv run ruff format .`
 - `mise run typecheck` → `uv run ty check src`
-- `mise run test:fast` → 并行运行主要 unit tests，跳过 integration、fuzz-style tests 和大型 runtime extension 回归文件
-- `mise run test` → `uv run pytest -n auto`
-- `mise run test:coverage` → `uv run pytest -n auto --cov=voidcode --cov-report=term-missing`
+- `mise run test` / `mise run test:fast` → 使用 xdist work-stealing 并行运行主要 unit tests，跳过 integration、fuzz-style tests 和大型 runtime extension 回归文件
+- `mise run test:all` → 使用 xdist work-stealing 运行完整 Python 测试套件
+- `mise run test:coverage` → 使用 xdist work-stealing 运行完整套件并收集 coverage
 - `mise run build` → `uv build`
 
 Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 property tests。当前这类覆盖刻意保持在 helper 层，主要用于验证像 `apply_patch`、`edit`、`todo_write`、`glob` 这类确定性字符串/patch/summary/路径规范化逻辑，而不是直接对 runtime 主循环做随机化测试。为了让 CI 行为稳定，这批测试使用有界 strategy，并通过 Hypothesis 设置保持可重复的 deterministic 运行。
 
-默认本地 Python 测试不再自动启用 coverage：`mise run test:fast` 用于高频迭代，跳过 integration、fuzz-style 单测和大型 runtime extension 回归文件；`mise run test` 使用 `pytest-xdist` 并行运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。
+默认本地 Python 测试不再自动启用 coverage：`mise run test` 和 `mise run test:fast` 用于高频迭代，跳过 integration、fuzz-style 单测、大型 runtime extension 回归，以及会启动真实 CLI/TUI/MCP/tmux 边界的重型测试；`mise run test:all` 运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。并行任务使用 work-stealing 调度，避免慢测文件集中在少数 worker 上造成长尾等待。
 
 ### 前端 任务
 

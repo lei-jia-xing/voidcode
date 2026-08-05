@@ -130,7 +130,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `provider`：产品默认主路径；执行前必须配置 `model = "provider/model"`（或等价环境变量），否则 runtime 会在 run preflight 阶段返回清晰的 provider/model 配置错误。
 - `deterministic`：保留为显式支持的 test/dev/no-key harness，并继续承担 graph harness 与确定性回归测试。
 - `voidcode config init` 默认不写入 `execution_engine`，避免 repo-local config 锁死 provider/no-model 状态；若显式写入 `execution_engine = "provider"`，应同时写入 `model`。
-- 历史会话 replay/resume 的兼容语义由持久化 runtime config 元数据维持，不应被新默认值静默覆盖。
+- 会话 replay/resume 必须读取持久化 runtime config 元数据，不得被新默认值覆盖。
 
 ## 当前实现的仓库本地形状
 
@@ -198,7 +198,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `mcp.servers`：对象
 - `provider_fallback`：对象
 - `providers`：对象
-- provider 凭据环境变量可作为 first-run fallback：设置 `VOIDCODE_MODEL=opencode-go/<model>` 与 `OPENCODE_API_KEY` 时，即使 `.voidcode.json` 没有 `providers.opencode-go` block，runtime 也会构造最小 OpenCode Go provider 配置。等价 fallback 也覆盖现有标准变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY`、`GITHUB_COPILOT_TOKEN`、`LITELLM_API_KEY` / `LITELLM_PROXY_API_KEY`、`GLM_API_KEY`、`MINIMAX_API_KEY`、`KIMI_API_KEY` 与 `DASHSCOPE_API_KEY`。这些值只进入运行时配置对象；`config show` 与 persisted runtime metadata 不会输出 secret。
+- provider 凭据环境变量可用于 first-run discovery：设置 `VOIDCODE_MODEL=opencode-go/<model>` 与 `OPENCODE_API_KEY` 时，即使 `.voidcode.json` 没有 `providers.opencode-go` block，runtime 也会构造最小 OpenCode Go provider 配置。该 discovery 也覆盖现有标准变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY`、`GITHUB_COPILOT_TOKEN`、`LITELLM_API_KEY` / `LITELLM_PROXY_API_KEY`、`ZAI_API_KEY`、`ZHIPU_API_KEY`、`MINIMAX_API_KEY`、`KIMI_API_KEY` 与 `DASHSCOPE_API_KEY`。这些值只进入运行时配置对象；`config show` 与 persisted runtime metadata 不会输出 secret。
 - `agent.preset`：agent preset id。可解析 builtin `leader`、`worker`、`advisor`、`explore`、`researcher`、`product`，以及本地发现的 markdown manifest id（见下方“本地 markdown agent manifest”）。
 - `agent.prompt_profile`：字符串；省略时从内置 manifest 回填
 - `agent.model`：字符串；对 active agent 覆盖顶层 `model`
@@ -336,7 +336,7 @@ Runtime Harness Policy v1 的仓库本地配置面必须保持 schema-bounded。
 
 配置只能选择、收窄或记录 policy intent；不能授予 hard-denied tool、delegation target、hook authority、MCP server、approval 或 product delegation。未知 policy key、未知 hook event scope、无效 tool policy shape、`metadata` 这类无界 escape hatch、以及任何试图把 `product` 加入 delegated child allowlist 的配置都必须 fail fast。
 
-当 fresh run materialize policy 后，`RuntimePolicySnapshot` 会进入 session truth，并通过 `runtime.request_received.payload.runtime_policy` 暴露有界、脱敏的 debug projection；resume/replay 优先读取已持久化 snapshot。旧 session 或旧 bundle 缺少 snapshot 时，runtime 合成保守 v1 snapshot，而不是从新的 live config 静默扩大能力。未知 policy key、unsupported policy version、无界 diagnostics 入口和 product delegation allow 都是 fail-fast 配置错误。
+当 fresh run materialize policy 后，`RuntimePolicySnapshot` 会进入 session truth，并通过 `runtime.request_received.payload.runtime_policy` 暴露有界、脱敏的 debug projection。resume/replay 必须读取完整的已持久化 v1 snapshot；snapshot 缺失、版本不匹配或 shape 不完整都会立即失败。未知 policy key、unsupported policy version、无界 diagnostics 入口和 product delegation allow 同样是 fail-fast 配置错误。
 
 ## Agent preset runtime consumption 边界
 
@@ -492,7 +492,7 @@ workspace 本地覆盖路径保持为：
 
 ## 推荐优先级
 
-对于当前实现，`load_runtime_config()` 仍保持 backward-compatible 的解析顺序：
+`load_runtime_config()` 使用以下唯一解析顺序：
 
 1. 显式参数和 request-level 覆盖
 2. 仓库本地配置文件
@@ -500,6 +500,8 @@ workspace 本地覆盖路径保持为：
 4. 内置默认值
 
 对于恢复的会话，持久化在 `SessionState.metadata["runtime_config"]` 中的 `approval_mode` / `model` 就是会话覆盖，并且优先级高于新的 CLI / 客户端覆盖。
+
+持久化 runtime config 使用单一当前 shape。`approval_mode`、`permission`、`execution_engine`、`max_steps`、`tool_timeout_seconds` 和 `fallback_models` 均为必填字段；缺失字段、无效类型或未知字段直接失败。resume/replay 不从当前进程默认值补齐缺失字段，也不从其他 snapshot 反推缺失配置。
 
 Memory policy 也要按 runtime-owned policy 解释。`memory` 默认保持保守、workspace-scoped、可预测的行为，memory tools 只有在 runtime 明确允许的 context 中才可见或可调用；prompt guidance 只是补充，不是隐藏或允许 memory tools 的唯一依据。prompt-stack metadata 可以显示 memory guidance fragment 的有界 redacted preview，但不代表 memory tool 权限本身。
 

@@ -198,7 +198,3 @@ class ActiveSessionRegistry:
 
 
 ACTIVE_SESSION_REGISTRY = ActiveSessionRegistry()
-
-# Compatibility alias for callers that reached into the old service module internals.
-_ACTIVE_SESSION_REGISTRY = ACTIVE_SESSION_REGISTRY
-_ActiveSessionRegistry = ActiveSessionRegistry

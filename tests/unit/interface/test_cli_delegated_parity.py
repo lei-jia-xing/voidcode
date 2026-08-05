@@ -132,54 +132,34 @@ class _WriteThenDoneGraph:
 
 def test_cli_parser_has_sessions_list_subcommand() -> None:
     """``voidcode sessions list`` must exist for session enumeration."""
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    actions = {action.dest for action in parser._subparsers._group_actions[0]._choices_actions}
-    assert "sessions" in actions
+    cli = importlib.import_module("voidcode.cli.app")
+    assert "sessions" in cli.root_cli.commands
 
 
 def test_cli_parser_has_sessions_resume_subcommand() -> None:
     """``voidcode sessions resume`` must exist for approval/resume paths."""
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    sessions_parser = None
-    for action in parser._subparsers._group_actions:
-        if hasattr(action, "_parser_class") and "sessions" in (action.choices or {}):
-            sessions_parser = action.choices["sessions"]
-            break
-    assert sessions_parser is not None
-    sub_actions = {a.dest for a in sessions_parser._subparsers._group_actions[0]._choices_actions}
-    assert "resume" in sub_actions
+    cli = importlib.import_module("voidcode.cli.app")
+    sessions_command = cli.root_cli.commands["sessions"]
+    assert "resume" in sessions_command.commands
 
 
 def test_cli_parser_has_sessions_answer_subcommand() -> None:
     """``voidcode sessions answer`` must exist for pending-question waits."""
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    sessions_parser = None
-    for action in parser._subparsers._group_actions:
-        if hasattr(action, "_parser_class") and "sessions" in (action.choices or {}):
-            sessions_parser = action.choices["sessions"]
-            break
-    assert sessions_parser is not None
-    sub_actions = {a.dest for a in sessions_parser._subparsers._group_actions[0]._choices_actions}
-    assert "answer" in sub_actions
+    cli = importlib.import_module("voidcode.cli.app")
+    sessions_command = cli.root_cli.commands["sessions"]
+    assert "answer" in sessions_command.commands
 
 
 def test_cli_parser_has_run_subcommand() -> None:
     """``voidcode run`` must exist as the primary delegated-task entry point."""
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    actions = {action.dest for action in parser._subparsers._group_actions[0]._choices_actions}
-    assert "run" in actions
+    cli = importlib.import_module("voidcode.cli.app")
+    assert "run" in cli.root_cli.commands
 
 
 def test_cli_parser_has_serve_subcommand() -> None:
     """``voidcode serve`` must exist to start the HTTP transport."""
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    actions = {action.dest for action in parser._subparsers._group_actions[0]._choices_actions}
-    assert "serve" in actions
+    cli = importlib.import_module("voidcode.cli.app")
+    assert "serve" in cli.root_cli.commands
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +168,7 @@ def test_cli_parser_has_serve_subcommand() -> None:
 
 
 def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = tmp_path
     config = SimpleNamespace(approval_mode="allow")
 
@@ -251,11 +231,11 @@ def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
 def test_cli_sessions_resume_resolves_approval_allow() -> None:
     """``voidcode sessions resume --approval-request-id X --approval-decision allow``
     must resolve a pending approval and continue the session."""
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
-            session=SimpleNamespace(id="waiting-session"),
+            session=SimpleNamespace(id="waiting-session", parent_id=None),
             status="completed",
             turn=1,
             metadata={"workspace": str(workspace)},
@@ -306,11 +286,11 @@ def test_cli_sessions_resume_resolves_approval_allow() -> None:
 def test_cli_sessions_resume_resolves_approval_deny() -> None:
     """``voidcode sessions resume --approval-decision deny`` must deny the
     pending approval and mark the session as failed."""
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
-            session=SimpleNamespace(id="waiting-session"),
+            session=SimpleNamespace(id="waiting-session", parent_id=None),
             status="failed",
             turn=1,
             metadata={"workspace": str(workspace)},
@@ -356,11 +336,11 @@ def test_cli_sessions_resume_resolves_approval_deny() -> None:
 
 def test_cli_sessions_answer_resolves_pending_question() -> None:
     """``voidcode sessions answer`` must call the runtime-owned question path."""
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
-            session=SimpleNamespace(id="question-session"),
+            session=SimpleNamespace(id="question-session", parent_id=None),
             status="completed",
             turn=1,
             metadata={"workspace": str(workspace)},
@@ -405,11 +385,11 @@ def test_cli_sessions_answer_resolves_pending_question() -> None:
 
 
 def test_cli_sessions_answer_accepts_json_responses() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
         session=SimpleNamespace(
-            session=SimpleNamespace(id="question-session"),
+            session=SimpleNamespace(id="question-session", parent_id=None),
             status="completed",
             turn=1,
             metadata={"workspace": str(workspace)},
@@ -441,7 +421,7 @@ def test_cli_sessions_answer_accepts_json_responses() -> None:
 
 
 def test_cli_sessions_answer_completes_real_question_wait(tmp_path: Path) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     runtime_module = importlib.import_module("voidcode.runtime")
     config_module = importlib.import_module("voidcode.runtime.config")
 
@@ -527,7 +507,7 @@ def test_cli_sessions_resume_replays_completed_session_after_restart(tmp_path: P
 
 
 def test_cli_sessions_list_shows_delegated_child_sessions(tmp_path: Path) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = tmp_path
     runtime_module = importlib.import_module("voidcode.runtime")
     (workspace / "sample.txt").write_text("hello\n", encoding="utf-8")
@@ -559,7 +539,7 @@ def test_cli_sessions_list_shows_delegated_child_sessions(tmp_path: Path) -> Non
 def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
     """Interactive ``voidcode run`` must emit approval_requested events and
     wait for user input before resuming."""
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
 
     class _StubSession:
@@ -685,7 +665,7 @@ def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
 def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
     """Non-interactive ``voidcode run`` must NOT enter the approval loop and
     must return immediately after the initial stream ends."""
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
 
     class _StubSession:
@@ -776,27 +756,18 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
 
 
 def test_cli_parser_has_tasks_subcommand() -> None:
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    actions = {action.dest for action in parser._subparsers._group_actions[0]._choices_actions}
-    assert "tasks" in actions
+    cli = importlib.import_module("voidcode.cli.app")
+    assert "tasks" in cli.root_cli.commands
 
 
 def test_cli_parser_has_tasks_lifecycle_subcommands() -> None:
-    cli = importlib.import_module("voidcode.cli")
-    parser = cli.build_parser()
-    tasks_parser = None
-    for action in parser._subparsers._group_actions:
-        if hasattr(action, "choices") and "tasks" in (action.choices or {}):
-            tasks_parser = action.choices["tasks"]
-            break
-    assert tasks_parser is not None
-    sub_actions = {a.dest for a in tasks_parser._subparsers._group_actions[0]._choices_actions}
-    assert sub_actions == {"status", "output", "cancel", "retry", "list"}
+    cli = importlib.import_module("voidcode.cli.app")
+    tasks_command = cli.root_cli.commands["tasks"]
+    assert set(tasks_command.commands) == {"status", "output", "cancel", "retry", "list"}
 
 
 def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-1"),
@@ -839,7 +810,7 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
 
 
 def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-json"),
@@ -879,7 +850,7 @@ def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
 
 
 def test_cli_tasks_guidance_quotes_workspace_with_spaces(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-spaces"),
@@ -907,7 +878,7 @@ def test_cli_tasks_guidance_quotes_workspace_with_spaces(capsys: Any) -> None:
 def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
     capsys: Any,
 ) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo repo; rm -rf no")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-shell"),
@@ -942,7 +913,7 @@ def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
 def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(
     tmp_path: Path, capsys: Any
 ) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     runtime_module = importlib.import_module("voidcode.runtime")
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
@@ -997,7 +968,7 @@ def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(
 
 
 def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-1",
@@ -1039,7 +1010,7 @@ def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: A
 
 
 def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-failed-json",
@@ -1080,7 +1051,7 @@ def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
 def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(
     tmp_path: Path, capsys: Any
 ) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     runtime_module = importlib.import_module("voidcode.runtime")
     config_module = importlib.import_module("voidcode.runtime.config")
     permission_module = importlib.import_module("voidcode.runtime.permission")
@@ -1132,7 +1103,7 @@ def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(
 
 
 def test_cli_tasks_output_falls_back_to_summary_without_child_result(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-2",
@@ -1164,7 +1135,7 @@ def test_cli_tasks_output_falls_back_to_summary_without_child_result(capsys: Any
 
 
 def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-3",
@@ -1198,7 +1169,7 @@ def test_cli_tasks_output_falls_back_when_child_session_lookup_fails(capsys: Any
 
 
 def test_cli_tasks_output_preserves_empty_child_session_output(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_result = SimpleNamespace(
         task_id="task-empty",
@@ -1234,7 +1205,7 @@ def test_cli_tasks_output_preserves_empty_child_session_output(capsys: Any) -> N
 
 
 def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-1"),
@@ -1263,7 +1234,7 @@ def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: An
 
 
 def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     task_state = SimpleNamespace(
         task=SimpleNamespace(id="task-retried"),
@@ -1291,7 +1262,7 @@ def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any)
 
 
 def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     tasks = (
         SimpleNamespace(
@@ -1326,7 +1297,7 @@ def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
 
 
 def test_cli_tasks_list_supports_json(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     tasks = (
         SimpleNamespace(
@@ -1364,7 +1335,7 @@ def test_cli_tasks_list_supports_json(capsys: Any) -> None:
 
 
 def test_cli_tasks_list_filters_by_parent_session(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     tasks = (
         SimpleNamespace(
@@ -1450,73 +1421,6 @@ def test_runtime_background_child_inherits_parent_read_only_policy(tmp_path: Pat
     assert not (tmp_path / "child.txt").exists()
 
 
-def test_runtime_child_policy_inheritance_treats_workflow_default_as_read_only(
-    tmp_path: Path,
-) -> None:
-    runtime_module = importlib.import_module("voidcode.runtime")
-    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    parent_metadata: dict[str, object] = {
-        "workflow": {
-            "selected_preset": "review",
-            "read_only_default": True,
-            "effective": {
-                "mode": "default",
-                "read_only_default": True,
-            },
-        }
-    }
-
-    inherited = runtime._metadata_with_inherited_child_policy(
-        child_metadata={},
-        parent_metadata=parent_metadata,
-    )
-
-    assert "read_only" not in parent_metadata
-    assert inherited["read_only"] is True
-
-
-def test_runtime_background_child_inherits_workflow_read_only_default(
-    tmp_path: Path,
-) -> None:
-    runtime_module = importlib.import_module("voidcode.runtime")
-    config_module = importlib.import_module("voidcode.runtime.config")
-    (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
-    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(
-            prompt="read sample.txt",
-            session_id="leader-workflow-read-only",
-            metadata={"workflow_preset": "review"},
-        )
-    )
-    runtime = runtime_module.VoidCodeRuntime(
-        workspace=tmp_path,
-        config=config_module.RuntimeConfig(execution_engine="deterministic"),
-        graph=_WriteThenDoneGraph(),
-    )
-
-    started = runtime.start_background_task(
-        runtime_module.RuntimeRequest(
-            prompt="write child.txt delegated",
-            parent_session_id="leader-workflow-read-only",
-        )
-    )
-    completed = _wait_for_background_task(
-        runtime,
-        started.task.id,
-        predicate=_is_terminal_background_task,
-    )
-    child_result = runtime.session_result(session_id=cast(str, completed.child_session_id))
-
-    assert completed.status == "failed"
-    assert completed.request.metadata["read_only"] is True
-    assert completed.request.metadata["mode"] == "normal"
-    assert child_result.session.metadata["read_only"] is True
-    assert child_result.error is not None
-    assert "read-only runtime policy denies mutating tools" in child_result.error
-    assert not (tmp_path / "child.txt").exists()
-
-
 def test_runtime_background_child_cannot_enable_memory_when_parent_forbids(
     tmp_path: Path,
 ) -> None:
@@ -1562,7 +1466,7 @@ def test_runtime_exposes_load_background_task(tmp_path: Path) -> None:
 def test_runtime_exposes_cancel_background_task(tmp_path: Path) -> None:
     runtime_module = importlib.import_module("voidcode.runtime")
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
     store = runtime._session_store
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
@@ -1584,7 +1488,7 @@ def test_runtime_exposes_cancel_background_task(tmp_path: Path) -> None:
 def test_runtime_exposes_retry_background_task(tmp_path: Path) -> None:
     runtime_module = importlib.import_module("voidcode.runtime")
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    runtime._background_tasks_reconciled = True
+    runtime._background_task_supervisor.reconciled = True
     store = runtime._session_store
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(

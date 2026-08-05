@@ -423,7 +423,7 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
         ToolCall(tool_name="shell_exec", arguments={"command": command}),
         workspace=tmp_path,
     )
-    capped = cap_tool_result_output(result, workspace=tmp_path)
+    capped = cap_tool_result_output(result)
 
     assert capped.truncated is True
     assert capped.partial is True

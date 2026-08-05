@@ -235,7 +235,7 @@ def _handle_run_command(args: argparse.Namespace) -> int:
             metadata["skills"] = cast(list[str], args.skills)
         runtime_mode = cast(str | None, getattr(args, "runtime_mode", None))
         if runtime_mode is not None:
-            metadata["mode"] = "normal" if runtime_mode == "act" else runtime_mode
+            metadata["mode"] = runtime_mode
         if getattr(args, "read_only", False):
             metadata["read_only"] = True
         if getattr(args, "max_steps", None) is not None:
@@ -2825,7 +2825,7 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 @click.option(
     "--mode",
     "runtime_mode",
-    type=click.Choice(["normal", "analyze", "plan", "act"]),
+    type=click.Choice(["normal", "analyze", "plan"]),
     help="Select runtime mode metadata; analyze and plan are runtime-enforced read-only modes.",
 )
 @click.option(
@@ -3736,34 +3736,6 @@ def doctor(workspace: Path, verbose: bool, json_output: bool) -> int:
             command="doctor", workspace=workspace, verbose=verbose, json=json_output
         ),
     )
-
-
-class _CompatChoiceAction:
-    def __init__(self, dest: str) -> None:
-        self.dest = dest
-
-
-class _CompatSubparsers:
-    def __init__(self, command: click.Command) -> None:
-        commands = command.commands if isinstance(command, click.Group) else {}
-        self.choices = {name: _CompatParser(child) for name, child in commands.items()}
-        self._choices_actions = [_CompatChoiceAction(name) for name in commands]
-        self._parser_class = _CompatParser
-
-
-class _CompatSubparserContainer:
-    def __init__(self, command: click.Command) -> None:
-        self._group_actions = [_CompatSubparsers(command)]
-
-
-class _CompatParser:
-    def __init__(self, command: click.Command) -> None:
-        self._command = command
-        self._subparsers = _CompatSubparserContainer(command)
-
-
-def build_parser() -> _CompatParser:
-    return _CompatParser(root_cli)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -235,12 +235,12 @@ export interface ToolDisplay {
 }
 
 export interface ToolStatusPayload {
-  invocation_id?: unknown;
-  tool_name?: unknown;
-  phase?: unknown;
-  status?: unknown;
-  label?: unknown;
-  display?: unknown;
+  invocation_id: string;
+  tool_name: string;
+  phase: string;
+  status: string;
+  label?: string;
+  display: ToolDisplay;
 }
 
 export interface RuntimeRequest {

@@ -38,7 +38,7 @@ type DelegatedReminderStopCondition = Literal[
 ]
 
 
-def _parse_subagent_execution_mode(value: object) -> SubagentExecutionMode:
+def _parse_subagent_routing_mode(value: object) -> SubagentExecutionMode:
     if value == "sync":
         return "sync"
     if value == "background":
@@ -235,7 +235,7 @@ def parse_subagent_routing_identity(metadata: object) -> SubagentRoutingIdentity
         key: value for key, value in routing_items.items() if isinstance(key, str)
     }
 
-    mode = _parse_subagent_execution_mode(routing_metadata.get("mode"))
+    mode = _parse_subagent_routing_mode(routing_metadata.get("mode"))
 
     category = routing_metadata.get("category")
     subagent_type = routing_metadata.get("subagent_type")

@@ -5,12 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from .mode import (
-    legacy_runtime_mode_from_metadata,
-    legacy_runtime_read_only_from_metadata,
-    runtime_mode_from_metadata,
-    runtime_read_only_from_metadata,
-)
+from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 
 POLICY_SCHEMA_VERSION = 1
 POLICY_VERSION = "v1"
@@ -207,7 +202,7 @@ def validate_runtime_policy_config_payload(
         if not isinstance(enabled, bool):
             raise ValueError(f"{source}.enabled must be a boolean")
         enabled = enabled
-    version = payload.get("version", POLICY_VERSION)
+    version = payload.get("version")
     if version != POLICY_VERSION:
         raise ValueError(f"{source}.version must be {POLICY_VERSION!r}")
     if "tool_policy" in payload:
@@ -395,7 +390,7 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     hook_actions = _hook_actions(policy_config, hook_policy_request)
     denied = [{"target": "product", "reason": PRODUCT_DELEGATION_DENIAL_REASON}]
 
-    trace = _base_precedence_trace(synthesized=False)
+    trace = _base_precedence_trace()
     if _requested_product_delegation(request_metadata) or _policy_mentions_product(policy_config):
         trace[0]["reason"] = PRODUCT_DELEGATION_DENIAL_REASON
     trace[6] = _intent_metadata_trace()
@@ -434,85 +429,31 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     return _child_snapshot_from_parent(snapshot=snapshot, parent_snapshot=parent_snapshot)
 
 
-def synthesize_legacy_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
-    session_metadata = _mapping(inputs.get("session_metadata"))
-    runtime_config = _mapping(session_metadata.get("runtime_config"))
-    request_metadata = dict(session_metadata)
-    agent_preset = (
-        _agent_preset_from_config(runtime_config)
-        or _agent_preset_from_config(session_metadata)
-        or "leader"
-    )
-    mode = legacy_runtime_mode_from_metadata(request_metadata)
-    read_only = legacy_runtime_read_only_from_metadata(request_metadata, mode=mode)
-    trace = _base_precedence_trace(synthesized=True)
-    trace.insert(
-        0,
-        {
-            "source": "legacy_policy_synthesis",
-            "applied": True,
-            "reason": "missing_stored_runtime_policy_snapshot",
-        },
-    )
-    return RuntimePolicySnapshot(
-        agent_preset=agent_preset,
-        agent_manifest_id=agent_preset,
-        intent=_neutral_intent_payload(),
-        tool_policy={"allowed": [], "denied": [], "source": "legacy_conservative_default"},
-        delegation_policy={
-            "allowed_presets": list(_ALLOWED_CHILD_PRESETS),
-            "denied": [{"target": "product", "reason": PRODUCT_DELEGATION_DENIAL_REASON}],
-            "product_denial_reason": PRODUCT_DELEGATION_DENIAL_REASON,
-        },
-        hook_policy={
-            "allowed_event_scopes": list(_ALLOWED_HOOK_SCOPES),
-            "actions": ["observe", "report"],
-            "authoritative": False,
-        },
-        prompt_activation={"enabled": True, "raw_prompt_stored": False},
-        precedence_trace=trace,
-        diagnostics={"synthesized": True},
-        created_at=int(time.time() * 1000),
-        mode=mode,
-        read_only=read_only,
-    )
-
-
 def runtime_policy_snapshot_from_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
     existing = _existing_snapshot(metadata.get("runtime_policy"))
-    if existing is not None:
-        if _has_explicit_snapshot_version(existing):
-            return _snapshot_from_payload(existing).as_payload()
-        return synthesize_legacy_runtime_policy_snapshot(session_metadata=metadata).as_payload()
-    return synthesize_legacy_runtime_policy_snapshot(session_metadata=metadata).as_payload()
+    if existing is None:
+        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot is required")
+    return _snapshot_from_payload(existing).as_payload()
 
 
 def _snapshot_from_payload(payload: Mapping[str, object]) -> RuntimePolicySnapshot:
     payload = _validated_snapshot_payload(payload)
     return RuntimePolicySnapshot(
-        agent_preset=_string(payload.get("agent_preset")) or "leader",
-        agent_manifest_id=(
-            _string(payload.get("agent_manifest_id"))
-            or _string(payload.get("agent_preset"))
-            or "leader"
-        ),
-        intent=_mapping(payload.get("intent")),
-        tool_policy=_mapping(payload.get("tool_policy")),
-        delegation_policy=_mapping(payload.get("delegation_policy")),
-        hook_policy=_mapping(payload.get("hook_policy")),
-        prompt_activation=_mapping(payload.get("prompt_activation")),
-        precedence_trace=tuple(_trace_entries(payload.get("precedence_trace"))),
-        diagnostics=_mapping(payload.get("diagnostics")),
-        created_at=_int_or_none(payload.get("created_at")),
-        mode=_string(payload.get("mode")) or "normal",
-        read_only=payload.get("read_only") is True,
+        agent_preset=cast(str, payload["agent_preset"]),
+        agent_manifest_id=cast(str, payload["agent_manifest_id"]),
+        intent=cast(Mapping[str, object], payload["intent"]),
+        tool_policy=cast(Mapping[str, object], payload["tool_policy"]),
+        delegation_policy=cast(Mapping[str, object], payload["delegation_policy"]),
+        hook_policy=cast(Mapping[str, object], payload["hook_policy"]),
+        prompt_activation=cast(Mapping[str, object], payload["prompt_activation"]),
+        precedence_trace=cast(Sequence[Mapping[str, object]], payload["precedence_trace"]),
+        diagnostics=cast(Mapping[str, object], payload["diagnostics"]),
+        created_at=cast(int, payload["created_at"]),
+        mode=cast(str, payload["mode"]),
+        read_only=cast(bool, payload["read_only"]),
         schema_version=POLICY_SCHEMA_VERSION,
         policy_version=POLICY_VERSION,
     )
-
-
-def _has_explicit_snapshot_version(payload: Mapping[str, object]) -> bool:
-    return "schema_version" in payload or "policy_version" in payload
 
 
 def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, object]:
@@ -527,6 +468,65 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
         raise RuntimePolicySnapshotVersionError(
             "unsupported runtime_policy policy_version: "
             f"{policy_version!r}; expected {POLICY_VERSION!r}"
+        )
+    required_fields = {
+        "agent_preset",
+        "agent_manifest_id",
+        "intent",
+        "tool_policy",
+        "delegation_policy",
+        "hook_policy",
+        "prompt_activation",
+        "precedence_trace",
+        "diagnostics",
+        "created_at",
+        "mode",
+        "read_only",
+    }
+    missing_fields = sorted(required_fields - payload.keys())
+    if missing_fields:
+        raise RuntimePolicySnapshotVersionError(
+            "runtime_policy snapshot is missing required fields: " + ", ".join(missing_fields)
+        )
+    for field_name in (
+        "agent_preset",
+        "agent_manifest_id",
+        "mode",
+    ):
+        value = payload[field_name]
+        if not isinstance(value, str) or not value:
+            raise RuntimePolicySnapshotVersionError(
+                f"runtime_policy snapshot {field_name} must be a non-empty string"
+            )
+    if payload["mode"] not in {"normal", "analyze", "plan"}:
+        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot mode is invalid")
+    for field_name in (
+        "intent",
+        "tool_policy",
+        "delegation_policy",
+        "hook_policy",
+        "prompt_activation",
+        "diagnostics",
+    ):
+        if not isinstance(payload[field_name], dict):
+            raise RuntimePolicySnapshotVersionError(
+                f"runtime_policy snapshot {field_name} must be an object"
+            )
+    precedence_trace = payload["precedence_trace"]
+    if not isinstance(precedence_trace, list) or not all(
+        isinstance(entry, dict) for entry in precedence_trace
+    ):
+        raise RuntimePolicySnapshotVersionError(
+            "runtime_policy snapshot precedence_trace must be a list of objects"
+        )
+    created_at = payload["created_at"]
+    if not isinstance(created_at, int) or isinstance(created_at, bool):
+        raise RuntimePolicySnapshotVersionError(
+            "runtime_policy snapshot created_at must be an integer"
+        )
+    if not isinstance(payload["read_only"], bool):
+        raise RuntimePolicySnapshotVersionError(
+            "runtime_policy snapshot read_only must be a boolean"
         )
     return payload
 
@@ -625,26 +625,18 @@ def _child_snapshot_from_parent(
     )
 
 
-def _int_or_none(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _mapping(value: object) -> dict[str, object]:
     return dict(cast(dict[str, object], value)) if isinstance(value, dict) else {}
 
 
 def _existing_snapshot(value: object) -> Mapping[str, object] | None:
+    if value is None:
+        return None
     if isinstance(value, RuntimePolicySnapshot):
         return value.as_payload()
     if isinstance(value, dict):
         return cast(dict[str, object], value)
-    return None
-
-
-def _trace_entries(value: object) -> list[Mapping[str, object]]:
-    if not isinstance(value, list | tuple):
-        return []
-    return [_mapping(item) for item in value if isinstance(item, dict)]
+    raise ValueError("persisted runtime policy snapshot must be an object")
 
 
 def _string(value: object) -> str | None:
@@ -743,10 +735,10 @@ def _policy_mentions_product(policy_config: Mapping[str, object]) -> bool:
     )
 
 
-def _base_precedence_trace(*, synthesized: bool) -> list[dict[str, object]]:
+def _base_precedence_trace() -> list[dict[str, object]]:
     return [
         {"source": "runtime_hard_denials", "applied": True},
-        {"source": "persisted_session_policy", "applied": not synthesized},
+        {"source": "persisted_session_policy", "applied": False},
         {"source": "runtime_config", "applied": True},
         {"source": "agent_manifest", "applied": True},
         {"source": "request_session_options", "applied": True},

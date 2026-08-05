@@ -8,14 +8,12 @@ from typing import Literal
 from uuid import uuid4
 
 from ..tools.contracts import ToolCall, ToolDefinition
+from .mode import RuntimeMode
 
 type PermissionDecision = Literal["allow", "deny", "ask"]
 type PermissionResolution = Literal["allow", "deny"]
 type PathScope = Literal["workspace", "external"]
 type OperationClass = Literal["read", "write", "execute"]
-type RuntimeExecutionMode = Literal["plan", "act"]
-
-DEFAULT_RUNTIME_EXECUTION_MODE: RuntimeExecutionMode = "act"
 PLAN_MODE_DENIAL_REASON = "plan mode is active; mutating tools are denied"
 
 
@@ -89,7 +87,7 @@ def default_policy_for_tool(tool: ToolDefinition) -> PermissionPolicy:
 
 def is_plan_mode_blocked(
     *,
-    execution_mode: RuntimeExecutionMode,
+    runtime_mode: RuntimeMode,
     tool: ToolDefinition,
     operation_class: OperationClass | None = None,
 ) -> bool:
@@ -100,7 +98,7 @@ def is_plan_mode_blocked(
     write/execute operation class is denied even if the tool itself is
     advertised as read-only (defense in depth).
     """
-    if execution_mode != "plan":
+    if runtime_mode != "plan":
         return False
     if not tool.read_only:
         return True
@@ -122,11 +120,9 @@ def resolve_permission(
     policy_surface: str | None = None,
     external_decision: PermissionDecision | None = None,
     rule_decision: PermissionDecision | None = None,
-    execution_mode: RuntimeExecutionMode = DEFAULT_RUNTIME_EXECUTION_MODE,
+    runtime_mode: RuntimeMode = "normal",
 ) -> PermissionOutcome:
-    if is_plan_mode_blocked(
-        execution_mode=execution_mode, tool=tool, operation_class=operation_class
-    ):
+    if is_plan_mode_blocked(runtime_mode=runtime_mode, tool=tool, operation_class=operation_class):
         pending_approval = build_pending_approval(
             tool_call,
             policy=PermissionPolicy(mode="deny"),
@@ -137,7 +133,7 @@ def resolve_permission(
             operation_class=operation_class,
             canonical_path=canonical_path,
             matched_rule=matched_rule,
-            policy_surface="execution_mode.plan",
+            policy_surface="mode.plan",
             reason=PLAN_MODE_DENIAL_REASON,
         )
         return PermissionOutcome(decision="deny", pending_approval=pending_approval)
@@ -328,20 +324,3 @@ def _path_matches_rule(*, normalized_path: str, pattern: str) -> bool:
     if pattern == "*":
         return True
     return fnmatch(normalized_path, expanded_pattern)
-
-
-def execution_mode_from_metadata(
-    metadata: dict[str, object] | None,
-) -> RuntimeExecutionMode:
-    """Extract validated execution_mode from runtime request/session metadata.
-
-    Falls back to DEFAULT_RUNTIME_EXECUTION_MODE when missing or invalid; the
-    runtime contract layer is responsible for rejecting bad input upstream, so
-    this helper is intentionally permissive at read time.
-    """
-    if metadata is None:
-        return DEFAULT_RUNTIME_EXECUTION_MODE
-    raw = metadata.get("execution_mode")
-    if raw == "plan":
-        return "plan"
-    return DEFAULT_RUNTIME_EXECUTION_MODE

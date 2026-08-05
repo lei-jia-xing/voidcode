@@ -523,7 +523,7 @@ def test_parse_glm_provider_config_from_env() -> None:
     parsed = parse_provider_configs_payload(
         {"glm": {}},
         source="runtime config field 'providers'",
-        env={"GLM_API_KEY": "glm-env-key"},
+        env={"ZAI_API_KEY": "glm-env-key"},
     )
 
     assert parsed is not None
@@ -534,7 +534,7 @@ def test_parse_glm_provider_config_with_api_key() -> None:
     parsed = parse_provider_configs_payload(
         {"glm": {"api_key": "glm-direct-key"}},
         source="runtime config field 'providers'",
-        env={"GLM_API_KEY": "glm-env-key"},
+        env={"ZAI_API_KEY": "glm-env-key"},
     )
 
     assert parsed is not None
@@ -572,7 +572,7 @@ def test_parse_grok_provider_config_from_env() -> None:
     assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
 
 
-def test_parse_grok_provider_config_falls_back_to_grok_api_key() -> None:
+def test_parse_grok_provider_config_ignores_removed_grok_api_key() -> None:
     parsed = parse_provider_configs_payload(
         {"grok": {}},
         source="runtime config field 'providers'",
@@ -580,7 +580,7 @@ def test_parse_grok_provider_config_falls_back_to_grok_api_key() -> None:
     )
 
     assert parsed is not None
-    assert parsed.grok == SimplifiedProviderConfig(api_key="grok-env-key")
+    assert parsed.grok == SimplifiedProviderConfig()
 
 
 def test_parse_minimax_provider_config_from_env() -> None:
@@ -752,7 +752,7 @@ def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
             }
         },
         source="runtime config field 'providers'",
-        env={"MY_CUSTOM_GLM_KEY": "env-key", "GLM_API_KEY": "default-env-key"},
+        env={"MY_CUSTOM_GLM_KEY": "env-key", "ZAI_API_KEY": "default-env-key"},
     )
 
     assert parsed is not None

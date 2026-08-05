@@ -5,7 +5,7 @@ import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import sleep, time
 from typing import Protocol, cast, final, runtime_checkable
@@ -979,7 +979,7 @@ class SqliteSessionStore:
             # table set to concurrent connections while the bootstrapper is still
             # validating and stamping ``user_version``. Let version-0 databases
             # continue through the idempotent CREATE TABLE path; the canonical
-            # schema assertion below still rejects legacy or corrupt tables before
+            # The schema assertion below rejects unsupported or corrupt tables before
             # the database is stamped as current.
             return
         cls._raise_schema_mismatch(
@@ -2070,20 +2070,28 @@ class SqliteSessionStore:
                 "payload must decode to an object."
             )
         data = cast(dict[str, object], decoded)
-        try:
-            request_id = data["request_id"]
-            tool_name = data["tool_name"]
-        except KeyError as exc:
+        required_fields = frozenset(field.name for field in fields(PendingApproval))
+        missing_fields = sorted(required_fields - data.keys())
+        if missing_fields:
             raise RuntimeError(
                 f"persisted pending approval for session {session_id!r} is missing "
-                f"required field {exc}; run `voidcode storage reset` to recover."
-            ) from exc
+                f"required fields {missing_fields!r}; run `voidcode storage reset` to recover."
+            )
+        request_id = data["request_id"]
+        tool_name = data["tool_name"]
         if not isinstance(request_id, str) or not isinstance(tool_name, str):
             raise RuntimeError(
                 f"persisted pending approval for session {session_id!r} has invalid "
                 "request_id/tool_name types; run `voidcode storage reset` to recover."
             )
-        raw_policy_mode = data.get("policy_mode", "ask")
+        arguments = data["arguments"]
+        target_summary = data["target_summary"]
+        reason = data["reason"]
+        if not isinstance(arguments, dict):
+            raise RuntimeError("persisted pending approval arguments must be an object")
+        if not isinstance(target_summary, str) or not isinstance(reason, str):
+            raise RuntimeError("persisted pending approval summary and reason must be strings")
+        raw_policy_mode = data["policy_mode"]
         try:
             policy_mode = _pending_permission_decision(raw_policy_mode)
         except ValueError as exc:
@@ -2091,49 +2099,60 @@ class SqliteSessionStore:
                 f"persisted pending approval for session {session_id!r} has invalid "
                 f"policy_mode {raw_policy_mode!r}: {exc}"
             ) from exc
+        request_event_sequence = data["request_event_sequence"]
+        if request_event_sequence is not None and (
+            not isinstance(request_event_sequence, int) or isinstance(request_event_sequence, bool)
+        ):
+            raise RuntimeError(
+                "persisted pending approval request_event_sequence must be an integer or null"
+            )
+        nullable_string_fields = (
+            "owner_session_id",
+            "owner_parent_session_id",
+            "delegated_task_id",
+            "canonical_path",
+            "matched_rule",
+            "policy_surface",
+        )
+        for field_name in nullable_string_fields:
+            value = data[field_name]
+            if value is not None and not isinstance(value, str):
+                raise RuntimeError(
+                    f"persisted pending approval {field_name} must be a string or null"
+                )
+        path_scope = _pending_path_scope(data["path_scope"])
+        if data["path_scope"] is not None and path_scope is None:
+            raise RuntimeError("persisted pending approval path_scope is invalid")
+        operation_class = _pending_operation_class(data["operation_class"])
+        if data["operation_class"] is not None and operation_class is None:
+            raise RuntimeError("persisted pending approval operation_class is invalid")
         return PendingApproval(
             request_id=request_id,
             tool_name=tool_name,
-            arguments=cast(dict[str, object], data.get("arguments", {})),
-            target_summary=cast(str, data.get("target_summary", "")),
-            reason=cast(str, data.get("reason", "")),
+            arguments=cast(dict[str, object], arguments),
+            target_summary=target_summary,
+            reason=reason,
             policy_mode=policy_mode,
-            request_event_sequence=(
-                cast(int, data["request_event_sequence"])
-                if isinstance(data.get("request_event_sequence"), int)
-                else None
-            ),
+            request_event_sequence=request_event_sequence,
             owner_session_id=(
-                cast(str, data["owner_session_id"])
-                if isinstance(data.get("owner_session_id"), str)
-                else None
+                data["owner_session_id"] if isinstance(data["owner_session_id"], str) else None
             ),
             owner_parent_session_id=(
-                cast(str, data["owner_parent_session_id"])
-                if isinstance(data.get("owner_parent_session_id"), str)
+                data["owner_parent_session_id"]
+                if isinstance(data["owner_parent_session_id"], str)
                 else None
             ),
             delegated_task_id=(
-                cast(str, data["delegated_task_id"])
-                if isinstance(data.get("delegated_task_id"), str)
-                else None
+                data["delegated_task_id"] if isinstance(data["delegated_task_id"], str) else None
             ),
-            path_scope=_pending_path_scope(data.get("path_scope")),
-            operation_class=_pending_operation_class(data.get("operation_class")),
+            path_scope=path_scope,
+            operation_class=operation_class,
             canonical_path=(
-                cast(str, data["canonical_path"])
-                if isinstance(data.get("canonical_path"), str)
-                else None
+                data["canonical_path"] if isinstance(data["canonical_path"], str) else None
             ),
-            matched_rule=(
-                cast(str, data["matched_rule"])
-                if isinstance(data.get("matched_rule"), str)
-                else None
-            ),
+            matched_rule=(data["matched_rule"] if isinstance(data["matched_rule"], str) else None),
             policy_surface=(
-                cast(str, data["policy_surface"])
-                if isinstance(data.get("policy_surface"), str)
-                else None
+                data["policy_surface"] if isinstance(data["policy_surface"], str) else None
             ),
         )
 
@@ -2219,19 +2238,20 @@ class SqliteSessionStore:
                 "payload must decode to an object."
             )
         data = cast(dict[str, object], decoded)
-        try:
-            request_id = data["request_id"]
-        except KeyError as exc:
+        required_fields = {"request_id", "tool_name", "arguments", "prompts"}
+        missing_fields = sorted(required_fields - data.keys())
+        if missing_fields:
             raise RuntimeError(
                 f"persisted pending question for session {session_id!r} is missing "
-                f"required field {exc}; run `voidcode storage reset` to recover."
-            ) from exc
+                f"required fields {missing_fields!r}; run `voidcode storage reset` to recover."
+            )
+        request_id = data["request_id"]
         if not isinstance(request_id, str):
             raise RuntimeError(
                 f"persisted pending question for session {session_id!r} has invalid "
                 "request_id type; run `voidcode storage reset` to recover."
             )
-        raw_prompts = data.get("prompts", [])
+        raw_prompts = data["prompts"]
         if not isinstance(raw_prompts, list):
             raise RuntimeError(
                 f"persisted pending question for session {session_id!r} has invalid "
@@ -2245,7 +2265,12 @@ class SqliteSessionStore:
                     f"prompts[{prompt_index}] (must be an object)."
                 )
             prompt_payload = cast(dict[str, object], raw_prompt)
-            raw_options = prompt_payload.get("options", [])
+            if not {"question", "header", "multiple", "options"} <= prompt_payload.keys():
+                raise RuntimeError(
+                    f"persisted pending question for session {session_id!r} has incomplete "
+                    f"prompts[{prompt_index}] payload."
+                )
+            raw_options = prompt_payload["options"]
             if not isinstance(raw_options, list):
                 raise RuntimeError(
                     f"persisted pending question for session {session_id!r} has invalid "
@@ -2260,30 +2285,32 @@ class SqliteSessionStore:
                         "(must be an object)."
                     )
                 option_payload = cast(dict[str, object], raw_option)
-                option_label = option_payload.get("label")
-                if not isinstance(option_label, str):
+                if set(option_payload) != {"label", "description"}:
                     raise RuntimeError(
                         f"persisted pending question for session {session_id!r} has "
-                        f"invalid prompts[{prompt_index}].options[{option_index}].label "
-                        "(must be a string)."
+                        f"incomplete prompts[{prompt_index}].options[{option_index}] payload."
                     )
-                option_description = option_payload.get("description", "")
-                if not isinstance(option_description, str):
-                    option_description = ""
+                option_label = option_payload["label"]
+                option_description = option_payload["description"]
+                if not isinstance(option_label, str) or not isinstance(option_description, str):
+                    raise RuntimeError(
+                        f"persisted pending question for session {session_id!r} has "
+                        f"invalid prompts[{prompt_index}].options[{option_index}] strings."
+                    )
                 options_list.append(
                     PendingQuestionOption(
                         label=option_label,
                         description=option_description,
                     )
                 )
-            prompt_question = prompt_payload.get("question")
-            prompt_header = prompt_payload.get("header")
+            prompt_question = prompt_payload["question"]
+            prompt_header = prompt_payload["header"]
             if not isinstance(prompt_question, str) or not isinstance(prompt_header, str):
                 raise RuntimeError(
                     f"persisted pending question for session {session_id!r} has invalid "
                     f"prompts[{prompt_index}].question/header (must be strings)."
                 )
-            raw_multiple = prompt_payload.get("multiple", False)
+            raw_multiple = prompt_payload["multiple"]
             if not isinstance(raw_multiple, bool):
                 raise RuntimeError(
                     f"persisted pending question for session {session_id!r} has invalid "
@@ -2297,12 +2324,12 @@ class SqliteSessionStore:
                     multiple=raw_multiple,
                 )
             )
-        tool_name_value = data.get("tool_name", "question")
+        tool_name_value = data["tool_name"]
         if not isinstance(tool_name_value, str):
-            tool_name_value = "question"
-        arguments_value = data.get("arguments", {})
+            raise RuntimeError("persisted pending question tool_name must be a string")
+        arguments_value = data["arguments"]
         if not isinstance(arguments_value, dict):
-            arguments_value = {}
+            raise RuntimeError("persisted pending question arguments must be an object")
         return PendingQuestion(
             request_id=request_id,
             tool_name=tool_name_value,

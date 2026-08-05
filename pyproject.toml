@@ -121,7 +121,7 @@ error-on-warning = true
 exclude = ["scripts"]
 
 [tool.pytest.ini_options]
-addopts = ""
+addopts = "-p no:langsmith"
 markers = [
   "slow: tests that are useful locally but too slow for the fast feedback loop",
   "integration: tests that exercise cross-module/runtime integration paths",

@@ -413,7 +413,7 @@ Leader 读取结果时应遵守以下规则：
 - `background_output(task_id)` 默认返回紧凑结果视图。
 - `background_output(task_id, full_session=true)` 返回 bounded transcript payload，并带 child session id 与 transcript metadata。
 - CLI `voidcode tasks status/output/list/cancel/retry --json` 返回 machine-readable payload，并保留 readable 默认输出；结构化字段应包含 `task_id`、`parent_session_id`、`requested_child_session_id`、`child_session_id`、approval / question request id、`result_available`、`error_type` 与 `next_steps`。
-- CLI readable 默认输出应继续先暴露兼容的 `TASK ...` correlation record，并在 waiting / running / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks cancel <task_id>`）。
+- CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。
 - failed/cancelled/interrupted task 可以通过 `retry_background_task(task_id)`、agent-facing `background_retry(task_id)`、CLI `voidcode tasks retry <task_id>` 或 HTTP `POST /api/tasks/<task_id>/retry` 显式重试。retry 必须复用旧 task 持久化的 request prompt、requested child session id、parent session id、metadata、routing 与 `allocate_session_id`，并创建新的 queued task handle；不得改写旧 terminal task。
 - failed/interrupted child 输出可以提示用户显式请求 retry/continue，并优先使用 runtime-owned `background_retry` 返回的新 task id；工具本身不得自动进入无限 retry loop。

@@ -7,8 +7,8 @@ The bundle is intentionally an inert artifact:
 - Default export redacts secrets, raw provider messages, full reasoning text,
   and oversized tool output. Opt-in flags can include them when the operator
   knows the destination is private.
-- The schema is versioned (``voidcode.session.bundle.v1``); incompatible
-  schemas fail fast on import with a clear migration message.
+- The schema is versioned (``voidcode.session.bundle.v1``); every other
+  schema fails fast on import.
 - Workspace memory records and vector/index/cache data are intentionally
   outside the canonical MVP bundle; memory import/export is deferred.
 
@@ -865,6 +865,24 @@ def _ensure_int(value: object, *, where: str) -> int:
     return value
 
 
+def _ensure_bool(value: object, *, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise SessionBundleError(f"session bundle {where} must be a boolean")
+    return value
+
+
+def _required(payload: Mapping[str, object], key: str, *, where: str) -> object:
+    if key not in payload:
+        raise SessionBundleError(f"session bundle {where} is required")
+    return payload[key]
+
+
+def _ensure_optional_str(value: object, *, where: str) -> str | None:
+    if value is None:
+        return None
+    return _ensure_str(value, where=where)
+
+
 def parse_session_bundle(payload: object) -> SessionBundle:
     """Parse a JSON payload into a :class:`SessionBundle`, fail-fast on incompatible schemas."""
 
@@ -894,44 +912,40 @@ def parse_session_bundle(payload: object) -> SessionBundle:
         workspace_hash=_ensure_str(
             manifest_payload.get("workspace_hash"), where="manifest.workspace_hash"
         ),
-        platform=dict(
-            _ensure_dict(manifest_payload.get("platform", {}), where="manifest.platform")
+        platform=dict(_ensure_dict(manifest_payload.get("platform"), where="manifest.platform")),
+        redaction=dict(_ensure_dict(manifest_payload.get("redaction"), where="manifest.redaction")),
+        support_mode=_ensure_bool(
+            manifest_payload.get("support_mode"), where="manifest.support_mode"
         ),
-        redaction=dict(
-            _ensure_dict(manifest_payload.get("redaction", {}), where="manifest.redaction")
-        ),
-        support_mode=bool(manifest_payload.get("support_mode", False)),
         session_count=_ensure_int(
-            manifest_payload.get("session_count", 0), where="manifest.session_count"
+            manifest_payload.get("session_count"), where="manifest.session_count"
         ),
-        event_count=_ensure_int(
-            manifest_payload.get("event_count", 0), where="manifest.event_count"
-        ),
+        event_count=_ensure_int(manifest_payload.get("event_count"), where="manifest.event_count"),
         background_task_count=_ensure_int(
-            manifest_payload.get("background_task_count", 0),
+            manifest_payload.get("background_task_count"),
             where="manifest.background_task_count",
         ),
         artifact_count=_ensure_int(
-            manifest_payload.get("artifact_count", 0), where="manifest.artifact_count"
+            manifest_payload.get("artifact_count"), where="manifest.artifact_count"
         ),
     )
-    sessions_raw = _ensure_list(root.get("sessions", []), where="sessions")
+    sessions_raw = _ensure_list(root.get("sessions"), where="sessions")
     sessions: list[SessionBundleSessionPayload] = []
     for index, raw in enumerate(sessions_raw):
         session_dict = _ensure_dict(raw, where=f"sessions[{index}]")
         sessions.append(_parse_session_payload(session_dict, index=index))
-    tasks_raw = _ensure_list(root.get("background_tasks", []), where="background_tasks")
+    tasks_raw = _ensure_list(root.get("background_tasks"), where="background_tasks")
     tasks: list[SessionBundleBackgroundTaskPayload] = []
     for index, raw in enumerate(tasks_raw):
         task_dict = _ensure_dict(raw, where=f"background_tasks[{index}]")
         tasks.append(_parse_task_payload(task_dict, index=index))
-    diagnostics_payload = _ensure_dict(root.get("diagnostics", {}), where="diagnostics")
+    diagnostics_payload = _ensure_dict(root.get("diagnostics"), where="diagnostics")
     diagnostics = SessionBundleDiagnostics(
         storage=_optional_dict(diagnostics_payload.get("storage")),
         config_summary=_optional_dict(diagnostics_payload.get("config_summary")),
         provider_summary=_optional_dict(diagnostics_payload.get("provider_summary")),
     )
-    artifacts_raw = _ensure_list(root.get("artifacts", []), where="artifacts")
+    artifacts_raw = _ensure_list(root.get("artifacts"), where="artifacts")
     artifacts: list[SessionBundleArtifactPayload] = []
     for index, raw in enumerate(artifacts_raw):
         artifact_dict = _ensure_dict(raw, where=f"artifacts[{index}]")
@@ -960,30 +974,23 @@ def _parse_session_payload(
         _ensure_str(payload.get("id"), where=f"sessions[{index}].id"),
         where=f"sessions[{index}].id",
     )
-    parent_raw = payload.get("parent_id")
-    parent_id = (
-        _validate_bundle_parent_id(
-            _ensure_str(parent_raw, where=f"sessions[{index}].parent_id"),
-            where=f"sessions[{index}].parent_id",
-        )
-        if isinstance(parent_raw, str)
-        else None
-    )
+    parent_raw = _required(payload, "parent_id", where=f"sessions[{index}].parent_id")
+    parent_id = _ensure_optional_str(parent_raw, where=f"sessions[{index}].parent_id")
+    if parent_id is not None:
+        parent_id = _validate_bundle_parent_id(parent_id, where=f"sessions[{index}].parent_id")
     status = _ensure_str(payload.get("status"), where=f"sessions[{index}].status")
-    turn = _ensure_int(payload.get("turn", 0), where=f"sessions[{index}].turn")
-    prompt = _ensure_str(payload.get("prompt", ""), where=f"sessions[{index}].prompt")
-    output_raw = payload.get("output")
-    output = (
-        _ensure_str(output_raw, where=f"sessions[{index}].output")
-        if isinstance(output_raw, str)
-        else None
+    turn = _ensure_int(payload.get("turn"), where=f"sessions[{index}].turn")
+    prompt = _ensure_str(payload.get("prompt"), where=f"sessions[{index}].prompt")
+    output = _ensure_optional_str(
+        _required(payload, "output", where=f"sessions[{index}].output"),
+        where=f"sessions[{index}].output",
     )
-    metadata = dict(_ensure_dict(payload.get("metadata", {}), where=f"sessions[{index}].metadata"))
+    metadata = dict(_ensure_dict(payload.get("metadata"), where=f"sessions[{index}].metadata"))
     last_event_sequence = _ensure_int(
-        payload.get("last_event_sequence", 0),
+        payload.get("last_event_sequence"),
         where=f"sessions[{index}].last_event_sequence",
     )
-    events_raw = _ensure_list(payload.get("events", []), where=f"sessions[{index}].events")
+    events_raw = _ensure_list(payload.get("events"), where=f"sessions[{index}].events")
     events: list[dict[str, object]] = []
     for event_index, raw_event in enumerate(events_raw):
         event_dict = _ensure_dict(raw_event, where=f"sessions[{index}].events[{event_index}]")
@@ -1004,10 +1011,10 @@ def _parse_session_payload(
 
 
 def _normalize_event_payload(event: dict[str, object], *, label: str) -> dict[str, object]:
-    sequence = _ensure_int(event.get("sequence", 0), where=f"{label}.sequence")
-    event_type = _ensure_str(event.get("event_type", ""), where=f"{label}.event_type")
-    source = _ensure_str(event.get("source", "runtime"), where=f"{label}.source")
-    payload = dict(_ensure_dict(event.get("payload", {}), where=f"{label}.payload"))
+    sequence = _ensure_int(event.get("sequence"), where=f"{label}.sequence")
+    event_type = _ensure_str(event.get("event_type"), where=f"{label}.event_type")
+    source = _ensure_str(event.get("source"), where=f"{label}.source")
+    payload = dict(_ensure_dict(event.get("payload"), where=f"{label}.payload"))
     return {
         "sequence": sequence,
         "event_type": event_type,
@@ -1035,30 +1042,28 @@ def _parse_task_payload(
 ) -> SessionBundleBackgroundTaskPayload:
     task_id = _ensure_str(payload.get("task_id"), where=f"background_tasks[{index}].task_id")
     status = _ensure_str(payload.get("status"), where=f"background_tasks[{index}].status")
-    raw_parent = payload.get("parent_session_id")
-    parent_session_id = (
-        _ensure_str(raw_parent, where=f"background_tasks[{index}].parent_session_id")
-        if isinstance(raw_parent, str)
-        else None
+    parent_session_id = _ensure_optional_str(
+        _required(
+            payload,
+            "parent_session_id",
+            where=f"background_tasks[{index}].parent_session_id",
+        ),
+        where=f"background_tasks[{index}].parent_session_id",
     )
-    raw_child = payload.get("child_session_id")
-    child_session_id = (
-        _ensure_str(raw_child, where=f"background_tasks[{index}].child_session_id")
-        if isinstance(raw_child, str)
-        else None
+    child_session_id = _ensure_optional_str(
+        _required(payload, "child_session_id", where=f"background_tasks[{index}].child_session_id"),
+        where=f"background_tasks[{index}].child_session_id",
     )
-    prompt = _ensure_str(payload.get("prompt", ""), where=f"background_tasks[{index}].prompt")
-    raw_error = payload.get("error")
-    error = (
-        _ensure_str(raw_error, where=f"background_tasks[{index}].error")
-        if isinstance(raw_error, str)
-        else None
+    prompt = _ensure_str(payload.get("prompt"), where=f"background_tasks[{index}].prompt")
+    error = _ensure_optional_str(
+        _required(payload, "error", where=f"background_tasks[{index}].error"),
+        where=f"background_tasks[{index}].error",
     )
     created_at = _ensure_int(
-        payload.get("created_at", 0), where=f"background_tasks[{index}].created_at"
+        payload.get("created_at"), where=f"background_tasks[{index}].created_at"
     )
     updated_at = _ensure_int(
-        payload.get("updated_at", 0), where=f"background_tasks[{index}].updated_at"
+        payload.get("updated_at"), where=f"background_tasks[{index}].updated_at"
     )
     return SessionBundleBackgroundTaskPayload(
         task_id=task_id,
@@ -1076,38 +1081,27 @@ def _parse_artifact_payload(
     payload: dict[str, object], *, index: int
 ) -> SessionBundleArtifactPayload:
     artifact_id = _ensure_str(payload.get("artifact_id"), where=f"artifacts[{index}].artifact_id")
-    raw_session_id = payload.get("session_id")
-    raw_tool_call_id = payload.get("tool_call_id")
-    raw_tool_name = payload.get("tool_name")
-    raw_content = payload.get("content")
-    raw_content_next_offset = payload.get("content_next_offset")
+    raw_session_id = _required(payload, "session_id", where=f"artifacts[{index}].session_id")
+    raw_tool_call_id = _required(payload, "tool_call_id", where=f"artifacts[{index}].tool_call_id")
+    raw_tool_name = _required(payload, "tool_name", where=f"artifacts[{index}].tool_name")
+    raw_content = _required(payload, "content", where=f"artifacts[{index}].content")
+    raw_content_next_offset = _required(
+        payload, "content_next_offset", where=f"artifacts[{index}].content_next_offset"
+    )
     return SessionBundleArtifactPayload(
         artifact_id=artifact_id,
-        session_id=(
-            _ensure_str(raw_session_id, where=f"artifacts[{index}].session_id")
-            if isinstance(raw_session_id, str)
-            else None
+        session_id=_ensure_optional_str(raw_session_id, where=f"artifacts[{index}].session_id"),
+        tool_call_id=_ensure_optional_str(
+            raw_tool_call_id,
+            where=f"artifacts[{index}].tool_call_id",
         ),
-        tool_call_id=(
-            _ensure_str(raw_tool_call_id, where=f"artifacts[{index}].tool_call_id")
-            if isinstance(raw_tool_call_id, str)
-            else None
+        tool_name=_ensure_optional_str(raw_tool_name, where=f"artifacts[{index}].tool_name"),
+        metadata=dict(_ensure_dict(payload.get("metadata"), where=f"artifacts[{index}].metadata")),
+        content=_ensure_optional_str(raw_content, where=f"artifacts[{index}].content"),
+        missing=_ensure_bool(payload.get("missing"), where=f"artifacts[{index}].missing"),
+        content_truncated=_ensure_bool(
+            payload.get("content_truncated"), where=f"artifacts[{index}].content_truncated"
         ),
-        tool_name=(
-            _ensure_str(raw_tool_name, where=f"artifacts[{index}].tool_name")
-            if isinstance(raw_tool_name, str)
-            else None
-        ),
-        metadata=dict(
-            _ensure_dict(payload.get("metadata", {}), where=f"artifacts[{index}].metadata")
-        ),
-        content=(
-            _ensure_str(raw_content, where=f"artifacts[{index}].content")
-            if isinstance(raw_content, str)
-            else None
-        ),
-        missing=bool(payload.get("missing", False)),
-        content_truncated=bool(payload.get("content_truncated", False)),
         content_next_offset=(
             _ensure_int(raw_content_next_offset, where=f"artifacts[{index}].content_next_offset")
             if raw_content_next_offset is not None
@@ -1222,14 +1216,14 @@ def _events_from_session_payload(
 ) -> tuple[EventEnvelope, ...]:
     events: list[EventEnvelope] = []
     for raw_event in session.events:
-        sequence = cast(int, raw_event.get("sequence", 0))
+        sequence = cast(int, raw_event["sequence"])
         events.append(
             EventEnvelope(
                 session_id=session.id,
                 sequence=sequence,
-                event_type=cast(str, raw_event.get("event_type", "")),
-                source=_validate_event_source(cast(str, raw_event.get("source", "runtime"))),
-                payload=cast(dict[str, object], raw_event.get("payload", {})),
+                event_type=cast(str, raw_event["event_type"]),
+                source=_validate_event_source(cast(str, raw_event["source"])),
+                payload=cast(dict[str, object], raw_event["payload"]),
             )
         )
     return tuple(events)

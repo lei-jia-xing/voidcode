@@ -60,16 +60,21 @@ run = "uv run ruff format ."
 run = "uv run ty check src"
 
 [tasks.test]
-run = "uv run python -X utf8 -m pytest -n auto"
+description = "Run the fast unit-test feedback loop (excluding slow, fuzz, and integration tests)"
+run = "uv run python -X utf8 -m pytest -n auto --dist worksteal tests/unit -m 'not slow and not fuzz'"
+
+[tasks."test:all"]
+description = "Run the complete Python test suite, including integration, slow, and fuzz tests"
+run = "uv run python -X utf8 -m pytest -n auto --dist worksteal"
 
 [tasks."test:fast"]
-run = "uv run python -X utf8 -m pytest -n auto tests/unit -m 'not slow and not fuzz'"
+run = "uv run python -X utf8 -m pytest -n auto --dist worksteal tests/unit -m 'not slow and not fuzz'"
 
 [tasks."test:slow"]
-run = "uv run python -X utf8 -m pytest -n auto -m 'slow or fuzz'"
+run = "uv run python -X utf8 -m pytest -n auto --dist worksteal -m 'slow or fuzz'"
 
 [tasks."test:coverage"]
-run = "uv run python -X utf8 -m pytest -n auto --cov=voidcode --cov-report=term-missing"
+run = "uv run python -X utf8 -m pytest -n auto --dist worksteal --cov=voidcode --cov-report=term-missing"
 
 [tasks.build]
 run = "uv build"

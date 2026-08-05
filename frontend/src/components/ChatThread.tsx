@@ -162,7 +162,6 @@ function toolDisplayTitle(tool: ChatTool, fallback: string) {
     tool.label ??
     tool.summary ??
     tool.display?.summary ??
-    tool.legacy?.summary ??
     tool.display?.title ??
     fallback
   );
@@ -189,7 +188,6 @@ function toolDisplayTitleFallback(tool: ChatTool): string {
   };
   if (precise[tool.name]) return precise[tool.name];
   if (tool.display?.title) return tool.display.title;
-  if (tool.legacy?.label) return tool.legacy.label;
   return tool.name;
 }
 
@@ -198,7 +196,7 @@ function toolDisplayName(tool: ChatTool): string {
 }
 
 function toolDisplaySubtitle(tool: ChatTool, fallback?: string) {
-  const subtitle = tool.display?.title ?? tool.legacy?.summary ?? fallback;
+  const subtitle = tool.display?.title ?? fallback;
   const title = toolDisplayTitle(tool, tool.name);
   return subtitle && subtitle !== title ? subtitle : undefined;
 }

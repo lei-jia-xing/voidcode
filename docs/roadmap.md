@@ -56,7 +56,7 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 **当前状态：** 部分完成。内置工具和技能发现已实现。`skill_refs` 已作为 manifest/catalog 默认选择进入 runtime skill application，`force_load_skills` 与 delegated `load_skills` 则只为目标 run / child session 注入完整 skill body。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；独立的 LSP server preset/config 模块也已经落地，主流 workspace 的 implicit defaults 也已进入可用状态。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，支持 runtime scope 与 session scope 生命周期，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能），不包含 workspace-scoped MCP 或 marketplace。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍未扩展为更宽的协作控制面或直接 agent-to-agent bus。
 
-**技术细节：** `ProviderSingleAgentGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；当前顶层兼容默认 execution engine 仍是 deterministic，用于无凭据本地演示、测试和参考/debug harness。产品化主路径应继续收敛到配置了 model/provider 的 provider-backed execution，因此仅 `DeterministicReadOnlyGraph` 使用 LangGraph `StateGraph` 这一事实不应被表述为“LangGraph 已退出主路径”。
+**技术细节：** `ProviderSingleAgentGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；deterministic engine 用于无凭据本地演示、测试和参考/debug harness。产品化主路径应继续收敛到配置了 model/provider 的 provider-backed execution，因此仅 `DeterministicReadOnlyGraph` 使用 LangGraph `StateGraph` 这一事实不应被表述为“LangGraph 已退出主路径”。
 
 ### Epic 4: 权限引擎
 
@@ -80,7 +80,7 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 管理长期运行的上下文，并提供对轮次、工具、审批、钩子和错误的追踪友好可见性。
 
-**当前状态：** 部分完成。通过事件流实现的轮次级可观测性已完成；provider fallback、step budget 与恢复关键配置的运行时治理已经落地。`#70`、`#82`、`#83` 与 `#84` 已经分别完成 waiting / terminal session resume checkpoint groundwork、retention / compaction / checkpoint invalidation 语义、corrupt / unreadable checkpoint fallback correctness，以及 cold-session archive / replay strategy。
+**当前状态：** 部分完成。通过事件流实现的轮次级可观测性已完成；provider fallback、step budget 与恢复关键配置的运行时治理已经落地。`#70`、`#82`、`#83` 与 `#84` 已经分别完成 waiting / terminal session resume checkpoint groundwork、retention / compaction / checkpoint invalidation 语义、corrupt / unreadable checkpoint fail-fast correctness，以及 cold-session archive / replay strategy。
 
 ### Epic 8: TUI / CLI / Web 客户端
 

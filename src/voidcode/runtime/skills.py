@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from ..skills.models import SkillMetadata
@@ -29,11 +29,18 @@ class SkillExecutionSnapshot:
     snapshot_hash: str
     snapshot_version: int = 1
     source: Literal["run", "resume", "replay"] = "run"
-    binding_snapshot: dict[str, object] | None = None
+    binding_snapshot: dict[str, object] = field(default_factory=dict)
 
 
 _WHITESPACE_PATTERN = re.compile(r"[ \t]+")
-_REQUIRED_SKILL_PAYLOAD_FIELDS = ("name", "description", "content")
+_REQUIRED_SKILL_PAYLOAD_FIELDS = (
+    "name",
+    "description",
+    "content",
+    "prompt_context",
+    "execution_notes",
+    "source_path",
+)
 
 
 def _normalize_text(value: str) -> str:
@@ -104,28 +111,17 @@ def runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext
         raise ValueError("persisted skill payload field 'description' must be a non-empty string")
     if not content:
         raise ValueError("persisted skill payload field 'content' must be a non-empty string")
-    prompt_context = payload.get("prompt_context")
-    execution_notes = payload.get("execution_notes", content).strip()
-    if not execution_notes:
-        execution_notes = content
-    if prompt_context is None:
-        prompt_parts = [f"Skill: {name}"]
-        if description:
-            prompt_parts.append(f"Description: {description}")
-        if execution_notes:
-            prompt_parts.append(f"Instructions:\n{execution_notes}")
-        prompt_context = "\n".join(prompt_parts).strip()
-    else:
-        prompt_context = prompt_context.strip()
-        if not prompt_context:
-            raise ValueError("persisted skill payload field 'prompt_context' must not be empty")
+    prompt_context = payload["prompt_context"].strip()
+    execution_notes = payload["execution_notes"].strip()
+    if not prompt_context:
+        raise ValueError("persisted skill payload field 'prompt_context' must not be empty")
     return SkillRuntimeContext(
         name=name,
         description=description,
         content=content,
         prompt_context=prompt_context,
         execution_notes=execution_notes,
-        source_path=payload.get("source_path", "").strip(),
+        source_path=payload["source_path"].strip(),
     )
 
 
@@ -169,13 +165,14 @@ def build_skill_execution_snapshot(
         if selected_skill_names is not None
         else tuple(context.name for context in context_values)
     )
+    materialized_binding = dict(binding_snapshot or {})
     snapshot_without_hash: dict[str, object] = {
         "snapshot_version": 1,
         "source": source,
         "selected_skill_names": list(selected_names),
         "applied_skill_payloads": [dict(payload) for payload in frozen_payloads],
         "skill_prompt_context": build_skill_prompt_context(context_values),
-        "binding_snapshot": binding_snapshot,
+        "binding_snapshot": materialized_binding,
     }
     return SkillExecutionSnapshot(
         selected_skill_names=selected_names,
@@ -184,17 +181,8 @@ def build_skill_execution_snapshot(
         snapshot_hash=_snapshot_hash(snapshot_without_hash),
         snapshot_version=1,
         source=source,
-        binding_snapshot=binding_snapshot,
+        binding_snapshot=materialized_binding,
     )
-
-
-def with_skill_snapshot_bindings(
-    snapshot: SkillExecutionSnapshot,
-    *,
-    binding_snapshot: dict[str, object] | None,
-) -> SkillExecutionSnapshot:
-    updated = replace(snapshot, binding_snapshot=binding_snapshot)
-    return replace(updated, snapshot_hash=_snapshot_hash(_snapshot_payload_without_hash(updated)))
 
 
 def snapshot_payload(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
@@ -204,14 +192,19 @@ def snapshot_payload(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
 
 
 def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
-    raw_selected = payload.get("selected_skill_names", [])
+    snapshot_version = payload.get("snapshot_version")
+    if not isinstance(snapshot_version, int) or isinstance(snapshot_version, bool):
+        raise ValueError("persisted skill snapshot version must be 1")
+    if snapshot_version != 1:
+        raise ValueError("persisted skill snapshot version must be 1")
+    raw_selected = payload.get("selected_skill_names")
     if not isinstance(raw_selected, list):
         raise ValueError("persisted skill snapshot selected_skill_names must be a list[str]")
     raw_selected_items = cast(list[object], raw_selected)
     if not all(isinstance(item, str) for item in raw_selected_items):
         raise ValueError("persisted skill snapshot selected_skill_names must be a list[str]")
     selected_skill_names = cast(list[str], raw_selected_items)
-    raw_applied = payload.get("applied_skill_payloads", [])
+    raw_applied = payload.get("applied_skill_payloads")
     if not isinstance(raw_applied, list):
         raise ValueError("persisted skill snapshot applied_skill_payloads must be a list")
     raw_applied_items = cast(list[object], raw_applied)
@@ -229,14 +222,11 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
     source = payload.get("source")
     if source not in {"run", "resume", "replay"}:
         raise ValueError("persisted skill snapshot source must be one of: run, resume, replay")
-    snapshot_version = payload.get("snapshot_version", 1)
-    if not isinstance(snapshot_version, int):
-        raise ValueError("persisted skill snapshot version must be an integer")
-    skill_prompt_context = payload.get("skill_prompt_context", "")
+    skill_prompt_context = payload.get("skill_prompt_context")
     if not isinstance(skill_prompt_context, str):
         raise ValueError("persisted skill snapshot skill_prompt_context must be a string")
     binding_snapshot = payload.get("binding_snapshot")
-    if binding_snapshot is not None and not isinstance(binding_snapshot, dict):
+    if not isinstance(binding_snapshot, dict):
         raise ValueError("persisted skill snapshot binding_snapshot must be an object")
     snapshot_without_hash: dict[str, object] = {
         "snapshot_version": snapshot_version,
@@ -247,14 +237,19 @@ def snapshot_from_payload(payload: dict[str, object]) -> SkillExecutionSnapshot:
         "binding_snapshot": binding_snapshot,
     }
     computed_hash = _snapshot_hash(snapshot_without_hash)
+    snapshot_hash = payload.get("snapshot_hash")
+    if not isinstance(snapshot_hash, str):
+        raise ValueError("persisted skill snapshot hash must be a string")
+    if snapshot_hash != computed_hash:
+        raise ValueError("persisted skill snapshot hash does not match its payload")
     return SkillExecutionSnapshot(
         selected_skill_names=tuple(selected_skill_names),
         applied_skill_payloads=tuple(applied_payloads),
         skill_prompt_context=skill_prompt_context,
-        snapshot_hash=computed_hash,
+        snapshot_hash=snapshot_hash,
         snapshot_version=snapshot_version,
         source=cast(Literal["run", "resume", "replay"], source),
-        binding_snapshot=cast(dict[str, object] | None, binding_snapshot),
+        binding_snapshot=cast(dict[str, object], binding_snapshot),
     )
 
 
@@ -268,5 +263,4 @@ __all__ = [
     "SkillExecutionSnapshot",
     "snapshot_from_payload",
     "snapshot_payload",
-    "with_skill_snapshot_bindings",
 ]

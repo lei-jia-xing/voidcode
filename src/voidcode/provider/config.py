@@ -116,7 +116,7 @@ def _prefer_primary[T](primary: T | None, fallback: T | None) -> T | None:
 
 
 class _ProviderPayloadModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class _ProviderTransientRetryConfigPayload(_ProviderPayloadModel):
@@ -440,11 +440,9 @@ def simplified_config_to_litellm(
 # Environment Variables for Chinese AI Providers
 # =============================================================================
 
-_GLM_API_KEY_ENV_VAR = "GLM_API_KEY"
 _GLM_ZAI_API_KEY_ENV_VAR = "ZAI_API_KEY"
 _GLM_ZHIPU_API_KEY_ENV_VAR = "ZHIPU_API_KEY"
 _DEEPSEEK_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY"
-_GROK_API_KEY_ENV_VAR = "GROK_API_KEY"
 _XAI_API_KEY_ENV_VAR = "XAI_API_KEY"
 _MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
 _KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
@@ -684,12 +682,10 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
             env,
             _GLM_ZAI_API_KEY_ENV_VAR,
             _GLM_ZHIPU_API_KEY_ENV_VAR,
-            _GLM_API_KEY_ENV_VAR,
         ),
         grok=_simplified_provider_config_from_env(
             env,
             _XAI_API_KEY_ENV_VAR,
-            _GROK_API_KEY_ENV_VAR,
         ),
         minimax=_simplified_provider_config_from_env(env, _MINIMAX_API_KEY_ENV_VAR),
         kimi=_simplified_provider_config_from_env(env, _KIMI_API_KEY_ENV_VAR),
@@ -1023,14 +1019,14 @@ def parse_provider_configs_payload(
             payload.glm,
             field_path=_nested_config_field(source, "glm"),
             env=environment,
-            api_key_env_var=_GLM_API_KEY_ENV_VAR,
+            api_key_env_var=_GLM_ZAI_API_KEY_ENV_VAR,
+            fallback_api_key_env_vars=(_GLM_ZHIPU_API_KEY_ENV_VAR,),
         ),
         grok=_parse_simplified_provider_config(
             payload.grok,
             field_path=_nested_config_field(source, "grok"),
             env=environment,
             api_key_env_var=_XAI_API_KEY_ENV_VAR,
-            fallback_api_key_env_vars=(_GROK_API_KEY_ENV_VAR,),
         ),
         minimax=_parse_simplified_provider_config(
             payload.minimax,

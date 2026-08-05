@@ -243,7 +243,7 @@ def format_report(report: CapabilityReport, *, verbose: bool = False) -> str:
     """
     lines: list[str] = []
 
-    # Use ASCII-safe icons for better cross-platform compatibility
+    # Keep terminal output portable across supported platforms.
     CHECK_ICON = "[+]"
     CROSS_ICON = "[-]"
     WARN_ICON = "[!]"

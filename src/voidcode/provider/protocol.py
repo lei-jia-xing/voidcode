@@ -328,9 +328,6 @@ class ModelTurnProvider(Protocol):
     def turn_provider(self) -> TurnProvider: ...
 
 
-ModelProvider = ModelTurnProvider
-
-
 @dataclass(frozen=True, slots=True)
 class StubTurnProvider:
     name: str

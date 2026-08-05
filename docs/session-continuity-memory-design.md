@@ -68,7 +68,7 @@ Session Continuity Memory 必须继续由 **runtime** 拥有。
 
 - compaction 的输入/输出语义属于 `runtime/`
 - distilled continuity state 的生成与注入边界属于 `runtime/`
-- replay / resume compatibility 属于 `runtime/`
+- replay / resume continuity 属于 `runtime/`
 - provider context reinjection 属于 runtime execution path
 
 它**不能**由以下位置拥有：
@@ -168,7 +168,7 @@ Session Continuity Memory 最合理的刷新触发点应当是：
 
 > refresh 触发点必须继续服从现有 runtime 主路径，而不是通过独立 worker / client-side helper 私自生成。
 
-## 与 replay / resume 的兼容规则
+## Replay / Resume 连续性规则
 
 Session Continuity Memory 不能破坏现有的 replay / resume 契约。
 
@@ -217,7 +217,7 @@ Session Continuity Memory 的价值最终必须体现在 provider-backed executi
 
 明确 continuity state 何时、以什么 shape 进入 provider-backed execution path。
 
-### Phase 4：保持 replay / resume / approval 兼容
+### Phase 4：验证 replay / resume / approval 连续性
 
 任何实现都必须证明：
 

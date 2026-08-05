@@ -74,7 +74,6 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     command: RuntimeCommandMetadata
     continuation_loop: RuntimeContinuationLoopMetadata
     delegation: RuntimeSubagentRoutingMetadata
-    execution_mode: str
     mode: runtime_mode.RuntimeMode
     read_only: bool
     max_steps: int
@@ -86,7 +85,6 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     memory_tools_allowed: bool
     workflow_mode: str
     workflow_plan: dict[str, object]
-    workflow_preset: str
     workflow: dict[str, object]
 
 
@@ -119,7 +117,6 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "context_transform_refs",
         "continuation_loop",
         "delegation",
-        "execution_mode",
         "mode",
         "read_only",
         "max_steps",
@@ -131,7 +128,6 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "memory_tools_allowed",
         "workflow_mode",
         "workflow_plan",
-        "workflow_preset",
         "workflow",
     }
 )
@@ -211,6 +207,13 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
     if unknown_keys:
         joined = ", ".join(unknown_keys)
         raise RuntimeRequestError(f"unsupported request metadata 'command' field(s): {joined}")
+    required_keys = {"name", "source", "arguments", "raw_arguments", "original_prompt"}
+    missing_keys = sorted(required_keys - command_payload.keys())
+    if missing_keys:
+        joined = ", ".join(missing_keys)
+        raise RuntimeRequestError(
+            f"request metadata 'command' is missing required field(s): {joined}"
+        )
 
     name = _validate_optional_runtime_metadata_string(
         command_payload.get("name"),
@@ -220,14 +223,14 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         command_payload.get("source"),
         field_name="command.source",
     )
-    raw_arguments = command_payload.get("raw_arguments", "")
+    raw_arguments = command_payload["raw_arguments"]
     if not isinstance(raw_arguments, str):
         raise RuntimeRequestError("request metadata 'command.raw_arguments' must be a string")
     original_prompt = _validate_optional_runtime_metadata_string(
         command_payload.get("original_prompt"),
         field_name="command.original_prompt",
     )
-    raw_arguments_list = command_payload.get("arguments", [])
+    raw_arguments_list = command_payload["arguments"]
     if not isinstance(raw_arguments_list, list):
         raise RuntimeRequestError("request metadata 'command.arguments' must be a list")
     arguments: list[str] = []
@@ -566,12 +569,6 @@ def validate_runtime_request_metadata(
             metadata["delegation"]
         )
 
-    if "execution_mode" in metadata:
-        execution_mode = metadata["execution_mode"]
-        if execution_mode not in ("plan", "act"):
-            raise RuntimeRequestError("request metadata 'execution_mode' must be 'plan' or 'act'")
-        normalized["execution_mode"] = execution_mode
-
     if "mode" in metadata:
         normalized["mode"] = parse_runtime_mode(metadata["mode"])
 
@@ -665,23 +662,15 @@ def validate_runtime_request_metadata(
             field_name="workflow_mode",
         )
 
-    if "workflow_preset" in metadata:
-        normalized["workflow_preset"] = _validate_optional_runtime_metadata_string(
-            metadata["workflow_preset"],
-            field_name="workflow_preset",
-        )
-
     if "workflow_mode" in normalized:
         try:
             from .workflow import resolve_workflow_mode
 
             _ = resolve_workflow_mode(
                 metadata_workflow_mode=cast(str | None, normalized.get("workflow_mode")),
-                workflow_preset=cast(str | None, normalized.get("workflow_preset")),
             )
         except ValueError as exc:
-            if "unknown workflow_preset" not in str(exc):
-                raise RuntimeRequestError(str(exc)) from exc
+            raise RuntimeRequestError(str(exc)) from exc
 
     if "workflow_plan" in metadata:
         if not allow_internal_fields:

@@ -32,20 +32,3 @@ def runtime_read_only_from_metadata(metadata: Mapping[str, object] | None) -> bo
     if not isinstance(read_only, bool):
         raise ValueError("runtime read_only must be a boolean")
     return read_only
-
-
-def legacy_runtime_mode_from_metadata(metadata: Mapping[str, object]) -> RuntimeMode:
-    try:
-        return runtime_mode_from_metadata(metadata)
-    except ValueError:
-        return "normal"
-
-
-def legacy_runtime_read_only_from_metadata(
-    metadata: Mapping[str, object],
-    *,
-    mode: RuntimeMode,
-) -> bool:
-    if mode in {"analyze", "plan"}:
-        return True
-    return metadata.get("read_only") is True

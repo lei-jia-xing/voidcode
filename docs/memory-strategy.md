@@ -418,7 +418,7 @@ Layer 1 已经拥有部分 substrate：
 
 - 更语义化的 compaction output
 - 可恢复的 distilled summary shape
-- 与 replay / resume 兼容的 reinjection boundary
+- replay / resume 的 reinjection boundary
 
 ### Layer 2 的主要前置条件：Leader-facing background result truth
 
@@ -461,7 +461,7 @@ Layer 2 直接依赖 `docs/contracts/background-task-delegation.md` 中仍处于
 1. `Session Continuity Memory Design`
    - compaction 输入/输出 shape
    - refresh trigger
-   - replay / resume compatibility
+   - replay / resume continuity
    - provider context reinjection boundary
    - 参考文档：[`session-continuity-memory-design.md`](./session-continuity-memory-design.md)
    - 详见 [`docs/session-continuity-memory-design.md`](./session-continuity-memory-design.md)

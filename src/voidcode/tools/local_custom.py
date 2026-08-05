@@ -136,7 +136,7 @@ def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, obje
         raise ValueError(
             f"local custom tool manifest {manifest_path} input_schema must be JSON serializable"
         ) from exc
-    schema_type = schema.get("type", "object")
+    schema_type = schema.get("type")
     if schema_type != "object":
         raise ValueError(
             f"local custom tool manifest {manifest_path} input_schema.type must be 'object'"
@@ -162,7 +162,7 @@ def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, obje
         raise ValueError(
             f"local custom tool manifest {manifest_path} input_schema.required must be strings"
         )
-    return {**schema, "type": "object"}
+    return dict(schema)
 
 
 def _validate_command_entrypoint(

@@ -10,7 +10,7 @@ runtime materialize agent capability 时按以下顺序收口：
 
 1. resolved `AgentManifest` defaults：builtin preset defaults，或从 project/user 本地 markdown manifest 发现并解析出的 custom defaults（prompt body、tool allowlist、skill refs、hook preset refs、MCP binding intent、model/execution defaults）；
 2. repo/runtime config overrides：`agent`、`agents`、`categories`、provider/model、tool/skill/MCP config；
-3. request metadata overrides：request `agent`、`skills`、`force_load_skills`、delegation route metadata、`workflow_mode` / legacy `workflow_preset` selector；
+3. request metadata overrides：request `agent`、`skills`、`force_load_skills`、delegation route metadata 和 `workflow_mode` selector；
 4. delegated child-only bindings：`load_skills` / `force_load_skills` 只进入目标 child session。
 
 这个优先级会写入 `session.metadata.agent_capability_snapshot.precedence`，用于 debug/replay 时解释一个 session 的能力来源。
@@ -73,7 +73,7 @@ Agent declarations can only select or narrow capability intent before policy mat
 
 ## Replay 要求
 
-Replay/debug 必须读取 persisted `agent_capability_snapshot`。只有 version 2 且包含非空 `tools.generation` 的 snapshot 有效；缺失版本、旧版本、未来版本以及缺失 generation 都必须 fail-fast，不能回退到 runtime config、重新 materialize 当前 workspace，或合成兼容 snapshot。
+Replay/debug 必须读取 persisted `agent_capability_snapshot`。只有 version 2 且包含非空 `tools.generation` 的 snapshot 有效；缺失版本、其他版本以及缺失 generation 都必须 fail-fast，不能回退到 runtime config、重新 materialize 当前 workspace，或合成 snapshot。
 
 ## 非目标
 

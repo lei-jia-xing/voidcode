@@ -221,7 +221,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 {"filePath": "relative/path.txt", "offset": 1, "limit": 2000}
 ```
 
-`filePath` 为必填；`offset` 与 `limit` 可省略，默认分别为 1 和 2000。实现仍兼容旧参数名 `path`，但新调用应优先使用 `filePath`。
+`filePath` 为必填；`offset` 与 `limit` 可省略，默认分别为 1 和 2000。其他路径字段名无效。
 
 - 成功返回：
 

@@ -140,10 +140,12 @@ def force_loaded_skill_payloads(
 def skill_snapshot_from_metadata(
     metadata: dict[str, object],
 ) -> SkillExecutionSnapshot | None:
-    raw_snapshot = metadata.get("skill_snapshot")
-    if isinstance(raw_snapshot, dict):
-        return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
-    return None
+    if "skill_snapshot" not in metadata:
+        return None
+    raw_snapshot = metadata["skill_snapshot"]
+    if not isinstance(raw_snapshot, dict):
+        raise ValueError("persisted skill_snapshot must be an object")
+    return snapshot_from_payload(cast(dict[str, object], raw_snapshot))
 
 
 def skill_binding_snapshot_from_agent_capability_snapshot(

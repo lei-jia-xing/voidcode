@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
+
 from voidcode.runtime.contracts import BackgroundTaskResult
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
-    PROTOTYPE_ADDITIVE_EVENT_TYPES,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
@@ -24,6 +25,7 @@ from voidcode.runtime.events import (
     RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
+    RUNTIME_EVENT_TYPES,
     RUNTIME_LSP_SERVER_FAILED,
     RUNTIME_LSP_SERVER_STARTED,
     RUNTIME_LSP_SERVER_STOPPED,
@@ -77,7 +79,7 @@ def test_runtime_event_types_include_stable_emitted_events() -> None:
 
 
 def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
-    assert PROTOTYPE_ADDITIVE_EVENT_TYPES == (
+    assert RUNTIME_EVENT_TYPES == (
         RUNTIME_MEMORY_REFRESHED,
         RUNTIME_MEMORY_ADDED,
         RUNTIME_MEMORY_DELETED,
@@ -274,7 +276,7 @@ def test_background_task_result_delegated_event_payload_names_are_explicit() -> 
     }
 
 
-def test_acp_delegated_lifecycle_uses_top_level_message_state_when_message_missing() -> None:
+def test_acp_delegated_lifecycle_rejects_missing_message_object() -> None:
     event = EventEnvelope(
         session_id="leader-session",
         sequence=1,
@@ -297,15 +299,8 @@ def test_acp_delegated_lifecycle_uses_top_level_message_state_when_message_missi
         },
     )
 
-    delegated = event.delegated_lifecycle
-
-    assert delegated is not None
-    assert delegated.session_id == "child-session"
-    assert delegated.parent_session_id == "leader-session"
-    assert delegated.delegation.lifecycle_status == "waiting_approval"
-    assert delegated.message.status == "waiting_approval"
-    assert delegated.message.approval_blocked is True
-    assert delegated.message.result_available is True
+    with pytest.raises(ValueError, match="requires message object"):
+        _ = event.delegated_lifecycle
 
 
 def test_delegated_lifecycle_preserves_interrupted_status_on_failed_event() -> None:
@@ -412,19 +407,6 @@ def test_tool_status_payload_shape_includes_display() -> None:
     assert display_value["kind"] == "shell"
 
 
-def test_tool_status_allows_missing_display_for_backwards_compatibility() -> None:
-    """Legacy events without display must remain valid."""
-    tool_status = {
-        "invocation_id": "call_xyz",
-        "tool_name": "read_file",
-        "status": "completed",
-        "label": "Read 10 lines",
-    }
-    assert tool_status["tool_name"] == "read_file"
-    assert tool_status["status"] == "completed"
-    assert "display" not in tool_status
-
-
 def test_tool_started_payload_target_shape_preserves_existing_keys() -> None:
     """tool_started payload must add display/tool_status without removing 'tool'."""
     payload = {
@@ -514,13 +496,13 @@ def test_skill_tool_display_uses_name_argument() -> None:
     """Skill display metadata must use the canonical skill tool argument."""
     display = build_tool_display(
         "skill",
-        {"name": "frontend-ui-ux", "skill": "legacy-skill"},
+        {"name": "frontend-ui-ux"},
     )
 
     assert display["kind"] == "skill"
     assert display["title"] == "Skill"
     assert display["summary"] == "frontend-ui-ux"
-    assert display["args"] == ["frontend-ui-ux", "legacy-skill"]
+    assert display["args"] == ["frontend-ui-ux"]
 
 
 def test_shell_tool_display_bounds_copyable_command_metadata() -> None:
@@ -561,14 +543,6 @@ def test_background_cancel_display_uses_camel_case_task_id_argument() -> None:
     assert display["title"] == "Background"
     assert display["summary"] == "task-123"
     assert display["args"] == ["task-123"]
-
-
-def test_background_cancel_display_accepts_legacy_task_id_argument() -> None:
-    """Legacy result-shaped cancellation data should remain displayable."""
-    display = build_tool_display("background_cancel", {"task_id": "legacy-task"})
-
-    assert display["summary"] == "legacy-task"
-    assert display["args"] == ["legacy-task"]
 
 
 def test_background_output_display_keeps_snake_case_task_id_argument() -> None:

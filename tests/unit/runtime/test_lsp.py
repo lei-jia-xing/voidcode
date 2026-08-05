@@ -1005,56 +1005,7 @@ def test_initialize_params_from_lsprotocol_keep_existing_wire_shape(tmp_path: Pa
     assert payload["capabilities"] == {}
 
 
-def test_lsp_tool_builds_same_text_document_position_wire_shape(tmp_path: Path) -> None:
-    sample_file = tmp_path / "sample.py"
-    sample_file.write_text("x = 1\n", encoding="utf-8")
-
-    class _StubResponse:
-        def __init__(self, response: dict[str, object]) -> None:
-            self.response = response
-
-    captured: dict[str, object] = {}
-
-    def _requester(
-        *,
-        server_name: str | None,
-        method: str,
-        params: dict[str, object],
-        workspace: Path,
-    ) -> _StubResponse:
-        captured["server_name"] = server_name
-        captured["method"] = method
-        captured["params"] = params
-        captured["workspace"] = workspace
-        return _StubResponse({"result": {"ok": True}})
-
-    tool_module = import_module("voidcode.tools.lsp")
-    tool = tool_module.LspTool(requester=_requester)
-
-    result = tool.invoke(
-        ToolCall(
-            tool_name="lsp",
-            arguments={
-                "operation": "textDocument/definition",
-                "filePath": "sample.py",
-                "line": 2,
-                "character": 3,
-            },
-        ),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert captured["server_name"] is None
-    assert captured["method"] == "textDocument/definition"
-    assert captured["workspace"] == tmp_path.resolve()
-    assert captured["params"] == {
-        "textDocument": {"uri": sample_file.resolve().as_uri()},
-        "position": {"line": 1, "character": 2},
-    }
-
-
-def test_lsp_tool_accepts_opencode_style_operation_aliases(tmp_path: Path) -> None:
+def test_lsp_tool_accepts_documented_operation_name(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
 

@@ -107,7 +107,6 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         ),
         source="builtin",
         workflow_mode="sustain",
-        workflow_preset="implementation",
     ),
     CommandDefinition(
         name="continuation-loop",
@@ -123,7 +122,6 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         ),
         source="builtin",
         workflow_mode="sustain",
-        workflow_preset="implementation",
     ),
     CommandDefinition(
         name="intensive-loop",
@@ -140,7 +138,6 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         ),
         source="builtin",
         workflow_mode="deep_work",
-        workflow_preset="research",
     ),
     CommandDefinition(
         name="cancel-continuation",
@@ -262,7 +259,6 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         source=source,
         agent=_optional_string(metadata.get("agent")),
         workflow_mode=_optional_string(metadata.get("workflow_mode")),
-        workflow_preset=_optional_string(metadata.get("workflow_preset")),
         model=_optional_string(metadata.get("model")),
         subtask=_metadata_bool(metadata.get("subtask"), default=False),
         enabled=_metadata_bool(metadata.get("enabled"), default=True),

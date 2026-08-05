@@ -7,13 +7,23 @@ from .session import SessionState
 
 
 def provider_attempt_from_metadata(metadata: dict[str, object]) -> int:
-    raw_provider_attempt = metadata.get("provider_attempt", 0)
-    return raw_provider_attempt if isinstance(raw_provider_attempt, int) else 0
+    if "provider_attempt" not in metadata:
+        return 0
+    raw_provider_attempt = metadata["provider_attempt"]
+    if not isinstance(raw_provider_attempt, int) or isinstance(raw_provider_attempt, bool):
+        raise ValueError("persisted provider_attempt must be an integer")
+    return raw_provider_attempt
 
 
 def provider_retry_attempt_from_metadata(metadata: dict[str, object]) -> int:
-    raw_provider_retry_attempt = metadata.get("provider_retry_attempt", 0)
-    return raw_provider_retry_attempt if isinstance(raw_provider_retry_attempt, int) else 0
+    if "provider_retry_attempt" not in metadata:
+        return 0
+    raw_provider_retry_attempt = metadata["provider_retry_attempt"]
+    if not isinstance(raw_provider_retry_attempt, int) or isinstance(
+        raw_provider_retry_attempt, bool
+    ):
+        raise ValueError("persisted provider_retry_attempt must be an integer")
+    return raw_provider_retry_attempt
 
 
 def run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
@@ -33,27 +43,27 @@ def session_with_provider_usage_metadata(
         return session
     usage_payload = usage.metadata_payload()
     raw_provider_usage = session.metadata.get("provider_usage")
-    provider_usage = (
-        dict(cast(dict[str, object], raw_provider_usage))
-        if isinstance(raw_provider_usage, dict)
-        else {}
-    )
+    if raw_provider_usage is not None and not isinstance(raw_provider_usage, dict):
+        raise ValueError("persisted provider_usage must be an object")
+    provider_usage = dict(cast(dict[str, object], raw_provider_usage or {}))
     raw_cumulative = provider_usage.get("cumulative")
-    cumulative = (
-        dict(cast(dict[str, object], raw_cumulative)) if isinstance(raw_cumulative, dict) else {}
-    )
+    if raw_cumulative is not None and not isinstance(raw_cumulative, dict):
+        raise ValueError("persisted provider_usage.cumulative must be an object")
+    cumulative = dict(cast(dict[str, object], raw_cumulative or {}))
 
     def _int_value(key: str) -> int:
         raw_value = cumulative.get(key, 0)
         if isinstance(raw_value, int) and not isinstance(raw_value, bool):
             return raw_value
-        return 0
+        raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
 
     cumulative_payload = {key: _int_value(key) + value for key, value in usage_payload.items()}
     raw_turn_count = provider_usage.get("turn_count", 0)
     turn_count = 0
     if isinstance(raw_turn_count, int) and not isinstance(raw_turn_count, bool):
         turn_count = raw_turn_count
+    else:
+        raise ValueError("persisted provider_usage.turn_count must be an integer")
     current_run_id = run_id_from_session_metadata(session.metadata)
     current_provider_attempt = provider_attempt_from_metadata(session.metadata)
     return SessionState(

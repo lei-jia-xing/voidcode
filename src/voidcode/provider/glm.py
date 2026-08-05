@@ -23,7 +23,6 @@ class GLMModelProvider:
     Environment Variables:
         ZAI_API_KEY: API key for GLM authentication via ZAI port
         ZHIPU_API_KEY: API key for GLM authentication via ZHIPU port
-        GLM_API_KEY: optional fallback API key for compatibility
     """
 
     name: str = "glm"

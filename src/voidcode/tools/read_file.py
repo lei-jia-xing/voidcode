@@ -242,14 +242,14 @@ class ReadFileTool:
             "limit": {"type": "integer"},
         },
         read_only=True,
-        path_argument_keys=("filePath", "path"),
+        path_argument_keys=("filePath",),
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
             args = ReadFileArgs.model_validate(
                 {
-                    "filePath": call.arguments.get("filePath", call.arguments.get("path")),
+                    "filePath": call.arguments.get("filePath"),
                     "offset": call.arguments.get("offset"),
                     "limit": call.arguments.get("limit"),
                 }

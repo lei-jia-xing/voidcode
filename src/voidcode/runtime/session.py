@@ -4,10 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from .mode import (
-    legacy_runtime_mode_from_metadata,
-    legacy_runtime_read_only_from_metadata,
-)
+from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
 
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed"]
@@ -90,22 +87,6 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
     return value
 
 
-def _workflow_effective_read_only(metadata: dict[str, object], read_only: bool) -> bool:
-    raw_workflow = metadata.get("workflow")
-    if not isinstance(raw_workflow, dict):
-        return read_only
-    workflow = cast(dict[str, object], raw_workflow)
-    if workflow.get("read_only_default") is True:
-        read_only = True
-    raw_effective = workflow.get("effective")
-    if (
-        isinstance(raw_effective, dict)
-        and cast(dict[str, object], raw_effective).get("read_only_default") is True
-    ):
-        read_only = True
-    return read_only
-
-
 def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object]:
     """Return session metadata projected for replay/resume without run-local markers."""
 
@@ -126,12 +107,10 @@ def session_metadata_for_replay(metadata: dict[str, object]) -> dict[str, object
 
 
 def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[str, object]:
-    """Return persisted metadata with top-level runtime mode compatibility normalized."""
+    """Validate persisted top-level runtime mode metadata."""
 
     normalized = dict(metadata)
-    mode = legacy_runtime_mode_from_metadata(normalized)
-    if "mode" in normalized and normalized.get("mode") != mode:
-        normalized["mode"] = mode
+    mode = runtime_mode_from_metadata(normalized)
     raw_runtime_policy = normalized.get("runtime_policy")
     if isinstance(raw_runtime_policy, dict):
         runtime_policy = dict(cast(dict[str, object], raw_runtime_policy))
@@ -207,9 +186,8 @@ def session_metadata_for_persistence(
 
     persisted = cast(dict[str, object], _bounded_redacted(metadata))
     persisted.pop("_prompt_activation_this_run", None)
-    mode = legacy_runtime_mode_from_metadata(persisted)
-    read_only = legacy_runtime_read_only_from_metadata(persisted, mode=mode)
-    read_only = _workflow_effective_read_only(persisted, read_only)
+    mode = runtime_mode_from_metadata(persisted)
+    read_only = runtime_read_only_from_metadata(persisted)
     observations = _policy_observations(events)
     raw_persisted_runtime_policy = persisted.get("runtime_policy")
     if isinstance(raw_persisted_runtime_policy, dict):
@@ -236,10 +214,8 @@ def session_metadata_for_persistence(
                 **cast(dict[str, object], raw_runtime_policy),
                 **observations,
             }
-    else:
-        if observations:
-            persisted["policy_observations"] = observations
-        persisted["runtime_policy"] = runtime_policy_snapshot_from_session_metadata(persisted)
+    elif observations:
+        persisted["policy_observations"] = observations
     return persisted
 
 

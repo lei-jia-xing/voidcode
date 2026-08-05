@@ -10,13 +10,11 @@ from voidcode.runtime.contracts import (
     runtime_read_only_from_metadata,
     validate_runtime_request_metadata,
 )
+from voidcode.runtime.mode import RuntimeMode
 from voidcode.runtime.permission import (
-    DEFAULT_RUNTIME_EXECUTION_MODE,
     PLAN_MODE_DENIAL_REASON,
     OperationClass,
     PermissionPolicy,
-    RuntimeExecutionMode,
-    execution_mode_from_metadata,
     is_plan_mode_blocked,
     resolve_permission,
 )
@@ -45,14 +43,10 @@ def _call(name: str = "write_file") -> ToolCall:
     return ToolCall(tool_name=name, arguments={"path": "foo.txt"})
 
 
-def test_default_runtime_execution_mode_is_act() -> None:
-    assert DEFAULT_RUNTIME_EXECUTION_MODE == "act"
-
-
 @pytest.mark.parametrize(
     ("mode", "tool", "operation_class", "expected"),
     [
-        ("act", _write_tool(), "write", False),
+        ("normal", _write_tool(), "write", False),
         ("plan", _read_only_tool(), "read", False),
         ("plan", _read_only_tool(), None, False),
         ("plan", _write_tool(), "write", True),
@@ -71,7 +65,7 @@ def test_is_plan_mode_blocked_matrix(
 ) -> None:
     assert (
         is_plan_mode_blocked(
-            execution_mode=cast(RuntimeExecutionMode, mode),
+            runtime_mode=cast(RuntimeMode, mode),
             tool=tool,
             operation_class=cast(OperationClass | None, operation_class),
         )
@@ -84,13 +78,13 @@ def test_resolve_permission_plan_mode_denies_write_tool() -> None:
         _write_tool(),
         _call(),
         policy=PermissionPolicy(mode="ask"),
-        execution_mode="plan",
+        runtime_mode="plan",
     )
 
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
     assert outcome.pending_approval.policy_mode == "deny"
-    assert outcome.pending_approval.policy_surface == "execution_mode.plan"
+    assert outcome.pending_approval.policy_surface == "mode.plan"
     assert outcome.pending_approval.reason == PLAN_MODE_DENIAL_REASON
 
 
@@ -99,24 +93,24 @@ def test_resolve_permission_plan_mode_allows_read_only_tool() -> None:
         _read_only_tool(),
         _call("grep"),
         policy=PermissionPolicy(mode="ask"),
-        execution_mode="plan",
+        runtime_mode="plan",
     )
 
     assert outcome.decision == "allow"
     assert outcome.pending_approval is None
 
 
-def test_resolve_permission_act_mode_does_not_short_circuit() -> None:
+def test_resolve_permission_normal_mode_does_not_short_circuit() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
         policy=PermissionPolicy(mode="ask"),
-        execution_mode="act",
+        runtime_mode="act",
     )
 
     assert outcome.decision == "ask"
     assert outcome.pending_approval is not None
-    # Reason in act mode should remain the default approval reason rather than
+    # Reason in normal mode should remain the default approval reason rather than
     # the plan-mode denial sentinel.
     assert outcome.pending_approval.reason != PLAN_MODE_DENIAL_REASON
 
@@ -128,42 +122,12 @@ def test_resolve_permission_plan_mode_overrides_explicit_allow_rule() -> None:
         _call(),
         policy=PermissionPolicy(mode="ask"),
         rule_decision="allow",
-        execution_mode="plan",
+        runtime_mode="plan",
     )
 
     assert outcome.decision == "deny"
     assert outcome.pending_approval is not None
-    assert outcome.pending_approval.policy_surface == "execution_mode.plan"
-
-
-def test_execution_mode_from_metadata_defaults_to_act() -> None:
-    assert execution_mode_from_metadata(None) == "act"
-    assert execution_mode_from_metadata({}) == "act"
-    assert execution_mode_from_metadata({"execution_mode": "act"}) == "act"
-    # Invalid values fall back to default rather than raising; validation is
-    # the responsibility of the runtime contract layer.
-    assert execution_mode_from_metadata({"execution_mode": "weird"}) == "act"
-
-
-def test_execution_mode_from_metadata_returns_plan_when_set() -> None:
-    assert execution_mode_from_metadata({"execution_mode": "plan"}) == "plan"
-
-
-def test_request_metadata_accepts_plan_execution_mode() -> None:
-    normalized = validate_runtime_request_metadata({"execution_mode": "plan"})
-
-    assert normalized.get("execution_mode") == "plan"
-
-
-def test_request_metadata_accepts_act_execution_mode() -> None:
-    normalized = validate_runtime_request_metadata({"execution_mode": "act"})
-
-    assert normalized.get("execution_mode") == "act"
-
-
-def test_request_metadata_rejects_unknown_execution_mode() -> None:
-    with pytest.raises(RuntimeRequestError, match="execution_mode"):
-        _ = validate_runtime_request_metadata({"execution_mode": "magic"})
+    assert outcome.pending_approval.policy_surface == "mode.plan"
 
 
 def test_request_metadata_defaults_to_normal_action_capable_runtime_mode() -> None:
@@ -213,16 +177,6 @@ def test_normal_runtime_mode_allows_explicit_read_only() -> None:
 
     assert runtime_mode_from_metadata(normalized) == "normal"
     assert runtime_read_only_from_metadata(normalized) is True
-
-
-def test_runtime_mode_and_execution_mode_remain_compatible() -> None:
-    normalized = validate_runtime_request_metadata(
-        {"mode": "plan", "read_only": True, "execution_mode": "act"}
-    )
-
-    assert normalized.get("mode") == "plan"
-    assert normalized.get("read_only") is True
-    assert normalized.get("execution_mode") == "act"
 
 
 def test_runtime_mode_helper_rejects_invalid_unvalidated_metadata() -> None:

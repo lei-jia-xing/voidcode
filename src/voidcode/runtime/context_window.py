@@ -174,7 +174,6 @@ class ContextWindowPolicy:
     continuity_distillation_enabled: bool = True
     continuity_distillation_max_input_items: int = 12
     continuity_distillation_max_input_chars: int = 4000
-    importance_retention: bool = False
     protected_context_tiers: tuple[str, ...] = (
         "instruction",
         "workspace",
@@ -254,7 +253,6 @@ class ContextWindowPolicy:
         payload["continuity_distillation_max_input_chars"] = (
             self.continuity_distillation_max_input_chars
         )
-        payload["importance_retention"] = self.importance_retention
         payload["protected_context_tiers"] = list(self.protected_context_tiers)
         return payload
 
@@ -548,13 +546,9 @@ def continuity_state_from_metadata_payload(
     payload: Mapping[str, object],
 ) -> RuntimeContinuityState | None:
     version = payload.get("version")
-    if version is None:
-        resolved_version = 1
-    elif isinstance(version, int) and not isinstance(version, bool):
-        resolved_version = version
-    else:
+    if not isinstance(version, int) or isinstance(version, bool):
         return None
-    if resolved_version not in {1, 2}:
+    if version != 2:
         return None
 
     summary_text = payload.get("summary_text")
@@ -635,7 +629,7 @@ def continuity_state_from_metadata_payload(
         token_budget=resolved_token_budget,
         token_estimate_source=token_estimate_source,
         dropped_tool_results=_dropped_tool_diagnostics_from_metadata_payload(payload),
-        version=resolved_version,
+        version=version,
     )
 
 
@@ -973,9 +967,7 @@ def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
     # context_pressure_threshold is an upper bound on the tool-result budget.
     # This turns the threshold into an actual compaction trigger instead of a
     # passive observability signal: tool results are projected so that retained
-    # tokens stay below (model_window * threshold). Set threshold to 1.0 to
-    # restore the legacy behavior of relying purely on max_tool_result_tokens /
-    # max_context_ratio.
+    # tokens stay below (model_window * threshold).
     pressure_ceiling = max(
         1, int(policy.model_context_window_tokens * policy.context_pressure_threshold)
     )
@@ -1113,19 +1105,12 @@ def _coerce_float(payload: Mapping[str, object], key: str, *, default: float) ->
     return float(raw)
 
 
-def _coerce_bool(payload: Mapping[str, object], key: str, *, default: bool) -> bool:
-    raw = payload.get(key)
-    if raw is None:
-        return default
-    if not isinstance(raw, bool):
-        raise ValueError(f"context window policy field '{key}' must be a boolean")
-    return raw
-
-
 def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPolicy:
     if not isinstance(raw_payload, dict):
         raise ValueError("context window policy payload must be an object")
     payload = cast(dict[str, object], raw_payload)
+    if payload.get("version") != 1:
+        raise ValueError("context window policy version must be 1")
     per_tool_raw = payload.get("per_tool_result_tokens")
     per_tool: dict[str, int] = {}
     if per_tool_raw is not None:
@@ -1195,11 +1180,6 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
             payload,
             "continuity_distillation_max_input_chars",
             default=ContextWindowPolicy().continuity_distillation_max_input_chars,
-        ),
-        importance_retention=_coerce_bool(
-            payload,
-            "importance_retention",
-            default=ContextWindowPolicy().importance_retention,
         ),
     )
 
@@ -1310,7 +1290,7 @@ def _build_continuity_state(
             source_references=previous.source_references if previous is not None else (),
         )
 
-    legacy_summary = None
+    dropped_preview_summary = None
     if previewable_dropped_results:
         preview_count = min(preview_item_limit, len(previewable_dropped_results))
         lines = [f"Compacted {dropped_count} earlier tool results:"]
@@ -1321,7 +1301,7 @@ def _build_continuity_state(
         remaining = len(previewable_dropped_results) - preview_count
         if remaining > 0:
             lines.append(f"... and {remaining} more")
-        legacy_summary = "\n".join(lines)
+        dropped_preview_summary = "\n".join(lines)
     state_without_summary = RuntimeContinuityState(
         objective=objective,
         current_goal=current_goal,
@@ -1403,8 +1383,8 @@ def _build_continuity_state(
 
     canonical_summary = _continuity_summary_text(state_without_summary)
     summary_text = canonical_summary
-    if legacy_summary is not None:
-        summary_text = f"{canonical_summary}\n\n## Dropped Tool Preview\n{legacy_summary}"
+    if dropped_preview_summary is not None:
+        summary_text = f"{canonical_summary}\n\n## Dropped Tool Preview\n{dropped_preview_summary}"
     return RuntimeContinuityState(
         summary_text=summary_text,
         objective=state_without_summary.objective,

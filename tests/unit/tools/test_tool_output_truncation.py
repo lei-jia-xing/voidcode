@@ -20,7 +20,7 @@ from voidcode.tools import (
 def test_cap_tool_result_output_noops_under_limits(tmp_path: Path) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="small output")
 
-    capped = cap_tool_result_output(result, workspace=tmp_path)
+    capped = cap_tool_result_output(result)
 
     assert capped is result
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
@@ -30,7 +30,7 @@ def test_cap_tool_result_output_caps_by_line_count_and_saves_full_output(tmp_pat
     content = "".join(f"line-{index}\n" for index in range(6))
     result = ToolResult(tool_name="sample", status="ok", content=content)
 
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=3, max_bytes=10_000)
+    capped = cap_tool_result_output(result, max_lines=3, max_bytes=10_000)
 
     assert capped.content is not None
     assert "line-0" in capped.content
@@ -93,7 +93,6 @@ def test_tool_output_artifact_retrieval_supports_offsets_and_search(tmp_path: Pa
 
     capped = cap_tool_result_output(
         result,
-        workspace=tmp_path,
         session_id="session-1",
         tool_call_id="call-1",
         max_lines=2,
@@ -122,7 +121,6 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
 
     capped = cap_tool_result_output(
         result,
-        workspace=tmp_path,
         session_id="session-1",
         tool_call_id="call-1",
         max_lines=2,
@@ -155,7 +153,6 @@ def test_tool_output_artifact_resolves_from_events_by_id_or_tool_call(tmp_path: 
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
     capped = cap_tool_result_output(
         result,
-        workspace=tmp_path,
         session_id="session-1",
         tool_call_id="call-1",
         max_lines=1,
@@ -180,7 +177,6 @@ def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_tool_cal
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
     capped = cap_tool_result_output(
         result,
-        workspace=tmp_path,
         session_id="session-1",
         tool_call_id="call-1",
         max_lines=1,
@@ -209,7 +205,6 @@ def test_tool_output_artifact_resolver_skips_invalid_candidate_for_same_artifact
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
     capped = cap_tool_result_output(
         result,
-        workspace=tmp_path,
         session_id="session-1",
         tool_call_id="call-1",
         max_lines=1,
@@ -285,7 +280,7 @@ def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
     tmp_path: Path,
 ) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
     real_artifact = capped.data["artifact"]
     assert isinstance(real_artifact, dict)
     forged_artifact = {
@@ -309,7 +304,7 @@ def test_tool_output_artifact_rejects_valid_shaped_id_for_another_artifact_path(
     tmp_path: Path,
 ) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
     real_artifact = capped.data["artifact"]
     assert isinstance(real_artifact, dict)
     forged_id = "artifact_000000000000000000000000"
@@ -332,7 +327,7 @@ def test_tool_output_artifact_rejects_valid_shaped_id_for_another_artifact_path(
 
 def test_tool_output_artifact_retrieval_reports_missing(tmp_path: Path) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
@@ -346,7 +341,7 @@ def test_tool_output_artifact_retrieval_reports_missing(tmp_path: Path) -> None:
 
 def test_tool_output_artifact_search_reports_missing(tmp_path: Path) -> None:
     result = ToolResult(tool_name="sample", status="ok", content="one\ntwo\nthree\n")
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=1, max_bytes=10_000)
+    capped = cap_tool_result_output(result, max_lines=1, max_bytes=10_000)
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
@@ -363,7 +358,7 @@ def test_cap_tool_result_output_caps_by_utf8_byte_count_safely(tmp_path: Path) -
     content = "π" * 100
     result = ToolResult(tool_name="unicode", status="ok", content=content)
 
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=2000, max_bytes=51)
+    capped = cap_tool_result_output(result, max_lines=2000, max_bytes=51)
 
     assert capped.content is not None
     assert "�" not in capped.content
@@ -378,14 +373,14 @@ def test_cap_tool_result_output_caps_by_utf8_byte_count_safely(tmp_path: Path) -
 def test_cap_tool_result_output_skips_errors_and_empty_content(tmp_path: Path) -> None:
     empty = ToolResult(tool_name="sample", status="ok", content="")
 
-    assert cap_tool_result_output(empty, workspace=tmp_path) is empty
+    assert cap_tool_result_output(empty) is empty
 
 
 def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     error_text = "".join(f"error-{index}\n" for index in range(10))
     result = ToolResult(tool_name="sample", status="error", error=error_text)
 
-    capped = cap_tool_result_output(result, workspace=tmp_path, max_lines=3, max_bytes=10_000)
+    capped = cap_tool_result_output(result, max_lines=3, max_bytes=10_000)
 
     assert capped.error is not None
     assert "error-0" in capped.error

@@ -9,6 +9,10 @@ import pytest
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("PYTHONUTF8", "1")
+# Unit and integration tests must not make LiteLLM refresh its public model-cost
+# catalog at import time.  Each CLI subprocess would otherwise pay a DNS/network
+# timeout before it can even collect or execute a test.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="voidcode-pytest-config-")
 
 
@@ -30,8 +34,13 @@ def _isolated_xdg_runtime_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 _TEST_ROOT = Path(__file__).resolve().parent
 
 _SLOW_TEST_FILES = {
+    Path("unit/interface/test_cli_delegated_parity.py"),
+    Path("unit/interface/test_cli_memory.py"),
+    Path("unit/interface/test_tui.py"),
+    Path("unit/runtime/test_mcp.py"),
     Path("unit/runtime/test_http_question_payload_fuzz.py"),
     Path("unit/runtime/test_runtime_service_extensions.py"),
+    Path("unit/tools/test_interactive_shell_tool.py"),
 }
 
 
@@ -77,4 +86,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.slow)
 
         if _source_contains(item, "time.sleep("):
+            item.add_marker(pytest.mark.slow)
+
+        if _source_contains(item, "socket.socket("):
             item.add_marker(pytest.mark.slow)

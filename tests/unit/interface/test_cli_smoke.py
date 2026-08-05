@@ -32,6 +32,7 @@ class _StubEvent:
 @dataclass(frozen=True)
 class _StubSessionRef:
     id: str
+    parent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -396,7 +397,7 @@ def test_storage_reset_removes_global_database_files() -> None:
 
 
 def test_web_command_forwards_runtime_config_and_server_entry() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/web-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
@@ -428,7 +429,7 @@ def test_web_command_forwards_runtime_config_and_server_entry() -> None:
 
 
 def test_web_command_defaults_to_auto_assigned_port() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/web-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
@@ -450,7 +451,7 @@ def test_web_command_defaults_to_auto_assigned_port() -> None:
 
 
 def test_web_command_forwards_no_open_flag() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/web-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
@@ -483,7 +484,7 @@ def test_web_command_forwards_no_open_flag() -> None:
 
 
 def test_serve_command_forwards_runtime_config_and_server_entry() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/serve-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
@@ -860,7 +861,7 @@ def test_sessions_debug_missing_session_returns_clean_error() -> None:
 
 
 def test_tui_command_forwards_workspace_and_approval_mode() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     tui = importlib.import_module("voidcode.tui")
     workspace = Path("/tmp/demo-workspace")
 
@@ -881,7 +882,7 @@ def test_tui_command_forwards_workspace_and_approval_mode() -> None:
 
 
 def test_serve_command_forwards_host_port_and_workspace() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="deny")
 
@@ -912,7 +913,7 @@ def test_serve_command_forwards_host_port_and_workspace() -> None:
 
 
 def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -966,7 +967,7 @@ def test_run_command_executes_compact_slash_command_through_runtime_surface() ->
 
 
 def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
@@ -994,7 +995,7 @@ def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
 
 
 def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_flags() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1047,7 +1048,7 @@ def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_fl
 
 
 def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
@@ -1066,7 +1067,7 @@ def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement()
 
 
 def test_run_command_read_only_flag_forwards_runtime_metadata() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
@@ -1092,25 +1093,8 @@ def test_run_command_read_only_flag_forwards_runtime_metadata() -> None:
     assert request.metadata["read_only"] is True
 
 
-def test_run_command_legacy_act_mode_maps_to_normal_runtime_mode() -> None:
-    cli = importlib.import_module("voidcode.cli")
-    workspace = Path("/tmp/demo-workspace")
-    config = SimpleNamespace(approval_mode="allow")
-    chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
-
-    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
-        with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
-            runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(["run", "act", "--workspace", str(workspace), "--mode", "act"])
-
-    assert result == 0
-    request = runtime_class.return_value.run_stream.call_args.args[0]
-    assert request.metadata["mode"] == "normal"
-    assert "execution_mode" not in request.metadata
-
-
 def test_run_command_accepts_runtime_discovered_custom_agent_id() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (_make_chunk(session_id="demo-session", status="completed", output="done\n"),)
@@ -1135,7 +1119,7 @@ def test_run_command_accepts_runtime_discovered_custom_agent_id() -> None:
 
 
 def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1196,7 +1180,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
 
 
 def test_run_json_reports_failed_status_and_returns_runtime_error(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1231,7 +1215,7 @@ def test_run_json_reports_failed_status_and_returns_runtime_error(capsys: Any) -
 
 
 def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1352,7 +1336,7 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
 
 
 def test_run_trace_reports_incomplete_runtime_stream_as_failure(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1393,7 +1377,7 @@ def test_run_trace_reports_incomplete_runtime_stream_as_failure(capsys: Any) -> 
 
 
 def test_run_trace_hides_reasoning_without_show_thinking(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1434,7 +1418,7 @@ def test_run_trace_hides_reasoning_without_show_thinking(capsys: Any) -> None:
 
 
 def test_run_trace_shows_reasoning_with_show_thinking(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1487,7 +1471,7 @@ def test_run_trace_shows_reasoning_with_show_thinking(capsys: Any) -> None:
 
 
 def test_run_trace_respects_explicit_no_provider_stream() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (_make_chunk(session_id="trace-session", status="completed", output="done\n"),)
@@ -1513,7 +1497,7 @@ def test_run_trace_respects_explicit_no_provider_stream() -> None:
 
 
 def test_run_trace_fails_incomplete_stream_even_with_partial_output(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1548,7 +1532,7 @@ def test_run_trace_fails_incomplete_stream_even_with_partial_output(capsys: Any)
 
 
 def test_run_trace_conflicts_with_json(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
 
     result = cli.main(["run", "go", "--workspace", "/tmp/demo-workspace", "--json", "--trace"])
 
@@ -1559,7 +1543,7 @@ def test_run_trace_conflicts_with_json(capsys: Any) -> None:
 
 
 def test_run_json_strips_runtime_failed_prefix_from_error_summary(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1586,7 +1570,7 @@ def test_run_json_strips_runtime_failed_prefix_from_error_summary(capsys: Any) -
 
 
 def test_run_json_prefers_runtime_error_summary_field(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1614,7 +1598,7 @@ def test_run_json_prefers_runtime_error_summary_field(capsys: Any) -> None:
 
 
 def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1648,7 +1632,7 @@ def test_run_command_forwards_reasoning_effort_flag_to_metadata_and_config() -> 
 
 
 def test_run_command_show_thinking_flag_does_not_persist_request_metadata() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1679,7 +1663,7 @@ def test_run_command_show_thinking_flag_does_not_persist_request_metadata() -> N
 
 
 def test_run_json_redacts_reasoning_by_default_and_shows_with_flag(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
@@ -1731,7 +1715,7 @@ def test_run_json_redacts_reasoning_by_default_and_shows_with_flag(capsys: Any) 
 
 
 def test_run_command_omits_reasoning_effort_metadata_when_flag_absent() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1761,7 +1745,7 @@ def test_run_command_omits_reasoning_effort_metadata_when_flag_absent() -> None:
 
 
 def test_run_command_prints_request_observability_event(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="allow")
     chunks = (
@@ -1843,7 +1827,7 @@ def test_run_command_missing_config_named_file_is_runtime_error() -> None:
 
 
 def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -1918,7 +1902,7 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
 
 
 def test_run_command_interactively_streams_initial_events_incrementally() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
     stdout = _StubStdout()
     stderr = _StubTtyStderr()
@@ -1988,7 +1972,7 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
 
 
 def test_run_command_interactively_streams_resumed_events_incrementally() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
     stdout = _StubStdout()
     stderr = _StubTtyStderr()
@@ -2079,7 +2063,7 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
 
 
 def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -2157,7 +2141,7 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
 def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
     capsys: Any,
 ) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -2263,7 +2247,7 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
 
 
 def test_run_command_interactively_handles_repeated_approval_requests(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
         _make_chunk(
@@ -2388,7 +2372,7 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
 
 
 def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
@@ -2427,7 +2411,7 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
 
 
 def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     first_stream = (
@@ -2478,7 +2462,7 @@ def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) ->
 
 
 def test_run_command_non_interactive_question_block_returns_failure(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     questions: list[dict[str, object]] = [
@@ -2531,7 +2515,7 @@ def test_run_command_non_interactive_question_block_returns_failure(capsys: Any)
 
 
 def test_run_command_json_reports_non_interactive_question_block(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     config = SimpleNamespace(approval_mode="ask")
     questions: list[dict[str, object]] = [
@@ -2923,7 +2907,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
 
 
 def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     runtime_config = SimpleNamespace(
         approval_mode="allow",
         execution_engine="provider",
@@ -3515,7 +3499,7 @@ def test_commands_show_missing_command_returns_clean_error() -> None:
 
 
 def test_provider_models_command_outputs_refreshed_provider_model_list() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     models = ("alias", "provider/model")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -3558,7 +3542,7 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
 
 
 def test_provider_inspect_command_outputs_provider_capabilities() -> None:
-    cli = importlib.import_module("voidcode.cli")
+    cli = importlib.import_module("voidcode.cli.app")
     contracts = importlib.import_module("voidcode.runtime.contracts")
 
     with tempfile.TemporaryDirectory() as tmp:

@@ -134,7 +134,6 @@ def _save_session_with_tool_artifact(tmp_path: Path) -> dict[str, object]:
     content = "".join(f"artifact-line-{index}\n" for index in range(8))
     capped = cap_tool_result_output(
         ToolResult(tool_name="shell_exec", status="ok", content=content),
-        workspace=tmp_path,
         session_id="artifact-session",
         tool_call_id="artifact-call",
         max_lines=2,
@@ -190,10 +189,12 @@ def _minimal_bundle_payload(sessions: list[dict[str, object]]) -> dict[str, obje
                 len(cast(list[object], session.get("events", []))) for session in sessions
             ),
             "background_task_count": 0,
+            "artifact_count": 0,
         },
         "sessions": sessions,
         "background_tasks": [],
         "diagnostics": {},
+        "artifacts": [],
     }
 
 
@@ -402,25 +403,15 @@ def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:
 def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "workflow_preset": "frontend",
         "workflow": {
             "snapshot_version": 2,
-            "requested": {"workflow_mode": "product", "workflow_preset": "frontend"},
+            "requested": {"workflow_mode": "product"},
             "effective": {
                 "mode": "product",
-                "legacy_preset": "frontend",
-                "source": "workflow_preset",
-                "category": "frontend",
-                "default_agent": "leader",
-                "effective_agent": "leader",
-                "read_only_default": False,
-                "prompt_append": "Stored frontend guidance.",
-                "hook_preset_refs": ["role_reminder"],
-                "skill_refs": ["frontend-design", "playwright"],
-                "force_load_skills": [],
-                "mcp_binding_intents": [{"servers": ["playwright"], "required": False}],
-                "verification_guidance": "Run stored frontend checks.",
+                "source": "workflow_mode",
             },
+            "mode": "product",
+            "source": "workflow_mode",
         },
     }
     store.save_run(
@@ -467,42 +458,6 @@ def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Pa
     assert imported_snapshot == workflow_snapshot_from_metadata(metadata)
 
 
-def test_session_bundle_import_preserves_legacy_workflow_preset_only_metadata(
-    tmp_path: Path,
-) -> None:
-    store = SqliteSessionStore()
-    bundle = parse_session_bundle(
-        _minimal_bundle_payload(
-            [
-                {
-                    **_minimal_session_payload("legacy-workflow-bundle"),
-                    "metadata": {"workflow_preset": "research"},
-                }
-            ]
-        )
-    )
-    target_workspace = tmp_path / "imported-legacy"
-    target_workspace.mkdir()
-
-    apply_session_bundle(bundle, session_store=store, workspace=target_workspace)
-
-    imported = store.load_session(
-        workspace=target_workspace,
-        session_id="legacy-workflow-bundle",
-    )
-    snapshot = workflow_snapshot_from_metadata(imported.session.metadata)
-
-    assert imported.session.metadata["workflow_preset"] == "research"
-    assert snapshot is not None
-    assert snapshot["requested"] == {"workflow_mode": None, "workflow_preset": "research"}
-    assert snapshot["effective"] == {
-        "mode": None,
-        "legacy_preset": "research",
-        "source": None,
-    }
-    assert snapshot["selected_preset"] == "research"
-
-
 def test_session_bundle_import_preserves_requested_and_effective_workflow_mode(
     tmp_path: Path,
 ) -> None:
@@ -511,22 +466,13 @@ def test_session_bundle_import_preserves_requested_and_effective_workflow_mode(
         "workflow_mode": "review",
         "workflow": {
             "snapshot_version": 2,
-            "requested": {"workflow_mode": "review", "workflow_preset": None},
+            "requested": {"workflow_mode": "review"},
             "effective": {
                 "mode": "review",
-                "legacy_preset": None,
                 "source": "workflow_mode",
-                "category": "review",
-                "default_agent": "leader",
-                "effective_agent": "leader",
-                "read_only_default": False,
-                "prompt_append": "Stored review guidance.",
-                "hook_preset_refs": [],
-                "skill_refs": ["review-work"],
-                "force_load_skills": [],
-                "mcp_binding_intents": [],
-                "verification_guidance": "Use stored review checks.",
             },
+            "mode": "review",
+            "source": "workflow_mode",
         },
     }
     bundle = parse_session_bundle(
@@ -554,61 +500,7 @@ def test_session_bundle_import_preserves_requested_and_effective_workflow_mode(
     assert imported.session.metadata.get("mode") != "review"
 
 
-def test_session_bundle_export_import_normalizes_legacy_workflow_mode_pollution(
-    tmp_path: Path,
-) -> None:
-    store = SqliteSessionStore()
-    polluted_metadata: dict[str, object] = {
-        "mode": "deep_work",
-        "read_only": True,
-        "workflow": {
-            "snapshot_version": 2,
-            "requested": {"workflow_mode": "deep_work", "workflow_preset": "research"},
-            "effective": {
-                "mode": "deep_work",
-                "legacy_preset": "research",
-                "source": "workflow_mode",
-                "read_only_default": True,
-            },
-        },
-        "runtime_policy": {"version": 1, "mode": "deep_work", "read_only": True},
-    }
-    bundle = parse_session_bundle(
-        _minimal_bundle_payload(
-            [
-                {
-                    **_minimal_session_payload("polluted-workflow-bundle"),
-                    "metadata": polluted_metadata,
-                }
-            ]
-        )
-    )
-    target_workspace = tmp_path / "imported-polluted"
-    target_workspace.mkdir()
-
-    apply_session_bundle(bundle, session_store=store, workspace=target_workspace)
-    exported = build_session_bundle(
-        session_store=store,
-        workspace=target_workspace,
-        session_id="polluted-workflow-bundle",
-    )
-
-    imported = store.load_session(
-        workspace=target_workspace,
-        session_id="polluted-workflow-bundle",
-    )
-    exported_metadata = exported.sessions[0].metadata
-    workflow = cast(dict[str, object], imported.session.metadata["workflow"])
-
-    assert imported.session.metadata["mode"] == "normal"
-    assert imported.session.metadata["read_only"] is True
-    assert cast(dict[str, object], imported.session.metadata["runtime_policy"])["mode"] == "normal"
-    assert exported_metadata["mode"] == "normal"
-    assert cast(dict[str, object], exported_metadata["runtime_policy"])["mode"] == "normal"
-    assert cast(dict[str, object], workflow["effective"])["mode"] == "deep_work"
-
-
-def test_session_bundle_export_import_preserves_redacted_runtime_policy_metadata(
+def test_session_bundle_export_import_preserves_redacted_policy_observations(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
@@ -673,7 +565,8 @@ def test_session_bundle_export_import_preserves_redacted_runtime_policy_metadata
     assert bundled_metadata["read_only"] is True
     assert imported.session.metadata["mode"] == "plan"
     assert imported.session.metadata["read_only"] is True
-    assert imported.session.metadata["runtime_policy"] == bundled_metadata["runtime_policy"]
+    assert "runtime_policy" not in bundled_metadata
+    assert "runtime_policy" not in imported.session.metadata
     assert "rawpromptsecret" not in encoded
     assert "promptsecret" not in encoded
     assert 'NPM_CONFIG_YES": "true' not in encoded
@@ -714,6 +607,7 @@ def test_session_bundle_preserves_prompt_activation_records_without_raw_guidance
             },
             "precedence_trace": [],
             "diagnostics": {},
+            "created_at": 1,
             "mode": "plan",
             "read_only": True,
         },
@@ -1028,6 +922,36 @@ def test_session_bundle_import_rejects_unsupported_runtime_policy_snapshot_versi
 def test_session_bundle_unknown_schema_fails_fast() -> None:
     with pytest.raises(SessionBundleError, match="unsupported session bundle schema"):
         parse_session_bundle({"schema": "voidcode.session.bundle.v999", "manifest": {}})
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "error"),
+    (
+        ("root", "artifacts", "artifacts must be an array"),
+        ("manifest", "artifact_count", "manifest.artifact_count must be an integer"),
+        ("session", "turn", r"sessions\[0\]\.turn must be an integer"),
+        ("event", "source", r"sessions\[0\]\.events\[0\]\.source must be a string"),
+    ),
+)
+def test_session_bundle_parse_rejects_missing_current_contract_fields(
+    container: str,
+    field: str,
+    error: str,
+) -> None:
+    payload = _minimal_bundle_payload([_minimal_session_payload("strict-bundle")])
+    if container == "root":
+        target = payload
+    elif container == "manifest":
+        target = cast(dict[str, object], payload["manifest"])
+    elif container == "session":
+        target = cast(list[dict[str, object]], payload["sessions"])[0]
+    else:
+        session = cast(list[dict[str, object]], payload["sessions"])[0]
+        target = cast(list[dict[str, object]], session["events"])[0]
+    del target[field]
+
+    with pytest.raises(SessionBundleError, match=error):
+        parse_session_bundle(payload)
 
 
 def test_session_bundle_parse_rejects_invalid_session_ids() -> None:

@@ -80,7 +80,7 @@ EventEnvelope(
 - `runtime.background_task_cancelled`
 - `runtime.delegated_result_available`
 
-它们在 `src/voidcode/runtime/events.py` 中仍被归类在 `PrototypeAdditiveEventType`，这是代码内兼容性分组，而不是“尚未支持”的意思。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件。
+它们在 `src/voidcode/runtime/events.py` 中归类为 `RuntimeEventType`。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件。
 
 ## 未来补充 / additive 词汇表
 
@@ -168,7 +168,7 @@ EventEnvelope(
 - `hook_policy` 只描述 named event-scoped hook decisions。Hooks are non-authoritative: they can observe/report/cancel/guidance within runtime policy, but cannot grant tool/delegation authority.
 - `prompt_activation.activated_this_turn` 是 run-local projection；replay/resume surfaces must project it conservatively and never imply fresh activation unless the current run actually activated it.
 - This projection never contains raw prompt bodies, skill bodies, secret-like values, env values, or unbounded policy inputs. Strings/lists/traces/diagnostics are bounded by runtime-owned helpers.
-- Legacy sessions without stored policy truth synthesize a conservative v1 projection on replay/debug surfaces. Unsupported policy/schema versions are version errors and must fail fast rather than silently widening policy.
+- Replay and debug require stored policy truth. Missing snapshots and unsupported policy/schema versions are version errors.
 
 ### `runtime.skills_loaded`
 - source: `runtime`

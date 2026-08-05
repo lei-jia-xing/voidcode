@@ -1184,7 +1184,7 @@ describe("useAppStore integration flow", () => {
   });
 
   it("refreshes session-scoped background tasks after selecting a session", async () => {
-    const firstTask = makeBackgroundTaskSummary("task-a", "old session task");
+    const firstTask = makeBackgroundTaskSummary("task-a", "prior session task");
     const secondTask = makeBackgroundTaskSummary(
       "task-b",
       "selected session task",
@@ -1222,7 +1222,10 @@ describe("useAppStore integration flow", () => {
   });
 
   it("reloads global background tasks when selecting a new session", async () => {
-    const sessionTask = makeBackgroundTaskSummary("task-a", "old session task");
+    const sessionTask = makeBackgroundTaskSummary(
+      "task-a",
+      "prior session task",
+    );
     const globalTask = makeBackgroundTaskSummary("task-global", "global task");
     useAppStore.setState({
       currentSessionId: "session-1",

@@ -747,8 +747,7 @@ def _tool_pair_diagnostics(
                 ),
                 source="tool_registry",
                 suggested_fix=(
-                    "Keep a compatible tool schema available or inject a provider-specific "
-                    "compatibility guard."
+                    "Provide the active tool schema required by persisted provider history."
                 ),
             )
         )

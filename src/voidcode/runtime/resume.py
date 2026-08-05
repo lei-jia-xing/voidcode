@@ -247,19 +247,14 @@ class RuntimeResumeCoordinator:
             pending=pending,
             stored_metadata=stored.session.metadata,
         )
-        if checkpoint_state is not None:
-            prompt = checkpoint_state.prompt
-            session = SessionState(
-                session=stored.session.session,
-                status="running",
-                turn=stored.session.turn,
-                metadata=checkpoint_state.session_metadata,
-            )
-            tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
-        else:
-            prompt, tool_results = self._resume_prompt_and_tool_results_from_stored_events(
-                stored.events
-            )
+        prompt = checkpoint_state.prompt
+        session = SessionState(
+            session=stored.session.session,
+            status="running",
+            turn=stored.session.turn,
+            metadata=checkpoint_state.session_metadata,
+        )
+        tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
         session = SessionState(
             session=session.session,
             status=session.status,
@@ -594,43 +589,38 @@ class RuntimeResumeCoordinator:
             stored_metadata=stored.session.metadata,
         )
         binding_mismatch_payload: dict[str, object] | None = None
-        if checkpoint is not None:
-            checkpoint_binding = checkpoint.get("skill_binding_snapshot")
-            checkpoint_binding_payload = (
-                cast(dict[str, object], checkpoint_binding)
-                if isinstance(checkpoint_binding, dict)
+        checkpoint_payload = cast(dict[str, object], checkpoint)
+        checkpoint_binding = checkpoint_payload.get("skill_binding_snapshot")
+        checkpoint_binding_payload = (
+            cast(dict[str, object], checkpoint_binding)
+            if isinstance(checkpoint_binding, dict)
+            else None
+        )
+        if checkpoint_binding_payload is not None:
+            stored_snapshot_payload = cast(
+                dict[str, object] | None,
+                stored.session.metadata.get("skill_snapshot"),
+            )
+            stored_binding_payload = (
+                cast(dict[str, object], stored_snapshot_payload.get("binding_snapshot"))
+                if isinstance(stored_snapshot_payload, dict)
+                and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
                 else None
             )
-            if checkpoint_binding_payload is not None:
-                stored_snapshot_payload = cast(
-                    dict[str, object] | None,
-                    stored.session.metadata.get("skill_snapshot"),
-                )
-                stored_binding_payload = (
-                    cast(dict[str, object], stored_snapshot_payload.get("binding_snapshot"))
-                    if isinstance(stored_snapshot_payload, dict)
-                    and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
-                    else None
-                )
-                mismatch_payload = runtime._skill_binding_mismatch_payload(
-                    checkpoint_binding_payload,
-                    stored_binding_payload,
-                )
-                if cast(bool, mismatch_payload["mismatch"]):
-                    binding_mismatch_payload = mismatch_payload
-        if checkpoint_state is not None:
-            prompt = checkpoint_state.prompt
-            session = SessionState(
-                session=stored.session.session,
-                status="running",
-                turn=stored.session.turn,
-                metadata=checkpoint_state.session_metadata,
+            mismatch_payload = runtime._skill_binding_mismatch_payload(
+                checkpoint_binding_payload,
+                stored_binding_payload,
             )
-            tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
-        else:
-            prompt, tool_results = self._resume_prompt_and_tool_results_from_stored_events(
-                stored.events
-            )
+            if cast(bool, mismatch_payload["mismatch"]):
+                binding_mismatch_payload = mismatch_payload
+        prompt = checkpoint_state.prompt
+        session = SessionState(
+            session=stored.session.session,
+            status="running",
+            turn=stored.session.turn,
+            metadata=checkpoint_state.session_metadata,
+        )
+        tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
 
         session = SessionState(
             session=session.session,
@@ -642,7 +632,13 @@ class RuntimeResumeCoordinator:
         session = runtime._session_with_current_acp_metadata(session)
         effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
         mcp_state = runtime._mcp_manager.current_state()
-        if mcp_state.configuration.configured_enabled is True:
+        if (
+            mcp_state.configuration.configured_enabled is True
+            and not runtime._should_skip_mcp_startup_for_request(
+                request_metadata=session.metadata,
+                effective_config=effective_config,
+            )
+        ):
             mcp_startup_chunks, session, _, mcp_failed_chunk = (
                 runtime._refresh_mcp_tools_for_session(
                     session=session,
@@ -1063,13 +1059,11 @@ class RuntimeResumeCoordinator:
         checkpoint: dict[str, object] | None,
         pending: PendingApproval,
         stored_metadata: dict[str, object],
-    ) -> ApprovalResumeCheckpointState | None:
+    ) -> ApprovalResumeCheckpointState:
         checkpoint_envelope = self.validated_resume_checkpoint_envelope(
             checkpoint=checkpoint,
             expected_kind="approval_wait",
         )
-        if checkpoint_envelope is None:
-            return None
         checkpoint_payload = checkpoint_envelope.payload
         if checkpoint_payload.get("pending_approval_request_id") != pending.request_id:
             raise ValueError(
@@ -1090,7 +1084,9 @@ class RuntimeResumeCoordinator:
             and stored_snapshot_hash is not None
             and checkpoint_snapshot_hash != stored_snapshot_hash
         ):
-            return None
+            raise ValueError(
+                "persisted approval resume checkpoint skill snapshot hash does not match session"
+            )
         prompt = checkpoint_payload.get("prompt")
         session_metadata = checkpoint_payload.get("session_metadata")
         raw_tool_results = checkpoint_payload.get("tool_results")
@@ -1105,7 +1101,9 @@ class RuntimeResumeCoordinator:
             stored_metadata=stored_metadata,
         )
         if recovered_metadata is None:
-            return None
+            raise ValueError(
+                "persisted approval resume checkpoint session_metadata does not match session"
+            )
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted approval resume checkpoint tool_results must be a list")
         return ApprovalResumeCheckpointState(
@@ -1120,13 +1118,11 @@ class RuntimeResumeCoordinator:
         checkpoint: dict[str, object] | None,
         pending: PendingQuestion,
         stored_metadata: dict[str, object],
-    ) -> ApprovalResumeCheckpointState | None:
+    ) -> ApprovalResumeCheckpointState:
         checkpoint_envelope = self.validated_resume_checkpoint_envelope(
             checkpoint=checkpoint,
             expected_kind="question_wait",
         )
-        if checkpoint_envelope is None:
-            return None
         checkpoint_payload = checkpoint_envelope.payload
         if checkpoint_payload.get("pending_question_request_id") != pending.request_id:
             raise ValueError(
@@ -1146,7 +1142,9 @@ class RuntimeResumeCoordinator:
             stored_metadata=stored_metadata,
         )
         if recovered_metadata is None:
-            return None
+            raise ValueError(
+                "persisted question resume checkpoint session_metadata does not match session"
+            )
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted question resume checkpoint tool_results must be a list")
         return ApprovalResumeCheckpointState(
@@ -1158,9 +1156,9 @@ class RuntimeResumeCoordinator:
     @staticmethod
     def validated_resume_checkpoint_envelope(
         *, checkpoint: dict[str, object] | None, expected_kind: str
-    ) -> PersistedResumeCheckpointEnvelope | None:
+    ) -> PersistedResumeCheckpointEnvelope:
         if checkpoint is None:
-            return None
+            raise ValueError("persisted resume checkpoint is required")
         kind = checkpoint.get("kind")
         if not isinstance(kind, str):
             raise ValueError("persisted resume checkpoint kind must be a string")
@@ -1177,12 +1175,9 @@ class RuntimeResumeCoordinator:
         return PersistedResumeCheckpointEnvelope(kind=kind, version=1, payload=checkpoint)
 
     def load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
-        load_checkpoint = getattr(self._runtime._session_store, "load_resume_checkpoint", None)
-        if load_checkpoint is None:
-            return None
-        return cast(
-            dict[str, object] | None,
-            load_checkpoint(workspace=self._runtime._workspace, session_id=session_id),
+        return self._runtime._session_store.load_resume_checkpoint(
+            workspace=self._runtime._workspace,
+            session_id=session_id,
         )
 
     def resume_provider_failure_response(
@@ -1578,49 +1573,6 @@ class RuntimeResumeCoordinator:
         )
         normalized_responses = QuestionTool.validate_responses(pending.prompts, responses)
         return stored_response, pending, checkpoint, normalized_responses
-
-    def _resume_prompt_and_tool_results_from_stored_events(
-        self,
-        stored_events: tuple[EventEnvelope, ...],
-    ) -> tuple[str, list[ToolResult]]:
-        prompt = self._runtime._prompt_from_events(stored_events)
-        tool_results: list[ToolResult] = []
-        for event in stored_events:
-            if event.event_type != "runtime.tool_completed":
-                continue
-            error_value = event.payload.get("error")
-            raw_content = event.payload.get("content")
-            is_err = error_value is not None
-            tool_results.append(
-                ToolResult(
-                    tool_name=str(event.payload.get("tool", "unknown")),
-                    content=str(raw_content) if raw_content is not None and not is_err else None,
-                    status="error" if is_err else "ok",
-                    data=sanitize_tool_result_data(event.payload),
-                    error=str(error_value) if is_err else None,
-                    error_kind=(
-                        cast(str, event.payload.get("error_kind"))
-                        if isinstance(event.payload.get("error_kind"), str) and is_err
-                        else None
-                    ),
-                    error_summary=(
-                        cast(str, event.payload.get("error_summary"))
-                        if isinstance(event.payload.get("error_summary"), str) and is_err
-                        else None
-                    ),
-                    error_details=(
-                        cast(dict[str, object], event.payload.get("error_details"))
-                        if isinstance(event.payload.get("error_details"), dict) and is_err
-                        else None
-                    ),
-                    retry_guidance=(
-                        cast(str, event.payload.get("retry_guidance"))
-                        if isinstance(event.payload.get("retry_guidance"), str) and is_err
-                        else None
-                    ),
-                )
-            )
-        return prompt, tool_results
 
     @staticmethod
     def _recorded_pending_tool_call_id(

@@ -1665,18 +1665,13 @@ class RuntimeBackgroundTaskSupervisor:
                 continue
             if child_response.session.status in ("waiting", "completed", "failed"):
                 self.finalize_background_task_from_session_response(session_response=child_response)
-        fail_incomplete = getattr(runtime._session_store, "fail_incomplete_background_tasks", None)
-        if callable(fail_incomplete):
-            failed_tasks = cast(
-                tuple[BackgroundTaskState, ...],
-                fail_incomplete(
-                    workspace=runtime._workspace,
-                    message="background task interrupted before completion",
-                    include_queued=False,
-                ),
-            )
-            for failed_task in failed_tasks:
-                self.run_background_task_lifecycle_hook(failed_task)
+        failed_tasks = runtime._session_store.fail_incomplete_background_tasks(
+            workspace=runtime._workspace,
+            message="background task interrupted before completion",
+            include_queued=False,
+        )
+        for failed_task in failed_tasks:
+            self.run_background_task_lifecycle_hook(failed_task)
         task_summaries = runtime._session_store.list_background_tasks(workspace=runtime._workspace)
         for task_summary in task_summaries:
             task = runtime._session_store.load_background_task(

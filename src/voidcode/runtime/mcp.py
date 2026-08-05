@@ -191,6 +191,19 @@ class DisabledMcpManager:
         _ = workspace
         return None
 
+    def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+        _ = session_id
+        return ()
+
+    def cleanup_idle_session_servers(
+        self,
+        *,
+        max_idle_seconds: float,
+        active_session_ids: set[str] | None = None,
+    ) -> tuple[McpRuntimeEvent, ...]:
+        _ = max_idle_seconds, active_session_ids
+        return ()
+
 
 # =============================================================================
 # Runtime MCP Server (SDK session lifecycle)
@@ -267,8 +280,8 @@ class ManagedMcpManager:
                 server_name=name,
                 status="stopped",
                 command=list(server.command),
-                url=getattr(server, "url", None),
-                scope=getattr(server, "scope", "runtime"),
+                url=server.url,
+                scope=server.scope,
             )
             for name, server in self._configuration.servers.items()
         }
@@ -326,7 +339,7 @@ class ManagedMcpManager:
             raise ValueError(f"MCP[{server_name}]: server not found in configuration")
         key = self._server_key(
             server_name=server_name,
-            scope=getattr(server_config, "scope", "runtime"),
+            scope=server_config.scope,
             owner_session_id=owner_session_id,
         )
         running = self._ensure_running(
@@ -405,7 +418,7 @@ class ManagedMcpManager:
 
     def retry_connections(self, *, workspace: Path) -> None:
         for server_name, server_config in self._configuration.servers.items():
-            if getattr(server_config, "scope", "runtime") == "session":
+            if server_config.scope == "session":
                 continue
             self._ensure_running(server_name=server_name, workspace=workspace)
 
@@ -476,8 +489,8 @@ class ManagedMcpManager:
             )
             raise ValueError(message)
 
-        transport = getattr(server_config, "transport", "stdio")
-        scope = getattr(server_config, "scope", "runtime")
+        transport = server_config.transport
+        scope = server_config.scope
         key = self._server_key(
             server_name=server_name,
             scope=scope,
@@ -491,7 +504,7 @@ class ManagedMcpManager:
                 self._record_server_acquired(key=key, workspace_root=running.workspace_root)
                 return running
 
-        if transport == "stdio" and not getattr(server_config, "command", None):
+        if transport == "stdio" and not server_config.command:
             diagnostic = create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="startup",
@@ -512,7 +525,7 @@ class ManagedMcpManager:
             )
             raise ValueError(message)
 
-        if transport == "remote-http" and not getattr(server_config, "url", None):
+        if transport == "remote-http" and not server_config.url:
             diagnostic = create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="startup",
@@ -828,7 +841,7 @@ class ManagedMcpManager:
             return ()
         key = self._server_key(
             server_name=server_name,
-            scope=getattr(server_config, "scope", "runtime"),
+            scope=server_config.scope,
             owner_session_id=owner_session_id,
         )
         running = self._ensure_running(

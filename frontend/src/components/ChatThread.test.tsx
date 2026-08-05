@@ -379,7 +379,18 @@ describe("ChatThread", () => {
         payload: {
           tool: "read_file",
           tool_call_id: "call-1",
-          arguments: { path: "README.md" },
+          arguments: { filePath: "README.md" },
+          tool_status: {
+            invocation_id: "call-1",
+            tool_name: "read_file",
+            phase: "running",
+            status: "running",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+            },
+          },
         },
       },
       {
@@ -391,8 +402,19 @@ describe("ChatThread", () => {
           tool: "read_file",
           tool_call_id: "call-1",
           status: "ok",
-          arguments: { path: "README.md" },
+          arguments: { filePath: "README.md" },
           content: "ok",
+          tool_status: {
+            invocation_id: "call-1",
+            tool_name: "read_file",
+            phase: "completed",
+            status: "completed",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+            },
+          },
         },
       },
       {
@@ -1325,46 +1347,6 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText(/task failed:/)).not.toBeInTheDocument();
   });
 
-  it("uses legacy fallback labels without exposing raw payloads", () => {
-    render(
-      <ChatThread
-        {...baseProps}
-        messages={[
-          {
-            id: "msg-1",
-            role: "assistant",
-            content: "",
-            thinking: [],
-            tools: [
-              {
-                id: "legacy-1",
-                name: "mcp_legacy_tool",
-                status: "completed",
-                legacy: {
-                  label: "Legacy inspect",
-                  summary: "Legacy inspect",
-                },
-                arguments: {
-                  path: "README.md",
-                  internalState: { secret: true },
-                },
-                result: { internalData: "hidden" },
-              },
-            ],
-            approval: null,
-            status: "completed",
-            sequence: 1,
-          },
-        ]}
-      />,
-    );
-
-    expect(screen.getByText("Legacy inspect")).toBeInTheDocument();
-    expect(screen.getByText(/path=README.md/)).toBeInTheDocument();
-    expect(screen.queryByText(/internalState/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/hidden/)).not.toBeInTheDocument();
-  });
-
   it("aggregates multiple project lookup tools into an expandable group", () => {
     const { container } = render(
       <ChatThread
@@ -1477,7 +1459,7 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText("Hidden todo")).not.toBeInTheDocument();
   });
 
-  it("renders derived backend display metadata for failed shell, context, generic, and legacy tools", () => {
+  it("renders derived backend display metadata for failed shell, context, and generic tools", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "session-1",
@@ -1500,6 +1482,7 @@ describe("Tool Card Display Contract", () => {
           tool_status: {
             invocation_id: "read-1",
             tool_name: "read_file",
+            phase: "completed",
             status: "completed",
             display: {
               kind: "context",
@@ -1525,6 +1508,7 @@ describe("Tool Card Display Contract", () => {
           tool_status: {
             invocation_id: "grep-1",
             tool_name: "grep",
+            phase: "completed",
             status: "completed",
             display: {
               kind: "context",
@@ -1550,6 +1534,7 @@ describe("Tool Card Display Contract", () => {
           tool_status: {
             invocation_id: "shell-1",
             tool_name: "shell_exec",
+            phase: "failed",
             status: "failed",
             display: {
               kind: "shell",
@@ -1575,6 +1560,7 @@ describe("Tool Card Display Contract", () => {
           tool_status: {
             invocation_id: "mcp-1",
             tool_name: "mcp_custom_tool",
+            phase: "completed",
             status: "completed",
             display: {
               kind: "generic",
@@ -1583,19 +1569,6 @@ describe("Tool Card Display Contract", () => {
               args: ["action=inspect"],
             },
           },
-        },
-      },
-      {
-        session_id: "session-1",
-        sequence: 6,
-        event_type: "runtime.tool_completed",
-        source: "tool",
-        payload: {
-          tool: "mcp_legacy_tool",
-          tool_call_id: "legacy-1",
-          target_summary: "Legacy inspect",
-          arguments: { path: "legacy.txt", internalState: { secret: true } },
-          result: { internalData: "hidden" },
         },
       },
       {
@@ -1640,10 +1613,6 @@ describe("Tool Card Display Contract", () => {
     expect(mcpRow).not.toBeNull();
     expect(mcpRow).toHaveTextContent("mcp_custom_tool");
     expect(screen.getByText(/action=inspect/)).toBeInTheDocument();
-    expect(
-      screen.getByText("mcp_legacy_tool: Legacy inspect"),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/path=legacy.txt/)).toBeInTheDocument();
     expect(screen.getByText("Done").closest('[class*="border"]')).toBeNull();
     expect(screen.queryByText(/internalData/)).not.toBeInTheDocument();
     expect(screen.queryByText(/internalState/)).not.toBeInTheDocument();
@@ -1687,83 +1656,5 @@ describe("Tool Card Display Contract", () => {
       kind: "text",
       text: "final authoritative answer",
     });
-  });
-
-  it("shows a streamed tool call before the formal tool request event", () => {
-    const events: EventEnvelope[] = [
-      {
-        session_id: "session-1",
-        sequence: 1,
-        event_type: "runtime.request_received",
-        source: "runtime",
-        payload: { prompt: "inspect readme" },
-      },
-      {
-        session_id: "session-1",
-        sequence: 2,
-        event_type: "graph.provider_stream",
-        source: "graph",
-        payload: {
-          channel: "tool",
-          kind: "content",
-          text: JSON.stringify({
-            tool_name: "read_file",
-            tool_call_id: "call-1",
-            arguments: { path: "README.md" },
-          }),
-        },
-      },
-      {
-        session_id: "session-1",
-        sequence: 3,
-        event_type: "graph.tool_request_created",
-        source: "graph",
-        payload: {
-          tool: "read_file",
-          tool_call_id: "call-1",
-          arguments: { path: "README.md" },
-        },
-      },
-      {
-        session_id: "session-1",
-        sequence: 4,
-        event_type: "runtime.tool_completed",
-        source: "runtime",
-        payload: {
-          tool: "read_file",
-          tool_call_id: "call-1",
-          status: "ok",
-          arguments: { path: "README.md" },
-          content: "done",
-        },
-      },
-      {
-        session_id: "session-1",
-        sequence: 5,
-        event_type: "graph.provider_stream",
-        source: "graph",
-        payload: { channel: "text", kind: "delta", text: "Done." },
-      },
-    ];
-
-    const [, assistant] = deriveChatMessages(events, null);
-    const toolParts = (assistant.parts ?? []).filter(
-      (part) => part.kind === "tool",
-    );
-
-    expect(toolParts).toHaveLength(1);
-    expect(assistant.tools).toHaveLength(1);
-    expect(assistant.tools[0]).toMatchObject({
-      id: "call-1",
-      name: "read_file",
-      status: "completed",
-    });
-
-    render(
-      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
-    );
-
-    expect(screen.getByText("Read: README.md")).toBeInTheDocument();
-    expect(screen.getByText("Done.")).toBeInTheDocument();
   });
 });

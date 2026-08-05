@@ -60,19 +60,37 @@ def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval
     if approval_event is None:
         raise ValueError("waiting runtime response must include an approval event")
     payload = approval_event.payload
-    raw_policy = cast(dict[str, object], payload.get("policy", {}))
-    raw_policy_mode = raw_policy.get("mode", "ask")
+    required = {"request_id", "tool", "arguments", "target_summary", "reason", "policy"}
+    missing = sorted(required - payload.keys())
+    if missing:
+        raise ValueError(f"approval event is missing required fields: {missing!r}")
+    raw_policy_value = payload["policy"]
+    if not isinstance(raw_policy_value, dict):
+        raise ValueError("approval event policy must be an object")
+    raw_policy = cast(dict[str, object], raw_policy_value)
+    raw_policy_mode = raw_policy.get("mode")
     policy_mode = permission_decision_or_none(raw_policy_mode)
     if policy_mode is None:
         raise ValueError(f"invalid approval policy mode: {raw_policy_mode}")
+    request_id = payload["request_id"]
+    tool_name = payload["tool"]
+    arguments = payload["arguments"]
+    target_summary = payload["target_summary"]
+    reason = payload["reason"]
+    if not isinstance(request_id, str) or not isinstance(tool_name, str):
+        raise ValueError("approval event request_id and tool must be strings")
+    if not isinstance(arguments, dict):
+        raise ValueError("approval event arguments must be an object")
+    if not isinstance(target_summary, str) or not isinstance(reason, str):
+        raise ValueError("approval event target_summary and reason must be strings")
     path_scope = payload.get("path_scope")
     operation_class = payload.get("operation_class")
     return PendingApproval(
-        request_id=str(payload["request_id"]),
-        tool_name=str(payload["tool"]),
-        arguments=cast(dict[str, object], payload.get("arguments", {})),
-        target_summary=str(payload.get("target_summary", "")),
-        reason=str(payload.get("reason", "")),
+        request_id=request_id,
+        tool_name=tool_name,
+        arguments=cast(dict[str, object], arguments),
+        target_summary=target_summary,
+        reason=reason,
         policy_mode=policy_mode,
         request_event_sequence=approval_event.sequence,
         owner_session_id=(
