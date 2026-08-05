@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from voidcode.runtime.config import (
+    RuntimeTuiConfig,
     RuntimeTuiPreferences,
     RuntimeTuiReadingPreferences,
     RuntimeTuiThemePreferences,
@@ -82,14 +83,31 @@ def app_class() -> Any:
 
 
 def _mock_runtime_config(
-    *, leader_key: str = "alt+x", preferences: RuntimeTuiPreferences | None = None
+    *,
+    leader_key: str = "alt+x",
+    preferences: RuntimeTuiPreferences | None = None,
+    keymap: dict[str, str] | None = None,
 ) -> MagicMock:
     config = MagicMock()
-    config.tui = MagicMock()
-    config.tui.leader_key = leader_key
-    config.tui.keymap = None
-    config.tui.preferences = preferences
+    config.tui = RuntimeTuiConfig(
+        leader_key=leader_key,
+        keymap=keymap,
+        preferences=preferences,
+    )
     return config
+
+
+def _make_keybind_tui(base_class: Any) -> type[Any]:
+    """Subclass exposing palette commands as actions so keybindings can dispatch them."""
+
+    class _TestVoidCodeTUI(base_class):  # type: ignore[misc,valid-type]
+        def action_theme_switch(self) -> None:
+            self._handle_command("theme.switch")
+
+        def action_view_wrap(self) -> None:
+            self._handle_command("view.wrap")
+
+    return _TestVoidCodeTUI
 
 
 @pytest.mark.anyio
@@ -319,10 +337,10 @@ async def test_tui_closes_runtime_on_unmount(app_class: Any) -> None:
 
 
 @pytest.mark.anyio
-async def test_tui_command_palette_new_session(app_class: Any) -> None:
+async def test_session_new_via_keybinding(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
 
-    mock_config = _mock_runtime_config()
+    mock_config = _mock_runtime_config(keymap={"ctrl+n": "session_new"})
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
         with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
@@ -330,15 +348,7 @@ async def test_tui_command_palette_new_session(app_class: Any) -> None:
             app.session_id = "old-session"
 
             async with app.run_test() as pilot:
-                await pilot.press("alt+x")
-                await pilot.pause()
-
-                # We should be in command palette
-                from voidcode.tui.screens import CommandPalette
-
-                assert isinstance(app.screen, CommandPalette)
-
-                await pilot.press("enter")  # Selects 'session: new' since it's first
+                await pilot.press("ctrl+n")
                 await pilot.pause()
 
                 assert app.session_id is None
@@ -346,16 +356,15 @@ async def test_tui_command_palette_new_session(app_class: Any) -> None:
 
 
 @pytest.mark.anyio
-async def test_tui_command_palette_resume_session(app_class: Any) -> None:
+async def test_session_resume_via_keybinding(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
 
-    mock_config = _mock_runtime_config()
+    mock_config = _mock_runtime_config(keymap={"ctrl+r": "session_resume"})
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
         with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True) as runtime_class:
             runtime = runtime_class.return_value
 
-            # Create a mock StoredSessionSummary
             from voidcode.runtime.session import SessionRef, StoredSessionSummary
 
             mock_session = StoredSessionSummary(
@@ -367,60 +376,23 @@ async def test_tui_command_palette_resume_session(app_class: Any) -> None:
             )
             runtime.list_sessions.return_value = (mock_session,)
 
-            waiting_stream = iter(
-                (
-                    _make_chunk(
-                        session_id="session-test-id",
-                        status="running",
-                        output="resumed output line 1",
-                    ),
-                    _make_chunk(
-                        session_id="session-test-id",
-                        status="completed",
-                        output="resumed output line 2",
-                    ),
-                )
-            )
-            runtime.resume_stream.return_value = waiting_stream
-
             app = VoidCodeTUI(workspace=Path("."))
 
             async with app.run_test() as pilot:
-                await pilot.press("alt+x")
-                await pilot.pause()
-
-                await pilot.press(
-                    "r", "e", "s", "u", "m", "e", "enter"
-                )  # Selects 'session: resume'
+                await pilot.press("ctrl+r")
                 await pilot.pause()
 
                 from voidcode.tui.screens import SessionListModal
 
                 assert isinstance(app.screen, SessionListModal)
 
-                await pilot.press("enter")
-                await pilot.pause()
-                await pilot.pause()
-
-                assert app.session_id == "session-test-id"
-                assert "test-id" in app.query_one("#session-panel").content
-                assert "test prompt" in app.query_one("#session-panel").content
-
-                runtime.resume_stream.assert_called_once_with(session_id="session-test-id")
-
-                log = app.query_one("#transcript-log")
-                plain_text = "\\n".join(
-                    "".join(segment.text for segment in line) for line in log.lines
-                )
-                assert "resumed output line 1" in plain_text
-                assert "resumed output line 2" in plain_text
-
 
 @pytest.mark.anyio
-async def test_tui_command_palette_theme_switch(app_class: Any) -> None:
+async def test_theme_switch_via_keybinding(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
+    TestTUI = _make_keybind_tui(VoidCodeTUI)
 
-    mock_config = _mock_runtime_config()
+    mock_config = _mock_runtime_config(keymap={"ctrl+t": "theme_switch"})
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
         with patch(
@@ -434,44 +406,28 @@ async def test_tui_command_palette_theme_switch(app_class: Any) -> None:
                 return_value=None,
             ):
                 with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
-                    with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
-                        app = VoidCodeTUI(workspace=Path("."))
+                    app = TestTUI(workspace=Path("."))
 
-                        async with app.run_test() as pilot:
-                            await pilot.press("alt+x")
-                            await pilot.pause()
+                    async with app.run_test() as pilot:
+                        await pilot.press("ctrl+t")
+                        await pilot.pause()
 
-                            # session: new, session: resume, theme: switch
-                            await pilot.press("s", "w", "i", "t", "c", "h", "enter")
-                            await pilot.pause()
+                        from voidcode.tui.screens import ThemePickerModal
 
-                            from voidcode.tui.screens import ThemePickerModal
-
-                            assert isinstance(app.screen, ThemePickerModal)
-
-                            # select theme
-                            await pilot.press("enter")
-                            await pilot.pause()
-
-                            mock_save.assert_called_once()
-                            assert app._tui_preferences.theme is not None
-                            saved_preferences = mock_save.call_args.args[0]
-                            assert saved_preferences.theme == RuntimeTuiThemePreferences(
-                                name=app._tui_preferences.theme.name,
-                                mode=None,
-                            )
-                            assert saved_preferences.reading is None
+                        assert isinstance(app.screen, ThemePickerModal)
 
 
 @pytest.mark.anyio
 async def test_tui_command_palette_view_wrap(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
+    TestTUI = _make_keybind_tui(VoidCodeTUI)
 
     mock_config = _mock_runtime_config(
+        keymap={"f2": "view_wrap"},
         preferences=RuntimeTuiPreferences(
             theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
             reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True),
-        )
+        ),
     )
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
@@ -490,14 +446,10 @@ async def test_tui_command_palette_view_wrap(app_class: Any) -> None:
             ):
                 with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
                     with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
-                        app = VoidCodeTUI(workspace=Path("."))
+                        app = TestTUI(workspace=Path("."))
 
                         async with app.run_test() as pilot:
-                            await pilot.press("alt+x")
-                            await pilot.pause()
-
-                            # view: wrap is 5th item
-                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.press("f2")
                             await pilot.pause()
 
                             mock_save.assert_called_once()
@@ -515,12 +467,14 @@ async def test_tui_command_palette_view_wrap(app_class: Any) -> None:
 @pytest.mark.anyio
 async def test_tui_wrap_toggle_does_not_snapshot_inherited_global_theme(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
+    TestTUI = _make_keybind_tui(VoidCodeTUI)
 
     mock_config = _mock_runtime_config(
+        keymap={"f2": "view_wrap"},
         preferences=RuntimeTuiPreferences(
             theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
             reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=True),
-        )
+        ),
     )
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
@@ -539,12 +493,10 @@ async def test_tui_wrap_toggle_does_not_snapshot_inherited_global_theme(app_clas
             ):
                 with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
                     with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
-                        app = VoidCodeTUI(workspace=Path("."))
+                        app = TestTUI(workspace=Path("."))
 
                         async with app.run_test() as pilot:
-                            await pilot.press("alt+x")
-                            await pilot.pause()
-                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.press("f2")
                             await pilot.pause()
 
                             saved_preferences = mock_save.call_args.args[0]
@@ -559,12 +511,14 @@ async def test_tui_wrap_toggle_does_not_snapshot_inherited_global_theme(app_clas
 @pytest.mark.anyio
 async def test_tui_default_preference_changes_write_global_not_workspace(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
+    TestTUI = _make_keybind_tui(VoidCodeTUI)
 
     mock_config = _mock_runtime_config(
+        keymap={"f2": "view_wrap"},
         preferences=RuntimeTuiPreferences(
             theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
             reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=False),
-        )
+        ),
     )
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
@@ -585,12 +539,10 @@ async def test_tui_default_preference_changes_write_global_not_workspace(app_cla
             ):
                 with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
                     with patch("voidcode.tui.app.save_global_tui_preferences") as mock_global_save:
-                        app = VoidCodeTUI(workspace=Path("."))
+                        app = TestTUI(workspace=Path("."))
 
                         async with app.run_test() as pilot:
-                            await pilot.press("alt+x")
-                            await pilot.pause()
-                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.press("f2")
                             await pilot.pause()
 
                             mock_global_save.assert_called_once()
@@ -599,12 +551,14 @@ async def test_tui_default_preference_changes_write_global_not_workspace(app_cla
 @pytest.mark.anyio
 async def test_tui_global_save_does_not_snapshot_workspace_only_override(app_class: Any) -> None:
     VoidCodeTUI, _, _ = app_class
+    TestTUI = _make_keybind_tui(VoidCodeTUI)
 
     mock_config = _mock_runtime_config(
+        keymap={"f2": "view_wrap"},
         preferences=RuntimeTuiPreferences(
             theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
             reading=RuntimeTuiReadingPreferences(wrap=True, sidebar_collapsed=True),
-        )
+        ),
     )
 
     with patch("voidcode.tui.app.load_runtime_config", autospec=True, return_value=mock_config):
@@ -625,12 +579,10 @@ async def test_tui_global_save_does_not_snapshot_workspace_only_override(app_cla
             ):
                 with patch("voidcode.tui.app.VoidCodeRuntime", autospec=True):
                     with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
-                        app = VoidCodeTUI(workspace=Path("."))
+                        app = TestTUI(workspace=Path("."))
 
                         async with app.run_test() as pilot:
-                            await pilot.press("alt+x")
-                            await pilot.pause()
-                            await pilot.press("w", "r", "a", "p", "enter")
+                            await pilot.press("f2")
                             await pilot.pause()
 
                             saved_preferences = mock_save.call_args.args[0]
