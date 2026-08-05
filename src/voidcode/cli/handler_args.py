@@ -1,9 +1,8 @@
 """Typed frozen argument shapes for CLI handler command groups.
 
-Each dataclass mirrors the keys packed into ``argparse.Namespace`` by
-``_build_click_command_context`` in :mod:`voidcode.cli.app`. Field names match
-the Click param names, with the synthesized ``command`` and
-``<group>_command`` keys used for subcommand routing.
+Field names match the Click command param names. The ``command`` and
+``<group>_command`` keys are carried for subcommand routing and defaulted
+per command group.
 """
 
 from __future__ import annotations

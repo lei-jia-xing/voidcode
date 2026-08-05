@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import builtins as _builtins
 import json
 import os
@@ -8,7 +7,7 @@ import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, TypeGuard, cast
+from typing import Protocol, TypedDict, TypeGuard, cast
 
 import click
 
@@ -17,12 +16,11 @@ from ..acp.stdio import StdioAcpServer
 from ..cli_support import (
     EXIT_APPROVAL_DENIED,
     EXIT_CONFIG_ERROR,
-    EXIT_GENERAL_ERROR,
     EXIT_INVALID_COMMAND,
     EXIT_INVALID_RESOURCE,
-    EXIT_PROVIDER_ERROR,
     EXIT_RUNTIME_ERROR,
     EXIT_SUCCESS,
+    EXIT_USAGE_ERROR,
     RuntimeStreamResult,
     format_event,
     print_json,
@@ -114,40 +112,14 @@ from .handler_args import (
 
 print = _builtins.print
 
-Handler = Callable[[Any], int]
 
-_COMMAND_DATACLASS: dict[str, type] = {
-    "run": RunArgs,
-    "acp": AcpArgs,
-    "sessions": SessionsArgs,
-    "memory": MemoryArgs,
-    "tasks": TasksArgs,
-    "storage": StorageArgs,
-    "config": ConfigArgs,
-    "provider": ProviderArgs,
-    "commands": CommandsArgs,
-    "doctor": DoctorArgs,
-    "tui": TuiArgs,
-    "serve": ServerArgs,
-    "web": ServerArgs,
-    "agents": AgentsArgs,
-    "mcp": McpArgs,
-}
+class CliError(Exception):
+    """Typed CLI error carrying an explicit exit code and message."""
 
-
-def _namespace_to_handler_args(args: argparse.Namespace) -> object:
-    """Convert an argparse.Namespace to the typed handler dataclass."""
-    command: str | None = getattr(args, "command", None)
-    cls = _COMMAND_DATACLASS.get(command or "")
-    if cls is None:
-        raise _CliUsageError(f"unknown command: {command}")
-    return cls(**vars(args))
-
-
-class _CliUsageError(Exception):
-    def __init__(self, message: str, *, exit_code: int = 2) -> None:
+    def __init__(self, *, code: int = 1, message: str = "") -> None:
         super().__init__(message)
-        self.exit_code = exit_code
+        self.code = code
+        self.message = message
 
 
 class _RunCommandConfigKwargs(TypedDict, total=False):
@@ -156,60 +128,16 @@ class _RunCommandConfigKwargs(TypedDict, total=False):
     reasoning_effort: str | None
 
 
-def _namespace(**values: object) -> argparse.Namespace:
-    return argparse.Namespace(**values)
-
-
-def _click_path(value: str | Path) -> Path:
-    return value if isinstance(value, Path) else Path(value)
-
-
-def _click_optional_path(value: str | Path | None) -> Path | None:
-    if value is None or isinstance(value, Path):
-        return value
-    return Path(value)
-
-
-def _json_option_enabled(value: bool | None) -> bool:
-    return bool(value)
-
-
-def _build_click_command_context(
-    *,
-    command: str | None = None,
-    subcommand: str | None = None,
-    **values: object,
-) -> argparse.Namespace:
-    payload = dict(values)
-    if command is not None:
-        payload["command"] = command
-    if subcommand is not None and command is not None:
-        payload[f"{command}_command"] = subcommand
-    return _namespace(**payload)
-
-
-def _invoke_handler_from_click(handler: Handler, args: argparse.Namespace) -> int:
-    try:
-        typed_args = _namespace_to_handler_args(args)
-        return handler(typed_args)
-    except _CliUsageError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
-    except SystemExit as exc:
-        return _handle_cli_system_exit(exc)
-    except RuntimeError as exc:
-        message = f"error: {exc}"
-        print(message, file=sys.stderr)
-        return _classify_cli_error(message)
-
-
 def _parse_question_responses(
     *,
     response: tuple[str, ...] = (),
     response_json: str | None = None,
 ) -> tuple[QuestionResponse, ...]:
     if response_json is not None and response:
-        raise _CliUsageError("--response and --response-json cannot be used together")
+        raise CliError(
+            code=EXIT_USAGE_ERROR,
+            message="--response and --response-json cannot be used together",
+        )
     if response_json is not None:
         raw_payload = json.loads(response_json)
         if not isinstance(raw_payload, list) or not raw_payload:
@@ -237,7 +165,10 @@ def _parse_question_responses(
             parsed.append(QuestionResponse(header=raw_header, answers=tuple(answers)))
         return tuple(parsed)
     if not response:
-        raise _CliUsageError("at least one --response or --response-json must be provided")
+        raise CliError(
+            code=EXIT_USAGE_ERROR,
+            message="at least one --response or --response-json must be provided",
+        )
     return (QuestionResponse(header="response", answers=tuple(response)),)
 
 
@@ -260,7 +191,7 @@ def _handle_run_command(args: RunArgs) -> int:
     json_output = args.json
     trace_output = args.trace
     if json_output and trace_output:
-        raise _CliUsageError("--json and --trace cannot be used together")
+        raise CliError(code=EXIT_USAGE_ERROR, message="--json and --trace cannot be used together")
     show_thinking = args.show_thinking
     cli_reasoning_effort = args.reasoning_effort
     cli_model = args.model
@@ -312,7 +243,7 @@ def _handle_run_command(args: RunArgs) -> int:
             print("Interrupted current run.", file=sys.stderr)
             return 130
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
         incomplete_stream_message = _incomplete_runtime_stream_message(result)
         if incomplete_stream_message is not None:
@@ -1011,8 +942,9 @@ _MEMORY_KINDS: tuple[MemoryKind, ...] = (
 def _parse_memory_kind(value: str) -> MemoryKind:
     if value in _MEMORY_KINDS:
         return cast(MemoryKind, value)
-    raise _CliUsageError(
-        f"invalid memory kind: {value}. Expected one of: {', '.join(_MEMORY_KINDS)}"
+    raise CliError(
+        code=EXIT_USAGE_ERROR,
+        message=f"invalid memory kind: {value}. Expected one of: {', '.join(_MEMORY_KINDS)}",
     )
 
 
@@ -1069,7 +1001,7 @@ def _handle_memory_add_command(args: MemoryArgs) -> int:
     workspace = args.workspace
     content = args.content
     if not content.strip():
-        raise _CliUsageError("memory content cannot be empty")
+        raise CliError(code=EXIT_USAGE_ERROR, message="memory content cannot be empty")
     kind = _parse_memory_kind(args.kind)
     tags = tuple(args.tag)
     runtime = _memory_runtime(workspace)
@@ -1077,7 +1009,7 @@ def _handle_memory_add_command(args: MemoryArgs) -> int:
         try:
             memory = runtime.add_memory(content=content, kind=kind, tags=tags)
         except ValueError as exc:
-            raise _CliUsageError(str(exc)) from None
+            raise CliError(code=EXIT_USAGE_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     if args.json:
@@ -1103,7 +1035,7 @@ def _memory_filter_records(
     ]
     if limit is not None:
         if limit < 0:
-            raise _CliUsageError("limit must be non-negative")
+            raise CliError(code=EXIT_USAGE_ERROR, message="limit must be non-negative")
         filtered = filtered[:limit]
     return tuple(filtered)
 
@@ -1166,7 +1098,7 @@ def _handle_memory_show_command(args: MemoryArgs) -> int:
     finally:
         _close_runtime(runtime)
     if memory is None:
-        raise _CliUsageError(f"memory not found: {memory_id}", exit_code=EXIT_INVALID_RESOURCE)
+        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"memory not found: {memory_id}")
     if args.json:
         print_json({"memory": _memory_payload(memory)})
         return EXIT_SUCCESS
@@ -1182,7 +1114,7 @@ def _handle_memory_delete_command(args: MemoryArgs) -> int:
         try:
             memory = runtime.delete_memory(memory_id)
         except ValueError as exc:
-            raise _CliUsageError(str(exc), exit_code=EXIT_INVALID_RESOURCE) from None
+            raise CliError(code=EXIT_INVALID_RESOURCE, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     if args.json:
@@ -1754,7 +1686,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
             try:
                 snapshot = runtime.session_debug_snapshot(session_id=session_id)
             except ValueError as exc:
-                raise SystemExit(f"error: {exc}") from None
+                raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
             print_json(
                 {
                     "workspace": str(workspace),
@@ -1771,7 +1703,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
                 approval_decision=approval_decision,
             )
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -1790,10 +1722,10 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
             response=args.response,
             response_json=args.response_json,
         )
-    except _CliUsageError:
+    except CliError:
         raise
     except (json.JSONDecodeError, ValueError) as exc:
-        raise SystemExit(f"error: {exc}") from None
+        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
@@ -1804,7 +1736,7 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
                 responses=responses,
             )
         except (ValueError, NoPendingQuestionError) as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -1846,7 +1778,7 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
         try:
             bundle = runtime.export_session_bundle(session_id=session_id, options=options)
         except (ValueError, SessionBundleError) as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -1882,7 +1814,7 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
                 dry_run=dry_run,
             )
         except (ValueError, SessionBundleError) as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     print_json({"workspace": str(workspace), "import": result.to_payload()})
@@ -1898,7 +1830,7 @@ def _handle_sessions_debug_command(args: SessionsArgs) -> int:
         try:
             snapshot = runtime.session_debug_snapshot(session_id=session_id)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -1924,7 +1856,7 @@ def _handle_sessions_undo_command(args: SessionsArgs) -> int:
         try:
             marker = runtime.undo_session(session_id=session_id)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
@@ -1942,7 +1874,7 @@ def _handle_sessions_revert_command(args: SessionsArgs) -> int:
                 sequence=args.sequence,
             )
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
@@ -1957,7 +1889,7 @@ def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
         try:
             marker = runtime.unrevert_session(session_id=session_id)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
@@ -1973,7 +1905,7 @@ def _handle_tasks_status_command(args: TasksArgs) -> int:
         try:
             task = runtime.load_background_task(task_id)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2004,7 +1936,7 @@ def _handle_tasks_output_command(args: TasksArgs) -> int:
                     print(f"warning: session result output unavailable: {exc}", file=sys.stderr)
                     session_output = None
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2033,7 +1965,7 @@ def _handle_tasks_cancel_command(args: TasksArgs) -> int:
         try:
             task = runtime.cancel_background_task(task_id)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2055,7 +1987,7 @@ def _handle_tasks_retry_command(args: TasksArgs) -> int:
         try:
             task = runtime.retry_background_task(task_id)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2083,7 +2015,7 @@ def _handle_tasks_list_command(args: TasksArgs) -> int:
                 else runtime.list_background_tasks()
             )
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2124,7 +2056,7 @@ def _handle_storage_prune_command(args: StorageArgs) -> int:
                 older_than=args.older_than,
             )
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
     print_json({"workspace": str(workspace), "pruned": counts})
@@ -2171,7 +2103,7 @@ def _handle_server_command(args: ServerArgs) -> int:
 def _handle_config_show_command(args: ConfigArgs) -> int:
     workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
-        raise SystemExit(f"error: workspace does not exist: {workspace}")
+        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
     session_id = args.session_id
     runtime = VoidCodeRuntime(workspace=workspace)
@@ -2183,7 +2115,7 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
             agents = runtime.effective_agent_model_config(session_id=session_id)
             status = runtime.current_status()
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2242,7 +2174,7 @@ def _serialize_agent_summary(summary: AgentSummary) -> dict[str, object]:
 def _handle_agents_list_command(args: AgentsArgs) -> int:
     workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
-        raise SystemExit(f"error: workspace does not exist: {workspace}")
+        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
@@ -2290,7 +2222,7 @@ def _mcp_status_payload(snapshot: CapabilityStatusSnapshot) -> dict[str, object]
 def _handle_mcp_list_command(args: McpArgs) -> int:
     workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
-        raise SystemExit(f"error: workspace does not exist: {workspace}")
+        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
     runtime = VoidCodeRuntime(workspace=workspace)
     try:
@@ -2379,11 +2311,14 @@ def _handle_commands_show_command(args: CommandsArgs) -> int:
     command_name = args.name
     command = registry.get(command_name)
     if command is None:
-        raise SystemExit(f"error: unknown command: /{command_name.removeprefix('/')}")
+        raise CliError(
+            code=EXIT_INVALID_COMMAND,
+            message=f"unknown command: /{command_name.removeprefix('/')}",
+        )
     if command.hidden and not args.include_hidden:
-        raise SystemExit(f"error: unknown command: /{command.name}")
+        raise CliError(code=EXIT_INVALID_COMMAND, message=f"unknown command: /{command.name}")
     if not command.enabled and not args.include_disabled:
-        raise SystemExit(f"error: command is disabled: /{command.name}")
+        raise CliError(code=EXIT_INVALID_COMMAND, message=f"command is disabled: /{command.name}")
 
     payload = serialize_command_definition(command)
     if args.json:
@@ -2406,7 +2341,7 @@ def _load_cli_command_registry(args: CommandsArgs, *, workspace: Path) -> Comman
     try:
         return load_command_registry(workspace=workspace, user_commands_dir=user_commands_dir)
     except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from None
+        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
 
 def _handle_config_schema_command(args: ConfigArgs) -> int:
@@ -2418,7 +2353,7 @@ def _handle_config_schema_command(args: ConfigArgs) -> int:
 def _handle_config_init_command(args: ConfigArgs) -> int:
     workspace = args.workspace
     if not workspace.exists() or not workspace.is_dir():
-        raise SystemExit(f"error: workspace does not exist: {workspace}")
+        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"workspace does not exist: {workspace}")
 
     try:
         payload = generate_starter_runtime_config(
@@ -2428,15 +2363,16 @@ def _handle_config_init_command(args: ConfigArgs) -> int:
             include_examples=args.with_examples,
         )
     except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from None
+        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     if args.print:
         print(format_starter_runtime_config_json(payload), end="")
         return 0
 
     config_path = workspace.resolve() / RUNTIME_CONFIG_FILE_NAME
     if config_path.exists() and not args.force:
-        raise SystemExit(
-            f"error: runtime config already exists: {config_path}; pass --force to overwrite"
+        raise CliError(
+            code=EXIT_CONFIG_ERROR,
+            message=f"runtime config already exists: {config_path}; pass --force to overwrite",
         )
     written_path = write_runtime_config_payload(workspace, payload)
     print(
@@ -2463,7 +2399,7 @@ def _handle_provider_models_command(args: ProviderArgs) -> int:
                 _ = runtime.refresh_provider_models(provider)
             result = runtime.provider_models_result(provider)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2603,7 +2539,7 @@ def _handle_provider_inspect_command(args: ProviderArgs) -> int:
         try:
             result = runtime.inspect_provider(provider)
         except ValueError as exc:
-            raise SystemExit(f"error: {exc}") from None
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     finally:
         _close_runtime(runtime)
 
@@ -2687,45 +2623,6 @@ def _handle_doctor_command(args: DoctorArgs) -> int:
     return EXIT_SUCCESS if (report.is_healthy and config_error is None) else EXIT_RUNTIME_ERROR
 
 
-def _classify_cli_error(message: str) -> int:
-    normalized = message.lower()
-    if "unknown command" in normalized or "command is disabled" in normalized:
-        return EXIT_INVALID_COMMAND
-    if (
-        "unknown session" in normalized
-        or "unknown task" in normalized
-        or "no pending question" in normalized
-        or "workspace does not exist" in normalized
-    ):
-        return EXIT_INVALID_RESOURCE
-    if "provider" in normalized and (
-        "requires a configured model" in normalized
-        or "not configured" in normalized
-        or "unreachable" in normalized
-    ):
-        return EXIT_PROVIDER_ERROR
-    if (
-        normalized.startswith("error: runtime config")
-        or ".voidcode.json" in normalized
-        or "voidcode/config.json" in normalized
-    ):
-        return EXIT_CONFIG_ERROR
-    return EXIT_RUNTIME_ERROR
-
-
-def _handle_cli_system_exit(exc: SystemExit) -> int:
-    code = exc.code
-    if code is None:
-        return EXIT_SUCCESS
-    if isinstance(code, int):
-        return code
-    message = str(code)
-    print(message, file=sys.stderr)
-    if message.startswith("error:"):
-        return _classify_cli_error(message)
-    return EXIT_GENERAL_ERROR
-
-
 _APPROVAL_MODES = ("allow", "deny", "ask")
 _APPROVAL_DECISIONS = ("allow", "deny")
 _EXECUTION_ENGINES = ("deterministic", "provider")
@@ -2771,28 +2668,10 @@ def _command_discovery_options(function: Callable[..., object]) -> Callable[...,
     )(function)
 
 
-def _normalize_click_argv(argv: Sequence[str] | None) -> list[str] | None:
-    if argv is None:
-        return None
-    normalized: list[str] = []
-    index = 0
-    while index < len(argv):
-        item = argv[index]
-        if item != "--skills":
-            normalized.append(item)
-            index += 1
-            continue
-        index += 1
-        while index < len(argv) and not argv[index].startswith("-"):
-            normalized.extend(("--skills", argv[index]))
-            index += 1
-    return normalized
-
-
 def _run_click_command(command: click.Command, argv: Sequence[str] | None) -> int:
     try:
         result = command.main(
-            args=_normalize_click_argv(argv),
+            args=argv,
             prog_name="voidcode",
             standalone_mode=False,
         )
@@ -2802,15 +2681,12 @@ def _run_click_command(command: click.Command, argv: Sequence[str] | None) -> in
     except click.ClickException as exc:
         exc.show(file=sys.stderr)
         return exc.exit_code
-    except _CliUsageError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return exc.exit_code
-    except SystemExit as exc:
-        return _handle_cli_system_exit(exc)
+    except CliError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        return exc.code
     except RuntimeError as exc:
-        message = f"error: {exc}"
-        print(message, file=sys.stderr)
-        return _classify_cli_error(message)
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
 
 
 @click.group(
@@ -2846,13 +2722,11 @@ def root_cli(ctx: click.Context, db_path: Path | None) -> None:
     help="Override the runtime approval mode for this invocation.",
 )
 def tui(workspace: Path, approval_mode: str | None) -> int:
-    return _invoke_handler_from_click(
-        _handle_tui_command,
-        _build_click_command_context(
-            command="tui",
+    return _handle_tui_command(
+        TuiArgs(
             workspace=workspace,
             approval_mode=approval_mode,
-        ),
+        )
     )
 
 
@@ -2916,10 +2790,8 @@ def run(
     runtime_mode: str | None,
     read_only: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_run_command,
-        _build_click_command_context(
-            command="run",
+    return _handle_run_command(
+        RunArgs(
             request=request,
             workspace=workspace,
             session_id=session_id,
@@ -2935,7 +2807,7 @@ def run(
             provider_stream=provider_stream,
             runtime_mode=runtime_mode,
             read_only=read_only,
-        ),
+        )
     )
 
 
@@ -2947,13 +2819,11 @@ def run(
     help="Override the runtime approval mode for this ACP process.",
 )
 def acp(workspace: Path, approval_mode: str | None) -> int:
-    return _invoke_handler_from_click(
-        _handle_acp_command,
-        _build_click_command_context(
-            command="acp",
+    return _handle_acp_command(
+        AcpArgs(
             workspace=workspace,
             approval_mode=approval_mode,
-        ),
+        )
     )
 
 
@@ -2966,16 +2836,15 @@ def _server_command(
     approval_mode: str | None,
     server_entry: Callable[..., None],
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_server_command,
-        _build_click_command_context(
+    return _handle_server_command(
+        ServerArgs(
             command=command,
             workspace=workspace,
             host=host,
             port=port,
             approval_mode=approval_mode,
             server_entry=server_entry,
-        ),
+        )
     )
 
 
@@ -2987,9 +2856,8 @@ def _web_server_command(
     approval_mode: str | None,
     open_browser: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_server_command,
-        _build_click_command_context(
+    return _handle_server_command(
+        ServerArgs(
             command="web",
             workspace=workspace,
             host=host,
@@ -2997,7 +2865,7 @@ def _web_server_command(
             approval_mode=approval_mode,
             server_entry=web,
             open_browser=open_browser,
-        ),
+        )
     )
 
 
@@ -3070,14 +2938,11 @@ def sessions() -> None:
 @_workspace_option("Workspace root used to resolve the local session database.")
 @_json_option("Output persisted sessions as JSON.")
 def sessions_list(workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_list_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="list",
+    return _handle_sessions_list_command(
+        SessionsArgs(
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3108,21 +2973,19 @@ def resume(
     show_thinking: bool,
 ) -> int:
     if (approval_request_id is None) != (approval_decision is None):
-        raise _CliUsageError(
-            "--approval-request-id and --approval-decision must be provided together"
+        raise CliError(
+            code=EXIT_USAGE_ERROR,
+            message="--approval-request-id and --approval-decision must be provided together",
         )
-    return _invoke_handler_from_click(
-        _handle_sessions_resume_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="resume",
+    return _handle_sessions_resume_command(
+        SessionsArgs(
             session_id=session_id,
             workspace=workspace,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
             dry_run=dry_run,
             show_thinking=show_thinking,
-        ),
+        )
     )
 
 
@@ -3154,11 +3017,8 @@ def answer(
     json_output: bool,
     show_thinking: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_answer_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="answer",
+    return _handle_sessions_answer_command(
+        SessionsArgs(
             session_id=session_id,
             workspace=workspace,
             question_request_id=question_request_id,
@@ -3166,7 +3026,7 @@ def answer(
             response_json=response_json,
             json=json_output,
             show_thinking=show_thinking,
-        ),
+        )
     )
 
 
@@ -3191,11 +3051,8 @@ def sessions_export(
     include_reasoning_text: bool,
     support: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_export_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="export",
+    return _handle_sessions_export_command(
+        SessionsArgs(
             session_id=session_id,
             workspace=workspace,
             output=output,
@@ -3205,7 +3062,7 @@ def sessions_export(
             include_raw_provider_messages=include_raw_provider_messages,
             include_reasoning_text=include_reasoning_text,
             support=support,
-        ),
+        )
     )
 
 
@@ -3214,37 +3071,29 @@ def sessions_export(
 @_workspace_option("Workspace root used to resolve the local session database.")
 @click.option("--dry-run", is_flag=True)
 def sessions_import(bundle_path: Path, workspace: Path, dry_run: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_import_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="import",
+    return _handle_sessions_import_command(
+        SessionsArgs(
             bundle_path=bundle_path,
             workspace=workspace,
             dry_run=dry_run,
-        ),
+        )
     )
 
 
 @sessions.command(help="Show a minimal runtime-owned debug snapshot for one session.")
 @click.argument("session_id")
 @_workspace_option("Workspace root used to resolve the local session database.")
-@_json_option("Output JSON debug snapshot (default).")
 @_show_thinking_option(
     "Include reasoning/thinking text in debug event payloads; hidden by default."
 )
-def debug(session_id: str, workspace: Path, json_output: bool, show_thinking: bool) -> int:
-    _ = json_output
-    return _invoke_handler_from_click(
-        _handle_sessions_debug_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="debug",
+def debug(session_id: str, workspace: Path, show_thinking: bool) -> int:
+    return _handle_sessions_debug_command(
+        SessionsArgs(
             session_id=session_id,
             workspace=workspace,
             json=True,
             show_thinking=show_thinking,
-        ),
+        )
     )
 
 
@@ -3252,11 +3101,11 @@ def debug(session_id: str, workspace: Path, json_output: bool, show_thinking: bo
 @click.argument("session_id")
 @_workspace_option("Workspace root used to resolve the local session database.")
 def undo(session_id: str, workspace: Path) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_undo_command,
-        _build_click_command_context(
-            command="sessions", subcommand="undo", session_id=session_id, workspace=workspace
-        ),
+    return _handle_sessions_undo_command(
+        SessionsArgs(
+            session_id=session_id,
+            workspace=workspace,
+        )
     )
 
 
@@ -3265,15 +3114,12 @@ def undo(session_id: str, workspace: Path) -> int:
 @click.option("--to", "sequence", type=int, required=True)
 @_workspace_option("Workspace root used to resolve the local session database.")
 def revert(session_id: str, sequence: int, workspace: Path) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_revert_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="revert",
+    return _handle_sessions_revert_command(
+        SessionsArgs(
             session_id=session_id,
             sequence=sequence,
             workspace=workspace,
-        ),
+        )
     )
 
 
@@ -3281,14 +3127,11 @@ def revert(session_id: str, sequence: int, workspace: Path) -> int:
 @click.argument("session_id")
 @_workspace_option("Workspace root used to resolve the local session database.")
 def unrevert(session_id: str, workspace: Path) -> int:
-    return _invoke_handler_from_click(
-        _handle_sessions_unrevert_command,
-        _build_click_command_context(
-            command="sessions",
-            subcommand="unrevert",
+    return _handle_sessions_unrevert_command(
+        SessionsArgs(
             session_id=session_id,
             workspace=workspace,
-        ),
+        )
     )
 
 
@@ -3310,17 +3153,14 @@ def memory_add(
     tag: tuple[str, ...],
     json_output: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_memory_add_command,
-        _build_click_command_context(
-            command="memory",
-            subcommand="add",
+    return _handle_memory_add_command(
+        MemoryArgs(
             content=content,
             workspace=workspace,
             kind=kind,
             tag=tag,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3337,17 +3177,14 @@ def memory_list(
     limit: int | None,
     json_output: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_memory_list_command,
-        _build_click_command_context(
-            command="memory",
-            subcommand="list",
+    return _handle_memory_list_command(
+        MemoryArgs(
             workspace=workspace,
             kind=kind,
             tag=tag,
             limit=limit,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3366,18 +3203,15 @@ def memory_search(
     limit: int | None,
     json_output: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_memory_search_command,
-        _build_click_command_context(
-            command="memory",
-            subcommand="search",
+    return _handle_memory_search_command(
+        MemoryArgs(
             query=query,
             workspace=workspace,
             kind=kind,
             tag=tag,
             limit=limit,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3386,15 +3220,12 @@ def memory_search(
 @_workspace_option("Workspace whose memory store should be queried.")
 @_json_option("Output the memory as JSON.")
 def memory_show(memory_id: str, workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_memory_show_command,
-        _build_click_command_context(
-            command="memory",
-            subcommand="show",
+    return _handle_memory_show_command(
+        MemoryArgs(
             memory_id=memory_id,
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3403,15 +3234,12 @@ def memory_show(memory_id: str, workspace: Path, json_output: bool) -> int:
 @_workspace_option("Workspace whose memory store should be updated.")
 @_json_option("Output delete status as JSON.")
 def memory_delete(memory_id: str, workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_memory_delete_command,
-        _build_click_command_context(
-            command="memory",
-            subcommand="delete",
+    return _handle_memory_delete_command(
+        MemoryArgs(
             memory_id=memory_id,
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3419,14 +3247,11 @@ def memory_delete(memory_id: str, workspace: Path, json_output: bool) -> int:
 @_workspace_option("Workspace whose memory storage scope should be reported.")
 @_json_option("Output memory status as JSON.")
 def memory_status(workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_memory_status_command,
-        _build_click_command_context(
-            command="memory",
-            subcommand="status",
+    return _handle_memory_status_command(
+        MemoryArgs(
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3440,15 +3265,12 @@ def tasks() -> None:
 @_workspace_option("Workspace root used to resolve the local session database.")
 @_json_option("Output delegated task state as JSON.")
 def status(task_id: str, workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_tasks_status_command,
-        _build_click_command_context(
-            command="tasks",
-            subcommand="status",
+    return _handle_tasks_status_command(
+        TasksArgs(
             task_id=task_id,
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3457,15 +3279,12 @@ def status(task_id: str, workspace: Path, json_output: bool) -> int:
 @_workspace_option("Workspace root used to resolve the local session database.")
 @_json_option("Output delegated task result and guidance as JSON.")
 def output(task_id: str, workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_tasks_output_command,
-        _build_click_command_context(
-            command="tasks",
-            subcommand="output",
+    return _handle_tasks_output_command(
+        TasksArgs(
             task_id=task_id,
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3474,15 +3293,12 @@ def output(task_id: str, workspace: Path, json_output: bool) -> int:
 @_workspace_option("Workspace root used to resolve the local session database.")
 @_json_option("Output cancelled delegated task state as JSON.")
 def cancel(task_id: str, workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_tasks_cancel_command,
-        _build_click_command_context(
-            command="tasks",
-            subcommand="cancel",
+    return _handle_tasks_cancel_command(
+        TasksArgs(
             task_id=task_id,
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3491,15 +3307,12 @@ def cancel(task_id: str, workspace: Path, json_output: bool) -> int:
 @_workspace_option("Workspace root used to resolve the local session database.")
 @_json_option("Output retried delegated task state as JSON.")
 def retry(task_id: str, workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_tasks_retry_command,
-        _build_click_command_context(
-            command="tasks",
-            subcommand="retry",
+    return _handle_tasks_retry_command(
+        TasksArgs(
             task_id=task_id,
             workspace=workspace,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3508,15 +3321,12 @@ def retry(task_id: str, workspace: Path, json_output: bool) -> int:
 @click.option("--parent-session", "parent_session_id")
 @_json_option("Output delegated task summaries as JSON.")
 def tasks_list(workspace: Path, parent_session_id: str | None, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_tasks_list_command,
-        _build_click_command_context(
-            command="tasks",
-            subcommand="list",
+    return _handle_tasks_list_command(
+        TasksArgs(
             workspace=workspace,
             parent_session_id=parent_session_id,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3527,14 +3337,12 @@ def storage() -> None:
 
 @storage.command(help="Show SQLite runtime storage policy, checkpoint, size, and row counts.")
 @_workspace_option("Workspace root used to resolve the local session database.")
-@_json_option("Output storage diagnostics as JSON (default).")
-def diagnostics(workspace: Path, json_output: bool) -> int:
-    _ = json_output
-    return _invoke_handler_from_click(
-        _handle_storage_diagnostics_command,
-        _build_click_command_context(
-            command="storage", subcommand="diagnostics", workspace=workspace, json=True
-        ),
+def diagnostics(workspace: Path) -> int:
+    return _handle_storage_diagnostics_command(
+        StorageArgs(
+            workspace=workspace,
+            json=True,
+        )
     )
 
 
@@ -3549,25 +3357,23 @@ def prune(
     keep_background_tasks: int | None,
     older_than: int | None,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_storage_prune_command,
-        _build_click_command_context(
-            command="storage",
-            subcommand="prune",
+    return _handle_storage_prune_command(
+        StorageArgs(
             workspace=workspace,
             keep_sessions=keep_sessions,
             keep_background_tasks=keep_background_tasks,
             older_than=older_than,
-        ),
+        )
     )
 
 
 @storage.command(help="Delete the runtime SQLite database and WAL/SHM files.")
 @_workspace_option("Workspace root used to bootstrap the runtime; the database itself is global.")
 def reset(workspace: Path) -> int:
-    return _invoke_handler_from_click(
-        _handle_storage_reset_command,
-        _build_click_command_context(command="storage", subcommand="reset", workspace=workspace),
+    return _handle_storage_reset_command(
+        StorageArgs(
+            workspace=workspace,
+        )
     )
 
 
@@ -3579,26 +3385,20 @@ def config() -> None:
 @config.command(name="show", help="Show effective runtime config for a workspace or session.")
 @_workspace_option("Workspace root used to resolve runtime config and sessions.")
 @click.option("--session", "session_id")
-@_json_option("Output JSON effective config (default).")
-def config_show(workspace: Path, session_id: str | None, json_output: bool) -> int:
-    _ = json_output
-    return _invoke_handler_from_click(
-        _handle_config_show_command,
-        _build_click_command_context(
-            command="config",
-            subcommand="show",
+def config_show(workspace: Path, session_id: str | None) -> int:
+    return _handle_config_show_command(
+        ConfigArgs(
             workspace=workspace,
             session_id=session_id,
             json=True,
-        ),
+        )
     )
 
 
 @config.command(name="schema", help="Print the JSON Schema for .voidcode.json.")
 def config_schema() -> int:
-    return _invoke_handler_from_click(
-        _handle_config_schema_command,
-        _build_click_command_context(command="config", subcommand="schema"),
+    return _handle_config_schema_command(
+        ConfigArgs()
     )
 
 
@@ -3619,11 +3419,8 @@ def config_init(
     print_config: bool,
     force: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_config_init_command,
-        _build_click_command_context(
-            command="config",
-            subcommand="init",
+    return _handle_config_init_command(
+        ConfigArgs(
             workspace=workspace,
             approval_mode=approval_mode,
             model=model,
@@ -3631,7 +3428,7 @@ def config_init(
             with_examples=with_examples,
             print=print_config,
             force=force,
-        ),
+        )
     )
 
 
@@ -3645,15 +3442,12 @@ def provider() -> None:
 @_workspace_option("Workspace root used to resolve runtime config.")
 @click.option("--refresh", is_flag=True)
 def models(provider_name: str, workspace: Path, refresh: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_provider_models_command,
-        _build_click_command_context(
-            command="provider",
-            subcommand="models",
+    return _handle_provider_models_command(
+        ProviderArgs(
             provider=provider_name,
             workspace=workspace,
             refresh=refresh,
-        ),
+        )
     )
 
 
@@ -3661,14 +3455,11 @@ def models(provider_name: str, workspace: Path, refresh: bool) -> int:
 @click.argument("provider_name")
 @_workspace_option("Workspace root used to resolve runtime config.")
 def inspect(provider_name: str, workspace: Path) -> int:
-    return _invoke_handler_from_click(
-        _handle_provider_inspect_command,
-        _build_click_command_context(
-            command="provider",
-            subcommand="inspect",
+    return _handle_provider_inspect_command(
+        ProviderArgs(
             provider=provider_name,
             workspace=workspace,
-        ),
+        )
     )
 
 
@@ -3689,17 +3480,14 @@ def commands_list(
     include_disabled: bool,
     json_output: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_commands_list_command,
-        _build_click_command_context(
-            command="commands",
-            subcommand="list",
+    return _handle_commands_list_command(
+        CommandsArgs(
             workspace=workspace,
             user_commands_dir=user_commands_dir,
             include_hidden=include_hidden,
             include_disabled=include_disabled,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3720,18 +3508,15 @@ def commands_show(
     include_disabled: bool,
     json_output: bool,
 ) -> int:
-    return _invoke_handler_from_click(
-        _handle_commands_show_command,
-        _build_click_command_context(
-            command="commands",
-            subcommand="show",
+    return _handle_commands_show_command(
+        CommandsArgs(
             name=name,
             workspace=workspace,
             user_commands_dir=user_commands_dir,
             include_hidden=include_hidden,
             include_disabled=include_disabled,
             json=json_output,
-        ),
+        )
     )
 
 
@@ -3747,11 +3532,11 @@ def agents() -> None:
 @_workspace_option("Workspace root used to discover project-local agents.")
 @_json_option("Output discovered agents as JSON.")
 def agents_list(workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_agents_list_command,
-        _build_click_command_context(
-            command="agents", subcommand="list", workspace=workspace, json=json_output
-        ),
+    return _handle_agents_list_command(
+        AgentsArgs(
+            workspace=workspace,
+            json=json_output,
+        )
     )
 
 
@@ -3764,11 +3549,11 @@ def mcp() -> None:
 @_workspace_option("Workspace root used to resolve runtime config and MCP state.")
 @_json_option("Output MCP status as JSON.")
 def mcp_list(workspace: Path, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_mcp_list_command,
-        _build_click_command_context(
-            command="mcp", subcommand="list", workspace=workspace, json=json_output
-        ),
+    return _handle_mcp_list_command(
+        McpArgs(
+            workspace=workspace,
+            json=json_output,
+        )
     )
 
 
@@ -3777,11 +3562,12 @@ def mcp_list(workspace: Path, json_output: bool) -> int:
 @click.option("--verbose", "verbose", "-v", is_flag=True)
 @_json_option("Output report in JSON format.")
 def doctor(workspace: Path, verbose: bool, json_output: bool) -> int:
-    return _invoke_handler_from_click(
-        _handle_doctor_command,
-        _build_click_command_context(
-            command="doctor", workspace=workspace, verbose=verbose, json=json_output
-        ),
+    return _handle_doctor_command(
+        DoctorArgs(
+            workspace=workspace,
+            verbose=verbose,
+            json=json_output,
+        )
     )
 
 
