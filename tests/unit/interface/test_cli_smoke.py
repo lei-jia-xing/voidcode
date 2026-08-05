@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from voidcode.runtime.events import runtime_reasoning_part_payload
 from voidcode.runtime.paths import sessions_db_path
 
@@ -3607,3 +3609,68 @@ def test_provider_inspect_command_outputs_provider_capabilities() -> None:
     assert payload["current_model"] == "gpt-4o"
     assert payload["current_model_metadata"]["max_input_tokens"] == 111_616
     assert payload["current_model_metadata"]["supports_tools"] is True
+
+
+@pytest.mark.parametrize(
+    ("exit_constant", "expected_exit"),
+    [
+        ("EXIT_CONFIG_ERROR", 10),
+        ("EXIT_PROVIDER_ERROR", 11),
+        ("EXIT_RUNTIME_ERROR", 12),
+        ("EXIT_APPROVAL_DENIED", 13),
+        ("EXIT_CANCELLED", 14),
+        ("EXIT_INVALID_COMMAND", 15),
+        ("EXIT_INVALID_RESOURCE", 16),
+    ],
+)
+def test_cli_error_propagates_correct_exit_code(
+    exit_constant: str,
+    expected_exit: int,
+    capsys: Any,
+) -> None:
+    """A CliError raised by any handler surfaces as the process exit code."""
+    import click
+
+    cli = importlib.import_module("voidcode.cli.app")
+    cli_support = importlib.import_module("voidcode.cli_support")
+    error_code = getattr(cli_support, exit_constant)
+
+    @click.command()
+    def _failing_handler() -> None:
+        raise cli.CliError(code=error_code, message=f"boom {error_code}")
+
+    result = cli._run_click_command(_failing_handler, [])
+
+    captured = capsys.readouterr()
+    assert result == expected_exit
+    assert captured.out == ""
+    assert f"error: boom {error_code}" in captured.err
+
+
+def test_config_init_existing_config_returns_config_error_exit_code() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        _ = _run_module_cli("config", "init", "--workspace", str(workspace))
+        result = _run_module_cli("config", "init", "--workspace", str(workspace))
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    assert "error: runtime config already exists" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_commands_show_missing_command_returns_invalid_command_exit_code() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        result = _run_module_cli(
+            "commands",
+            "show",
+            "/missing",
+            "--workspace",
+            str(workspace),
+        )
+
+    assert result.returncode == 15
+    assert result.stdout == ""
+    assert "error: unknown command: /missing" in result.stderr
+    assert "Traceback" not in result.stderr

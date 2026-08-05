@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from rich.markdown import Markdown
 from rich.syntax import Syntax
@@ -13,6 +14,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Input, RichLog, Static
 
 from ..runtime.config import (
+    RuntimeConfig,
     RuntimeTuiConfig,
     RuntimeTuiPreferences,
     RuntimeTuiReadingPreferences,
@@ -24,10 +26,12 @@ from ..runtime.config import (
     merge_runtime_tui_preferences,
     save_global_tui_preferences,
 )
-from ..runtime.contracts import RuntimeRequest
+from ..runtime.contracts import CommandSummary, RuntimeRequest, RuntimeStreamChunk
 from ..runtime.events import EventEnvelope
-from ..runtime.permission import PermissionDecision
+from ..runtime.lsp import LspManagerState
+from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.service import VoidCodeRuntime
+from ..runtime.session import StoredSessionSummary
 from .messages import (
     ContextPanelUpdated,
     StreamChunkReceived,
@@ -44,6 +48,45 @@ from .screens import (
 logger = logging.getLogger(__name__)
 
 _SLASH_COMMANDS: tuple[str, ...] = ("/expand",)
+
+
+@runtime_checkable
+class RuntimeProtocol(Protocol):
+    """Runtime surface consumed by the TUI.
+
+    Structural contract matching the subset of ``VoidCodeRuntime`` public
+    methods used by ``VoidCodeTUI``. It is the injection seam that lets tests
+    (and future clients) pass a mock or alternate runtime instead of forcing a
+    real ``VoidCodeRuntime`` construction.
+    """
+
+    def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
+
+    def resume_stream(
+        self,
+        session_id: str,
+        *,
+        approval_request_id: str | None = None,
+        approval_decision: PermissionResolution | None = None,
+    ) -> Iterator[RuntimeStreamChunk]: ...
+
+    def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
+
+    def current_lsp_state(self) -> LspManagerState: ...
+
+    def read_tool_output_artifact(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str | None = None,
+        tool_call_id: str | None = None,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> dict[str, object]: ...
+
+    def list_command_summaries(self) -> tuple[CommandSummary, ...]: ...
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
 
 
 class _ComposerInput(Input):
@@ -119,12 +162,21 @@ class VoidCodeTUI(App[int]):
     }
     """
 
-    def __init__(self, workspace: Path, approval_mode: PermissionDecision | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        approval_mode: PermissionDecision | None = None,
+        *,
+        runtime: RuntimeProtocol | None = None,
+        tui_preferences: RuntimeTuiPreferences | None = None,
+    ) -> None:
         super().__init__()
         self.workspace = workspace
         self.approval_mode = approval_mode
         config = load_runtime_config(workspace, approval_mode=approval_mode)
-        self.runtime = VoidCodeRuntime(workspace=workspace, config=config)
+        if runtime is None:
+            runtime = VoidCodeRuntime(workspace=workspace, config=config)
+        self.runtime = runtime
         self.session_id: str | None = None
         self.pending_request_id: str | None = None
         self.current_state = "Idle"
@@ -134,7 +186,11 @@ class VoidCodeTUI(App[int]):
         self._global_tui_preferences = load_global_tui_preferences()
         self._workspace_tui_preferences = load_workspace_tui_preferences(workspace)
         self._effective_preferences = RuntimeTuiPreferences()
-        self._tui_preferences = self._global_tui_preferences or RuntimeTuiPreferences()
+        self._tui_preferences = (
+            tui_preferences
+            if tui_preferences is not None
+            else (self._global_tui_preferences or RuntimeTuiPreferences())
+        )
         self._pending_tool_progress: dict[str, dict[str, list[str]]] = {}
         self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
         self._tool_content_by_call_id: dict[str, str] = {}
@@ -147,6 +203,9 @@ class VoidCodeTUI(App[int]):
             if isinstance(merged_preferences, RuntimeTuiPreferences):
                 self._effective_preferences = merged_preferences
 
+        self._configure_keybindings(config)
+
+    def _configure_keybindings(self, config: RuntimeConfig) -> None:
         if isinstance(config.tui, RuntimeTuiConfig):
             if isinstance(config.tui.keymap, dict):
                 for k, action in config.tui.keymap.items():
