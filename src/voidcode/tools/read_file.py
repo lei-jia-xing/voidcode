@@ -169,7 +169,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                     has_more = True
                     break
 
-                rendered_lines.append(f"{line_number}: {line_text}")
+                rendered_lines.append(line_text)
                 bytes_used += encoded_size
                 content_truncated = content_truncated or line_truncated
     except UnicodeDecodeError as exc:
@@ -181,22 +181,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     next_offset = offset + len(rendered_lines)
     content_truncated = content_truncated or has_more
 
-    rendered: list[str] = [
-        f"<path>{relative_path}</path>",
-        "<type>file</type>",
-        "<content>",
-    ]
-    rendered.extend(rendered_lines)
-    if has_more:
-        if bytes_used >= MAX_BYTES:
-            rendered.append(
-                f"(Output capped at {MAX_BYTES // 1024} KB. Showing lines {offset}-{next_offset - 1}. Use offset={next_offset} to continue.)"
-            )
-        else:
-            rendered.append(f"(Showing lines {offset}-{next_offset - 1} of {total_lines}. Use offset={next_offset} to continue.)")
-    else:
-        rendered.append(f"(End of file - total {total_lines} lines)")
-    rendered.append("</content>")
+    rendered = rendered_lines
 
     return _ReadOutcome(
         content="\n".join(rendered),
@@ -210,10 +195,6 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             "truncated": content_truncated,
             "partial": content_truncated,
             "byte_count": bytes_used,
-            "copy_guidance": (
-                "Displayed lines include '<line>: ' prefixes for navigation. "
-                "When passing text to edit oldString, omit those prefixes and use only file text."
-            ),
         },
     )
 

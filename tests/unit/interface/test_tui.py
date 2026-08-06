@@ -1111,6 +1111,9 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
 
         mock_runtime.run_stream.assert_called_once()
         assert app.session_id == "demo-session"
+        first_request = mock_runtime.run_stream.call_args.args[0]
+        assert first_request.session_id is None
+        assert first_request.allocate_session_id is True
 
         log = app.query_one("#transcript-log")
         plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
@@ -1145,3 +1148,31 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
 
         plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
         assert "⚠ Approval requested for tool: write_file" in plain
+
+
+@pytest.mark.anyio
+async def test_tui_reuses_session_id_for_follow_up_prompt(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    mock_runtime = _mock_runtime()
+    mock_runtime.run_stream.side_effect = [
+        iter((_make_chunk(session_id="session-1", status="completed", output="first"),)),
+        iter((_make_chunk(session_id="session-1", status="completed", output="second"),)),
+    ]
+    app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
+
+    async with app.run_test() as pilot:
+        await pilot.press("a", "enter")
+        await pilot.pause()
+        await pilot.pause()
+        assert app.session_id == "session-1"
+
+        await pilot.press("b", "enter")
+        await pilot.pause()
+        await pilot.pause()
+
+    requests = [call.args[0] for call in mock_runtime.run_stream.call_args_list]
+    assert requests[0].session_id is None
+    assert requests[0].allocate_session_id is True
+    assert requests[1].session_id == "session-1"
+    assert requests[1].allocate_session_id is False

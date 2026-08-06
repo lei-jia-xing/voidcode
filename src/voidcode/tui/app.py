@@ -429,7 +429,11 @@ class VoidCodeTUI(App[int]):
         self._set_stream_active(True)
         self._current_prompt = prompt
 
-        request = RuntimeRequest(prompt=prompt, allocate_session_id=self.session_id is None)
+        request = RuntimeRequest(
+            prompt=prompt,
+            session_id=self.session_id,
+            allocate_session_id=self.session_id is None,
+        )
         self._start_stream(request)
 
     def _handle_slash_command(self, raw: str) -> None:
@@ -476,7 +480,7 @@ class VoidCodeTUI(App[int]):
         display = self._tool_display_by_call_id.get(tool_call_id)
         path = self._display_copyable_path(display)
         kind = self._display_field(display, "kind") or ""
-        if kind in ("read", "search"):
+        if kind == "search":
             syntax = self._build_syntax_for_path(path, content)
             if syntax is not None:
                 log.write(syntax)
@@ -487,6 +491,14 @@ class VoidCodeTUI(App[int]):
         self.query_one("#transcript-log", RichLog).write(Text(f"User: {prompt}"))
 
     def _write_event_line(self, event: EventEnvelope) -> None:
+        if event.event_type == "graph.provider_stream":
+            payload = event.payload or {}
+            if payload.get("channel") == "text" and payload.get("kind") in {"delta", "content"}:
+                text = payload.get("text")
+                if isinstance(text, str) and text:
+                    self._pending_output.append(text)
+                    self._schedule_stream_preview_flush()
+            return
         if event.event_type not in (
             "graph.tool_request_created",
             "runtime.tool_started",
@@ -913,7 +925,6 @@ class VoidCodeTUI(App[int]):
         elif chunk.kind == "output" and chunk.output is not None:
             self._pending_output.append(chunk.output)
             self._schedule_stream_preview_flush()
-            self._set_state("Completed")
 
     def on_stream_completed(self, message: StreamCompleted) -> None:
         self._flush_stream_preview()
