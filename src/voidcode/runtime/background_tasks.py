@@ -1167,6 +1167,7 @@ class RuntimeBackgroundTaskSupervisor:
                         "notification_event_sequence": appended.sequence,
                     },
                 )
+            self._emit_parallel_group_terminal_event(task=task)
             runtime._append_parent_acp_delegated_lifecycle_event(
                 task=task,
                 lifecycle_status=task.status,
@@ -1184,6 +1185,61 @@ class RuntimeBackgroundTaskSupervisor:
                 "skipping background terminal event for unavailable parent session: %s",
                 parent_session_id,
             )
+
+    def _emit_parallel_group_terminal_event(self, *, task: BackgroundTaskState) -> None:
+        """Notify the parent once the explicitly sized parallel group is terminal."""
+        parent_session_id = task.parent_session_id
+        metadata = task.request.metadata
+        group_id = metadata.get("parallel_group_id")
+        raw_size = metadata.get("parallel_group_size")
+        if not isinstance(group_id, str) or not group_id.strip() or parent_session_id is None:
+            return
+        if isinstance(raw_size, bool):
+            return
+        if isinstance(raw_size, int):
+            group_size = raw_size
+        elif isinstance(raw_size, str):
+            try:
+                group_size = int(raw_size)
+            except ValueError:
+                return
+        else:
+            return
+        if group_size < 1:
+            return
+        runtime = self._runtime
+        summaries = runtime._session_store.list_background_tasks_by_parent_session(
+            workspace=runtime._workspace,
+            parent_session_id=parent_session_id,
+        )
+        group_tasks: list[BackgroundTaskState] = []
+        for summary in summaries:
+            candidate = runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+            if candidate.request.metadata.get("parallel_group_id") == group_id:
+                group_tasks.append(candidate)
+        if len(group_tasks) != group_size or not all(is_background_task_terminal(item.status) for item in group_tasks):
+            return
+        appender = runtime._session_store
+        if not isinstance(appender, SessionEventAppender):
+            return
+        counts = {status: sum(item.status == status for item in group_tasks) for status in ("completed", "failed", "cancelled", "interrupted")}
+        appender.append_session_event(
+            workspace=runtime._workspace,
+            session_id=parent_session_id,
+            event_type="runtime.background_task_group_completed",
+            source="runtime",
+            payload={
+                "parallel_group_id": group_id,
+                "expected_task_count": group_size,
+                "terminal_task_count": len(group_tasks),
+                "counts": counts,
+                "task_ids": [item.task.id for item in group_tasks],
+            },
+            dedupe_key=f"runtime.background_task_group_completed:{parent_session_id}:{group_id}",
+        )
 
     def backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
         if task.parent_session_id is None:
