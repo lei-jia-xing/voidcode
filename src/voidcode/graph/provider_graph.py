@@ -133,22 +133,14 @@ class ProviderGraph:
 
         session_id = request.session.session.id
         run_id = self._run_id_from_metadata(request.session.metadata)
-        if (
-            self._pending_tool_calls
-            and self._pending_tool_calls_session_id == session_id
-            and (self._pending_tool_calls_run_id == run_id or self._is_approval_resume(request.metadata))
-            and self._pending_tool_calls_min_tool_result_count is not None
-            and len(tool_results) >= self._pending_tool_calls_min_tool_result_count
-        ):
-            next_tool_call = self._pending_tool_calls.pop(0)
-            if not self._pending_tool_calls:
-                self._clear_pending_tool_calls()
-            else:
-                self._pending_tool_calls_min_tool_result_count = len(tool_results) + 1
-            return ProviderStep(
-                events=(),
-                tool_call=next_tool_call,
-            )
+        pending_step = self._consume_pending_tool_call(
+            session_id=session_id,
+            run_id=run_id,
+            request_metadata=request.metadata,
+            tool_result_count=len(tool_results),
+        )
+        if pending_step is not None:
+            return pending_step
         if self._pending_tool_calls:
             self._clear_pending_tool_calls()
 
@@ -274,6 +266,29 @@ class ProviderGraph:
             tool_calls=turn_result.tool_calls,
             provider_usage=turn_result.usage,
         )
+
+    def _consume_pending_tool_call(
+        self,
+        *,
+        session_id: str,
+        run_id: str | None,
+        request_metadata: dict[str, object],
+        tool_result_count: int,
+    ) -> ProviderStep | None:
+        if not (
+            self._pending_tool_calls
+            and self._pending_tool_calls_session_id == session_id
+            and (self._pending_tool_calls_run_id == run_id or self._is_approval_resume(request_metadata))
+            and self._pending_tool_calls_min_tool_result_count is not None
+            and tool_result_count >= self._pending_tool_calls_min_tool_result_count
+        ):
+            return None
+        next_tool_call = self._pending_tool_calls.pop(0)
+        if not self._pending_tool_calls:
+            self._clear_pending_tool_calls()
+        else:
+            self._pending_tool_calls_min_tool_result_count = tool_result_count + 1
+        return ProviderStep(events=(), tool_call=next_tool_call)
 
     def _step_streaming(
         self,
