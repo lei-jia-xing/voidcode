@@ -954,6 +954,34 @@ class RuntimeRunLoopCoordinator:
                 active_graph_request = pending_provider_attempt_reset.graph_request
                 session = pending_provider_attempt_reset.session
                 pending_provider_attempt_reset = None
+            if tool_results and tool_results[-1].tool_name == "submit_result" and tool_results[-1].status == "ok":
+                terminal_result = tool_results[-1]
+                terminal_output = (terminal_result.content or "").strip()
+                if not terminal_output:
+                    raise ValueError("submit_result completed without a non-empty summary")
+                completed_session = runtime._session_with_plan_state(
+                    SessionState(
+                        session=session.session,
+                        status="completed",
+                        turn=session.turn,
+                        metadata=session.metadata,
+                    ),
+                    status="completed",
+                )
+                sequence += 1
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=completed_session,
+                    event=EventEnvelope(
+                        session_id=session.session.id,
+                        sequence=sequence,
+                        event_type="graph.response_ready",
+                        source="graph",
+                        payload={"output_preview": terminal_output, "source": "submit_result"},
+                    ),
+                )
+                yield RuntimeStreamChunk(kind="output", session=completed_session, output=terminal_output)
+                break
             sequence = int(sequence)
             current_graph_request: Any = active_graph_request
             current_prompt: str = cast(str, current_graph_request.prompt)
@@ -1443,6 +1471,9 @@ class RuntimeRunLoopCoordinator:
                 raise
 
             is_final_step = getattr(graph_step, "is_finished", False) or getattr(graph_step, "output", None) is not None
+            if is_final_step and session.session.parent_id is not None:
+                if not tool_results or tool_results[-1].tool_name != "submit_result" or tool_results[-1].status != "ok":
+                    raise ValueError("delegated child must call submit_result before completing")
             if _is_abort_requested(active_graph_request):
                 yield runtime._failed_chunk(
                     session=session,

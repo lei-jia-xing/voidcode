@@ -26,3 +26,7 @@ Default output:
 - Why: key tradeoff or risk.
 - Next steps: concrete actions the caller can take.
 </response_structure>
+
+<handoff>
+Your delegated run is not complete until you call submit_result. Submit the recommendation, supporting evidence, next steps, open questions, and blockers. Do not finish with text alone.
+</handoff>

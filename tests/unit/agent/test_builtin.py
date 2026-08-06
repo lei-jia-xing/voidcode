@@ -39,7 +39,7 @@ _MUTATING_TOOL_PATTERNS = frozenset(
 _PROMPT_BOUNDARY_PHRASES = {
     "leader": (
         "primary user-facing runtime agent",
-        "Prefer direct, low-filler answers",
+        "Prefer direct, low-filler prose",
         "You own the final user-facing outcome",
         "Child agents provide bounded assistance",
         "verify results yourself, and return one cohesive answer",
@@ -322,13 +322,17 @@ def test_product_prompt_and_manifest_remain_planning_only() -> None:
     assert "Do not claim code execution" in prompt
 
 
-def test_leader_prompt_enforces_concise_low_filler_output() -> None:
+def test_leader_prompt_balances_low_filler_output_with_complete_delivery() -> None:
     prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
 
     assert prompt is not None
-    assert "Prefer direct, low-filler answers" in prompt
-    assert "Skip praise, padding, and routine narration" in prompt
-    assert "Keep default answers short unless the user asks for detail" in prompt
+    assert "Prefer direct, low-filler prose" in prompt
+    assert "Brevity must not remove evidence" in prompt
+    assert "Be concise in wording and complete in substance" in prompt
+    assert "Do not finish while actionable in-scope work remains" in prompt
+    assert "do not minimize investigation or verification" in prompt
+    assert "Make the smallest correct change or give the direct answer" not in prompt
+    assert "Keep default answers short unless the user asks for detail" not in prompt
 
 
 @pytest.mark.parametrize(

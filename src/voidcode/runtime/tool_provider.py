@@ -14,6 +14,7 @@ from ..tools.grep import GrepTool
 from ..tools.local_custom import discover_local_custom_tools
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
+from ..tools.submit_result import SubmitResultTool
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
@@ -34,6 +35,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "read_file",
         "question",
         "shell_exec",
+        "submit_result",
         "skill",
         "task",
         "todo_write",
@@ -219,6 +221,7 @@ class BuiltinToolProvider:
             GrepTool(),
             ReadFileTool(),
             ShellExecTool(),
+            SubmitResultTool(),
             WebFetchTool(),
             WebSearchTool(),
             WriteFileTool(hooks_config=self._hooks_config),

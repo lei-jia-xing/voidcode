@@ -665,7 +665,12 @@ class _DelegationE2EModelProvider:
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
-                    return provider_protocol_module.ProviderTurnResult(output="child final")
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="submit_result",
+                            arguments={"summary": "child final", "completed_work": ["returned delegated result"]},
+                        )
+                    )
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
@@ -704,7 +709,12 @@ class _ParentToolResultGuardrailProvider:
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
-                    return provider_protocol_module.ProviderTurnResult(output="child clean")
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="submit_result",
+                            arguments={"summary": "child clean"},
+                        )
+                    )
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
@@ -750,7 +760,12 @@ class _BackgroundOutputGuardrailProvider:
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
-                    return provider_protocol_module.ProviderTurnResult(output="child transcript sentinel")
+                    return provider_protocol_module.ProviderTurnResult(
+                        tool_call=tool_contracts_module.ToolCall(
+                            tool_name="submit_result",
+                            arguments={"summary": "child transcript sentinel"},
+                        )
+                    )
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
@@ -852,9 +867,10 @@ class _ParentBackgroundOutputGraph:
         if getattr(session_ref, "parent_id", None) is not None:
             return _GraphStep(
                 events=(),
-                tool_call=None,
-                output="child background final",
-                is_finished=True,
+                tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
+                    tool_name="submit_result",
+                    arguments={"summary": "child background final"},
+                ),
             )
         tool_call_factory = cast(
             ToolCallFactory,
@@ -919,6 +935,15 @@ class _McpEchoGraph:
                 )(
                     tool_name="mcp/echo/echo",
                     arguments={"text": "delegated mcp"},
+                ),
+            )
+        session_ref = cast(SessionLike, session).session
+        if getattr(session_ref, "parent_id", None) is not None:
+            return _GraphStep(
+                events=(),
+                tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
+                    tool_name="submit_result",
+                    arguments={"summary": "mcp child done", "completed_work": ["called delegated MCP"]},
                 ),
             )
         return _GraphStep(events=(), tool_call=None, output="mcp parent done", is_finished=True)
@@ -1983,8 +2008,7 @@ def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(
     assert delegation["selected_preset"] == "explore"
     assert delegation["selected_execution_engine"] == "provider"
     assert delegation["lifecycle_status"] == "completed"
-    assert str(message["summary_output"]).startswith("Completed child session ")
-    assert "child background final" not in str(message["summary_output"])
+    assert message["summary_output"] == "child background final"
     assert message == {
         "kind": "delegated_lifecycle",
         "status": "completed",
@@ -2023,8 +2047,7 @@ def test_runtime_background_restart_reconcile_reloads_terminal_delegated_result(
     assert completed.status == "completed"
     assert reloaded.status == "completed"
     assert task_result.status == "completed"
-    assert str(task_result.summary_output).startswith("Completed child session ")
-    assert "child background final" not in str(task_result.summary_output)
+    assert task_result.summary_output == "child background final"
     assert task_result.result_available is True
 
 

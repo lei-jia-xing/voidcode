@@ -204,7 +204,7 @@ class ProviderGraph:
                 provider_usage=turn_result.usage,
             )
 
-        if turn_result.output is not None:
+        if turn_result.output is not None and turn_result.output.strip():
             finalize_events = planning_events + (
                 self._graph_event(
                     GRAPH_LOOP_STEP,
@@ -223,7 +223,7 @@ class ProviderGraph:
             raise self._provider_execution_error(
                 kind="transient_failure",
                 model_name=turn_request.model_name,
-                message="provider turn produced neither output nor tool calls",
+                message="provider turn produced neither output nor tool calls (output was empty)",
                 details={
                     "source": "graph_nonstream",
                     "reason": "missing_terminal_outcome",
@@ -343,6 +343,17 @@ class ProviderGraph:
                 tool_call=first_tool_call,
                 tool_calls=streamed_tool_calls,
                 provider_usage=provider_usage,
+            )
+
+        if not output.strip():
+            raise self._provider_execution_error(
+                kind="transient_failure",
+                model_name=turn_request.model_name,
+                message="provider stream produced neither output nor tool calls (output was empty)",
+                details={
+                    "source": "graph_stream",
+                    "reason": "missing_terminal_outcome",
+                },
             )
 
         finalize_events = (

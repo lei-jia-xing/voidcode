@@ -14,6 +14,8 @@ _WORKSPACE_DISCOVERY_TOOLS = (
     "lsp",
 )
 
+_CHILD_HANDOFF_TOOLS = ("submit_result",)
+
 
 _LEADER_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
@@ -88,6 +90,7 @@ WORKER_AGENT_MANIFEST = AgentManifest(
         "format_file",
         "todo_write",
         "mcp/*",
+        *_CHILD_HANDOFF_TOOLS,
     ),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
@@ -107,7 +110,7 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
     description=("Read-only advisory preset for architecture, debugging, risk, and review guidance."),
     prompt_profile="advisor",
     execution_engine="provider",
-    tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
+    tool_allowlist=(*_WORKSPACE_DISCOVERY_TOOLS, *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
@@ -126,7 +129,7 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     description=("Read-only workspace-bound exploration preset for local code structure, paths, and pattern discovery."),
     prompt_profile="explore",
     execution_engine="provider",
-    tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
+    tool_allowlist=(*_WORKSPACE_DISCOVERY_TOOLS, *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
@@ -145,7 +148,7 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
     description=("External research preset for public docs, repositories, and implementation examples."),
     prompt_profile="researcher",
     execution_engine="provider",
-    tool_allowlist=("web_search", "web_fetch"),
+    tool_allowlist=("web_search", "web_fetch", *_CHILD_HANDOFF_TOOLS),
     preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
     top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(

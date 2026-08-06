@@ -1052,14 +1052,51 @@ class RuntimeBackgroundTaskSupervisor:
     ) -> str | None:
         if child_result is None:
             return None
+        handoff = RuntimeBackgroundTaskSupervisor._child_handoff(child_result)
+        if handoff is not None:
+            return RuntimeBackgroundTaskSupervisor._render_child_handoff(handoff)
         child_session_id = child_result.session.session.id
         if child_result.status == "completed":
-            return f"Completed child session {child_session_id}; full output is preserved outside active context."
+            return f"Child session {child_session_id} completed without required submit_result handoff."
         if child_result.status == "waiting":
             return child_result.summary
         if child_result.status == "failed":
             return child_result.summary
         return f"Background child session {child_session_id}: {child_result.status}"
+
+    @staticmethod
+    def _child_handoff(child_result: RuntimeSessionResult) -> dict[str, object] | None:
+        for event in reversed(child_result.transcript):
+            if event.event_type != RUNTIME_TOOL_COMPLETED:
+                continue
+            if event.payload.get("tool") != "submit_result" or event.payload.get("status") != "ok":
+                continue
+            handoff = event.payload.get("handoff")
+            if isinstance(handoff, dict):
+                typed_handoff = cast(dict[str, object], handoff)
+                summary = typed_handoff.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    return dict(typed_handoff)
+        return None
+
+    @staticmethod
+    def _render_child_handoff(handoff: dict[str, object]) -> str:
+        lines = [str(handoff["summary"]).strip()]
+        labels = (
+            ("completed_work", "Completed work"),
+            ("files_touched", "Files touched"),
+            ("verification", "Verification"),
+            ("open_questions", "Open questions"),
+            ("blockers", "Blockers"),
+        )
+        for key, label in labels:
+            value = handoff.get(key)
+            if not isinstance(value, list):
+                continue
+            items = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+            if items:
+                lines.append(f"{label}: " + "; ".join(items))
+        return "\n".join(lines)
 
     def _delegated_lifecycle_payloads(
         self,

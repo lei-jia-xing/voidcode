@@ -1269,7 +1269,7 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
     assert step.output == "answer"
 
 
-def test_provider_provider_graph_stream_done_without_text_does_not_fallback_propose_turn() -> None:
+def test_provider_provider_graph_stream_done_without_text_is_rejected() -> None:
     provider_model = resolve_provider_model(
         "opencode/gpt-5.4",
         registry=ModelProviderRegistry.with_defaults(),
@@ -1277,21 +1277,19 @@ def test_provider_provider_graph_stream_done_without_text_does_not_fallback_prop
     provider = _StreamNoTextDoneTurnProvider()
     graph = ProviderGraph(provider=provider, provider_model=provider_model)
 
-    step = graph.step(
-        request=GraphRunRequest(
+    with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
+        _ = graph.step(
+            request=GraphRunRequest(
+                session=_session(),
+                prompt="read sample.txt",
+                available_tools=_tool_definitions(),
+                context_window=RuntimeContextWindow(prompt="read sample.txt"),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
+                metadata={"provider_stream": True},
+            ),
+            tool_results=(),
             session=_session(),
-            prompt="read sample.txt",
-            available_tools=_tool_definitions(),
-            context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
-            metadata={"provider_stream": True},
-        ),
-        tool_results=(),
-        session=_session(),
-    )
-
-    assert step.is_finished is True
-    assert step.output == ""
+        )
     assert provider.stream_calls == 1
     assert provider.propose_calls == 0
 

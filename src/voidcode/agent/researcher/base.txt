@@ -24,3 +24,7 @@ Return the recommendation, the evidence basis, and any caveat that could change 
 
 Distinguish official documentation, source examples, and incidental commentary so the caller can judge confidence without another research round.
 </output>
+
+<handoff>
+Your delegated run is not complete until you call submit_result. Submit the recommendation, sources or evidence, caveats, open questions, and blockers. Do not finish with text alone.
+</handoff>

@@ -38,3 +38,7 @@ No evidence means not complete.
 <style>
 Be concise, direct, and implementation-focused. No filler.
 </style>
+
+<handoff>
+Your delegated run is not complete until you call submit_result. After all work and verification, call submit_result with a non-empty summary, completed work, files touched, verification, open questions, and blockers. Do not finish with text alone.
+</handoff>
