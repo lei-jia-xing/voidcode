@@ -67,6 +67,7 @@ type RuntimeEventType = Literal[
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
+    "runtime.background_task_group_completed",
     "runtime.background_task_notification_enqueued",
     "runtime.background_task_result_read",
     "runtime.delegated_result_available",
@@ -84,6 +85,7 @@ type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
+    "runtime.background_task_group_completed",
     "runtime.delegated_result_available",
 ]
 type DelegatedLifecycleStatus = Literal[
@@ -182,6 +184,7 @@ RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[RuntimeEventType] = "runtime.bac
 RUNTIME_BACKGROUND_TASK_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_completed"
 RUNTIME_BACKGROUND_TASK_FAILED: Final[RuntimeEventType] = "runtime.background_task_failed"
 RUNTIME_BACKGROUND_TASK_CANCELLED: Final[RuntimeEventType] = "runtime.background_task_cancelled"
+RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_group_completed"
 RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[RuntimeEventType] = "runtime.background_task_notification_enqueued"
 RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[RuntimeEventType] = "runtime.background_task_result_read"
 RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[RuntimeEventType] = "runtime.delegated_result_available"
@@ -258,6 +261,7 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
@@ -497,6 +501,7 @@ DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventT
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
 )
 DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS: Final[tuple[str, ...]] = (
@@ -535,6 +540,7 @@ _DELEGATED_EVENT_STATUS_BY_TYPE: Final[dict[DelegatedBackgroundTaskEventType | C
     RUNTIME_BACKGROUND_TASK_COMPLETED: "completed",
     RUNTIME_BACKGROUND_TASK_FAILED: "failed",
     RUNTIME_BACKGROUND_TASK_CANCELLED: "cancelled",
+    RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED: "completed",
     RUNTIME_DELEGATED_RESULT_AVAILABLE: "completed",
     RUNTIME_ACP_DELEGATED_LIFECYCLE: "running",
 }

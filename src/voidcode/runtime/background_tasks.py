@@ -25,6 +25,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
+    RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_PROVIDER_FALLBACK,
@@ -1229,7 +1230,7 @@ class RuntimeBackgroundTaskSupervisor:
         appender.append_session_event(
             workspace=runtime._workspace,
             session_id=parent_session_id,
-            event_type="runtime.background_task_group_completed",
+            event_type=RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
             source="runtime",
             payload={
                 "parallel_group_id": group_id,
@@ -1238,7 +1239,7 @@ class RuntimeBackgroundTaskSupervisor:
                 "counts": counts,
                 "task_ids": [item.task.id for item in group_tasks],
             },
-            dedupe_key=f"runtime.background_task_group_completed:{parent_session_id}:{group_id}",
+            dedupe_key=f"{RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED}:{parent_session_id}:{group_id}",
         )
 
     def backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
