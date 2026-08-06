@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import operator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Protocol, TypedDict, runtime_checkable
 
@@ -45,6 +46,7 @@ class GraphRunRequest:
     context_window: ProviderContextWindow | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     abort_signal: ProviderAbortSignal | None = None
+    stream_event_sink: Callable[[GraphEvent], None] | None = None
 
 
 @runtime_checkable

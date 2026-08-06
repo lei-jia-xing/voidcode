@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 import time
 from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from ..graph.contracts import GraphRunRequest, RuntimeGraph
+from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..provider.errors import (
     ProviderExecutionError,
     SingleAgentContextLimitError,
@@ -1275,11 +1277,66 @@ class RuntimeRunLoopCoordinator:
                         ),
                     )
                     return
-                graph_step = graph.step(
-                    active_graph_request,
-                    tool_results=tuple(tool_results),
-                    session=session,
-                )
+                stream_queue: queue.Queue[object] | None = None
+                stream_error: list[BaseException] = []
+                stream_result: list[object] = []
+                stream_thread: threading.Thread | None = None
+                if active_graph_request.metadata.get("provider_stream") is True:
+                    stream_queue = queue.Queue()
+
+                    def _push_stream_event(event: object, target_queue: queue.Queue[object] = stream_queue) -> None:
+                        target_queue.put(event)
+
+                    def _run_graph_step(
+                        target_result: list[object] = stream_result,
+                        target_error: list[BaseException] = stream_error,
+                        target_graph: RuntimeGraph = graph,
+                        target_request: GraphRunRequest = active_graph_request,
+                        target_session: SessionState = session,
+                    ) -> None:
+                        try:
+                            target_result.append(
+                                target_graph.step(
+                                    replace(target_request, stream_event_sink=_push_stream_event),
+                                    tool_results=tuple(tool_results),
+                                    session=target_session,
+                                )
+                            )
+                        except BaseException as exc:  # propagate through the owning runtime thread
+                            target_error.append(exc)
+
+                    stream_thread = threading.Thread(target=_run_graph_step, daemon=True)
+                    stream_thread.start()
+                    while stream_thread.is_alive() or not stream_queue.empty():
+                        try:
+                            streamed_event = stream_queue.get(timeout=0.02)
+                        except queue.Empty:
+                            continue
+                        if isinstance(streamed_event, GraphEvent):
+                            sequence += 1
+                            yield RuntimeStreamChunk(
+                                kind="event",
+                                session=session,
+                                event=EventEnvelope(
+                                    session_id=session.session.id,
+                                    sequence=sequence,
+                                    event_type=streamed_event.event_type,
+                                    source=streamed_event.source,
+                                    payload=streamed_event.payload,
+                                ),
+                            )
+                    stream_thread.join()
+                    if stream_error:
+                        raise stream_error[0]
+                    if not stream_result:
+                        raise RuntimeError("graph streaming step produced no result")
+                    graph_step = cast(Any, stream_result[0])
+                else:
+                    graph_step = graph.step(
+                        active_graph_request,
+                        tool_results=tuple(tool_results),
+                        session=session,
+                    )
                 provider_retry_attempt = 0
             except Exception as exc:
                 current_provider_attempt = runtime._provider_attempt_from_metadata({"provider_attempt": provider_attempt})

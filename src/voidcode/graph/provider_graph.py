@@ -186,6 +186,7 @@ class ProviderGraph:
                 current_turn=current_turn,
                 session_id=session_id,
                 run_id=run_id,
+                stream_event_sink=request.stream_event_sink,
             )
 
         turn_result = self._provider.propose_turn(turn_request)
@@ -244,6 +245,7 @@ class ProviderGraph:
         current_turn: int,
         session_id: str,
         run_id: str | None,
+        stream_event_sink: object | None = None,
     ) -> ProviderStep:
         stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         stream_events: list[GraphEvent] = []
@@ -253,7 +255,11 @@ class ProviderGraph:
         provider_usage: ProviderTokenUsage | None = None
 
         for stream_event in stream_provider.stream_turn(turn_request):
-            stream_events.append(self._stream_event_to_graph_event(stream_event))
+            graph_event = self._stream_event_to_graph_event(stream_event)
+            if stream_event_sink is None:
+                stream_events.append(graph_event)
+            else:
+                cast(Any, stream_event_sink)(graph_event)
             provider_usage = stream_event.usage or provider_usage
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
                 if stream_event.text is not None:
