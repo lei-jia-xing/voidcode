@@ -52,7 +52,17 @@ class MultiEditTool:
             "path": {"type": "string", "description": "Path to file"},
             "edits": {
                 "type": "array",
-                "description": "Array of {oldString, newString, replaceAll}",
+                "minItems": 1,
+                "description": "Ordered replacements; each oldString must match the current file state at that step.",
+                "items": {
+                    "type": "object",
+                    "required": ["oldString", "newString"],
+                    "properties": {
+                        "oldString": {"type": "string", "description": "Exact text to replace."},
+                        "newString": {"type": "string", "description": "Replacement text."},
+                        "replaceAll": {"type": "boolean", "description": "Replace every match; defaults to false."},
+                    },
+                },
             },
         },
         read_only=False,

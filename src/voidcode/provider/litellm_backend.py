@@ -552,6 +552,7 @@ class LiteLLMBackendSingleAgentProvider:
             "synthetic_tool_feedback_size_chars": synthetic_tool_feedback_size,
             "continuity_summary_size_chars": continuity_summary_size,
             "compacted": context_window.compacted,
+            "prompt_cache_identity": request.prompt_cache_identity,
         }
 
     def _log_provider_request_diagnostics(
@@ -564,7 +565,8 @@ class LiteLLMBackendSingleAgentProvider:
         logger.debug(
             "provider request diagnostics: provider=%s model=%s messages=%d "
             "estimated_chars=%d retained_tool_results=%d synthetic_tool_feedback_size=%d "
-            "continuity_summary_size=%d largest_message=%s compacted=%s",
+            "continuity_summary_size=%d largest_message=%s compacted=%s "
+            "stable_prefix_hash=%s tool_generation=%s",
             request.provider_name or self.name,
             request.model_name or "unknown",
             diagnostics["message_count"],
@@ -574,6 +576,8 @@ class LiteLLMBackendSingleAgentProvider:
             diagnostics["continuity_summary_size_chars"],
             diagnostics["largest_message"],
             diagnostics["compacted"],
+            cast(dict[str, object], diagnostics["prompt_cache_identity"]).get("stable_prefix_hash"),
+            cast(dict[str, object], diagnostics["prompt_cache_identity"]).get("tool_generation"),
         )
 
     def _auth_kwargs(self) -> dict[str, object]:

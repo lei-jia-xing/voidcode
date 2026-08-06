@@ -207,9 +207,20 @@ class ReadFileTool:
         name="read_file",
         description="Read a file inside the current workspace.",
         input_schema={
-            "filePath": {"type": "string"},
-            "offset": {"type": "integer"},
-            "limit": {"type": "integer"},
+            "filePath": {
+                "type": "string",
+                "description": "Path relative to the workspace (or an explicitly permitted external path).",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "1-based line number to start reading from; defaults to the first line.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum lines to return; use data.next_offset to continue when truncated.",
+            },
         },
         read_only=True,
         path_argument_keys=("filePath",),

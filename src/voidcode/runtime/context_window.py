@@ -7,12 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
+from ..agent.prompt_sections import dynamic_boundary_marker
 from ..tools.contracts import ToolResult
 from .context_transforms import (
     RuntimeContextTransformResult,
     build_provider_context_transform_result,
 )
 from .prompt_assembly import (
+    PromptAssemblyPlan,
     PromptAssemblySection,
     build_prompt_assembly_plan,
     prompt_activation_decision,
@@ -1549,6 +1551,7 @@ def assemble_provider_context(
     )
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata
+    _add_prompt_cache_metadata(metadata_payload, assembly_plan)
     segments: list[RuntimeContextSegment] = []
     replayed_conversation_inserted = False
     for section in assembly_plan.sections:
@@ -1629,3 +1632,28 @@ def assemble_provider_context(
         metadata=metadata_payload,
         loaded_skills=loaded_skills,
     )
+
+
+def _add_prompt_cache_metadata(
+    metadata: dict[str, object],
+    assembly_plan: PromptAssemblyPlan,
+) -> None:
+    """Expose deterministic prompt partitions for provider-side cache keys."""
+    sections = assembly_plan.sections
+    contents = [section.content for section in sections]
+    boundary = dynamic_boundary_marker()
+    try:
+        boundary_index = contents.index(boundary)
+    except ValueError:
+        metadata["prompt_cache"] = {"version": 1, "boundary_present": False}
+        return
+    stable = "\n".join(contents[: boundary_index + 1]).encode("utf-8")
+    dynamic = "\n".join(contents[boundary_index + 1 :]).encode("utf-8")
+    metadata["prompt_cache"] = {
+        "version": 1,
+        "boundary_present": True,
+        "stable_prefix_hash": hashlib.sha256(stable).hexdigest(),
+        "dynamic_suffix_hash": hashlib.sha256(dynamic).hexdigest(),
+        "stable_section_count": boundary_index + 1,
+        "dynamic_section_count": len(contents) - boundary_index - 1,
+    }

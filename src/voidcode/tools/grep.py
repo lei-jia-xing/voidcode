@@ -79,14 +79,17 @@ class _GrepMatch:
 class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
-        description=("Search for a literal or regex pattern in files inside the current workspace."),
+        description=("Search workspace files. Pattern is literal by default; set regex=true to use regular expressions."),
         input_schema={
-            "pattern": {"type": "string"},
-            "path": {"type": "string"},
-            "regex": {"type": "boolean"},
-            "context": {"type": "integer"},
-            "include": {"type": "array", "items": {"type": "string"}},
-            "exclude": {"type": "array", "items": {"type": "string"}},
+            "pattern": {"type": "string", "description": "Text to search for; treated literally unless regex=true."},
+            "path": {"type": "string", "description": "File or directory to search, relative to the workspace; defaults to workspace root."},
+            "regex": {
+                "type": "boolean",
+                "description": "Treat pattern as a regular expression; defaults to false.",
+            },
+            "context": {"type": "integer", "minimum": 0, "description": "Number of surrounding lines to include for each match."},
+            "include": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to include."},
+            "exclude": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to exclude."},
         },
         read_only=True,
         path_argument_keys=("path",),
@@ -251,7 +254,7 @@ class GrepTool:
                     "reason": "no_matches",
                     "message": (
                         "No matches found. Broaden the path/include filter, verify the search "
-                        "text with read_file, or retry with regex=false for literal text."
+                        "text with read_file, or use a plain string for literal text."
                     ),
                 }
             )

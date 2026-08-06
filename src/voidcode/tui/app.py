@@ -192,6 +192,8 @@ class VoidCodeTUI(App[int]):
         self._tool_content_by_call_id: dict[str, str] = {}
         self._tool_artifact_by_call_id: dict[str, str] = {}
         self._pending_output: list[str] = []
+        self._stream_output_buffer = ""
+        self._streamed_provider_text = False
         self._preview_flush_scheduled = False
 
         if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
@@ -428,6 +430,8 @@ class VoidCodeTUI(App[int]):
         self._set_state("Running")
         self._set_stream_active(True)
         self._current_prompt = prompt
+        self._streamed_provider_text = False
+        self._stream_output_buffer = ""
 
         request = RuntimeRequest(
             prompt=prompt,
@@ -496,6 +500,7 @@ class VoidCodeTUI(App[int]):
             if payload.get("channel") == "text" and payload.get("kind") in {"delta", "content"}:
                 text = payload.get("text")
                 if isinstance(text, str) and text:
+                    self._streamed_provider_text = True
                     self._pending_output.append(text)
                     self._schedule_stream_preview_flush()
             return
@@ -804,7 +809,8 @@ class VoidCodeTUI(App[int]):
             return
         output = "".join(self._pending_output)
         self._pending_output.clear()
-        self._write_output_line(output)
+        self._stream_output_buffer += output
+        self.query_one("#current-response", Static).update(Markdown(self._stream_output_buffer))
 
     def _set_state(self, state: str) -> None:
         self.current_state = state
@@ -923,8 +929,11 @@ class VoidCodeTUI(App[int]):
                 self._set_state("Completed")
 
         elif chunk.kind == "output" and chunk.output is not None:
-            self._pending_output.append(chunk.output)
-            self._schedule_stream_preview_flush()
+            # The graph emits the complete final answer after provider deltas.
+            # Do not append it a second time when we already rendered deltas.
+            if not self._streamed_provider_text:
+                self._pending_output.append(chunk.output)
+                self._schedule_stream_preview_flush()
 
     def on_stream_completed(self, message: StreamCompleted) -> None:
         self._flush_stream_preview()
@@ -936,6 +945,9 @@ class VoidCodeTUI(App[int]):
         if message.final_status == "failed":
             self._set_state("Failed")
         else:
+            if self._stream_output_buffer:
+                self._write_output_line(self._stream_output_buffer)
+                self._stream_output_buffer = ""
             self._set_state("Idle")
         self._set_stream_active(False)
 

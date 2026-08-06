@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -89,6 +91,30 @@ class ProviderTurnRequest:
             summary_anchor=cast(str | None, payload.get("summary_anchor")),
             summary_source=cast(dict[str, object] | None, payload.get("summary_source")),
         )
+
+    @property
+    def prompt_cache_identity(self) -> dict[str, object]:
+        """Return deterministic dimensions suitable for provider cache metadata."""
+        prompt_cache = self.assembled_context.metadata.get("prompt_cache")
+        cache_payload = dict(prompt_cache) if isinstance(prompt_cache, dict) else {}
+        tool_payload = [
+            {
+                "name": definition.name,
+                "description": definition.description,
+                "input_schema": definition.input_schema,
+                "read_only": definition.read_only,
+                "path_argument_keys": list(definition.path_argument_keys),
+            }
+            for definition in self.available_tools
+        ]
+        encoded_tools = json.dumps(tool_payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return {
+            "version": 1,
+            "provider": self.provider_name,
+            "model": self.model_name or self.raw_model,
+            "stable_prefix_hash": cache_payload.get("stable_prefix_hash"),
+            "tool_generation": hashlib.sha256(encoded_tools).hexdigest(),
+        }
 
     @property
     def applied_skills(self) -> tuple[dict[str, str], ...]:

@@ -221,7 +221,7 @@ def test_grep_tool_returns_zero_matches_summary(tmp_path: Path) -> None:
                 "reason": "no_matches",
                 "message": (
                     "No matches found. Broaden the path/include filter, verify the search "
-                    "text with read_file, or retry with regex=false for literal text."
+                    "text with read_file, or use a plain string for literal text."
                 ),
             }
         ],

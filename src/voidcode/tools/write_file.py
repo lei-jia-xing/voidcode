@@ -25,7 +25,16 @@ class WriteFileTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="write_file",
         description="Write a UTF-8 text file inside the current workspace.",
-        input_schema={"path": {"type": "string"}, "content": {"type": "string"}},
+        input_schema={
+            "path": {
+                "type": "string",
+                "description": "Path relative to the workspace; parent directories are created when needed.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Complete UTF-8 file contents; this replaces the existing file.",
+            },
+        },
         read_only=False,
         path_argument_keys=("path",),
     )

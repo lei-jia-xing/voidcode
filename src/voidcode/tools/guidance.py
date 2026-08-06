@@ -69,4 +69,5 @@ def definition_with_guidance(definition: ToolDefinition) -> ToolDefinition:
         description=description,
         input_schema=definition.input_schema,
         read_only=definition.read_only,
+        path_argument_keys=definition.path_argument_keys,
     )

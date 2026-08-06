@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import pytest
@@ -168,6 +168,19 @@ def _build_turn_request(*, model_name: str, reasoning_effort: str | None = None)
         attempt=0,
         abort_signal=None,
     )
+
+
+def test_prompt_cache_identity_is_stable_and_tracks_tool_contracts() -> None:
+    request = _build_turn_request(model_name="anthropic")
+    same_request = _build_turn_request(model_name="anthropic")
+    changed_tool = replace(
+        request.available_tools[0],
+        description="read file with line ranges",
+    )
+    changed_request = replace(request, available_tools=(changed_tool,))
+
+    assert request.prompt_cache_identity == same_request.prompt_cache_identity
+    assert request.prompt_cache_identity["tool_generation"] != changed_request.prompt_cache_identity["tool_generation"]
 
 
 def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
