@@ -113,7 +113,9 @@ class TaskTool:
             "Delegate work to a child runtime session. Always include prompt, "
             "run_in_background, and load_skills. Provide exactly one of category or "
             "subagent_type. Prefer run_in_background=true for delegated work that can "
-            "run independently."
+            "run independently. Each background task emits a completion event to its parent; "
+            "when launching several tasks for one deliverable, wait for all known tasks to finish "
+            "before synthesizing the final answer."
         ),
         input_schema={
             "type": "object",
