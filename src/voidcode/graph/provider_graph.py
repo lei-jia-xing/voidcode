@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from ..provider.errors import parse_provider_stream_error
@@ -18,7 +19,7 @@ from ..provider.protocol import (
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolResult
-from .contracts import GraphEvent, GraphRunRequest
+from .contracts import GraphEvent, GraphRunRequest, GraphStreamItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,20 @@ class ProviderGraph:
 
     def cancel_current_turn(self) -> None:
         self._abort_signal.set_cancelled(True)
+
+    def stream_step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[ToolResult, ...],
+        *,
+        session: SessionState,
+    ) -> Iterator[GraphStreamItem]:
+        """Native graph streaming surface; yields events before the final step."""
+        events: list[GraphEvent] = []
+        streamed_request = replace(request, stream_event_sink=events.append)
+        step = self.step(streamed_request, tool_results, session=session)
+        yield from events
+        yield step
 
     def step(
         self,

@@ -64,6 +64,9 @@ class GraphStep(Protocol):
     def is_finished(self) -> bool: ...
 
 
+type GraphStreamItem = GraphEvent | GraphStep
+
+
 @runtime_checkable
 class RuntimeGraph(Protocol):
     def step(
