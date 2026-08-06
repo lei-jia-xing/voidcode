@@ -194,18 +194,9 @@ class ProviderGraph:
             abort_signal = request.abort_signal
             if should_abort and hasattr(abort_signal, "set_cancelled"):
                 cast(_GraphAbortSignal, abort_signal).set_cancelled(True)
-        turn_request = ProviderTurnRequest(
-            assembled_context=request.assembled_context,
-            bounded_context_window=request.context_window,
-            available_tools=request.available_tools,
-            raw_model=self._provider_model.selection.raw_model,
-            provider_name=self._provider_model.selection.provider,
-            model_name=self._provider_model.selection.model,
-            agent_preset=cast(dict[str, object] | None, request.metadata.get("agent_preset")),
-            model_metadata=self._provider_model.metadata,
+        turn_request = self._build_provider_turn_request(
+            request=request,
             session_id=session_id,
-            reasoning_effort=cast(str | None, request.metadata.get("reasoning_effort")),
-            attempt=cast(int, request.metadata.get("provider_attempt", 0)),
             abort_signal=abort_signal,
         )
 
@@ -289,6 +280,28 @@ class ProviderGraph:
         else:
             self._pending_tool_calls_min_tool_result_count = tool_result_count + 1
         return ProviderStep(events=(), tool_call=next_tool_call)
+
+    def _build_provider_turn_request(
+        self,
+        *,
+        request: GraphRunRequest,
+        session_id: str,
+        abort_signal: ProviderAbortSignal,
+    ) -> ProviderTurnRequest:
+        return ProviderTurnRequest(
+            assembled_context=request.assembled_context,
+            bounded_context_window=request.context_window,
+            available_tools=request.available_tools,
+            raw_model=self._provider_model.selection.raw_model,
+            provider_name=self._provider_model.selection.provider,
+            model_name=self._provider_model.selection.model,
+            agent_preset=cast(dict[str, object] | None, request.metadata.get("agent_preset")),
+            model_metadata=self._provider_model.metadata,
+            session_id=session_id,
+            reasoning_effort=cast(str | None, request.metadata.get("reasoning_effort")),
+            attempt=cast(int, request.metadata.get("provider_attempt", 0)),
+            abort_signal=abort_signal,
+        )
 
     def _step_streaming(
         self,
