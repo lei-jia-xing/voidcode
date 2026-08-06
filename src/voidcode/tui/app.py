@@ -194,6 +194,7 @@ class VoidCodeTUI(App[int]):
         self._tool_artifact_by_call_id: dict[str, str] = {}
         self._pending_output: list[str] = []
         self._stream_output_buffer = ""
+        self._thinking_buffer = ""
         self._streamed_provider_text = False
         self._preview_flush_scheduled = False
 
@@ -433,6 +434,7 @@ class VoidCodeTUI(App[int]):
         self._current_prompt = prompt
         self._streamed_provider_text = False
         self._stream_output_buffer = ""
+        self._thinking_buffer = ""
 
         request = RuntimeRequest(
             prompt=prompt,
@@ -499,10 +501,17 @@ class VoidCodeTUI(App[int]):
     def _write_event_line(self, event: EventEnvelope) -> None:
         if event.event_type == "graph.provider_stream":
             payload = event.payload or {}
+            if payload.get("channel") == "reasoning" and payload.get("kind") in {"delta", "content"}:
+                text = payload.get("text")
+                if isinstance(text, str) and text:
+                    self._thinking_buffer += text
+                    self.query_one("#current-response", Static).update(Text(f"Thinking\n{self._thinking_buffer}", style="dim italic"))
+                return
             if payload.get("channel") == "text" and payload.get("kind") in {"delta", "content"}:
                 text = payload.get("text")
                 if isinstance(text, str) and text:
                     self._streamed_provider_text = True
+                    self._thinking_buffer = ""
                     self._pending_output.append(text)
                     self._schedule_stream_preview_flush()
             return
@@ -965,7 +974,8 @@ class VoidCodeTUI(App[int]):
         else:
             if self._stream_output_buffer:
                 self._write_output_line(self._stream_output_buffer)
-                self._stream_output_buffer = ""
+            self._stream_output_buffer = ""
+            self._thinking_buffer = ""
             self._set_state("Idle")
         self._set_stream_active(False)
 
