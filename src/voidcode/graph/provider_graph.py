@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
@@ -90,11 +92,32 @@ class ProviderGraph:
         session: SessionState,
     ) -> Iterator[GraphStreamItem]:
         """Native graph streaming surface; yields events before the final step."""
-        events: list[GraphEvent] = []
-        streamed_request = replace(request, stream_event_sink=events.append)
-        step = self.step(streamed_request, tool_results, session=session)
-        yield from events
-        yield step
+        events: queue.Queue[GraphEvent] = queue.Queue()
+        result: list[ProviderStep] = []
+        errors: list[BaseException] = []
+
+        def push(event: GraphEvent) -> None:
+            events.put(event)
+
+        def execute() -> None:
+            try:
+                result.append(self.step(replace(request, stream_event_sink=push), tool_results, session=session))
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=execute, daemon=True)
+        thread.start()
+        while thread.is_alive() or not events.empty():
+            try:
+                yield events.get(timeout=0.02)
+            except queue.Empty:
+                continue
+        thread.join()
+        if errors:
+            raise errors[0]
+        if not result:
+            raise RuntimeError("graph stream ended without a terminal step")
+        yield result[0]
 
     def step(
         self,
