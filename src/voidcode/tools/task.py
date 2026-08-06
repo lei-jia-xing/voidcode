@@ -43,6 +43,8 @@ class _TaskArgs(BaseModel):
     description: str | None = None
     session_id: str | None = None
     command: str | None = None
+    parallel_group_id: str | None = None
+    parallel_group_size: int | None = None
 
     @field_validator("prompt", mode="after")
     @classmethod
@@ -76,13 +78,28 @@ class _TaskArgs(BaseModel):
             normalized.append(item.strip())
         return normalized
 
-    @field_validator("category", "subagent_type", "description", "session_id", "command", mode="after")
+    @field_validator(
+        "category",
+        "subagent_type",
+        "description",
+        "session_id",
+        "command",
+        "parallel_group_id",
+        mode="after",
+    )
     @classmethod
     def _strip_optional_string(cls, value: str | None) -> str | None:
         if value is None:
             return None
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("parallel_group_size", mode="after")
+    @classmethod
+    def _validate_parallel_group_size(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("parallel_group_size must be at least 1")
+        return value
 
     @model_validator(mode="after")
     def _validate_route(self) -> _TaskArgs:
@@ -103,6 +120,10 @@ def _delegation_metadata(args: _TaskArgs) -> dict[str, str]:
         metadata["description"] = args.description
     if args.command is not None:
         metadata["command"] = args.command
+    if args.parallel_group_id is not None:
+        metadata["parallel_group_id"] = args.parallel_group_id
+    if args.parallel_group_size is not None:
+        metadata["parallel_group_size"] = str(args.parallel_group_size)
     return metadata
 
 
@@ -166,6 +187,16 @@ class TaskTool:
                     "type": "string",
                     "description": "Optional originating command label for delegated work.",
                     "minLength": 1,
+                },
+                "parallel_group_id": {
+                    "type": "string",
+                    "description": "Optional shared id for parallel tasks serving one deliverable.",
+                    "minLength": 1,
+                },
+                "parallel_group_size": {
+                    "type": "integer",
+                    "description": "Expected number of tasks in the parallel group.",
+                    "minimum": 1,
                 },
             },
             "required": ["prompt", "run_in_background", "load_skills"],
