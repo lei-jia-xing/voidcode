@@ -79,9 +79,7 @@ class _GrepMatch:
 class GrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="grep",
-        description=(
-            "Search for a literal or regex pattern in files inside the current workspace."
-        ),
+        description=("Search for a literal or regex pattern in files inside the current workspace."),
         input_schema={
             "pattern": {"type": "string"},
             "path": {"type": "string"},
@@ -120,14 +118,9 @@ class GrepTool:
             if not candidate.is_file():
                 continue
             rel = candidate.relative_to(project_root).as_posix()
-            if any(
-                part in DEFAULT_IGNORE_PATTERNS
-                for part in candidate.relative_to(project_root).parts
-            ):
+            if any(part in DEFAULT_IGNORE_PATTERNS for part in candidate.relative_to(project_root).parts):
                 continue
-            if include_patterns and not any(
-                GrepTool._matches_glob(rel, pat) for pat in include_patterns
-            ):
+            if include_patterns and not any(GrepTool._matches_glob(rel, pat) for pat in include_patterns):
                 continue
             if any(GrepTool._matches_glob(rel, pat) for pat in exclude_patterns):
                 continue
@@ -144,17 +137,11 @@ class GrepTool:
             return None
 
     @staticmethod
-    def _context_lines(
-        lines: list[str], start: int, end: int, *, context: int
-    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    def _context_lines(lines: list[str], start: int, end: int, *, context: int) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         context = max(0, context)
-        before = [
-            cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]})
-            for line_no in range(max(0, start - context), start)
-        ]
+        before = [cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]}) for line_no in range(max(0, start - context), start)]
         after = [
-            cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]})
-            for line_no in range(end + 1, min(len(lines), end + 1 + context))
+            cast(dict[str, object], {"line": line_no + 1, "text": lines[line_no]}) for line_no in range(end + 1, min(len(lines), end + 1 + context))
         ]
         return before, after
 
@@ -186,9 +173,7 @@ class GrepTool:
             raise ValueError(f"grep target does not exist: {args.path}")
 
         workspace_root = workspace.resolve()
-        effective_root = (
-            candidate if resolution.is_external and candidate.is_dir() else workspace_root
-        )
+        effective_root = candidate if resolution.is_external and candidate.is_dir() else workspace_root
 
         try:
             pattern = re.compile(args.pattern if args.regex else re.escape(args.pattern))
@@ -201,9 +186,7 @@ class GrepTool:
                 ),
                 error_kind="tool_input_validation",
                 reason="invalid_regex",
-                retry_guidance=(
-                    "Retry with a valid regex pattern, or set regex=false for a literal search."
-                ),
+                retry_guidance=("Retry with a valid regex pattern, or set regex=false for a literal search."),
                 details={"pattern": args.pattern, "regex_error": exc.msg},
             )
         targets = self._collect_targets(
@@ -230,11 +213,7 @@ class GrepTool:
                 )
                 matches.append(
                     _GrepMatch(
-                        file=(
-                            str(target.resolve())
-                            if resolution.is_external
-                            else target.relative_to(workspace_root).as_posix()
-                        ),
+                        file=(str(target.resolve()) if resolution.is_external else target.relative_to(workspace_root).as_posix()),
                         line=line_index + 1,
                         text=line_text,
                         columns=columns,
@@ -284,8 +263,7 @@ class GrepTool:
                     "reason": "results_truncated",
                     "message": f"grep stopped after {MAX_MATCHES} matching lines.",
                     "retry_guidance": (
-                        "Refine path/include/exclude filters or use a more specific pattern before "
-                        "treating these results as complete."
+                        "Refine path/include/exclude filters or use a more specific pattern before treating these results as complete."
                     ),
                 }
             )

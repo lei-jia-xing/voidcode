@@ -17,9 +17,7 @@ from .runtime_context import current_runtime_tool_context
 LOCAL_CUSTOM_TOOL_SOURCE = "local_custom_tool"
 LOCAL_CUSTOM_TOOL_DEFAULT_PATH = ".voidcode/tools"
 LOCAL_CUSTOM_TOOL_MANIFEST_SUFFIX = ".json"
-_VALID_TOOL_NAME_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-/"
-)
+_VALID_TOOL_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-/")
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,19 +68,14 @@ def _load_local_custom_tool_manifest(path: Path, *, workspace: Path) -> LocalCus
     allowed_keys = {"name", "description", "input_schema", "command", "read_only"}
     unknown_keys = sorted(key for key in payload if key not in allowed_keys)
     if unknown_keys:
-        raise ValueError(
-            f"local custom tool manifest {path} has unsupported field: {unknown_keys[0]}"
-        )
+        raise ValueError(f"local custom tool manifest {path} has unsupported field: {unknown_keys[0]}")
 
     name = payload.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError(f"local custom tool manifest {path} requires a non-empty name")
     normalized_name = name.strip()
     if any(char not in _VALID_TOOL_NAME_CHARS for char in normalized_name):
-        raise ValueError(
-            f"local custom tool manifest {path} has invalid name {normalized_name!r}; "
-            "use letters, numbers, '_', '-', or '/'"
-        )
+        raise ValueError(f"local custom tool manifest {path} has invalid name {normalized_name!r}; use letters, numbers, '_', '-', or '/'")
 
     description = payload.get("description")
     if not isinstance(description, str) or not description.strip():
@@ -112,68 +105,41 @@ def _parse_manifest_command(value: object, *, manifest_path: Path) -> tuple[str,
     command: list[str] = []
     for index, item in enumerate(cast(list[object], value)):
         if not isinstance(item, str) or item == "":
-            raise ValueError(
-                "local custom tool manifest "
-                f"{manifest_path} command[{index}] must be a non-empty string"
-            )
+            raise ValueError(f"local custom tool manifest {manifest_path} command[{index}] must be a non-empty string")
         command.append(item)
     if not command:
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} command must contain at least one string"
-        )
+        raise ValueError(f"local custom tool manifest {manifest_path} command must contain at least one string")
     return tuple(command)
 
 
 def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} input_schema must be an object"
-        )
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema must be an object")
     schema = cast(dict[str, object], value)
     try:
         json.dumps(schema)
     except TypeError as exc:
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} input_schema must be JSON serializable"
-        ) from exc
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema must be JSON serializable") from exc
     schema_type = schema.get("type")
     if schema_type != "object":
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} input_schema.type must be 'object'"
-        )
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema.type must be 'object'")
     if not all(isinstance(key, str) for key in schema):
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} input_schema keys must be strings"
-        )
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema keys must be strings")
     properties = schema.get("properties")
     if properties is not None and not isinstance(properties, dict):
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} input_schema.properties must be an object"
-        )
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema.properties must be an object")
     if isinstance(properties, dict) and not all(isinstance(key, str) for key in properties):
-        raise ValueError(
-            "local custom tool manifest "
-            f"{manifest_path} input_schema.properties keys must be strings"
-        )
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema.properties keys must be strings")
     required = schema.get("required")
-    if required is not None and (
-        not isinstance(required, list) or not all(isinstance(item, str) for item in required)
-    ):
-        raise ValueError(
-            f"local custom tool manifest {manifest_path} input_schema.required must be strings"
-        )
+    if required is not None and (not isinstance(required, list) or not all(isinstance(item, str) for item in required)):
+        raise ValueError(f"local custom tool manifest {manifest_path} input_schema.required must be strings")
     return dict(schema)
 
 
-def _validate_command_entrypoint(
-    command: tuple[str, ...], *, manifest_path: Path, workspace: Path
-) -> None:
+def _validate_command_entrypoint(command: tuple[str, ...], *, manifest_path: Path, workspace: Path) -> None:
     _validate_rendered_manifest_dir_command_parts(
         command,
-        rendered_command=tuple(
-            Template(part).safe_substitute(manifest_dir=str(manifest_path.parent))
-            for part in command
-        ),
+        rendered_command=tuple(Template(part).safe_substitute(manifest_dir=str(manifest_path.parent)) for part in command),
         manifest_path=manifest_path,
         workspace=workspace,
     )
@@ -190,22 +156,15 @@ def _validate_rendered_manifest_dir_command_parts(
     for part, rendered_part in zip(command, rendered_command, strict=True):
         if "${manifest_dir}" not in part:
             continue
-        for rendered_path in _manifest_dir_rendered_paths(
-            part, rendered_part=rendered_part, manifest_dir=manifest_dir
-        ):
+        for rendered_path in _manifest_dir_rendered_paths(part, rendered_part=rendered_part, manifest_dir=manifest_dir):
             resolved_part = Path(rendered_path).expanduser().resolve()
             try:
                 resolved_part.relative_to(workspace)
             except ValueError as exc:
-                raise ValueError(
-                    "local custom tool manifest "
-                    f"{manifest_path} command part using manifest_dir must stay inside workspace"
-                ) from exc
+                raise ValueError(f"local custom tool manifest {manifest_path} command part using manifest_dir must stay inside workspace") from exc
 
 
-def _manifest_dir_rendered_paths(
-    part: str, *, rendered_part: str, manifest_dir: str
-) -> tuple[str, ...]:
+def _manifest_dir_rendered_paths(part: str, *, rendered_part: str, manifest_dir: str) -> tuple[str, ...]:
     paths: list[str] = []
     manifest_dir_token = "${manifest_dir}"
     rendered_cursor = 0
@@ -299,9 +258,7 @@ class LocalCustomTool:
         if stderr:
             data["stderr"] = stderr
         if completed.returncode != 0:
-            message = (
-                stderr.strip() or stdout.strip() or f"command exited with {completed.returncode}"
-            )
+            message = stderr.strip() or stdout.strip() or f"command exited with {completed.returncode}"
             return ToolResult(
                 tool_name=self._manifest.name,
                 status="error",
@@ -340,9 +297,7 @@ class LocalCustomTool:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise ValueError(
-                f"local custom tool '{self._manifest.name}' failed to execute: {exc}"
-            ) from exc
+            raise ValueError(f"local custom tool '{self._manifest.name}' failed to execute: {exc}") from exc
 
         context = current_runtime_tool_context()
         abort_signal = context.abort_signal if context is not None else None
@@ -357,14 +312,11 @@ class LocalCustomTool:
                 _kill_local_custom_process(process)
                 stdout, stderr = _communicate_after_kill(process)
                 raise RuntimeToolTimeoutError(
-                    "local custom tool "
-                    f"'{self._manifest.name}' timed out after {timeout_seconds} seconds",
+                    f"local custom tool '{self._manifest.name}' timed out after {timeout_seconds} seconds",
                     partial_result={"stdout": stdout, "stderr": stderr},
                 )
             try:
-                timeout = (
-                    0.05 if deadline is None else max(0.01, min(0.05, deadline - time.monotonic()))
-                )
+                timeout = 0.05 if deadline is None else max(0.01, min(0.05, deadline - time.monotonic()))
                 stdout, stderr = process.communicate(input=pending_input, timeout=timeout)
             except subprocess.TimeoutExpired:
                 pending_input = None

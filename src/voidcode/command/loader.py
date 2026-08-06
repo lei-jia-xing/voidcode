@@ -205,9 +205,7 @@ def load_command_registry(
     user_commands_dir: Path | None = None,
 ) -> CommandRegistry:
     registry = CommandRegistry()
-    for command in _commands_by_precedence(
-        workspace=workspace, user_commands_dir=user_commands_dir
-    ):
+    for command in _commands_by_precedence(workspace=workspace, user_commands_dir=user_commands_dir):
         registry.register(command)
     return registry
 
@@ -224,9 +222,7 @@ def _commands_by_precedence(
     yield from load_markdown_commands(workspace / ".voidcode" / "commands", source="project")
 
 
-def load_markdown_commands(
-    directory: Path, *, source: CommandSource
-) -> tuple[CommandDefinition, ...]:
+def load_markdown_commands(directory: Path, *, source: CommandSource) -> tuple[CommandDefinition, ...]:
     if source not in _SOURCE_PRECEDENCE:
         raise ValueError(f"unsupported command source: {source}")
     if not directory.exists():
@@ -299,9 +295,7 @@ def _parse_scalar(value: str) -> object:
         return True
     if value in {"false", "False"}:
         return False
-    if (value.startswith('"') and value.endswith('"')) or (
-        value.startswith("'") and value.endswith("'")
-    ):
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
     return value
 

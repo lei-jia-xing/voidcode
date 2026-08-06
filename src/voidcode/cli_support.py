@@ -112,11 +112,7 @@ def serialize_command_definition(command: CommandDefinition) -> dict[str, object
 
 
 def serialize_command_summary(command: CommandDefinition) -> dict[str, object]:
-    return {
-        key: value
-        for key, value in serialize_command_definition(command).items()
-        if key != "template"
-    }
+    return {key: value for key, value in serialize_command_definition(command).items() if key != "template"}
 
 
 def _serialize_path(path: Path | None) -> str | None:

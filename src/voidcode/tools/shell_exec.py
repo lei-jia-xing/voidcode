@@ -347,9 +347,7 @@ class ShellExecTool:
 
         if timed_out:
             if runtime_timeout_selected:
-                content = (
-                    f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
-                )
+                content = f"tool '{self.definition.name}' exceeded runtime timeout of {timeout_seconds}s"
                 partial_result = ToolResult(
                     tool_name=self.definition.name,
                     status="error",

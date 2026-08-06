@@ -33,17 +33,13 @@ def _parse_skill_frontmatter_fields(contents: str) -> dict[str, str]:
             continue
         key, separator, value = raw_line.partition(":")
         if separator != ":":
-            raise SkillManifestParseError(
-                f"skill frontmatter line {index} must use 'key: value' syntax"
-            )
+            raise SkillManifestParseError(f"skill frontmatter line {index} must use 'key: value' syntax")
         normalized_key = key.strip()
         if normalized_key not in SUPPORTED_FRONTMATTER_KEYS:
             raise SkillManifestParseError(f"unsupported skill frontmatter key: {normalized_key}")
         normalized_value = value.strip()
         if not normalized_value:
-            raise SkillManifestParseError(
-                f"skill frontmatter field '{normalized_key}' must not be empty"
-            )
+            raise SkillManifestParseError(f"skill frontmatter field '{normalized_key}' must not be empty")
         parsed[normalized_key] = normalized_value
     else:
         raise SkillManifestParseError("skill frontmatter must terminate with a closing '---' line")

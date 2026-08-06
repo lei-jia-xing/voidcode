@@ -108,9 +108,7 @@ def test_write_file_tool_allows_empty_content_for_existing_file(tmp_path: Path) 
     assert (tmp_path / "shader.frag").read_text(encoding="utf-8") == ""
     assert result.status == "ok"
     assert result.data["byte_count"] == 0
-    assert result.data["diff"] == (
-        "--- a/shader.frag\n+++ b/shader.frag\n@@ -1 +0,0 @@\n-void main() {}\n"
-    )
+    assert result.data["diff"] == ("--- a/shader.frag\n+++ b/shader.frag\n@@ -1 +0,0 @@\n-void main() {}\n")
 
 
 def test_write_file_tool_allows_absolute_paths_outside_workspace(tmp_path: Path) -> None:

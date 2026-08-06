@@ -65,11 +65,7 @@ def test_persisted_permission_rejects_missing_current_scope() -> None:
 
 @pytest.mark.parametrize("field", ("provider_attempt", "provider_retry_attempt"))
 def test_provider_attempt_metadata_rejects_invalid_persisted_values(field: str) -> None:
-    parser = (
-        provider_attempt_from_metadata
-        if field == "provider_attempt"
-        else provider_retry_attempt_from_metadata
-    )
+    parser = provider_attempt_from_metadata if field == "provider_attempt" else provider_retry_attempt_from_metadata
     with pytest.raises(ValueError, match=field):
         parser({field: "0"})
 

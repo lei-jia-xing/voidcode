@@ -54,9 +54,7 @@ def test_webfetch_tool_rejects_invalid_format() -> None:
 
     with pytest.raises(ValueError, match="'text', 'markdown', or 'html'"):
         tool.invoke(
-            ToolCall(
-                tool_name="web_fetch", arguments={"url": "https://example.com", "format": "invalid"}
-            ),
+            ToolCall(tool_name="web_fetch", arguments={"url": "https://example.com", "format": "invalid"}),
             workspace=Path("/tmp"),
         )
 
@@ -92,9 +90,7 @@ def test_webfetch_tolerates_malformed_html() -> None:
     malformed = b"<html><body>Hello <broken"
     with patch("httpx.Client.request", return_value=_response(content=malformed)):
         result = tool.invoke(
-            ToolCall(
-                tool_name="web_fetch", arguments={"url": "https://example.com", "format": "text"}
-            ),
+            ToolCall(tool_name="web_fetch", arguments={"url": "https://example.com", "format": "text"}),
             workspace=Path("/tmp"),
         )
 
@@ -108,9 +104,7 @@ def test_webfetch_text_preserves_list_item_separation() -> None:
     html = b"<html><body><ul><li>Alpha</li><li>Beta</li></ul></body></html>"
     with patch("httpx.Client.request", return_value=_response(content=html)):
         result = tool.invoke(
-            ToolCall(
-                tool_name="web_fetch", arguments={"url": "https://example.com", "format": "text"}
-            ),
+            ToolCall(tool_name="web_fetch", arguments={"url": "https://example.com", "format": "text"}),
             workspace=Path("/tmp"),
         )
 

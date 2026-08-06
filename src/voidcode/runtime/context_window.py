@@ -1,23 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 
 from ..tools.contracts import ToolResult
 from .context_transforms import (
     RuntimeContextTransformResult,
     build_provider_context_transform_result,
-)
-from .continuity_distillation import (
-    ContinuityDistillationRecord,
-    build_distillation_input_envelope,
-    distillation_record_from_payload,
 )
 from .prompt_assembly import (
     PromptAssemblySection,
@@ -101,8 +94,6 @@ class RuntimeContinuityState:
     dropped_tool_result_count: int = 0
     retained_tool_result_count: int = 0
     source: str = "tool_result_window"
-    distillation_source: str = "deterministic"
-    distillation_error: str | None = None
     fact_reference_count: int = 0
     source_references: tuple[str, ...] = ()
     original_tool_result_tokens: int | None = None
@@ -133,13 +124,10 @@ class RuntimeContinuityState:
             "dropped_tool_result_count": self.dropped_tool_result_count,
             "retained_tool_result_count": self.retained_tool_result_count,
             "source": self.source,
-            "distillation_source": self.distillation_source,
             "fact_reference_count": self.fact_reference_count,
             "source_references": list(self.source_references),
             "version": self.version,
         }
-        if self.distillation_error is not None:
-            payload["distillation_error"] = self.distillation_error
         if self.original_tool_result_tokens is not None:
             payload["original_tool_result_tokens"] = self.original_tool_result_tokens
         if self.retained_tool_result_tokens is not None:
@@ -151,41 +139,21 @@ class RuntimeContinuityState:
         if self.token_estimate_source is not None:
             payload["token_estimate_source"] = self.token_estimate_source
         if self.dropped_tool_results:
-            payload["dropped_tool_results"] = [
-                item.metadata_payload() for item in self.dropped_tool_results
-            ]
+            payload["dropped_tool_results"] = [item.metadata_payload() for item in self.dropped_tool_results]
         return payload
 
 
 @dataclass(frozen=True, slots=True)
 class ContextWindowPolicy:
     auto_compaction: bool = True
-    max_tool_result_tokens: int | None = None
-    max_context_ratio: float | None = None
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     tokenizer_model: str | None = "cl100k_base"
-    continuity_preview_items: int = 3
-    continuity_preview_chars: int = 80
-    context_pressure_threshold: float = 0.7
-    context_pressure_cooldown_steps: int = 3
-    continuity_distillation_enabled: bool = True
-    continuity_distillation_max_input_items: int = 12
-    continuity_distillation_max_input_chars: int = 4000
-    protected_context_tiers: tuple[str, ...] = (
-        "instruction",
-        "workspace",
-        "task",
-    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
-        if self.max_tool_result_tokens is not None and self.max_tool_result_tokens < 1:
-            raise ValueError("max_tool_result_tokens must be >= 1 when provided")
-        if self.max_context_ratio is not None and not 0 < self.max_context_ratio <= 1:
-            raise ValueError("max_context_ratio must be > 0 and <= 1 when provided")
         if self.model_context_window_tokens is not None and self.model_context_window_tokens < 1:
             raise ValueError("model_context_window_tokens must be >= 1 when provided")
         if self.reserved_output_tokens is not None and self.reserved_output_tokens < 0:
@@ -199,41 +167,12 @@ class ContextWindowPolicy:
                 raise ValueError("per_tool_result_tokens limits must be >= 1")
         if self.tokenizer_model is not None and not self.tokenizer_model:
             raise ValueError("tokenizer_model must be non-empty when provided")
-        if self.continuity_preview_items < 1:
-            raise ValueError("continuity_preview_items must be >= 1")
-        if self.continuity_preview_chars < 1:
-            raise ValueError("continuity_preview_chars must be >= 1")
-        if not 0 < self.context_pressure_threshold <= 1:
-            raise ValueError("context_pressure_threshold must be > 0 and <= 1")
-        if self.context_pressure_cooldown_steps < 1:
-            raise ValueError("context_pressure_cooldown_steps must be >= 1")
-        if self.continuity_distillation_max_input_items < 1:
-            raise ValueError("continuity_distillation_max_input_items must be >= 1")
-        if self.continuity_distillation_max_input_chars < 64:
-            raise ValueError("continuity_distillation_max_input_chars must be >= 64")
-        valid_tiers = {"instruction", "workspace", "task", "recent"}
-        normalized_tiers: list[str] = []
-        for tier in self.protected_context_tiers:
-            if tier not in valid_tiers:
-                raise ValueError(
-                    "protected_context_tiers must only contain: instruction, "
-                    "workspace, task, recent"
-                )
-            if tier not in normalized_tiers:
-                normalized_tiers.append(tier)
-        object.__setattr__(self, "protected_context_tiers", tuple(normalized_tiers))
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "version": 1,
             "auto_compaction": self.auto_compaction,
-            "continuity_preview_items": self.continuity_preview_items,
-            "continuity_preview_chars": self.continuity_preview_chars,
         }
-        if self.max_tool_result_tokens is not None:
-            payload["max_tool_result_tokens"] = self.max_tool_result_tokens
-        if self.max_context_ratio is not None:
-            payload["max_context_ratio"] = self.max_context_ratio
         if self.model_context_window_tokens is not None:
             payload["model_context_window_tokens"] = self.model_context_window_tokens
         if self.reserved_output_tokens is not None:
@@ -244,16 +183,6 @@ class ContextWindowPolicy:
             payload["per_tool_result_tokens"] = dict(self.per_tool_result_tokens)
         if self.tokenizer_model is not None:
             payload["tokenizer_model"] = self.tokenizer_model
-        payload["context_pressure_threshold"] = self.context_pressure_threshold
-        payload["context_pressure_cooldown_steps"] = self.context_pressure_cooldown_steps
-        payload["continuity_distillation_enabled"] = self.continuity_distillation_enabled
-        payload["continuity_distillation_max_input_items"] = (
-            self.continuity_distillation_max_input_items
-        )
-        payload["continuity_distillation_max_input_chars"] = (
-            self.continuity_distillation_max_input_chars
-        )
-        payload["protected_context_tiers"] = list(self.protected_context_tiers)
         return payload
 
 
@@ -409,9 +338,7 @@ def _compact_recent_tier_segments(
     }
 
 
-def estimate_provider_context_tokens(
-    segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None
-) -> TokenCount:
+def estimate_provider_context_tokens(segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None) -> TokenCount:
     payload: list[dict[str, object]] = []
     for segment in segments:
         entry: dict[str, object] = {"role": segment.role}
@@ -530,11 +457,7 @@ def _dropped_tool_diagnostics_from_metadata_payload(
                 command=_optional_entry_string(entry, "command"),
                 pattern=_optional_entry_string(entry, "pattern"),
                 error_kind=_optional_entry_string(entry, "error_kind"),
-                estimated_tokens=(
-                    estimated_tokens
-                    if isinstance(estimated_tokens, int) and not isinstance(estimated_tokens, bool)
-                    else None
-                ),
+                estimated_tokens=(estimated_tokens if isinstance(estimated_tokens, int) and not isinstance(estimated_tokens, bool) else None),
                 truncated=entry.get("truncated") is True,
                 partial=entry.get("partial") is True,
             )
@@ -563,8 +486,6 @@ def continuity_state_from_metadata_payload(
     dropped = payload.get("dropped_tool_result_count")
     retained = payload.get("retained_tool_result_count")
     source = payload.get("source")
-    distillation_source = payload.get("distillation_source")
-    distillation_error = payload.get("distillation_error")
     fact_reference_count = payload.get("fact_reference_count")
     source_references = _metadata_string_tuple(payload, "source_references")
     if not isinstance(dropped, int) or isinstance(dropped, bool):
@@ -572,12 +493,6 @@ def continuity_state_from_metadata_payload(
     if not isinstance(retained, int) or isinstance(retained, bool):
         return None
     if not isinstance(source, str):
-        return None
-    if distillation_source is None:
-        distillation_source = "deterministic"
-    if not isinstance(distillation_source, str):
-        return None
-    if distillation_error is not None and not isinstance(distillation_error, str):
         return None
     if fact_reference_count is None:
         fact_reference_count = 0
@@ -619,8 +534,6 @@ def continuity_state_from_metadata_payload(
         dropped_tool_result_count=dropped,
         retained_tool_result_count=retained,
         source=source,
-        distillation_source=distillation_source,
-        distillation_error=distillation_error,
         fact_reference_count=fact_reference_count,
         source_references=source_references,
         original_tool_result_tokens=original_token_count,
@@ -748,7 +661,8 @@ def _continuity_summary_text(state: RuntimeContinuityState) -> str:
     return "\n\n".join(sections)
 
 
-_UNICODE_TOKEN_ESTIMATE_SOURCE = "unicode_aware_chars"
+_CHARS_PER_TOKEN = 4
+_APPROX_CHARS_PER_4_SOURCE = "approx_chars_per_4"
 
 type TokenCountMethod = Literal["tiktoken", "estimated"]
 
@@ -774,40 +688,14 @@ class _TokenEstimate(NamedTuple):
     source: str
 
 
-@lru_cache(maxsize=32)
-def _tiktoken_encoding_for_model(tokenizer_model: str) -> Any:
-    tiktoken = cast(Any, importlib.import_module("tiktoken"))
-    try:
-        return tiktoken.encoding_for_model(tokenizer_model)
-    except KeyError:
-        return tiktoken.get_encoding("cl100k_base")
-
-
 def count_text_tokens(value: str, *, tokenizer_model: str | None = None) -> TokenCount:
+    _ = tokenizer_model
     if not value:
-        return TokenCount(0, method="estimated", source=_UNICODE_TOKEN_ESTIMATE_SOURCE)
-    if tokenizer_model is not None:
-        try:
-            encoding = _tiktoken_encoding_for_model(tokenizer_model)
-            return TokenCount(
-                len(encoding.encode(value, disallowed_special=())),
-                method="tiktoken",
-                source=f"tiktoken:{tokenizer_model}",
-                exact=True,
-            )
-        except ImportError:
-            pass
-    ascii_chars = 0
-    non_ascii_chars = 0
-    for char in value:
-        if ord(char) < 128:
-            ascii_chars += 1
-        else:
-            non_ascii_chars += 1
+        return TokenCount(0, method="estimated", source=_APPROX_CHARS_PER_4_SOURCE)
     return TokenCount(
-        tokens=max(1, ((ascii_chars + 3) // 4) + non_ascii_chars),
+        tokens=max(1, (len(value) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN),
         method="estimated",
-        source=_UNICODE_TOKEN_ESTIMATE_SOURCE,
+        source=_APPROX_CHARS_PER_4_SOURCE,
         exact=False,
     )
 
@@ -817,9 +705,7 @@ def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) ->
     return _TokenEstimate(counted.tokens, counted.source)
 
 
-def _tool_result_token_estimate(
-    result: ToolResult, *, tokenizer_model: str | None = None
-) -> _TokenEstimate:
+def _tool_result_token_estimate(result: ToolResult, *, tokenizer_model: str | None = None) -> _TokenEstimate:
     payload = {
         "tool_name": result.tool_name,
         "status": result.status,
@@ -834,7 +720,8 @@ def _tool_result_token_estimate(
         default=str,
         ensure_ascii=False,
     )
-    return _estimated_token_count(serialized, tokenizer_model=tokenizer_model)
+    token_count = max(1, (len(serialized) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN)
+    return _TokenEstimate(token_count, _APPROX_CHARS_PER_4_SOURCE)
 
 
 def _optional_tool_string(result: ToolResult, key: str) -> str | None:
@@ -882,8 +769,7 @@ def _dropped_tool_diagnostics(
                 index=index,
                 tool_call_id=_optional_tool_string(result, "tool_call_id"),
                 artifact_id=_artifact_metadata_string(result, "artifact_id"),
-                artifact_status=_artifact_metadata_string(result, "status")
-                or _optional_tool_string(result, "artifact_status"),
+                artifact_status=_artifact_metadata_string(result, "status") or _optional_tool_string(result, "artifact_status"),
                 artifact_byte_count=_artifact_metadata_int(result, "byte_count")
                 or _optional_tool_int(result, "original_byte_count")
                 or _optional_tool_int(result, "original_error_byte_count"),
@@ -914,16 +800,6 @@ def _select_recent_tool_result_indexes(
     return tuple(range(len(results)))
 
 
-def _retain_recent_tool_result_indexes_without_token_budget(
-    results: tuple[ToolResult, ...],
-) -> tuple[int, ...]:
-    if not results:
-        return ()
-    recent_count_cap = 8
-    start = max(0, len(results) - recent_count_cap)
-    return tuple(range(start, len(results)))
-
-
 def _retain_indexes_within_token_budget(
     results: tuple[ToolResult, ...],
     candidate_indexes: tuple[int, ...],
@@ -939,9 +815,7 @@ def _retain_indexes_within_token_budget(
     newest_index = ordered_indexes[0]
     newest_retained = False
     for index in ordered_indexes:
-        estimate = _tool_result_token_estimate(
-            results[index], tokenizer_model=tokenizer_model
-        ).tokens
+        estimate = _tool_result_token_estimate(results[index], tokenizer_model=tokenizer_model).tokens
         if index == newest_index:
             retained.add(index)
             retained_tokens = estimate
@@ -957,24 +831,11 @@ def _retain_indexes_within_token_budget(
 
 
 def _policy_token_budget(policy: ContextWindowPolicy) -> int | None:
-    if policy.max_tool_result_tokens is not None:
-        return policy.max_tool_result_tokens
     if policy.model_context_window_tokens is None:
         return None
-    available_context = policy.model_context_window_tokens
     if policy.reserved_output_tokens is not None:
-        available_context = max(1, available_context - policy.reserved_output_tokens)
-    # context_pressure_threshold is an upper bound on the tool-result budget.
-    # This turns the threshold into an actual compaction trigger instead of a
-    # passive observability signal: tool results are projected so that retained
-    # tokens stay below (model_window * threshold).
-    pressure_ceiling = max(
-        1, int(policy.model_context_window_tokens * policy.context_pressure_threshold)
-    )
-    if policy.max_context_ratio is None:
-        return min(available_context, pressure_ceiling)
-    configured_budget = max(1, int(available_context * policy.max_context_ratio))
-    return min(configured_budget, pressure_ceiling)
+        return max(1, policy.model_context_window_tokens - policy.reserved_output_tokens)
+    return policy.model_context_window_tokens
 
 
 def _tool_limit_for_result(result: ToolResult, policy: ContextWindowPolicy) -> int | None:
@@ -991,10 +852,7 @@ def _clip_plain_text_to_token_limit(text: str, *, limit: int, tokenizer_model: s
         clipped.append(char)
         used += char_tokens
     candidate = "".join(clipped)
-    while (
-        candidate
-        and _estimated_token_count(candidate, tokenizer_model=tokenizer_model).tokens > limit
-    ):
+    while candidate and _estimated_token_count(candidate, tokenizer_model=tokenizer_model).tokens > limit:
         candidate = candidate[:-1]
     return candidate
 
@@ -1075,7 +933,7 @@ def _truncate_tool_result_content(
 
 
 def _token_estimate_source(policy: ContextWindowPolicy, sample: str = "sample") -> str:
-    return _estimated_token_count(sample, tokenizer_model=policy.tokenizer_model).source
+    return _APPROX_CHARS_PER_4_SOURCE
 
 
 def _coerce_optional_int(payload: Mapping[str, object], key: str) -> int | None:
@@ -1115,9 +973,7 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
     per_tool: dict[str, int] = {}
     if per_tool_raw is not None:
         if not isinstance(per_tool_raw, dict):
-            raise ValueError(
-                "context window policy field 'per_tool_result_tokens' must be an object"
-            )
+            raise ValueError("context window policy field 'per_tool_result_tokens' must be an object")
         for key, value in cast(dict[object, object], per_tool_raw).items():
             if not isinstance(key, str) or not key:
                 raise ValueError("context window policy per-tool keys must be non-empty strings")
@@ -1127,60 +983,16 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
     auto_compaction = payload.get("auto_compaction", True)
     if not isinstance(auto_compaction, bool):
         raise ValueError("context window policy field 'auto_compaction' must be a boolean")
-    max_context_ratio = payload.get("max_context_ratio")
-    if max_context_ratio is not None and not isinstance(max_context_ratio, int | float):
-        raise ValueError("context window policy field 'max_context_ratio' must be a number")
     tokenizer_model = payload.get("tokenizer_model")
     if tokenizer_model is not None and not isinstance(tokenizer_model, str):
         raise ValueError("context window policy field 'tokenizer_model' must be a string")
-    continuity_distillation_enabled = payload.get(
-        "continuity_distillation_enabled",
-        ContextWindowPolicy().continuity_distillation_enabled,
-    )
-    if not isinstance(continuity_distillation_enabled, bool):
-        raise ValueError(
-            "context window policy field 'continuity_distillation_enabled' must be a boolean"
-        )
     return ContextWindowPolicy(
         auto_compaction=auto_compaction,
-        max_tool_result_tokens=_coerce_optional_int(payload, "max_tool_result_tokens"),
-        max_context_ratio=float(max_context_ratio) if max_context_ratio is not None else None,
         model_context_window_tokens=_coerce_optional_int(payload, "model_context_window_tokens"),
         reserved_output_tokens=_coerce_optional_int(payload, "reserved_output_tokens"),
         default_tool_result_tokens=_coerce_optional_int(payload, "default_tool_result_tokens"),
         per_tool_result_tokens=per_tool,
         tokenizer_model=tokenizer_model,
-        continuity_preview_items=_coerce_int(
-            payload,
-            "continuity_preview_items",
-            default=ContextWindowPolicy().continuity_preview_items,
-        ),
-        continuity_preview_chars=_coerce_int(
-            payload,
-            "continuity_preview_chars",
-            default=ContextWindowPolicy().continuity_preview_chars,
-        ),
-        context_pressure_threshold=_coerce_float(
-            payload,
-            "context_pressure_threshold",
-            default=ContextWindowPolicy().context_pressure_threshold,
-        ),
-        context_pressure_cooldown_steps=_coerce_int(
-            payload,
-            "context_pressure_cooldown_steps",
-            default=ContextWindowPolicy().context_pressure_cooldown_steps,
-        ),
-        continuity_distillation_enabled=continuity_distillation_enabled,
-        continuity_distillation_max_input_items=_coerce_int(
-            payload,
-            "continuity_distillation_max_input_items",
-            default=ContextWindowPolicy().continuity_distillation_max_input_items,
-        ),
-        continuity_distillation_max_input_chars=_coerce_int(
-            payload,
-            "continuity_distillation_max_input_chars",
-            default=ContextWindowPolicy().continuity_distillation_max_input_chars,
-        ),
     )
 
 
@@ -1235,15 +1047,9 @@ def _build_continuity_state(
     token_budget: int | None = None,
     token_estimate_source: str | None = None,
     tokenizer_model: str | None = None,
-    continuity_distillation_enabled: bool = False,
-    continuity_distillation_max_input_items: int = 12,
-    continuity_distillation_max_input_chars: int = 4000,
-    distillation_candidate: Mapping[str, object] | None = None,
 ) -> RuntimeContinuityState:
     dropped_count = len(dropped_results)
-    previewable_dropped_results = tuple(
-        result for result in dropped_results if result.tool_name != "todo_write"
-    )
+    previewable_dropped_results = tuple(result for result in dropped_results if result.tool_name != "todo_write")
     previous = _previous_continuity_state(session_metadata)
     objective = previous.objective if previous is not None else None
     if objective is None:
@@ -1254,10 +1060,7 @@ def _build_continuity_state(
         preview_item_limit=preview_item_limit,
         preview_char_limit=preview_char_limit,
     )
-    retained_tail = tuple(
-        _tool_result_preview(result, max_preview_chars=preview_char_limit)
-        for result in retained_results[-preview_item_limit:]
-    )
+    retained_tail = tuple(_tool_result_preview(result, max_preview_chars=preview_char_limit) for result in retained_results[-preview_item_limit:])
     previous_constraints = previous.verbatim_user_constraints if previous is not None else ()
     previous_progress = previous.progress_completed if previous is not None else ()
     previous_blockers = previous.blockers_open_questions if previous is not None else ()
@@ -1286,7 +1089,6 @@ def _build_continuity_state(
             token_budget=token_budget,
             token_estimate_source=token_estimate_source,
             dropped_tool_results=previous.dropped_tool_results if previous is not None else (),
-            distillation_source="deterministic",
             source_references=previous.source_references if previous is not None else (),
         )
 
@@ -1295,9 +1097,7 @@ def _build_continuity_state(
         preview_count = min(preview_item_limit, len(previewable_dropped_results))
         lines = [f"Compacted {dropped_count} earlier tool results:"]
         for index, result in enumerate(previewable_dropped_results[:preview_count], start=1):
-            lines.append(
-                f"{index}. {_tool_result_preview(result, max_preview_chars=preview_char_limit)}"
-            )
+            lines.append(f"{index}. {_tool_result_preview(result, max_preview_chars=preview_char_limit)}")
         remaining = len(previewable_dropped_results) - preview_count
         if remaining > 0:
             lines.append(f"... and {remaining} more")
@@ -1326,60 +1126,7 @@ def _build_continuity_state(
             original_indexes=dropped_result_indexes,
             tokenizer_model=tokenizer_model,
         ),
-        distillation_source="deterministic",
     )
-    if previous is not None:
-        previous_payload = previous.metadata_payload()
-    else:
-        previous_payload = None
-
-    if continuity_distillation_enabled:
-        effective_distillation, distillation_error = _try_model_assisted_distillation(
-            prompt=prompt,
-            dropped_results=dropped_results,
-            retained_results=retained_results,
-            previous_continuity=previous_payload,
-            policy_items=continuity_distillation_max_input_items,
-            policy_chars=continuity_distillation_max_input_chars,
-            distillation_candidate=distillation_candidate,
-        )
-        if effective_distillation is not None:
-            return _continuity_state_from_distillation(
-                base_state=state_without_summary,
-                distillation=effective_distillation,
-            )
-        if distillation_error is not None:
-            fallback_summary = _continuity_summary_text(state_without_summary)
-            fallback_text = (
-                f"{fallback_summary}\n\n## Distillation Fallback\n- {distillation_error}"
-            )
-            return RuntimeContinuityState(
-                summary_text=fallback_text,
-                objective=state_without_summary.objective,
-                current_goal=state_without_summary.current_goal,
-                verbatim_user_constraints=state_without_summary.verbatim_user_constraints,
-                progress_completed=state_without_summary.progress_completed,
-                blockers_open_questions=state_without_summary.blockers_open_questions,
-                key_decisions=state_without_summary.key_decisions,
-                relevant_files_commands_errors=state_without_summary.relevant_files_commands_errors,
-                verification_state=state_without_summary.verification_state,
-                delegated_task_summaries=state_without_summary.delegated_task_summaries,
-                recent_tail=state_without_summary.recent_tail,
-                dropped_tool_result_count=state_without_summary.dropped_tool_result_count,
-                retained_tool_result_count=state_without_summary.retained_tool_result_count,
-                source=state_without_summary.source,
-                distillation_source="fallback_after_model_error",
-                distillation_error=distillation_error,
-                original_tool_result_tokens=state_without_summary.original_tool_result_tokens,
-                retained_tool_result_tokens=state_without_summary.retained_tool_result_tokens,
-                dropped_tool_result_tokens=state_without_summary.dropped_tool_result_tokens,
-                token_budget=state_without_summary.token_budget,
-                token_estimate_source=state_without_summary.token_estimate_source,
-                dropped_tool_results=state_without_summary.dropped_tool_results,
-                fact_reference_count=0,
-                source_references=(),
-                version=2,
-            )
 
     canonical_summary = _continuity_summary_text(state_without_summary)
     summary_text = canonical_summary
@@ -1406,143 +1153,13 @@ def _build_continuity_state(
         token_budget=state_without_summary.token_budget,
         token_estimate_source=state_without_summary.token_estimate_source,
         dropped_tool_results=state_without_summary.dropped_tool_results,
-        distillation_source="deterministic",
-        source_references=state_without_summary.source_references,
-        version=2,
     )
 
 
-def _try_model_assisted_distillation(
-    *,
-    prompt: str,
-    dropped_results: tuple[ToolResult, ...],
-    retained_results: tuple[ToolResult, ...],
-    previous_continuity: Mapping[str, object] | None,
-    policy_items: int,
-    policy_chars: int,
-    distillation_candidate: Mapping[str, object] | None,
-) -> tuple[ContinuityDistillationRecord | None, str | None]:
-    envelope = build_distillation_input_envelope(
-        prompt=prompt,
-        dropped_results=dropped_results,
-        retained_results=retained_results,
-        previous_continuity=previous_continuity,
-        max_items=max(1, policy_items),
-        max_chars=max(64, policy_chars * 16),
-    )
-    candidate: Mapping[str, object] | None = distillation_candidate
-    if candidate is None:
-        embedded = envelope.get("distillation_candidate")
-        if isinstance(embedded, dict):
-            candidate = cast(Mapping[str, object], embedded)
-    if candidate is None:
-        return None, None
-    parsed = distillation_record_from_payload(candidate)
-    if parsed is None:
-        return None, "model-assisted distillation output failed schema validation"
-    return parsed, None
-
-
-def _continuity_state_from_distillation(
-    *,
-    base_state: RuntimeContinuityState,
-    distillation: ContinuityDistillationRecord,
-) -> RuntimeContinuityState:
-    key_decisions = tuple(
-        f"{item.text} — {item.rationale}" for item in distillation.key_decisions_with_rationale
-    )
-    refs = tuple(item.text for item in distillation.relevant_files_commands_errors)
-    source_references = _aggregate_distillation_source_references(distillation)
-    verification = (
-        distillation.verification_state.status,
-        *distillation.verification_state.details,
-    )
-    summary = _continuity_summary_text(
-        RuntimeContinuityState(
-            summary_text=None,
-            objective=base_state.objective,
-            current_goal=distillation.objective_current_goal,
-            verbatim_user_constraints=distillation.verbatim_user_constraints,
-            progress_completed=distillation.completed_progress,
-            blockers_open_questions=distillation.blockers_open_questions,
-            key_decisions=key_decisions,
-            relevant_files_commands_errors=refs,
-            verification_state=verification,
-            delegated_task_summaries=base_state.delegated_task_summaries,
-            recent_tail=base_state.recent_tail,
-            dropped_tool_result_count=base_state.dropped_tool_result_count,
-            retained_tool_result_count=base_state.retained_tool_result_count,
-            source=base_state.source,
-            distillation_source="model_assisted",
-            original_tool_result_tokens=base_state.original_tool_result_tokens,
-            retained_tool_result_tokens=base_state.retained_tool_result_tokens,
-            dropped_tool_result_tokens=base_state.dropped_tool_result_tokens,
-            token_budget=base_state.token_budget,
-            token_estimate_source=base_state.token_estimate_source,
-            dropped_tool_results=base_state.dropped_tool_results,
-            fact_reference_count=len(source_references),
-            source_references=source_references,
-        )
-    )
-    return RuntimeContinuityState(
-        summary_text=summary,
-        objective=base_state.objective,
-        current_goal=distillation.objective_current_goal,
-        verbatim_user_constraints=distillation.verbatim_user_constraints,
-        progress_completed=distillation.completed_progress,
-        blockers_open_questions=distillation.blockers_open_questions,
-        key_decisions=key_decisions,
-        relevant_files_commands_errors=refs,
-        verification_state=verification,
-        delegated_task_summaries=base_state.delegated_task_summaries,
-        recent_tail=base_state.recent_tail,
-        dropped_tool_result_count=base_state.dropped_tool_result_count,
-        retained_tool_result_count=base_state.retained_tool_result_count,
-        source=base_state.source,
-        distillation_source="model_assisted",
-        original_tool_result_tokens=base_state.original_tool_result_tokens,
-        retained_tool_result_tokens=base_state.retained_tool_result_tokens,
-        dropped_tool_result_tokens=base_state.dropped_tool_result_tokens,
-        token_budget=base_state.token_budget,
-        token_estimate_source=base_state.token_estimate_source,
-        dropped_tool_results=base_state.dropped_tool_results,
-        fact_reference_count=len(source_references),
-        source_references=source_references,
-        version=2,
-    )
-
-
-def _aggregate_distillation_source_references(
-    distillation: ContinuityDistillationRecord,
-) -> tuple[str, ...]:
-    refs: list[str] = []
-
-    def _append(kind: str, ref_id: str) -> None:
-        value = f"{kind}:{ref_id}"
-        if value not in refs:
-            refs.append(value)
-
-    for item in distillation.source_references:
-        _append(item.kind, item.id)
-    for item in distillation.key_decisions_with_rationale:
-        for ref in item.refs:
-            _append(ref.kind, ref.id)
-    for item in distillation.relevant_files_commands_errors:
-        for ref in item.refs:
-            _append(ref.kind, ref.id)
-    for ref in distillation.verification_state.refs:
-        _append(ref.kind, ref.id)
-    return tuple(refs)
-
-
-def _summary_anchor(
-    summary_text: str | None, *, dropped_count: int, retained_count: int
-) -> str | None:
+def _summary_anchor(summary_text: str | None, *, dropped_count: int, retained_count: int) -> str | None:
     if not summary_text:
         return None
-    digest = hashlib.sha256(
-        f"{dropped_count}:{retained_count}:{summary_text}".encode()
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(f"{dropped_count}:{retained_count}:{summary_text}".encode()).hexdigest()[:16]
     return f"continuity:{digest}"
 
 
@@ -1580,21 +1197,9 @@ def _artifact_reference_segments(
             f"tool_call_id={diagnostic.tool_call_id}" if diagnostic.tool_call_id else None,
             f"tool_name={diagnostic.tool_name}",
             f"status={diagnostic.status}",
-            (
-                f"artifact_status={diagnostic.artifact_status}"
-                if diagnostic.artifact_status
-                else None
-            ),
-            (
-                f"byte_count={diagnostic.artifact_byte_count}"
-                if diagnostic.artifact_byte_count is not None
-                else None
-            ),
-            (
-                f"line_count={diagnostic.artifact_line_count}"
-                if diagnostic.artifact_line_count is not None
-                else None
-            ),
+            (f"artifact_status={diagnostic.artifact_status}" if diagnostic.artifact_status else None),
+            (f"byte_count={diagnostic.artifact_byte_count}" if diagnostic.artifact_byte_count is not None else None),
+            (f"line_count={diagnostic.artifact_line_count}" if diagnostic.artifact_line_count is not None else None),
             f"reference={diagnostic.reference}" if diagnostic.reference else None,
         ]
         content = "\n".join(part for part in parts if part is not None)
@@ -1641,9 +1246,7 @@ def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeCon
     if isinstance(approval_request_id, str) and approval_request_id:
         parts.append(f"Approval request id: {approval_request_id}.")
     if status == "waiting_approval":
-        parts.append(
-            "Do not continue autonomous work until the approval is resolved through runtime resume."
-        )
+        parts.append("Do not continue autonomous work until the approval is resolved through runtime resume.")
     elif status == "waiting_question":
         parts.append("Do not continue autonomous work until the user answers the pending question.")
     else:
@@ -1690,12 +1293,10 @@ def project_tool_results_for_context_window(
             tokenizer_model=policy.tokenizer_model,
         )
         if token_budget is not None
-        else _retain_recent_tool_result_indexes_without_token_budget(prepared_results)
+        else _select_recent_tool_result_indexes(prepared_results)
     )
     retained_index_set = set(retained_indexes)
-    dropped_indexes = tuple(
-        index for index in range(len(prepared_results)) if index not in retained_index_set
-    )
+    dropped_indexes = tuple(index for index in range(len(prepared_results)) if index not in retained_index_set)
     retained_results = tuple(prepared_results[index] for index in retained_indexes)
     dropped_results = tuple(prepared_results[index] for index in dropped_indexes)
 
@@ -1743,12 +1344,6 @@ def prepare_provider_context(
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
 ) -> RuntimeContextWindow:
-    runtime_state = session_metadata.get("runtime_state")
-    distillation_candidate: Mapping[str, object] | None = None
-    if isinstance(runtime_state, dict):
-        raw_candidate = cast(dict[str, object], runtime_state).get("distillation_candidate")
-        if isinstance(raw_candidate, dict):
-            distillation_candidate = cast(Mapping[str, object], raw_candidate)
     effective_policy = policy or ContextWindowPolicy()
     original_count = len(tool_results)
     token_budget = _policy_token_budget(effective_policy)
@@ -1778,9 +1373,7 @@ def prepare_provider_context(
             retained_tool_result_tokens=retained_tokens,
             dropped_tool_result_tokens=0 if token_budget is not None else None,
             token_budget=token_budget,
-            token_estimate_source=(
-                _token_estimate_source(effective_policy) if token_budget is not None else None
-            ),
+            token_estimate_source=(_token_estimate_source(effective_policy) if token_budget is not None else None),
             model_context_window_tokens=effective_policy.model_context_window_tokens,
             reserved_output_tokens=effective_policy.reserved_output_tokens,
         )
@@ -1807,31 +1400,19 @@ def prepare_provider_context(
             dropped_result_indexes=dropped_indexes,
             retained_results=retained_results,
             retained_count=retained_count,
-            preview_item_limit=effective_policy.continuity_preview_items,
-            preview_char_limit=effective_policy.continuity_preview_chars,
+            preview_item_limit=3,
+            preview_char_limit=80,
             original_tokens=original_tokens,
             retained_tokens=retained_tokens,
             dropped_tokens=dropped_tokens,
             token_budget=token_budget,
             token_estimate_source=token_estimate_source,
             tokenizer_model=effective_policy.tokenizer_model,
-            continuity_distillation_enabled=effective_policy.continuity_distillation_enabled,
-            continuity_distillation_max_input_items=(
-                effective_policy.continuity_distillation_max_input_items
-            ),
-            continuity_distillation_max_input_chars=(
-                effective_policy.continuity_distillation_max_input_chars
-            ),
-            distillation_candidate=distillation_candidate,
         )
         if compacted
         else None
     )
-    summary_anchor, summary_source = (
-        continuity_summary_metadata(continuity_state)
-        if continuity_state is not None
-        else (None, None)
-    )
+    summary_anchor, summary_source = continuity_summary_metadata(continuity_state) if continuity_state is not None else (None, None)
     return RuntimeContextWindow(
         prompt=prompt,
         tool_results=retained_results,
@@ -1886,11 +1467,7 @@ def assemble_provider_context(
     )
     pending_state_segment = _pending_state_segment(session_metadata)
     todo_prompt_context = render_provider_todo_state(session_metadata)
-    continuity_state = (
-        preserved_continuity_state
-        or context_window.continuity_state
-        or _previous_continuity_state(session_metadata)
-    )
+    continuity_state = preserved_continuity_state or context_window.continuity_state or _previous_continuity_state(session_metadata)
     metadata_payload = context_window.metadata_payload()
     if continuity_state is not None and "continuity_state" not in metadata_payload:
         metadata_payload["continuity_state"] = continuity_state.metadata_payload()
@@ -1925,12 +1502,8 @@ def assemble_provider_context(
     if transform_result.traces:
         metadata_payload["context_transforms"] = transform_result.metadata_payload()
     runtime_instruction_precedence = (
-        "Runtime instruction precedence: active agent role and runtime enforcement "
-        "boundaries are authoritative. Tool allowlists, approvals, session truth, "
-        "and runtime safety policies outrank skill, todo, hook-preset, and "
-        "continuity guidance. Skill instructions may refine how to perform work, "
-        "but must not expand role scope, tool permissions, approval behavior, or "
-        "completion obligations."
+        "Runtime precedence: role and runtime boundaries are authoritative. "
+        "Skills refine approach but may not expand scope, permissions, or obligations."
     )
     activation_decision = prompt_activation_decision(
         session_metadata=session_metadata,
@@ -1956,11 +1529,7 @@ def assemble_provider_context(
                     ),
                 ),
                 tier="task",
-                metadata=(
-                    {}
-                    if pending_state_segment.metadata is None
-                    else dict(pending_state_segment.metadata)
-                ),
+                metadata=({} if pending_state_segment.metadata is None else dict(pending_state_segment.metadata)),
             )
             if pending_state_segment is not None
             else None
@@ -2004,11 +1573,7 @@ def assemble_provider_context(
             if todo_prompt_context is not None and result.tool_name == "todo_write":
                 continue
             raw_tool_call_id = result.data.get("tool_call_id")
-            tool_call_id = (
-                raw_tool_call_id
-                if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
-                else f"voidcode_tool_{index}"
-            )
+            tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_tool_{index}"
             raw_arguments = result.data.get("arguments")
             tool_arguments: dict[str, object]
             if isinstance(raw_arguments, dict):
@@ -2046,58 +1611,16 @@ def assemble_provider_context(
     metadata_payload["context_tiers"] = _context_tier_metadata(segments)
     metadata_payload["context_tier_policy"] = {
         "version": 1,
-        "protected_tiers": list((policy or ContextWindowPolicy()).protected_context_tiers),
+        "protected_tiers": ["instruction", "workspace", "task"],
         "compaction_target": "recent",
     }
-    effective_policy_for_guard = policy or ContextWindowPolicy()
-
-    def _record_context_pressure(current_segments: list[RuntimeContextSegment]) -> TokenCount:
-        context_token_count = estimate_provider_context_tokens(
-            tuple(current_segments),
-            tokenizer_model=policy.tokenizer_model if policy is not None else None,
-        )
-        metadata_payload["estimated_context_tokens"] = context_token_count.tokens
-        metadata_payload["estimated_context_token_source"] = context_token_count.source
-        metadata_payload["estimated_context_token_exact"] = context_token_count.exact
-        model_window_tokens = effective_policy_for_guard.model_context_window_tokens
-        if model_window_tokens is not None and model_window_tokens > 0:
-            pressure_ratio = context_token_count.tokens / model_window_tokens
-            metadata_payload["context_pressure_ratio"] = pressure_ratio
-            metadata_payload["context_pressure_threshold"] = (
-                effective_policy_for_guard.context_pressure_threshold
-            )
-            metadata_payload["context_pressure_detected"] = (
-                pressure_ratio >= effective_policy_for_guard.context_pressure_threshold
-            )
-            metadata_payload["context_overflow_detected"] = pressure_ratio >= 1.0
-        return context_token_count
-
-    _record_context_pressure(segments)
-    recent_tier_compaction = {
-        "version": 1,
-        "applied": False,
-        "dropped_segment_count": 0,
-        "dropped_sources": [],
-        "target_tier": "recent",
-    }
-    if metadata_payload.get("context_pressure_detected") is True:
-        pressure_before = metadata_payload.get("context_pressure_ratio")
-        overflow_before = metadata_payload.get("context_overflow_detected")
-        compacted_segments, compaction_metadata = _compact_recent_tier_segments(segments)
-        if compaction_metadata["applied"]:
-            segments = compacted_segments
-            metadata_payload["context_tiers"] = _context_tier_metadata(segments)
-            recent_tier_compaction = compaction_metadata
-            _record_context_pressure(segments)
-            recent_tier_compaction["pressure_ratio_before"] = pressure_before
-            recent_tier_compaction["pressure_ratio_after"] = metadata_payload.get(
-                "context_pressure_ratio"
-            )
-            recent_tier_compaction["overflow_before"] = overflow_before
-            recent_tier_compaction["overflow_after"] = metadata_payload.get(
-                "context_overflow_detected"
-            )
-    metadata_payload["recent_tier_compaction"] = recent_tier_compaction
+    context_token_count = estimate_provider_context_tokens(
+        tuple(segments),
+        tokenizer_model=policy.tokenizer_model if policy is not None else None,
+    )
+    metadata_payload["estimated_context_tokens"] = context_token_count.tokens
+    metadata_payload["estimated_context_token_source"] = context_token_count.source
+    metadata_payload["estimated_context_token_exact"] = context_token_count.exact
     return RuntimeAssembledContext(
         prompt=prompt,
         tool_results=context_window.tool_results,

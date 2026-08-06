@@ -185,9 +185,7 @@ def _minimal_bundle_payload(sessions: list[dict[str, object]]) -> dict[str, obje
             "redaction": {"redacted": True},
             "support_mode": False,
             "session_count": len(sessions),
-            "event_count": sum(
-                len(cast(list[object], session.get("events", []))) for session in sessions
-            ),
+            "event_count": sum(len(cast(list[object], session.get("events", []))) for session in sessions),
             "background_task_count": 0,
             "artifact_count": 0,
         },
@@ -318,9 +316,7 @@ def test_session_bundle_export_excludes_vector_index_and_cache_payloads(tmp_path
         storage_diagnostics={
             "database_tables": ["sessions", "memories", "memory_vectors", "vector_cache"],
             "vector_index_path": str(tmp_path / "sqlite-vec" / "private-index.bin"),
-            "embedding_cache": {
-                "cached_text": "semantic vector seed must not become bundle payload"
-            },
+            "embedding_cache": {"cached_text": "semantic vector seed must not become bundle payload"},
         },
         config_summary={
             "memory": {"semantic_search": "auto", "sqlite_vec": {"enabled": "auto"}},
@@ -378,9 +374,7 @@ def test_session_bundle_preserves_unrelated_deferred_word_diagnostics(
     assert storage["database_tables"] == ["sessions", "session_memory_notes"]
     assert "provider cache was warm during diagnostics" in encoded
     assert "plain index counter is not bundle payload" in encoded
-    assert cast(dict[str, object], config["memory"])["recall_note"] == (
-        "memory recall remains disabled for this session"
-    )
+    assert cast(dict[str, object], config["memory"])["recall_note"] == ("memory recall remains disabled for this session")
     assert provider["cache_status_text"] == "cache mention without deferred cache payload"
 
 
@@ -956,9 +950,7 @@ def test_session_bundle_parse_rejects_missing_current_contract_fields(
 
 def test_session_bundle_parse_rejects_invalid_session_ids() -> None:
     invalid_id_payload = _minimal_bundle_payload([_minimal_session_payload("")])
-    invalid_parent_payload = _minimal_bundle_payload(
-        [_minimal_session_payload("child", parent_id="bad/parent")]
-    )
+    invalid_parent_payload = _minimal_bundle_payload([_minimal_session_payload("child", parent_id="bad/parent")])
 
     with pytest.raises(SessionBundleError, match=r"sessions\[0\]\.id is invalid"):
         parse_session_bundle(invalid_id_payload)

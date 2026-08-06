@@ -184,9 +184,7 @@ class RuntimeBackgroundTaskSupervisor:
                         if self._threads.get(task_id) is thread:
                             self._threads.pop(task_id, None)
 
-    def _fail_unfinished_shutdown_threads(
-        self, threads: tuple[tuple[str, threading.Thread], ...]
-    ) -> None:
+    def _fail_unfinished_shutdown_threads(self, threads: tuple[tuple[str, threading.Thread], ...]) -> None:
         runtime = self._runtime
         for task_id, thread in threads:
             if not thread.is_alive():
@@ -237,9 +235,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def task_with_observability(self, task: BackgroundTaskState) -> BackgroundTaskState:
         runtime = self._runtime
-        queued_summaries = runtime._session_store.list_queued_background_tasks(
-            workspace=runtime._workspace
-        )
+        queued_summaries = runtime._session_store.list_queued_background_tasks(workspace=runtime._workspace)
         tasks_by_id = {task.task.id: task}
         for summary in queued_summaries:
             if summary.task.id in tasks_by_id:
@@ -254,9 +250,7 @@ class RuntimeBackgroundTaskSupervisor:
         )
         return replace(task, observability=self.task_observability(task, context=context))
 
-    def summary_with_observability(
-        self, summary: StoredBackgroundTaskSummary
-    ) -> StoredBackgroundTaskSummary:
+    def summary_with_observability(self, summary: StoredBackgroundTaskSummary) -> StoredBackgroundTaskSummary:
         task = self._runtime._session_store.load_background_task(
             workspace=self._runtime._workspace,
             task_id=summary.task.id,
@@ -270,9 +264,7 @@ class RuntimeBackgroundTaskSupervisor:
         if not summaries:
             return ()
         runtime = self._runtime
-        queued_summaries = runtime._session_store.list_queued_background_tasks(
-            workspace=runtime._workspace
-        )
+        queued_summaries = runtime._session_store.list_queued_background_tasks(workspace=runtime._workspace)
         task_ids_to_load = {summary.task.id for summary in summaries}
         task_ids_to_load.update(summary.task.id for summary in queued_summaries)
         tasks_by_id = {
@@ -299,9 +291,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def status_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for summary in self._runtime._session_store.list_background_tasks(
-            workspace=self._runtime._workspace
-        ):
+        for summary in self._runtime._session_store.list_background_tasks(workspace=self._runtime._workspace):
             counts[summary.status] = counts.get(summary.status, 0) + 1
         return counts
 
@@ -334,12 +324,7 @@ class RuntimeBackgroundTaskSupervisor:
             return context.queued_positions.get(task.task.id)
         runtime = self._runtime
         with self._queue_lock:
-            queued = [
-                summary.task.id
-                for summary in runtime._session_store.list_queued_background_tasks(
-                    workspace=runtime._workspace
-                )
-            ]
+            queued = [summary.task.id for summary in runtime._session_store.list_queued_background_tasks(workspace=runtime._workspace)]
         try:
             return queued.index(task.task.id) + 1
         except ValueError:
@@ -374,9 +359,7 @@ class RuntimeBackgroundTaskSupervisor:
         queued_summaries: tuple[StoredBackgroundTaskSummary, ...],
         tasks_by_id: dict[str, BackgroundTaskState],
     ) -> _BackgroundTaskObservabilityContext:
-        queued_positions = {
-            summary.task.id: index for index, summary in enumerate(queued_summaries, start=1)
-        }
+        queued_positions = {summary.task.id: index for index, summary in enumerate(queued_summaries, start=1)}
         queued_provider_counts: dict[str, int] = {}
         queued_model_counts: dict[str, int] = {}
         for summary in queued_summaries:
@@ -387,12 +370,8 @@ class RuntimeBackgroundTaskSupervisor:
                 identity = self._concurrency_identity_for_task(task)
             except (RuntimeRequestError, ValueError):
                 continue
-            queued_provider_counts[identity.provider] = (
-                queued_provider_counts.get(identity.provider, 0) + 1
-            )
-            queued_model_counts[identity.model_key] = (
-                queued_model_counts.get(identity.model_key, 0) + 1
-            )
+            queued_provider_counts[identity.provider] = queued_provider_counts.get(identity.provider, 0) + 1
+            queued_model_counts[identity.model_key] = queued_model_counts.get(identity.model_key, 0) + 1
         with self._queue_lock:
             return _BackgroundTaskObservabilityContext(
                 queued_positions=queued_positions,
@@ -450,9 +429,7 @@ class RuntimeBackgroundTaskSupervisor:
                 allocate_session_id=request.allocate_session_id,
             ),
         )
-        runtime._session_store.create_background_task(
-            workspace=runtime._workspace, task=initial_state
-        )
+        runtime._session_store.create_background_task(workspace=runtime._workspace, task=initial_state)
         registered_task = runtime._session_store.load_background_task(
             workspace=runtime._workspace,
             task_id=task_id,
@@ -460,9 +437,7 @@ class RuntimeBackgroundTaskSupervisor:
         self.run_background_task_lifecycle_surface(
             task=registered_task,
             surface="background_task_registered",
-            session_id=registered_task.parent_session_id
-            or registered_task.request.session_id
-            or "runtime",
+            session_id=registered_task.parent_session_id or registered_task.request.session_id or "runtime",
         )
         self._drain_background_task_queue()
         return runtime.load_background_task(task_id)
@@ -476,10 +451,7 @@ class RuntimeBackgroundTaskSupervisor:
             task_id=task_id,
         )
         if previous_task.status not in ("failed", "cancelled", "interrupted"):
-            raise ValueError(
-                "background task retry requires a failed, cancelled, or interrupted task; "
-                f"task {task_id} is {previous_task.status}"
-            )
+            raise ValueError(f"background task retry requires a failed, cancelled, or interrupted task; task {task_id} is {previous_task.status}")
         runtime._session_store.stop_background_task_idle_reminder(
             workspace=runtime._workspace,
             task_id=task_id,
@@ -495,17 +467,13 @@ class RuntimeBackgroundTaskSupervisor:
             )
         )
 
-    def _concurrency_identity_for_request(
-        self, request: RuntimeRequest
-    ) -> _BackgroundTaskConcurrencyIdentity:
+    def _concurrency_identity_for_request(self, request: RuntimeRequest) -> _BackgroundTaskConcurrencyIdentity:
         effective_config = self._runtime._runtime_config_for_request(request)
         return self._concurrency_identity_for_resolved_provider(
             effective_config.resolved_provider,
         )
 
-    def _concurrency_identity_for_resolved_provider(
-        self, resolved_provider: ResolvedProviderConfig
-    ) -> _BackgroundTaskConcurrencyIdentity:
+    def _concurrency_identity_for_resolved_provider(self, resolved_provider: ResolvedProviderConfig) -> _BackgroundTaskConcurrencyIdentity:
         target = resolved_provider.active_target
         provider = target.selection.provider or "deterministic"
         model = target.selection.model or target.selection.raw_model or "deterministic"
@@ -556,9 +524,7 @@ class RuntimeBackgroundTaskSupervisor:
             return None
         return self._concurrency_identity_for_provider_model(provider=provider, model=model)
 
-    def _concurrency_identity_for_task(
-        self, task: BackgroundTaskState
-    ) -> _BackgroundTaskConcurrencyIdentity:
+    def _concurrency_identity_for_task(self, task: BackgroundTaskState) -> _BackgroundTaskConcurrencyIdentity:
         request = RuntimeRequest(
             prompt=task.request.prompt,
             session_id=task.request.session_id,
@@ -578,12 +544,8 @@ class RuntimeBackgroundTaskSupervisor:
         return sum(self._provider_running_counts.values()) < identity.limit
 
     def _reserve_slot(self, identity: _BackgroundTaskConcurrencyIdentity) -> None:
-        self._provider_running_counts[identity.provider] = (
-            self._provider_running_counts.get(identity.provider, 0) + 1
-        )
-        self._model_running_counts[identity.model_key] = (
-            self._model_running_counts.get(identity.model_key, 0) + 1
-        )
+        self._provider_running_counts[identity.provider] = self._provider_running_counts.get(identity.provider, 0) + 1
+        self._model_running_counts[identity.model_key] = self._model_running_counts.get(identity.model_key, 0) + 1
 
     def _release_slot(self, identity: _BackgroundTaskConcurrencyIdentity) -> None:
         provider_count = max(0, self._provider_running_counts.get(identity.provider, 0) - 1)
@@ -660,16 +622,12 @@ class RuntimeBackgroundTaskSupervisor:
             self._reserve_slot(identity)
             return False
 
-    def _queued_counts_for_identity(
-        self, identity: _BackgroundTaskConcurrencyIdentity
-    ) -> tuple[int, int, int]:
+    def _queued_counts_for_identity(self, identity: _BackgroundTaskConcurrencyIdentity) -> tuple[int, int, int]:
         runtime = self._runtime
         queued_provider = 0
         queued_model = 0
         queued_total = 0
-        for summary in runtime._session_store.list_queued_background_tasks(
-            workspace=runtime._workspace
-        ):
+        for summary in runtime._session_store.list_queued_background_tasks(workspace=runtime._workspace):
             queued_total += 1
             task = runtime._session_store.load_background_task(
                 workspace=runtime._workspace,
@@ -682,9 +640,7 @@ class RuntimeBackgroundTaskSupervisor:
                 queued_model += 1
         return queued_provider, queued_model, queued_total
 
-    def _concurrency_snapshot(
-        self, task: BackgroundTaskState
-    ) -> _BackgroundTaskConcurrencySnapshot:
+    def _concurrency_snapshot(self, task: BackgroundTaskState) -> _BackgroundTaskConcurrencySnapshot:
         identity = self._concurrency_identity_for_task(task)
         with self._queue_lock:
             queued_provider, queued_model, queued_total = self._queued_counts_for_identity(identity)
@@ -703,8 +659,7 @@ class RuntimeBackgroundTaskSupervisor:
 
     def _concurrency_payload_for_event(self, task: BackgroundTaskState) -> dict[str, object]:
         if self._runtime._config.background_task.default_concurrency == 5 and not (
-            self._runtime._config.background_task.provider_concurrency
-            or self._runtime._config.background_task.model_concurrency
+            self._runtime._config.background_task.provider_concurrency or self._runtime._config.background_task.model_concurrency
         ):
             return {}
         try:
@@ -783,9 +738,7 @@ class RuntimeBackgroundTaskSupervisor:
                         start_gate.wait()
                         if self._shutdown_requested:
                             try:
-                                self._mark_background_task_interrupted_before_worker(
-                                    task_id=background_task_id
-                                )
+                                self._mark_background_task_interrupted_before_worker(task_id=background_task_id)
                             finally:
                                 with self._queue_lock:
                                     self._release_slot(reserved_identity)
@@ -821,9 +774,7 @@ class RuntimeBackgroundTaskSupervisor:
                 self.run_background_task_lifecycle_surface(
                     task=started_task,
                     surface="background_task_started",
-                    session_id=(
-                        started_task.session_id or started_task.parent_session_id or "runtime"
-                    ),
+                    session_id=(started_task.session_id or started_task.parent_session_id or "runtime"),
                 )
             finally:
                 worker_start_gate.set()
@@ -879,16 +830,11 @@ class RuntimeBackgroundTaskSupervisor:
             self.run_background_task_lifecycle_surface(
                 task=task,
                 surface="background_task_result_read",
-                session_id=task.parent_session_id
-                or task.session_id
-                or task.request.session_id
-                or "runtime",
+                session_id=task.parent_session_id or task.session_id or task.request.session_id or "runtime",
             )
         return result
 
-    def repair_interrupted_task_from_child_terminal_session(
-        self, task: BackgroundTaskState
-    ) -> BackgroundTaskState:
+    def repair_interrupted_task_from_child_terminal_session(self, task: BackgroundTaskState) -> BackgroundTaskState:
         """Recover a stale interrupted task when its child session already finished.
 
         This is intentionally not a general reconciliation path: active running tasks
@@ -944,10 +890,7 @@ class RuntimeBackgroundTaskSupervisor:
                     + (
                         EventEnvelope(
                             session_id=task.session_id,
-                            sequence=(
-                                child_response.events[-1].sequence if child_response.events else 0
-                            )
-                            + 1,
+                            sequence=(child_response.events[-1].sequence if child_response.events else 0) + 1,
                             event_type=RUNTIME_FAILED,
                             source="runtime",
                             payload={
@@ -1023,9 +966,7 @@ class RuntimeBackgroundTaskSupervisor:
         summary_output = self._leader_safe_child_summary(
             child_result=child_result,
         )
-        error = (
-            child_result.error if child_result is not None and child_result.error else task.error
-        )
+        error = child_result.error if child_result is not None and child_result.error else task.error
         result_available = task.result_available
         if not result_available and task.status != "cancelled" and child_result is not None:
             result_available = True
@@ -1068,11 +1009,7 @@ class RuntimeBackgroundTaskSupervisor:
         if child_result is None:
             return None
         delegated_events = child_result.delegated_events
-        if (
-            not delegated_events
-            and task.approval_request_id is None
-            and task.question_request_id is None
-        ):
+        if not delegated_events and task.approval_request_id is None and task.question_request_id is None:
             return None
         latest_event = delegated_events[-1] if delegated_events else None
         reminder: dict[str, object] = {
@@ -1091,9 +1028,7 @@ class RuntimeBackgroundTaskSupervisor:
             reminder["question_request_id"] = task.question_request_id
             reminder["message"] = "Child session is waiting on a question response."
         elif latest_event is not None:
-            reminder["message"] = (
-                f"Delegated lifecycle status: {latest_event.delegation.lifecycle_status}."
-            )
+            reminder["message"] = f"Delegated lifecycle status: {latest_event.delegation.lifecycle_status}."
         return reminder
 
     @staticmethod
@@ -1108,9 +1043,7 @@ class RuntimeBackgroundTaskSupervisor:
     def _tool_call_count(*, child_result: RuntimeSessionResult | None) -> int:
         if child_result is None:
             return 0
-        return sum(
-            1 for event in child_result.transcript if event.event_type == RUNTIME_TOOL_COMPLETED
-        )
+        return sum(1 for event in child_result.transcript if event.event_type == RUNTIME_TOOL_COMPLETED)
 
     @staticmethod
     def _leader_safe_child_summary(
@@ -1121,10 +1054,7 @@ class RuntimeBackgroundTaskSupervisor:
             return None
         child_session_id = child_result.session.session.id
         if child_result.status == "completed":
-            return (
-                f"Completed child session {child_session_id}; full output is preserved outside "
-                "active context."
-            )
+            return f"Completed child session {child_session_id}; full output is preserved outside active context."
         if child_result.status == "waiting":
             return child_result.summary
         if child_result.status == "failed":
@@ -1151,9 +1081,7 @@ class RuntimeBackgroundTaskSupervisor:
             return
         session_event_appender = runtime._session_store
         if not isinstance(session_event_appender, SessionEventAppender):
-            logger.debug(
-                "skipping background terminal parent event for session store without append support"
-            )
+            logger.debug("skipping background terminal parent event for session store without append support")
             return
         result = self.background_task_result(task=task)
         event_type_by_status: dict[BackgroundTaskStatus, str] = {
@@ -1262,9 +1190,7 @@ class RuntimeBackgroundTaskSupervisor:
                     "completed",
                     "failed",
                 ):
-                    self.finalize_background_task_from_session_response(
-                        session_response=child_response
-                    )
+                    self.finalize_background_task_from_session_response(session_response=child_response)
                     continue
             self.backfill_parent_background_task_event(task=task)
 
@@ -1287,9 +1213,7 @@ class RuntimeBackgroundTaskSupervisor:
         )
         session_event_appender = runtime._session_store
         if not isinstance(session_event_appender, SessionEventAppender):
-            logger.debug(
-                "skipping background waiting event for session store without append support"
-            )
+            logger.debug("skipping background waiting event for session store without append support")
             return
         result = self.background_task_result(task=task)
         _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
@@ -1308,11 +1232,7 @@ class RuntimeBackgroundTaskSupervisor:
                     "delegation": delegation_payload,
                     "message": message_payload,
                     **self._concurrency_payload_for_event(task),
-                    **(
-                        {"approval_request_id": approval_request_id}
-                        if approval_request_id is not None
-                        else {}
-                    ),
+                    **({"approval_request_id": approval_request_id} if approval_request_id is not None else {}),
                 },
                 dedupe_key=dedupe_key,
             )
@@ -1368,21 +1288,13 @@ class RuntimeBackgroundTaskSupervisor:
             return
         idle_event = self._latest_session_idle_event(child_response.events)
         waiting_reason = self._runtime._waiting_reason_from_session(child_response.session)
-        idle_event_sequence = (
-            idle_event.sequence
-            if idle_event is not None
-            else self._latest_waiting_episode_sequence(child_response.events)
-        )
+        idle_event_sequence = idle_event.sequence if idle_event is not None else self._latest_waiting_episode_sequence(child_response.events)
         self.emit_background_task_idle_reminder(
             task=task,
             child_session_id=child_session_id,
             child_session_status=child_response.session.status,
             idle_event_sequence=idle_event_sequence,
-            idle_reason=(
-                idle_event.payload.get("reason", waiting_reason)
-                if idle_event is not None
-                else waiting_reason
-            ),
+            idle_reason=(idle_event.payload.get("reason", waiting_reason) if idle_event is not None else waiting_reason),
         )
 
     def emit_background_task_idle_reminder(
@@ -1409,9 +1321,7 @@ class RuntimeBackgroundTaskSupervisor:
                 if not reminder_state.eligible:
                     return
             elif reminder_state.reminder_sent_at_unix_ms is not None:
-                cooldown_ms = (
-                    self._runtime._config.background_task.delegated_reminder_cooldown_seconds * 1000
-                )
+                cooldown_ms = self._runtime._config.background_task.delegated_reminder_cooldown_seconds * 1000
                 if now_unix_ms - reminder_state.reminder_sent_at_unix_ms < cooldown_ms:
                     return
         eligible_task = self._runtime._session_store.record_background_task_idle_reminder_eligible(
@@ -1466,9 +1376,7 @@ class RuntimeBackgroundTaskSupervisor:
             return None
         session_event_appender = runtime._session_store
         if not isinstance(session_event_appender, SessionEventAppender):
-            logger.debug(
-                "skipping background idle reminder for session store without append support"
-            )
+            logger.debug("skipping background idle reminder for session store without append support")
             return None
         result = self.background_task_result(task=task)
         _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
@@ -1481,10 +1389,7 @@ class RuntimeBackgroundTaskSupervisor:
             "idle_episode_id": idle_episode_id,
             "idle_event_sequence": idle_event_sequence,
             "idle_reason": idle_reason,
-            "reminder": (
-                "Delegated child session is idle and waiting for external action; "
-                "inspect or resume the child session when ready."
-            ),
+            "reminder": ("Delegated child session is idle and waiting for external action; inspect or resume the child session when ready."),
             "delegation": delegation_payload,
             "message": message_payload,
             **self._concurrency_payload_for_event(task),
@@ -1551,16 +1456,10 @@ class RuntimeBackgroundTaskSupervisor:
                 child_response=session_response,
             )
             return
-        terminal_status: BackgroundTaskStatus = (
-            "completed" if session_response.session.status == "completed" else "failed"
-        )
+        terminal_status: BackgroundTaskStatus = "completed" if session_response.session.status == "completed" else "failed"
         if current_task.status == terminal_status and current_task.error is None:
             return
-        if (
-            is_background_task_terminal(current_task.status)
-            and current_task.status != "interrupted"
-            and current_task.status != terminal_status
-        ):
+        if is_background_task_terminal(current_task.status) and current_task.status != "interrupted" and current_task.status != terminal_status:
             return
         error: str | None = None
         if terminal_status == "failed":
@@ -1720,16 +1619,12 @@ class RuntimeBackgroundTaskSupervisor:
                     self.run_background_task_lifecycle_surface(
                         task=running_task,
                         surface="background_task_started",
-                        session_id=running_task.session_id
-                        or running_task.parent_session_id
-                        or "runtime",
+                        session_id=running_task.session_id or running_task.parent_session_id or "runtime",
                     )
             else:
                 running_task = task
                 slot_reserved = True
-                session_id = (
-                    task.session_id or runtime._session_routing_for_request(request).session_id
-                )
+                session_id = task.session_id or runtime._session_routing_for_request(request).session_id
             if running_task.status != "running":
                 return
             dispatch_task = runtime.load_background_task(task_id)
@@ -1757,11 +1652,7 @@ class RuntimeBackgroundTaskSupervisor:
                         InternalRuntimeRequestMetadata,
                         {
                             **dispatch_task.request.metadata,
-                            **(
-                                {"background_rate_limit_retry": True}
-                                if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES
-                                else {}
-                            ),
+                            **({"background_rate_limit_retry": True} if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES else {}),
                             "background_task_id": task_id,
                             "background_run": True,
                         },
@@ -1861,19 +1752,13 @@ class RuntimeBackgroundTaskSupervisor:
                 if final_session is None:
                     raise ValueError("runtime stream emitted no chunks")
                 if final_session.status == "waiting":
-                    final_session = runtime._reload_persisted_session(
-                        session_id=final_session.session.id
-                    )
+                    final_session = runtime._reload_persisted_session(session_id=final_session.session.id)
                 response = RuntimeResponse(
                     session=final_session,
                     events=tuple(events),
                     output=output,
                 )
-                if (
-                    self._response_has_rate_limit_error(response)
-                    and retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES
-                    and slot_identity is not None
-                ):
+                if self._response_has_rate_limit_error(response) and retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES and slot_identity is not None:
                     retry_count += 1
                     with self._queue_lock:
                         self._release_slot(slot_identity)

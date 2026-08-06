@@ -26,9 +26,7 @@ def workflow_snapshot_from_metadata(
         if "workflow" in runtime_config:
             runtime_workflow = runtime_config["workflow"]
             if not isinstance(runtime_workflow, dict):
-                raise WorkflowSnapshotVersionError(
-                    "persisted runtime_config.workflow snapshot must be an object"
-                )
+                raise WorkflowSnapshotVersionError("persisted runtime_config.workflow snapshot must be an object")
             return validate_workflow_snapshot(cast(dict[str, object], runtime_workflow))
     raw_capability_snapshot = metadata.get("agent_capability_snapshot")
     if isinstance(raw_capability_snapshot, dict):
@@ -36,9 +34,7 @@ def workflow_snapshot_from_metadata(
         if "workflow" in capability_snapshot:
             capability_workflow = capability_snapshot["workflow"]
             if not isinstance(capability_workflow, dict):
-                raise WorkflowSnapshotVersionError(
-                    "persisted agent_capability_snapshot.workflow must be an object"
-                )
+                raise WorkflowSnapshotVersionError("persisted agent_capability_snapshot.workflow must be an object")
             return validate_workflow_snapshot(cast(dict[str, object], capability_workflow))
     return None
 
@@ -46,10 +42,7 @@ def workflow_snapshot_from_metadata(
 def validate_workflow_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
     version = snapshot.get("snapshot_version")
     if version != WORKFLOW_SNAPSHOT_VERSION:
-        raise WorkflowSnapshotVersionError(
-            "unsupported workflow snapshot_version: "
-            f"{version!r}; expected {WORKFLOW_SNAPSHOT_VERSION!r}"
-        )
+        raise WorkflowSnapshotVersionError(f"unsupported workflow snapshot_version: {version!r}; expected {WORKFLOW_SNAPSHOT_VERSION!r}")
     requested = _required_mapping(snapshot.get("requested"), field="requested")
     effective = _required_mapping(snapshot.get("effective"), field="effective")
     requested_mode = requested.get("workflow_mode")
@@ -57,9 +50,7 @@ def validate_workflow_snapshot(snapshot: dict[str, object]) -> dict[str, object]
     if not isinstance(requested_mode, str) or not requested_mode:
         raise WorkflowSnapshotVersionError("workflow snapshot v2 requires requested.workflow_mode")
     if effective_mode != requested_mode:
-        raise WorkflowSnapshotVersionError(
-            "workflow snapshot v2 effective.mode must match requested.workflow_mode"
-        )
+        raise WorkflowSnapshotVersionError("workflow snapshot v2 effective.mode must match requested.workflow_mode")
     if snapshot.get("mode") != effective_mode:
         raise WorkflowSnapshotVersionError("workflow snapshot v2 mode must match effective.mode")
     return snapshot

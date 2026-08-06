@@ -133,9 +133,7 @@ class TestCreateDoctorForConfig:
         config = RuntimeConfig(
             mcp=RuntimeMcpConfig(
                 enabled=False,
-                servers={
-                    "context7": RuntimeMcpServerConfig(command=("context7",), scope="session")
-                },
+                servers={"context7": RuntimeMcpServerConfig(command=("context7",), scope="session")},
             )
         )
 
@@ -170,11 +168,7 @@ class TestCreateDoctorForConfig:
 
         doctor = create_doctor_for_config(Path("/tmp"), config)
 
-        formatter_results = [
-            result
-            for result in doctor.results
-            if result.check_type == DoctorCheckType.FORMATTER_PRESET.value
-        ]
+        formatter_results = [result for result in doctor.results if result.check_type == DoctorCheckType.FORMATTER_PRESET.value]
         assert formatter_results == []
 
         ast_grep_results = [result for result in doctor.results if result.name == "ast-grep"]
@@ -184,16 +178,12 @@ class TestCreateDoctorForConfig:
             CapabilityCheckStatus.NOT_FOUND,
         }
 
-    def test_skips_provider_readiness_for_deterministic_config_without_model(
-        self, tmp_path: Path
-    ) -> None:
+    def test_skips_provider_readiness_for_deterministic_config_without_model(self, tmp_path: Path) -> None:
         config = RuntimeConfig(execution_engine="deterministic")
 
         doctor = create_doctor_for_config(tmp_path, config)
 
-        readiness_results = [
-            result for result in doctor.results if result.name == "provider.readiness"
-        ]
+        readiness_results = [result for result in doctor.results if result.name == "provider.readiness"]
         assert readiness_results == []
 
     def test_adds_provider_readiness_check_for_provider_config(self, tmp_path: Path) -> None:

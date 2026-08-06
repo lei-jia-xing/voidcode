@@ -22,7 +22,6 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_BACKGROUND_TASK_STARTED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
-    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_EVENT_TYPES,
@@ -85,7 +84,6 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_MEMORY_DELETED,
         RUNTIME_MEMORY_SEARCHED,
         RUNTIME_MEMORY_STATUS_CHECKED,
-        RUNTIME_CONTEXT_PRESSURE,
         RUNTIME_CONTEXT_TRANSFORM_APPLIED,
         RUNTIME_SESSION_STARTED,
         RUNTIME_SESSION_ENDED,
@@ -379,9 +377,7 @@ def test_tool_display_payload_shape_is_well_formed() -> None:
     copyable = display.get("copyable")
     if copyable is not None:
         assert isinstance(copyable, dict)
-        assert any(key in copyable for key in ("command", "output", "path")), (
-            "copyable must carry at least one payload key"
-        )
+        assert any(key in copyable for key in ("command", "output", "path")), "copyable must carry at least one payload key"
 
 
 def test_tool_status_payload_shape_includes_display() -> None:

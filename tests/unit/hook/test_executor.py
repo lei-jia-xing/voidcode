@@ -395,7 +395,6 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
         on_background_task_notification_enqueued=(("python", "scripts/task_notify.py"),),
         on_background_task_result_read=(("python", "scripts/task_result_read.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
-        on_context_pressure=(("python", "scripts/context_pressure.py"),),
         on_turn_progress=(("python", "scripts/turn_progress.py"),),
         on_stuck_detected=(("python", "scripts/stuck_detected.py"),),
     )
@@ -403,40 +402,17 @@ def test_runtime_hooks_config_exposes_async_lifecycle_surfaces() -> None:
     assert hooks.commands_for_surface("session_start") == (("python", "scripts/session_start.py"),)
     assert hooks.commands_for_surface("session_end") == (("python", "scripts/session_end.py"),)
     assert hooks.commands_for_surface("session_idle") == (("python", "scripts/session_idle.py"),)
-    assert hooks.commands_for_surface("background_task_registered") == (
-        ("python", "scripts/task_registered.py"),
-    )
-    assert hooks.commands_for_surface("background_task_started") == (
-        ("python", "scripts/task_started.py"),
-    )
-    assert hooks.commands_for_surface("background_task_progress") == (
-        ("python", "scripts/task_progress.py"),
-    )
-    assert hooks.commands_for_surface("background_task_completed") == (
-        ("python", "scripts/task_completed.py"),
-    )
-    assert hooks.commands_for_surface("background_task_failed") == (
-        ("python", "scripts/task_failed.py"),
-    )
-    assert hooks.commands_for_surface("background_task_cancelled") == (
-        ("python", "scripts/task_cancelled.py"),
-    )
-    assert hooks.commands_for_surface("background_task_notification_enqueued") == (
-        ("python", "scripts/task_notify.py"),
-    )
-    assert hooks.commands_for_surface("background_task_result_read") == (
-        ("python", "scripts/task_result_read.py"),
-    )
-    assert hooks.commands_for_surface("delegated_result_available") == (
-        ("python", "scripts/delegated_result.py"),
-    )
-    assert hooks.commands_for_surface("context_pressure") == (
-        ("python", "scripts/context_pressure.py"),
-    )
+    assert hooks.commands_for_surface("background_task_registered") == (("python", "scripts/task_registered.py"),)
+    assert hooks.commands_for_surface("background_task_started") == (("python", "scripts/task_started.py"),)
+    assert hooks.commands_for_surface("background_task_progress") == (("python", "scripts/task_progress.py"),)
+    assert hooks.commands_for_surface("background_task_completed") == (("python", "scripts/task_completed.py"),)
+    assert hooks.commands_for_surface("background_task_failed") == (("python", "scripts/task_failed.py"),)
+    assert hooks.commands_for_surface("background_task_cancelled") == (("python", "scripts/task_cancelled.py"),)
+    assert hooks.commands_for_surface("background_task_notification_enqueued") == (("python", "scripts/task_notify.py"),)
+    assert hooks.commands_for_surface("background_task_result_read") == (("python", "scripts/task_result_read.py"),)
+    assert hooks.commands_for_surface("delegated_result_available") == (("python", "scripts/delegated_result.py"),)
     assert hooks.commands_for_surface("turn_progress") == (("python", "scripts/turn_progress.py"),)
-    assert hooks.commands_for_surface("stuck_detected") == (
-        ("python", "scripts/stuck_detected.py"),
-    )
+    assert hooks.commands_for_surface("stuck_detected") == (("python", "scripts/stuck_detected.py"),)
 
 
 def test_run_lifecycle_hooks_executes_configured_session_command_and_reports_event(
@@ -473,30 +449,6 @@ def test_run_lifecycle_hooks_executes_configured_session_command_and_reports_eve
         "hook_status": "ok",
         "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
     }
-
-
-def test_run_lifecycle_hooks_reads_cancel_action_from_stdout(tmp_path: Path) -> None:
-    hooks = RuntimeHooksConfig(
-        enabled=True,
-        on_context_pressure=((sys.executable, "-c", 'print(\'{"action": "cancel"}\')'),),
-    )
-
-    outcome = run_lifecycle_hooks(
-        LifecycleHookExecutionRequest(
-            hooks=hooks,
-            workspace=tmp_path,
-            session_id="hook-session",
-            surface="context_pressure",
-            recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
-            environment={},
-            sequence_start=11,
-            payload={"pressure_ratio": 0.9},
-        )
-    )
-
-    assert outcome.failed_error is None
-    assert outcome.action == "cancel"
-    assert outcome.events[0].payload["action"] == "cancel"
 
 
 def test_run_lifecycle_hooks_exposes_context_as_environment(tmp_path: Path) -> None:
@@ -616,9 +568,7 @@ def test_run_lifecycle_hooks_exposes_canonical_payload_json_environment(tmp_path
             (
                 sys.executable,
                 "-c",
-                "import os, pathlib; "
-                "pathlib.Path('hook-payload.json').write_text("
-                "os.environ['VOIDCODE_HOOK_PAYLOAD_JSON'])",
+                "import os, pathlib; pathlib.Path('hook-payload.json').write_text(os.environ['VOIDCODE_HOOK_PAYLOAD_JSON'])",
             ),
         ),
     )

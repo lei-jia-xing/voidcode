@@ -234,9 +234,7 @@ def test_runtime_rejects_invalid_command_workflow_mode_during_request_normalizat
     except RuntimeRequestError as exc:
         assert "unknown workflow_mode: banana" in str(exc)
     else:
-        raise AssertionError(
-            "invalid command workflow_mode should fail runtime request normalization"
-        )
+        raise AssertionError("invalid command workflow_mode should fail runtime request normalization")
 
 
 def test_runtime_preserves_command_only_workflow_mode_for_structured_unregistered_command(

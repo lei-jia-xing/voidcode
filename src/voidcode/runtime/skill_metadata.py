@@ -25,11 +25,7 @@ def loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
     # Builtin skills are catalog resources: they stay resolvable through the
     # skill tool and selected workflow refs, but they are not workspace skills
     # that were actively loaded for an ordinary run.
-    return sorted(
-        skill_name
-        for skill_name, skill in skill_registry.skills.items()
-        if skill.origin != "builtin"
-    )
+    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.origin != "builtin")
 
 
 def request_skill_names_from_metadata(

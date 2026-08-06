@@ -42,7 +42,4 @@ class ResolvedLspServerConfig:
             return False
         normalized_name = path.name.lower()
         normalized_suffix = path.suffix.lower()
-        return any(
-            normalized_suffix == extension or normalized_name == extension.removeprefix(".")
-            for extension in self.extensions
-        )
+        return any(normalized_suffix == extension or normalized_name == extension.removeprefix(".") for extension in self.extensions)

@@ -146,8 +146,9 @@ async def test_tui_waiting_stream_keeps_waiting_state(app_class: Any) -> None:
 
         assert app.current_state == "Waiting approval"
         assert app.pending_request_id == "req-1"
-        assert app.query_one("#status-panel").content == "Waiting approval"
-        assert app.query_one("#composer-input").disabled is True
+        main_screen = app.screen_stack[-2]
+        assert main_screen.query_one("#status-panel").renderable == "Waiting approval"
+        assert main_screen.query_one("#composer-input").disabled is True
 
 
 @pytest.mark.anyio
@@ -174,9 +175,7 @@ async def test_tui_renders_output_as_markdown(app_class: Any) -> None:
     app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
 
     async with app.run_test() as pilot:
-        app.on_stream_chunk_received(
-            StreamChunkReceived(_make_chunk(status="completed", output="**bold**"))
-        )
+        app.on_stream_chunk_received(StreamChunkReceived(_make_chunk(status="completed", output="**bold**")))
         app.on_stream_completed(StreamCompleted("completed"))
         await pilot.pause()
 
@@ -208,7 +207,7 @@ async def test_tui_failed_stream_stays_failed(app_class: Any) -> None:
         await pilot.pause()
 
         assert app.current_state == "Failed"
-        assert app.query_one("#status-panel").content == "Failed"
+        assert app.query_one("#status-panel").renderable == "Failed"
 
 
 @pytest.mark.anyio
@@ -285,8 +284,8 @@ async def test_tui_sidebar_updates_on_mount(app_class: Any) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        assert app.query_one("#workspace-panel").content == "workspace"
-        assert app.query_one("#lsp-panel").content == "Active: 1"
+        assert app.query_one("#workspace-panel").renderable == "workspace"
+        assert app.query_one("#lsp-panel").renderable == "Active: 1"
 
 
 @pytest.mark.anyio
@@ -408,12 +407,8 @@ async def test_tui_command_palette_view_wrap(app_class: Any) -> None:
                 assert app._tui_preferences.reading is not None
                 assert app._tui_preferences.reading.wrap is False
                 saved_preferences = mock_save.call_args.args[0]
-                assert saved_preferences.reading == RuntimeTuiReadingPreferences(
-                    wrap=False, sidebar_collapsed=True
-                )
-                assert saved_preferences.theme == RuntimeTuiThemePreferences(
-                    name="textual-dark", mode="auto"
-                )
+                assert saved_preferences.reading == RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True)
+                assert saved_preferences.theme == RuntimeTuiThemePreferences(name="textual-dark", mode="auto")
 
 
 @pytest.mark.anyio
@@ -453,9 +448,7 @@ async def test_tui_wrap_toggle_does_not_snapshot_inherited_global_theme(app_clas
                 saved_preferences = mock_save.call_args.args[0]
                 assert saved_preferences == RuntimeTuiPreferences(
                     theme=RuntimeTuiThemePreferences(name="tokyo-night", mode="dark"),
-                    reading=RuntimeTuiReadingPreferences(
-                        wrap=False, sidebar_collapsed=True
-                    ),
+                    reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=True),
                 )
 
 
@@ -486,9 +479,7 @@ async def test_tui_default_preference_changes_write_global_not_workspace(app_cla
     with patch(
         "voidcode.tui.app.load_workspace_tui_preferences",
         autospec=True,
-        return_value=RuntimeTuiPreferences(
-            reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True)
-        ),
+        return_value=RuntimeTuiPreferences(reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True)),
     ):
         with patch("voidcode.tui.app.save_global_tui_preferences") as mock_global_save:
             async with app.run_test() as pilot:
@@ -525,9 +516,7 @@ async def test_tui_global_save_does_not_snapshot_workspace_only_override(app_cla
     with patch(
         "voidcode.tui.app.load_workspace_tui_preferences",
         autospec=True,
-        return_value=RuntimeTuiPreferences(
-            reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True)
-        ),
+        return_value=RuntimeTuiPreferences(reading=RuntimeTuiReadingPreferences(sidebar_collapsed=True)),
     ):
         with patch("voidcode.tui.app.save_global_tui_preferences") as mock_save:
             async with app.run_test() as pilot:
@@ -537,9 +526,7 @@ async def test_tui_global_save_does_not_snapshot_workspace_only_override(app_cla
                 saved_preferences = mock_save.call_args.args[0]
                 assert saved_preferences == RuntimeTuiPreferences(
                     theme=RuntimeTuiThemePreferences(name="textual-dark", mode="auto"),
-                    reading=RuntimeTuiReadingPreferences(
-                        wrap=False, sidebar_collapsed=False
-                    ),
+                    reading=RuntimeTuiReadingPreferences(wrap=False, sidebar_collapsed=False),
                 )
 
 
@@ -585,9 +572,7 @@ async def test_tui_filters_transcript_events(app_class: Any) -> None:
         await pilot.pause()
 
         log = app.query_one("#transcript-log")
-        plain_text = "\\n".join(
-            "".join(segment.text for segment in line) for line in log.lines
-        )
+        plain_text = "\\n".join("".join(segment.text for segment in line) for line in log.lines)
 
         assert "read" in plain_text
         assert "runtime.internal_spam" not in plain_text
@@ -746,14 +731,7 @@ async def test_tui_tool_result_read_uses_syntax_renderable(app_class: Any) -> No
 async def test_tui_tool_result_edit_diff_coloring(app_class: Any) -> None:
     VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
 
-    diff_content = (
-        "--- a/src/foo.py\n"
-        "+++ b/src/foo.py\n"
-        "@@ -1,2 +1,2 @@\n"
-        "-old_line\n"
-        "+new_line\n"
-        " context\n"
-    )
+    diff_content = "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1,2 +1,2 @@\n-old_line\n+new_line\n context\n"
 
     mock_runtime = _mock_runtime()
     app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
@@ -900,7 +878,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
     app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
 
     async with app.run_test() as pilot:
-        assert app.query_one("#context-panel").content == "Unknown"
+        assert app.query_one("#context-panel").renderable == "Unknown"
 
         mock_session = _StubSession(
             session=_StubSessionRef(id="test-session"),
@@ -916,7 +894,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
         app.on_stream_chunk_received(StreamChunkReceived(chunk))
         await pilot.pause()
 
-        assert app.query_one("#context-panel").content == "5 results\n[Budget: 120 tokens]"
+        assert app.query_one("#context-panel").renderable == "5 results\n[Budget: 120 tokens]"
 
         mock_session_compacted = _StubSession(
             session=_StubSessionRef(id="test-session"),
@@ -930,16 +908,11 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
                 }
             },
         )
-        chunk_compacted = _StubChunk(
-            kind="event", session=mock_session_compacted, event=_runtime_event("test")
-        )
+        chunk_compacted = _StubChunk(kind="event", session=mock_session_compacted, event=_runtime_event("test"))
         app.on_stream_chunk_received(StreamChunkReceived(chunk_compacted))
         await pilot.pause()
 
-        assert (
-            app.query_one("#context-panel").content
-            == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
-        )
+        assert app.query_one("#context-panel").renderable == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
 
 
 @pytest.mark.anyio

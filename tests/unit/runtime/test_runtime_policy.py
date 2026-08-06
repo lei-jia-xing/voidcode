@@ -205,11 +205,7 @@ def test_runtime_policy_product_is_hard_denied_for_delegation() -> None:
     delegation_policy = cast(Mapping[str, object], snapshot["delegation_policy"])
     assert "product" not in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
     denied = cast(Sequence[Mapping[str, object]], delegation_policy.get("denied", ()))
-    assert any(
-        item.get("target") == "product"
-        and item.get("reason") == "delegation_denied_product_top_level_only"
-        for item in denied
-    )
+    assert any(item.get("target") == "product" and item.get("reason") == "delegation_denied_product_top_level_only" for item in denied)
 
 
 def test_runtime_policy_requires_persisted_snapshot() -> None:
@@ -238,9 +234,7 @@ def test_runtime_policy_rejects_unsupported_explicit_snapshot_versions(
         _materialize_sample_snapshot(persisted_session_policy=unsupported_snapshot)
 
     with pytest.raises(error_type, match="unsupported runtime_policy"):
-        module.runtime_policy_snapshot_from_session_metadata(
-            {"runtime_policy": unsupported_snapshot}
-        )
+        module.runtime_policy_snapshot_from_session_metadata({"runtime_policy": unsupported_snapshot})
 
 
 def test_runtime_policy_rejects_current_version_with_incomplete_shape() -> None:
@@ -249,9 +243,7 @@ def test_runtime_policy_rejects_current_version_with_incomplete_shape() -> None:
     assert error_type is not None
 
     with pytest.raises(error_type, match="missing required fields"):
-        module.runtime_policy_snapshot_from_session_metadata(
-            {"runtime_policy": {"schema_version": 1, "policy_version": "v1"}}
-        )
+        module.runtime_policy_snapshot_from_session_metadata({"runtime_policy": {"schema_version": 1, "policy_version": "v1"}})
 
 
 def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:

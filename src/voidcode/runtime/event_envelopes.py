@@ -125,14 +125,8 @@ def envelopes_for_acp_events(
                         }
                         if acp_delegation is not None
                         else {
-                            **(
-                                {"session_id": acp_session_id} if acp_session_id is not None else {}
-                            ),
-                            **(
-                                {"parent_session_id": acp_parent_session_id}
-                                if acp_parent_session_id is not None
-                                else {}
-                            ),
+                            **({"session_id": acp_session_id} if acp_session_id is not None else {}),
+                            **({"parent_session_id": acp_parent_session_id} if acp_parent_session_id is not None else {}),
                         }
                     ),
                 },

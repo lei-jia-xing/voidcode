@@ -29,11 +29,7 @@ def resolve_workspace_path(
         path_candidate = path_candidate.expanduser()
     except RuntimeError:
         path_candidate = Path(raw_path)
-    candidate = (
-        path_candidate.resolve()
-        if path_candidate.is_absolute()
-        else (workspace_root / path_candidate).resolve()
-    )
+    candidate = path_candidate.resolve() if path_candidate.is_absolute() else (workspace_root / path_candidate).resolve()
 
     is_external = not candidate.is_relative_to(workspace_root)
     if is_external and not allow_outside_workspace:
@@ -45,11 +41,7 @@ def resolve_workspace_path(
     if require_regular_file and not candidate.is_file():
         raise ValueError(regular_file_error or f"target is not a regular file: {raw_path}")
 
-    relative_path = (
-        candidate.relative_to(workspace_root).as_posix()
-        if not is_external
-        else candidate.as_posix()
-    )
+    relative_path = candidate.relative_to(workspace_root).as_posix() if not is_external else candidate.as_posix()
 
     return WorkspacePathResolution(
         workspace_root=workspace_root,

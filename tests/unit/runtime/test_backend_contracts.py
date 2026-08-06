@@ -154,9 +154,7 @@ def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
     class StubRuntime:
         def run(self, request: Any) -> Any:
             typed_request = runtime_module.RuntimeRequest(**asdict(request))
-            session = runtime_module.SessionState(
-                session=runtime_module.SessionRef(id=typed_request.session_id or "new-session")
-            )
+            session = runtime_module.SessionState(session=runtime_module.SessionRef(id=typed_request.session_id or "new-session"))
             event = runtime_module.EventEnvelope(
                 session_id=session.session.id,
                 sequence=1,

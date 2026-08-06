@@ -55,8 +55,7 @@ class LspConfigState:
             return cls()
         resolved_servers = resolve_lsp_server_configs(config.servers)
         return cls(
-            configured_enabled=(config.enabled is True)
-            or (config.enabled is None and bool(resolved_servers)),
+            configured_enabled=(config.enabled is True) or (config.enabled is None and bool(resolved_servers)),
             servers=resolved_servers,
         )
 
@@ -136,9 +135,7 @@ class DisabledLspManager:
         return self._configuration.resolve(server_name)
 
     def current_state(self) -> LspManagerState:
-        servers: dict[str, LspServerState] = {
-            name: LspServerState(name=name) for name in self._configuration.servers
-        }
+        servers: dict[str, LspServerState] = {name: LspServerState(name=name) for name in self._configuration.servers}
         return LspManagerState(configuration=self._configuration, servers=servers)
 
     def request(self, request: LspRequest) -> LspRequestResult:
@@ -247,9 +244,7 @@ _WORKSPACE_SCOPED_LSP_REGISTRY = _WorkspaceScopedLspRegistry()
 class ManagedLspManager:
     def __init__(self, config: RuntimeLspConfig) -> None:
         self._configuration = LspConfigState.from_runtime_config(config)
-        self._server_states: dict[str, LspServerState] = {
-            name: LspServerState(name=name) for name in self._configuration.servers
-        }
+        self._server_states: dict[str, LspServerState] = {name: LspServerState(name=name) for name in self._configuration.servers}
         self._running_servers: dict[str, _RunningLspServer] = {}
         self._leased_servers: dict[str, _LspServerLease] = {}
         self._pending_events: list[LspRuntimeEvent] = []
@@ -339,11 +334,7 @@ class ManagedLspManager:
             self._mark_failed(server_name=server_name, error=message)
             self._record_event(
                 LspRuntimeEvent(
-                    event_type=(
-                        "runtime.lsp_server_startup_rejected"
-                        if "reuse rejected" in message
-                        else "runtime.lsp_server_failed"
-                    ),
+                    event_type=("runtime.lsp_server_startup_rejected" if "reuse rejected" in message else "runtime.lsp_server_failed"),
                     payload={
                         "server": server_name,
                         "command": list(server_config.command),
@@ -448,11 +439,7 @@ class ManagedLspManager:
                 )
             ],
             capabilities=lsp_types.ClientCapabilities(),
-            initialization_options=(
-                dict(running_server.config.init_options)
-                if running_server.config.init_options
-                else None
-            ),
+            initialization_options=(dict(running_server.config.init_options) if running_server.config.init_options else None),
         )
         try:
             response = self._send_request(
@@ -734,9 +721,7 @@ class ManagedLspManager:
             raise ValueError("LSP server pipe closed unexpectedly") from exc
 
     @staticmethod
-    def _read_message(
-        process: subprocess.Popen[bytes], *, timeout: float = 30.0
-    ) -> dict[str, object] | None:
+    def _read_message(process: subprocess.Popen[bytes], *, timeout: float = 30.0) -> dict[str, object] | None:
         if process.stdout is None:
             raise ValueError("LSP process stdout is unavailable")
 
@@ -773,18 +758,14 @@ class ManagedLspManager:
                 try:
                     content_length = int(raw_length)
                 except ValueError as exc:
-                    raise LspProtocolError(
-                        f"invalid Content-Length from LSP server: {raw_length}"
-                    ) from exc
+                    raise LspProtocolError(f"invalid Content-Length from LSP server: {raw_length}") from exc
                 break
         if content_length is None:
             raise LspProtocolError("missing Content-Length in LSP response header")
         if content_length < 0:
             raise LspProtocolError("invalid negative Content-Length from LSP server")
         if content_length > MAX_LSP_MESSAGE_BYTES:
-            raise LspMessageBoundsError(
-                f"LSP Content-Length {content_length} exceeds {MAX_LSP_MESSAGE_BYTES} bytes"
-            )
+            raise LspMessageBoundsError(f"LSP Content-Length {content_length} exceeds {MAX_LSP_MESSAGE_BYTES} bytes")
 
         body = b""
         while len(body) < content_length:

@@ -128,9 +128,7 @@ class RuntimeFileRulesTransformProvider:
                 RuntimeContextTransformInjection(
                     role="system",
                     content=(
-                        "Runtime file rules are active for touched workspace paths.\n"
-                        f"Rule file: {rule_context.path}\n"
-                        f"{rule_context.content}"
+                        f"Runtime file rules are active for touched workspace paths.\nRule file: {rule_context.path}\n{rule_context.content}"
                     ).strip(),
                     metadata=rule_context.metadata_payload(),
                 )
@@ -208,11 +206,7 @@ class RuntimeContextTransformRegistry:
         if not provider_ids:
             return self
         allowed = frozenset(provider_ids)
-        return RuntimeContextTransformRegistry(
-            providers=tuple(
-                provider for provider in self.providers if provider.provider_id in allowed
-            )
-        )
+        return RuntimeContextTransformRegistry(providers=tuple(provider for provider in self.providers if provider.provider_id in allowed))
 
     def provider_ids(self) -> tuple[RuntimeContextTransformProviderId, ...]:
         return tuple(provider.provider_id for provider in self.ordered_providers())
@@ -236,9 +230,7 @@ class RuntimeContextTransformRegistry:
                             provider_id=provider.provider_id,
                             status="error",
                             priority=provider.priority,
-                            diagnostics=(
-                                f"context transform provider '{provider.provider_id}' failed",
-                            ),
+                            diagnostics=(f"context transform provider '{provider.provider_id}' failed",),
                             error=str(exc),
                         ),
                     ),
@@ -321,8 +313,5 @@ def validate_runtime_context_transform_refs(
             raise ValueError(f"{field_path} entries must be non-empty strings")
         if ref not in valid_refs:
             allowed = ", ".join(sorted(valid_refs))
-            raise ValueError(
-                f"{field_path} references unknown context transform provider: {ref}; "
-                f"valid providers are: {allowed}"
-            )
+            raise ValueError(f"{field_path} references unknown context transform provider: {ref}; valid providers are: {allowed}")
     return refs

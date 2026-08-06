@@ -98,8 +98,7 @@ def _assembled_context(
         if rendered_skills:
             skill_message = (
                 "You must apply the following runtime-managed skills for this turn. "
-                "Treat them as active task instructions in addition to the user's request.\n\n"
-                + "\n\n".join(rendered_skills)
+                "Treat them as active task instructions in addition to the user's request.\n\n" + "\n\n".join(rendered_skills)
             )
     if skill_message:
         segments.append(ProviderContextSegment(role="system", content=skill_message))
@@ -115,15 +114,9 @@ def _assembled_context(
     segments.append(ProviderContextSegment(role="user", content=prompt))
     for index, result in enumerate(tool_results, start=1):
         raw_tool_call_id = result.data.get("tool_call_id")
-        tool_call_id = (
-            raw_tool_call_id
-            if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
-            else f"voidcode_tool_{index}"
-        )
+        tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_tool_{index}"
         raw_arguments = result.data.get("arguments")
-        tool_arguments = (
-            cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
-        )
+        tool_arguments = cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
         segments.append(
             ProviderContextSegment(
                 role="assistant",
@@ -158,9 +151,7 @@ def _assembled_context(
     )
 
 
-def _build_turn_request(
-    *, model_name: str, reasoning_effort: str | None = None
-) -> ProviderTurnRequest:
+def _build_turn_request(*, model_name: str, reasoning_effort: str | None = None) -> ProviderTurnRequest:
     tool_results: tuple[ToolResult, ...] = ()
     return ProviderTurnRequest(
         assembled_context=_assembled_context(
@@ -169,9 +160,7 @@ def _build_turn_request(
             context_window=_StubContextWindow(prompt="read sample.txt", tool_results=tool_results),
             applied_skills=(),
         ),
-        available_tools=(
-            ToolDefinition(name="read_file", description="read file", read_only=True),
-        ),
+        available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -187,9 +176,7 @@ def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
         assembled_context=_assembled_context(
             prompt="summarize sample.txt",
             tool_results=tool_results,
-            context_window=_StubContextWindow(
-                prompt="summarize sample.txt", tool_results=tool_results
-            ),
+            context_window=_StubContextWindow(prompt="summarize sample.txt", tool_results=tool_results),
             applied_skills=(
                 {
                     "name": "summarize",
@@ -198,9 +185,7 @@ def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
                 },
             ),
         ),
-        available_tools=(
-            ToolDefinition(name="read_file", description="read file", read_only=True),
-        ),
+        available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -230,9 +215,7 @@ def _build_turn_request_with_continuity(*, model_name: str) -> ProviderTurnReque
             ),
             applied_skills=(),
         ),
-        available_tools=(
-            ToolDefinition(name="read_file", description="read file", read_only=True),
-        ),
+        available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -315,9 +298,7 @@ class _StubCompletionResponse:
 
 
 class _StubAPIError(Exception):
-    def __init__(
-        self, message: str, status_code: int | None = None, code: str | None = None
-    ) -> None:
+    def __init__(self, message: str, status_code: int | None = None, code: str | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
@@ -344,9 +325,7 @@ def _patch_litellm_completion(
         _ = args
         _LAST_REQUEST_PAYLOAD["kwargs"] = dict(kwargs)
         if api_error is not None:
-            raise _PatchedAPIError(
-                str(api_error), status_code=api_error.status_code, code=api_error.code
-            )
+            raise _PatchedAPIError(str(api_error), status_code=api_error.status_code, code=api_error.code)
         if mode == "stream":
             chunks: list[object] = [
                 _StubStreamChunk(
@@ -357,8 +336,7 @@ def _patch_litellm_completion(
                 for text, finish in stream_chunks
             ]
             chunks.extend(
-                _StubStreamChunk(text=None, finish_reason=finish, tool_calls=tool_calls_chunk)
-                for tool_calls_chunk, finish in stream_tool_chunks
+                _StubStreamChunk(text=None, finish_reason=finish, tool_calls=tool_calls_chunk) for tool_calls_chunk, finish in stream_tool_chunks
             )
             if stream_usage_tail and usage is not None:
                 chunks.append(_StubStreamUsageChunk(usage))
@@ -830,9 +808,7 @@ def test_provider_adapter_prefers_runtime_skill_prompt_context(
             tool_results=request.tool_results,
             context_window=request.context_window,
             applied_skills=(),
-            skill_prompt_context=(
-                "Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief."
-            ),
+            skill_prompt_context=("Runtime skill context\n\nSkill: summarize\nInstructions:\nBe brief."),
         ),
         available_tools=request.available_tools,
         raw_model=request.raw_model,
@@ -883,9 +859,7 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
         completion_content="hello world",
     )
 
-    result = turn_provider.propose_turn(
-        _build_turn_request_with_continuity(model_name=provider_name)
-    )
+    result = turn_provider.propose_turn(_build_turn_request_with_continuity(model_name=provider_name))
 
     assert result.output == "hello world"
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
@@ -1018,10 +992,7 @@ def test_provider_adapter_includes_truncated_tool_reference_without_full_output(
         ToolResult(
             tool_name="web_fetch",
             status="ok",
-            content=(
-                "small preview\n\n[Tool output truncated: Full output saved to: "
-                ".voidcode/tool-output/web_fetch.txt]"
-            ),
+            content=("small preview\n\n[Tool output truncated: Full output saved to: .voidcode/tool-output/web_fetch.txt]"),
             data={
                 "url": "https://example.com",
                 "truncated": True,
@@ -1331,9 +1302,7 @@ def test_provider_adapter_includes_tool_result_errors(
 ) -> None:
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
-    tool_results = (
-        ToolResult(tool_name="read_file", status="error", error="sample.txt not found"),
-    )
+    tool_results = (ToolResult(tool_name="read_file", status="error", error="sample.txt not found"),)
     request = ProviderTurnRequest(
         assembled_context=_assembled_context(
             prompt=request.prompt,
@@ -2061,9 +2030,7 @@ def test_deepseek_provider_reinjects_reasoning_content_for_tool_history(
     messages = cast(list[dict[str, object]], messages_obj)
     assistant_message = messages[1]
     assert assistant_message["role"] == "assistant"
-    assert assistant_message["reasoning_content"] == (
-        "Need to inspect the workspace before coding."
-    )
+    assert assistant_message["reasoning_content"] == ("Need to inspect the workspace before coding.")
     assert "tool_calls" in assistant_message
 
 
@@ -2324,11 +2291,7 @@ def test_provider_adapter_logs_bounded_request_diagnostics(
 
     _ = provider.propose_turn(request)
 
-    diagnostic_records = [
-        record
-        for record in caplog.records
-        if record.message.startswith("provider request diagnostics:")
-    ]
+    diagnostic_records = [record for record in caplog.records if record.message.startswith("provider request diagnostics:")]
     assert diagnostic_records
     message = diagnostic_records[-1].message
     assert "provider=opencode-go" in message
@@ -2404,9 +2367,7 @@ def test_provider_adapter_uses_runtime_assembled_context_for_model_family_overri
             tool_results=(),
             continuity_state=None,
             segments=(
-                ProviderContextSegment(
-                    role="system", content="Runtime model-family override prompt."
-                ),
+                ProviderContextSegment(role="system", content="Runtime model-family override prompt."),
                 ProviderContextSegment(role="user", content="read sample.txt"),
             ),
             metadata={},
@@ -2552,9 +2513,7 @@ def test_provider_adapter_propose_turn_uses_model_map_for_litellm_alias(
 def test_provider_adapter_passes_reasoning_effort_for_direct_litellm_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = LiteLLMModelProvider(
-        config=LiteLLMProviderConfig(base_url="http://localhost:4000")
-    ).turn_provider()
+    provider = LiteLLMModelProvider(config=LiteLLMProviderConfig(base_url="http://localhost:4000")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2627,9 +2586,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
                 context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
                 applied_skills=(),
             ),
-            available_tools=(
-                ToolDefinition(name="read_file", description="read file", read_only=True),
-            ),
+            available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
             raw_model=f"opencode-go/{model_name}",
             provider_name="opencode-go",
             model_name=model_name,
@@ -2645,11 +2602,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == model_name
     assert payload["custom_llm_provider"] == custom_provider
-    expected_api_base = (
-        "https://opencode.ai/zen/go"
-        if model_name in {"minimax-m2.7", "minimax-m2.5"}
-        else "https://opencode.ai/zen/go/v1"
-    )
+    expected_api_base = "https://opencode.ai/zen/go" if model_name in {"minimax-m2.7", "minimax-m2.5"} else "https://opencode.ai/zen/go/v1"
     assert payload["api_base"] == expected_api_base
     assert payload["api_key"] == "opencode-go-key"
     assert payload["timeout"] == 300.0
@@ -2704,9 +2657,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
                     context_window=_StubContextWindow(prompt="read README.md", tool_results=()),
                     applied_skills=(),
                 ),
-                available_tools=(
-                    ToolDefinition(name="read_file", description="read file", read_only=True),
-                ),
+                available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
                 raw_model="opencode-go/glm-5.1",
                 provider_name="opencode-go",
                 model_name="glm-5.1",
@@ -2872,15 +2823,11 @@ def test_litellm_backend_ssl_verify_is_request_scoped_under_concurrency(
         _ = args, kwargs
         api_base = kwargs.get("api_base")
         if api_base == "https://explicit.example.test/v1":
-            observations.append(
-                ("explicit", backend_module.litellm_module.ssl_verify, kwargs.get("ssl_verify"))
-            )
+            observations.append(("explicit", backend_module.litellm_module.ssl_verify, kwargs.get("ssl_verify")))
             entered_calls["explicit"].set()
             assert release_calls["explicit"].wait(timeout=2)
         else:
-            observations.append(
-                ("default", backend_module.litellm_module.ssl_verify, kwargs.get("ssl_verify"))
-            )
+            observations.append(("default", backend_module.litellm_module.ssl_verify, kwargs.get("ssl_verify")))
             entered_calls["default"].set()
             assert release_calls["default"].wait(timeout=2)
         return _StubCompletionResponse(content="ok")
@@ -2894,9 +2841,7 @@ def test_litellm_backend_ssl_verify_is_request_scoped_under_concurrency(
 
     def _run_provider(provider_name: str) -> None:
         try:
-            result = providers[provider_name].propose_turn(
-                _build_turn_request(model_name=request_models[provider_name])
-            )
+            result = providers[provider_name].propose_turn(_build_turn_request(model_name=request_models[provider_name]))
             assert result.output == "ok"
         except BaseException as exc:  # pragma: no cover - re-raised in main test thread
             thread_errors.append(exc)
@@ -2987,11 +2932,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
 def test_google_provider_api_key_uses_google_auth_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = GoogleModelProvider(
-        config=GoogleProviderConfig(
-            auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")
-        )
-    )
+    provider = GoogleModelProvider(config=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")))
     provider = provider.turn_provider()
 
     _patch_litellm_completion(
@@ -3045,10 +2986,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text=(
-                '{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, '
-                '"tool_call_id": "read_file"}'
-            ),
+            text=('{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, "tool_call_id": "read_file"}'),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -3098,10 +3036,7 @@ def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text=(
-                '{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, '
-                '"tool_call_id": "read_file"}'
-            ),
+            text=('{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, "tool_call_id": "read_file"}'),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -3443,11 +3378,7 @@ def test_copilot_provider_reads_token_from_configured_env_var(
     from voidcode.provider.config import CopilotProviderAuthConfig, CopilotProviderConfig
 
     monkeypatch.setenv("COPILOT_TOKEN", "env-copilot-token")
-    provider = CopilotModelProvider(
-        config=CopilotProviderConfig(
-            auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
-        )
-    )
+    provider = CopilotModelProvider(config=CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")))
     provider = provider.turn_provider()
 
     _patch_litellm_completion(

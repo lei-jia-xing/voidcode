@@ -186,11 +186,7 @@ class VoidCodeTUI(App[int]):
         self._global_tui_preferences = load_global_tui_preferences()
         self._workspace_tui_preferences = load_workspace_tui_preferences(workspace)
         self._effective_preferences = RuntimeTuiPreferences()
-        self._tui_preferences = (
-            tui_preferences
-            if tui_preferences is not None
-            else (self._global_tui_preferences or RuntimeTuiPreferences())
-        )
+        self._tui_preferences = tui_preferences if tui_preferences is not None else (self._global_tui_preferences or RuntimeTuiPreferences())
         self._pending_tool_progress: dict[str, dict[str, list[str]]] = {}
         self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
         self._tool_content_by_call_id: dict[str, str] = {}
@@ -214,22 +210,14 @@ class VoidCodeTUI(App[int]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-layout"):
             with Vertical(id="transcript-column"):
-                transcript_log = RichLog(
-                    id="transcript-log", markup=True, wrap=True, max_lines=2000
-                )
-                transcript_log.tooltip = (
-                    "Session transcript; Tab completes /commands, "
-                    "Shift+Tab moves focus out of the composer"
-                )
+                transcript_log = RichLog(id="transcript-log", markup=True, wrap=True, max_lines=2000)
+                transcript_log.tooltip = "Session transcript; Tab completes /commands, Shift+Tab moves focus out of the composer"
                 yield transcript_log
                 yield Static("", id="current-response")
                 yield _ComposerInput(
                     placeholder="Ask voidcode...",
                     id="composer-input",
-                    tooltip=(
-                        "Ask a question or type /expand <tool_call_id>. "
-                        "Tab completes slash commands; Shift+Tab exits the composer."
-                    ),
+                    tooltip=("Ask a question or type /expand <tool_call_id>. Tab completes slash commands; Shift+Tab exits the composer."),
                 )
             with VerticalScroll(id="sidebar-column"):
                 yield Static("Status", classes="sidebar-header")
@@ -267,9 +255,7 @@ class VoidCodeTUI(App[int]):
             self.query_one("#lsp-panel", Static).update("LSP err")
         else:
             if lsp_state.mode == "managed":
-                active_servers = [
-                    name for name, s in lsp_state.servers.items() if s.status == "running"
-                ]
+                active_servers = [name for name, s in lsp_state.servers.items() if s.status == "running"]
                 if active_servers:
                     self.query_one("#lsp-panel", Static).update(f"Active: {len(active_servers)}")
                 else:
@@ -299,9 +285,7 @@ class VoidCodeTUI(App[int]):
             self.query_one("#session-panel", Static).update("None")
             self._update_context_panel(None)
             self.query_one("#transcript-log", RichLog).clear()
-            self.query_one("#transcript-log", RichLog).write(
-                Text("--- New Session ---", style="bold")
-            )
+            self.query_one("#transcript-log", RichLog).write(Text("--- New Session ---", style="bold"))
             self.query_one("#composer-input", Input).focus()
         elif command == "session.resume":
             try:
@@ -322,9 +306,7 @@ class VoidCodeTUI(App[int]):
                     self.query_one("#session-panel", Static).update(title)
 
                     self.query_one("#transcript-log", RichLog).clear()
-                    self.query_one("#transcript-log", RichLog).write(
-                        Text(f"--- Resumed Session {short_id} ---", style="bold")
-                    )
+                    self.query_one("#transcript-log", RichLog).write(Text(f"--- Resumed Session {short_id} ---", style="bold"))
                     self._set_state("Running")
                     self._set_stream_active(True)
                     self._replay_stream(session_id)
@@ -332,9 +314,7 @@ class VoidCodeTUI(App[int]):
 
             self.push_screen(SessionListModal(sessions), _handle_session)
         elif command == "theme.switch":
-            self.push_screen(
-                ThemePickerModal(self._available_theme_names()), self._handle_theme_selection
-            )
+            self.push_screen(ThemePickerModal(self._available_theme_names()), self._handle_theme_selection)
         elif command == "theme.mode":
             self.push_screen(ThemeModePickerModal(), self._handle_theme_mode_selection)
         elif command == "view.wrap":
@@ -346,9 +326,7 @@ class VoidCodeTUI(App[int]):
         return self._effective_preferences
 
     def _apply_tui_preferences(self) -> RuntimeTuiPreferences:
-        merged_preferences = merge_runtime_tui_preferences(
-            self._tui_preferences, self._workspace_tui_preferences
-        )
+        merged_preferences = merge_runtime_tui_preferences(self._tui_preferences, self._workspace_tui_preferences)
         effective = effective_runtime_tui_preferences(merged_preferences)
         if isinstance(effective.theme.name, str) and effective.theme.name in self.available_themes:
             self.theme = effective.theme.name
@@ -356,11 +334,7 @@ class VoidCodeTUI(App[int]):
         wrap = effective.reading.wrap if effective.reading.wrap is not None else True
         self.query_one("#transcript-log", RichLog).wrap = wrap
 
-        collapsed = (
-            effective.reading.sidebar_collapsed
-            if effective.reading.sidebar_collapsed is not None
-            else False
-        )
+        collapsed = effective.reading.sidebar_collapsed if effective.reading.sidebar_collapsed is not None else False
         sidebar = self.query_one("#sidebar-column", VerticalScroll)
         sidebar.display = not collapsed
         self._effective_preferences = RuntimeTuiPreferences(
@@ -373,9 +347,7 @@ class VoidCodeTUI(App[int]):
         save_global_tui_preferences(self._tui_preferences)
 
     def _available_theme_names(self) -> list[str]:
-        theme_preferences = self._effective_preferences.theme or RuntimeTuiThemePreferences(
-            mode="auto"
-        )
+        theme_preferences = self._effective_preferences.theme or RuntimeTuiThemePreferences(mode="auto")
         mode = theme_preferences.mode
         themes = sorted(self.available_themes.items())
         if mode == "light":
@@ -402,9 +374,7 @@ class VoidCodeTUI(App[int]):
         prefs = self._tui_preferences
         theme_prefs = prefs.theme or RuntimeTuiThemePreferences()
         self._tui_preferences = RuntimeTuiPreferences(
-            theme=RuntimeTuiThemePreferences(
-                name=theme_prefs.name, mode=cast(Literal["auto", "light", "dark"], mode)
-            ),
+            theme=RuntimeTuiThemePreferences(name=theme_prefs.name, mode=cast(Literal["auto", "light", "dark"], mode)),
             reading=prefs.reading,
         )
         self._apply_tui_preferences()
@@ -429,18 +399,12 @@ class VoidCodeTUI(App[int]):
         prefs = self._tui_preferences
         effective = self._effective_preferences
         reading_prefs = prefs.reading or RuntimeTuiReadingPreferences()
-        effective_reading = effective.reading or RuntimeTuiReadingPreferences(
-            sidebar_collapsed=False
-        )
+        effective_reading = effective.reading or RuntimeTuiReadingPreferences(sidebar_collapsed=False)
         self._tui_preferences = RuntimeTuiPreferences(
             theme=prefs.theme,
             reading=RuntimeTuiReadingPreferences(
                 wrap=reading_prefs.wrap,
-                sidebar_collapsed=not (
-                    effective_reading.sidebar_collapsed
-                    if effective_reading.sidebar_collapsed is not None
-                    else False
-                ),
+                sidebar_collapsed=not (effective_reading.sidebar_collapsed if effective_reading.sidebar_collapsed is not None else False),
             ),
         )
         self._apply_tui_preferences()
@@ -475,9 +439,7 @@ class VoidCodeTUI(App[int]):
         if command == "/expand":
             self._handle_expand(arg)
             return
-        self.query_one("#transcript-log", RichLog).write(
-            Text(f"Unknown command: {command}", style="bold red")
-        )
+        self.query_one("#transcript-log", RichLog).write(Text(f"Unknown command: {command}", style="bold red"))
 
     def _handle_expand(self, tool_call_id: str) -> None:
         log = self.query_one("#transcript-log", RichLog)
@@ -507,9 +469,7 @@ class VoidCodeTUI(App[int]):
             content = self._tool_content_by_call_id.get(tool_call_id)
 
         if content is None:
-            log.write(
-                Text(f"✖ No stored output for tool_call_id: {tool_call_id}", style="bold red")
-            )
+            log.write(Text(f"✖ No stored output for tool_call_id: {tool_call_id}", style="bold red"))
             return
 
         log.write(Text(f"── /expand {tool_call_id} ──", style="bold cyan"))
@@ -602,9 +562,7 @@ class VoidCodeTUI(App[int]):
         path = cast(dict[str, object], copyable).get("path")
         return path if isinstance(path, str) and path else None
 
-    def _render_tool_request_line(
-        self, tool_name: str, display: dict[str, object] | None
-    ) -> Text:
+    def _render_tool_request_line(self, tool_name: str, display: dict[str, object] | None) -> Text:
         title = self._display_field(display, "title")
         summary = self._display_field(display, "summary")
         if title and summary:
@@ -785,9 +743,7 @@ class VoidCodeTUI(App[int]):
         return value if isinstance(value, int) else default
 
     @staticmethod
-    def _context_str_value(
-        context_window: dict[str, object], key: str, default: str = "unknown"
-    ) -> str:
+    def _context_str_value(context_window: dict[str, object], key: str, default: str = "unknown") -> str:
         value = context_window.get(key, default)
         return value if isinstance(value, str) else default
 
@@ -807,10 +763,7 @@ class VoidCodeTUI(App[int]):
         if token_budget > 0:
             text += f"\n[Budget: {token_budget} tokens]"
 
-        if (
-            self._context_int_value(context_window, "compacted", 0)
-            or context_window.get("compacted") is True
-        ):
+        if self._context_int_value(context_window, "compacted", 0) or context_window.get("compacted") is True:
             reason = self._context_str_value(context_window, "compaction_reason")
             text += f"\n[Compacted: {reason}]"
 
@@ -858,9 +811,7 @@ class VoidCodeTUI(App[int]):
 
     def _set_stream_active(self, active: bool) -> None:
         self._stream_active = active
-        self.query_one("#composer-input", Input).disabled = (
-            active or self.pending_request_id is not None
-        )
+        self.query_one("#composer-input", Input).disabled = active or self.pending_request_id is not None
 
     @work(thread=True)
     def _replay_stream(self, session_id: str) -> None:
@@ -893,9 +844,7 @@ class VoidCodeTUI(App[int]):
             self.post_message(StreamFailed(error))
 
     @work(thread=True)
-    def _resume_stream(
-        self, session_id: str, request_id: str, decision: Literal["allow", "deny"]
-    ) -> None:
+    def _resume_stream(self, session_id: str, request_id: str, decision: Literal["allow", "deny"]) -> None:
         last_status = "Idle"
         saw_chunk = False
         try:
@@ -934,10 +883,7 @@ class VoidCodeTUI(App[int]):
             event = chunk.event
             self._write_event_line(event)
 
-            if (
-                chunk.session.status == "waiting"
-                and event.event_type == "runtime.approval_requested"
-            ):
+            if chunk.session.status == "waiting" and event.event_type == "runtime.approval_requested":
                 payload = event.payload or {}
                 self.pending_request_id = str(payload.get("request_id", ""))
                 self._set_state("Waiting approval")
@@ -972,8 +918,9 @@ class VoidCodeTUI(App[int]):
     def on_stream_completed(self, message: StreamCompleted) -> None:
         self._flush_stream_preview()
         if message.final_status == "waiting":
-            self._set_state("Waiting approval")
-            self._set_stream_active(False)
+            # The waiting chunk has already updated the underlying screen and
+            # opened the approval modal. Do not query main-screen widgets while
+            # that modal is the active screen.
             return
         if message.final_status == "failed":
             self._set_state("Failed")
@@ -983,9 +930,7 @@ class VoidCodeTUI(App[int]):
 
     def on_stream_failed(self, message: StreamFailed) -> None:
         self._flush_stream_preview()
-        self.query_one("#transcript-log", RichLog).write(
-            Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red")
-        )
+        self.query_one("#transcript-log", RichLog).write(Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red"))
         self.pending_request_id = None
         self._set_state("Failed")
         self._set_stream_active(False)

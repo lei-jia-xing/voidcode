@@ -24,9 +24,7 @@ _pattern_chars = st.characters(
     max_codepoint=126,
     blacklist_characters=["\n", "\r"],
 )
-_pattern = st.text(alphabet=_pattern_chars, min_size=1, max_size=6).filter(
-    lambda value: bool(value.strip())
-)
+_pattern = st.text(alphabet=_pattern_chars, min_size=1, max_size=6).filter(lambda value: bool(value.strip()))
 
 
 def _invoke_grep(*, content: str, pattern: str) -> tuple[ToolResult, Path]:
@@ -81,24 +79,18 @@ def test_grep_tool_match_count_equals_total_reported_columns(content: str, patte
     assert result.data["path"] == "sample.txt"
     assert result.data["regex"] is False
     assert result.data["context"] == 0
-    assert result.data["match_count"] == sum(
-        len(cast(list[int], match["columns"])) for match in matches
-    )
+    assert result.data["match_count"] == sum(len(cast(list[int], match["columns"])) for match in matches)
 
 
 @CI_SETTINGS
 @given(content=_multiline_text, pattern=_pattern)
-def test_grep_tool_reports_exact_literal_line_and_column_matches(
-    content: str, pattern: str
-) -> None:
+def test_grep_tool_reports_exact_literal_line_and_column_matches(content: str, pattern: str) -> None:
     result, _ = _invoke_grep(content=content, pattern=pattern)
 
     expected_matches = _expected_matches(content=content, pattern=pattern)
 
     assert result.data["matches"] == expected_matches
-    assert result.data["match_count"] == sum(
-        len(cast(list[int], match["columns"])) for match in expected_matches
-    )
+    assert result.data["match_count"] == sum(len(cast(list[int], match["columns"])) for match in expected_matches)
 
 
 @CI_SETTINGS
@@ -110,13 +102,8 @@ def test_grep_tool_summary_matches_preview_contract(content: str, pattern: str) 
     match_count = sum(len(cast(list[int], match["columns"])) for match in expected_matches)
 
     if expected_matches:
-        preview_lines = [
-            f"sample.txt:{match['line']}: {match['text']}" for match in expected_matches[:10]
-        ]
-        expected_summary = (
-            f"Found {match_count} match(es) for {pattern!r} in sample.txt\n"
-            + "\n".join(preview_lines)
-        )
+        preview_lines = [f"sample.txt:{match['line']}: {match['text']}" for match in expected_matches[:10]]
+        expected_summary = f"Found {match_count} match(es) for {pattern!r} in sample.txt\n" + "\n".join(preview_lines)
     else:
         expected_summary = f"Found 0 match(es) for {pattern!r} in sample.txt"
 

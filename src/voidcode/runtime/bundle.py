@@ -425,11 +425,7 @@ def _strip_deferred_bundle_diagnostics(value: object) -> object | None:
                 cleaned_items.append(cleaned_item)
         return cleaned_items
     if isinstance(value, tuple):
-        return tuple(
-            cleaned_item
-            for item in value
-            if (cleaned_item := _strip_deferred_bundle_diagnostics(item)) is not None
-        )
+        return tuple(cleaned_item for item in value if (cleaned_item := _strip_deferred_bundle_diagnostics(item)) is not None)
     if isinstance(value, str) and _is_deferred_bundle_diagnostic_value(value):
         return None
     return value
@@ -488,16 +484,12 @@ def _truncate_tool_output_payload(
             cleaned[key] = _truncate_string(value, limit=limit)
             continue
         if isinstance(value, dict):
-            cleaned[key] = _truncate_tool_output_payload(
-                cast(dict[str, object], value), limit=limit
-            )
+            cleaned[key] = _truncate_tool_output_payload(cast(dict[str, object], value), limit=limit)
         elif isinstance(value, list):
             cleaned_items: list[object] = []
             for item in cast(list[object], value):
                 if isinstance(item, dict):
-                    cleaned_items.append(
-                        _truncate_tool_output_payload(cast(dict[str, object], item), limit=limit)
-                    )
+                    cleaned_items.append(_truncate_tool_output_payload(cast(dict[str, object], item), limit=limit))
                 else:
                     cleaned_items.append(item)
             cleaned[key] = cleaned_items
@@ -548,9 +540,7 @@ def _redaction_summary(options: SessionBundleOptions) -> dict[str, object]:
     if not options.include_reasoning_text:
         notes.append("Reasoning/thinking text is redacted; metadata is kept.")
     if not options.include_tool_output:
-        notes.append(
-            f"Tool output text is truncated to {options.tool_output_preview_chars} characters."
-        )
+        notes.append(f"Tool output text is truncated to {options.tool_output_preview_chars} characters.")
     else:
         notes.append("Available temp tool output artifacts are embedded in the bundle.")
     return {
@@ -615,9 +605,7 @@ class _SessionBundleBuilder:
             artifacts=artifacts,
         )
 
-    def _collect_artifacts(
-        self, *, sessions: tuple[SessionBundleSessionPayload, ...]
-    ) -> tuple[SessionBundleArtifactPayload, ...]:
+    def _collect_artifacts(self, *, sessions: tuple[SessionBundleSessionPayload, ...]) -> tuple[SessionBundleArtifactPayload, ...]:
         if not self._options.include_tool_output:
             return ()
         artifacts: list[SessionBundleArtifactPayload] = []
@@ -638,15 +626,11 @@ class _SessionBundleBuilder:
                 artifacts.append(artifact_payload)
         return tuple(artifacts)
 
-    def _build_artifact_payload(
-        self, artifact: dict[str, object]
-    ) -> SessionBundleArtifactPayload | None:
+    def _build_artifact_payload(self, artifact: dict[str, object]) -> SessionBundleArtifactPayload | None:
         artifact_id = artifact.get("artifact_id")
         if not isinstance(artifact_id, str) or artifact_id == "":
             return None
-        read_result = read_tool_output_artifact(
-            artifact, offset=0, limit=_BUNDLE_ARTIFACT_READ_LIMIT_LINES
-        )
+        read_result = read_tool_output_artifact(artifact, offset=0, limit=_BUNDLE_ARTIFACT_READ_LIMIT_LINES)
         if read_result.get("status") == "invalid":
             return None
         missing = bool(read_result.get("artifact_missing"))
@@ -678,9 +662,7 @@ class _SessionBundleBuilder:
             content_next_offset=content_next_offset,
         )
 
-    def _sanitize_diagnostics_block(
-        self, payload: dict[str, object] | None
-    ) -> dict[str, object] | None:
+    def _sanitize_diagnostics_block(self, payload: dict[str, object] | None) -> dict[str, object] | None:
         if payload is None:
             return None
         cleaned = _strip_deferred_bundle_diagnostics(payload)
@@ -691,9 +673,7 @@ class _SessionBundleBuilder:
             return dict(diagnostics)
         return _redact_dict(diagnostics)
 
-    def _collect_sessions(
-        self, *, session_id: str
-    ) -> tuple[tuple[SessionBundleSessionPayload, ...], int]:
+    def _collect_sessions(self, *, session_id: str) -> tuple[tuple[SessionBundleSessionPayload, ...], int]:
         primary = self._load_session_response(session_id=session_id)
         sessions: list[SessionBundleSessionPayload] = [self._build_session_payload(primary)]
         event_total = len(sessions[0].events)
@@ -781,9 +761,7 @@ class _SessionBundleBuilder:
             ordered.append(child_id)
         return tuple(ordered)
 
-    def _collect_background_tasks(
-        self, *, session_id: str
-    ) -> tuple[SessionBundleBackgroundTaskPayload, ...]:
+    def _collect_background_tasks(self, *, session_id: str) -> tuple[SessionBundleBackgroundTaskPayload, ...]:
         try:
             tasks = self._session_store.list_background_tasks_by_parent_session(
                 workspace=self._workspace,
@@ -793,9 +771,7 @@ class _SessionBundleBuilder:
             return ()
         return tuple(self._build_task_payload(task) for task in tasks)
 
-    def _build_task_payload(
-        self, task: StoredBackgroundTaskSummary
-    ) -> SessionBundleBackgroundTaskPayload:
+    def _build_task_payload(self, task: StoredBackgroundTaskSummary) -> SessionBundleBackgroundTaskPayload:
         try:
             full = self._session_store.load_background_task(
                 workspace=self._workspace,
@@ -889,18 +865,12 @@ def parse_session_bundle(payload: object) -> SessionBundle:
     root = _ensure_dict(payload, where="payload")
     schema = _ensure_str(root.get("schema"), where="schema")
     if schema != SESSION_BUNDLE_SCHEMA_NAME:
-        raise SessionBundleError(
-            f"unsupported session bundle schema: {schema!r}; "
-            f"this build supports {SESSION_BUNDLE_SCHEMA_NAME!r}"
-        )
+        raise SessionBundleError(f"unsupported session bundle schema: {schema!r}; this build supports {SESSION_BUNDLE_SCHEMA_NAME!r}")
     manifest_payload = _ensure_dict(root.get("manifest"), where="manifest")
-    schema_version = _ensure_int(
-        manifest_payload.get("schema_version"), where="manifest.schema_version"
-    )
+    schema_version = _ensure_int(manifest_payload.get("schema_version"), where="manifest.schema_version")
     if schema_version != SESSION_BUNDLE_SCHEMA_VERSION:
         raise SessionBundleError(
-            f"session bundle schema version {schema_version} is not supported; "
-            f"this build supports version {SESSION_BUNDLE_SCHEMA_VERSION}"
+            f"session bundle schema version {schema_version} is not supported; this build supports version {SESSION_BUNDLE_SCHEMA_VERSION}"
         )
     manifest = SessionBundleManifest(
         schema_version=schema_version,
@@ -909,25 +879,17 @@ def parse_session_bundle(payload: object) -> SessionBundle:
             where="manifest.voidcode_version",
         ),
         created_at=_ensure_int(manifest_payload.get("created_at"), where="manifest.created_at"),
-        workspace_hash=_ensure_str(
-            manifest_payload.get("workspace_hash"), where="manifest.workspace_hash"
-        ),
+        workspace_hash=_ensure_str(manifest_payload.get("workspace_hash"), where="manifest.workspace_hash"),
         platform=dict(_ensure_dict(manifest_payload.get("platform"), where="manifest.platform")),
         redaction=dict(_ensure_dict(manifest_payload.get("redaction"), where="manifest.redaction")),
-        support_mode=_ensure_bool(
-            manifest_payload.get("support_mode"), where="manifest.support_mode"
-        ),
-        session_count=_ensure_int(
-            manifest_payload.get("session_count"), where="manifest.session_count"
-        ),
+        support_mode=_ensure_bool(manifest_payload.get("support_mode"), where="manifest.support_mode"),
+        session_count=_ensure_int(manifest_payload.get("session_count"), where="manifest.session_count"),
         event_count=_ensure_int(manifest_payload.get("event_count"), where="manifest.event_count"),
         background_task_count=_ensure_int(
             manifest_payload.get("background_task_count"),
             where="manifest.background_task_count",
         ),
-        artifact_count=_ensure_int(
-            manifest_payload.get("artifact_count"), where="manifest.artifact_count"
-        ),
+        artifact_count=_ensure_int(manifest_payload.get("artifact_count"), where="manifest.artifact_count"),
     )
     sessions_raw = _ensure_list(root.get("sessions"), where="sessions")
     sessions: list[SessionBundleSessionPayload] = []
@@ -967,9 +929,7 @@ def _optional_dict(value: object) -> dict[str, object] | None:
     return dict(cast(dict[str, object], value))
 
 
-def _parse_session_payload(
-    payload: dict[str, object], *, index: int
-) -> SessionBundleSessionPayload:
+def _parse_session_payload(payload: dict[str, object], *, index: int) -> SessionBundleSessionPayload:
     session_id = _validate_bundle_session_id(
         _ensure_str(payload.get("id"), where=f"sessions[{index}].id"),
         where=f"sessions[{index}].id",
@@ -994,9 +954,7 @@ def _parse_session_payload(
     events: list[dict[str, object]] = []
     for event_index, raw_event in enumerate(events_raw):
         event_dict = _ensure_dict(raw_event, where=f"sessions[{index}].events[{event_index}]")
-        events.append(
-            _normalize_event_payload(event_dict, label=f"sessions[{index}].events[{event_index}]")
-        )
+        events.append(_normalize_event_payload(event_dict, label=f"sessions[{index}].events[{event_index}]"))
     return SessionBundleSessionPayload(
         id=session_id,
         parent_id=parent_id,
@@ -1037,9 +995,7 @@ def _validate_bundle_parent_id(value: str, *, where: str) -> str:
         raise SessionBundleError(f"session bundle {where} is invalid: {exc}") from exc
 
 
-def _parse_task_payload(
-    payload: dict[str, object], *, index: int
-) -> SessionBundleBackgroundTaskPayload:
+def _parse_task_payload(payload: dict[str, object], *, index: int) -> SessionBundleBackgroundTaskPayload:
     task_id = _ensure_str(payload.get("task_id"), where=f"background_tasks[{index}].task_id")
     status = _ensure_str(payload.get("status"), where=f"background_tasks[{index}].status")
     parent_session_id = _ensure_optional_str(
@@ -1059,12 +1015,8 @@ def _parse_task_payload(
         _required(payload, "error", where=f"background_tasks[{index}].error"),
         where=f"background_tasks[{index}].error",
     )
-    created_at = _ensure_int(
-        payload.get("created_at"), where=f"background_tasks[{index}].created_at"
-    )
-    updated_at = _ensure_int(
-        payload.get("updated_at"), where=f"background_tasks[{index}].updated_at"
-    )
+    created_at = _ensure_int(payload.get("created_at"), where=f"background_tasks[{index}].created_at")
+    updated_at = _ensure_int(payload.get("updated_at"), where=f"background_tasks[{index}].updated_at")
     return SessionBundleBackgroundTaskPayload(
         task_id=task_id,
         status=status,
@@ -1077,17 +1029,13 @@ def _parse_task_payload(
     )
 
 
-def _parse_artifact_payload(
-    payload: dict[str, object], *, index: int
-) -> SessionBundleArtifactPayload:
+def _parse_artifact_payload(payload: dict[str, object], *, index: int) -> SessionBundleArtifactPayload:
     artifact_id = _ensure_str(payload.get("artifact_id"), where=f"artifacts[{index}].artifact_id")
     raw_session_id = _required(payload, "session_id", where=f"artifacts[{index}].session_id")
     raw_tool_call_id = _required(payload, "tool_call_id", where=f"artifacts[{index}].tool_call_id")
     raw_tool_name = _required(payload, "tool_name", where=f"artifacts[{index}].tool_name")
     raw_content = _required(payload, "content", where=f"artifacts[{index}].content")
-    raw_content_next_offset = _required(
-        payload, "content_next_offset", where=f"artifacts[{index}].content_next_offset"
-    )
+    raw_content_next_offset = _required(payload, "content_next_offset", where=f"artifacts[{index}].content_next_offset")
     return SessionBundleArtifactPayload(
         artifact_id=artifact_id,
         session_id=_ensure_optional_str(raw_session_id, where=f"artifacts[{index}].session_id"),
@@ -1099,13 +1047,9 @@ def _parse_artifact_payload(
         metadata=dict(_ensure_dict(payload.get("metadata"), where=f"artifacts[{index}].metadata")),
         content=_ensure_optional_str(raw_content, where=f"artifacts[{index}].content"),
         missing=_ensure_bool(payload.get("missing"), where=f"artifacts[{index}].missing"),
-        content_truncated=_ensure_bool(
-            payload.get("content_truncated"), where=f"artifacts[{index}].content_truncated"
-        ),
+        content_truncated=_ensure_bool(payload.get("content_truncated"), where=f"artifacts[{index}].content_truncated"),
         content_next_offset=(
-            _ensure_int(raw_content_next_offset, where=f"artifacts[{index}].content_next_offset")
-            if raw_content_next_offset is not None
-            else None
+            _ensure_int(raw_content_next_offset, where=f"artifacts[{index}].content_next_offset") if raw_content_next_offset is not None else None
         ),
     )
 
@@ -1177,9 +1121,7 @@ def _decode_zip_bundle(raw: bytes) -> SessionBundle:
             try:
                 payload_bytes = archive.read(SESSION_BUNDLE_FILE_NAME)
             except KeyError as exc:
-                raise SessionBundleError(
-                    f"session bundle archive missing entry {SESSION_BUNDLE_FILE_NAME!r}"
-                ) from exc
+                raise SessionBundleError(f"session bundle archive missing entry {SESSION_BUNDLE_FILE_NAME!r}") from exc
     except zipfile.BadZipFile as exc:
         raise SessionBundleError("session bundle archive is not a valid zip file") from exc
     return _decode_json_bundle(payload_bytes)
@@ -1196,18 +1138,14 @@ def _decode_json_bundle(raw: bytes) -> SessionBundle:
 def _validate_event_source(value: str) -> EventSource:
     allowed: set[str] = {"runtime", "graph", "tool"}
     if value not in allowed:
-        raise SessionBundleError(
-            f"unknown event source {value!r}; expected one of {sorted(allowed)}"
-        )
+        raise SessionBundleError(f"unknown event source {value!r}; expected one of {sorted(allowed)}")
     return cast(EventSource, value)
 
 
 def _validate_session_status(value: str) -> SessionStatus:
     allowed: set[str] = {"idle", "running", "waiting", "completed", "failed"}
     if value not in allowed:
-        raise SessionBundleError(
-            f"unknown session status {value!r}; expected one of {sorted(allowed)}"
-        )
+        raise SessionBundleError(f"unknown session status {value!r}; expected one of {sorted(allowed)}")
     return cast(SessionStatus, value)
 
 
@@ -1245,9 +1183,7 @@ def _runtime_response_for_session(
             workspace=workspace,
         ),
     )
-    events = tuple(
-        replace(event, session_id=rebound_id) for event in _events_from_session_payload(session)
-    )
+    events = tuple(replace(event, session_id=rebound_id) for event in _events_from_session_payload(session))
     return RuntimeResponse(session=state, events=events, output=session.output)
 
 
@@ -1319,11 +1255,7 @@ def apply_session_bundle(
             workspace=workspace,
         )
         session_store.save_run(workspace=workspace, request=request, response=response)
-    skipped_tasks = sum(
-        1
-        for task in bundle.background_tasks
-        if task.child_session_id is not None and task.child_session_id not in rebound_id_for
-    )
+    skipped_tasks = sum(1 for task in bundle.background_tasks if task.child_session_id is not None and task.child_session_id not in rebound_id_for)
     return SessionBundleImportResult(
         schema=SESSION_BUNDLE_SCHEMA_NAME,
         schema_version=bundle.manifest.schema_version,
@@ -1351,9 +1283,7 @@ def _remap_parent_id(
     return rebound.get(parent_id, parent_id)
 
 
-def _default_id_collision_resolver(
-    session_store: SessionStore, workspace: Path
-) -> Callable[[str], str]:
+def _default_id_collision_resolver(session_store: SessionStore, workspace: Path) -> Callable[[str], str]:
     def resolve(original: str) -> str:
         candidate = f"{original}-imported"
         attempt = 1
@@ -1398,9 +1328,7 @@ def _resolve_target_id(
     reserved: set[str],
 ) -> str:
     validate_session_id(bundle_session_id)
-    if bundle_session_id not in reserved and not session_store.has_session(
-        workspace=workspace, session_id=bundle_session_id
-    ):
+    if bundle_session_id not in reserved and not session_store.has_session(workspace=workspace, session_id=bundle_session_id):
         return bundle_session_id
     candidate = resolver(bundle_session_id)
     attempt = 1

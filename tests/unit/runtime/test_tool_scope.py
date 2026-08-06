@@ -84,34 +84,6 @@ def test_tool_scope_resolver_preserves_shell_for_command_level_classification() 
     assert "shell_exec" in scoped.tools
     assert "write_file" not in scoped.tools
 
-
-def test_tool_scope_resolver_exposes_memory_only_in_explicit_memory_context() -> None:
-    resolver = RuntimeToolScopeResolver(memory_enabled=True)
-
-    default = resolver.scope(_registry(), agent=None, metadata=None)
-    memory_command = resolver.scope(
-        _registry(),
-        agent=None,
-        metadata={"command": {"name": "memory"}},
-    )
-
-    assert "memory_add" not in default.tools
-    assert "memory_add" in memory_command.tools
-
-
-def test_tool_scope_resolver_never_exposes_memory_when_runtime_disabled() -> None:
-    resolver = RuntimeToolScopeResolver(memory_enabled=False)
-
-    scoped = resolver.scope(
-        _registry(),
-        agent=None,
-        metadata={"memory_tools_allowed": True},
-    )
-
-    assert "memory_add" not in scoped.tools
-
-
-def test_tool_scope_resolver_reports_delegated_manifest_denial_for_known_tools() -> None:
     agent = RuntimeAgentConfig(
         preset="worker",
         manifest_tool_allowlist=("read_file",),
@@ -125,8 +97,7 @@ def test_tool_scope_resolver_reports_delegated_manifest_denial_for_known_tools()
     )
 
     assert denial == (
-        "delegation policy denied tool 'write_file' for child preset 'worker'; this preset "
-        "may only call tools allowed by its manifest tool_allowlist"
+        "delegation policy denied tool 'write_file' for child preset 'worker'; this preset may only call tools allowed by its manifest tool_allowlist"
     )
 
 

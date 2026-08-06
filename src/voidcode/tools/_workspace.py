@@ -26,11 +26,7 @@ def suggest_workspace_paths(*, workspace: Path, raw_path: str, limit: int = 5) -
     if limit < 1:
         return []
 
-    candidates = [
-        path.relative_to(workspace_root).as_posix()
-        for path in workspace_root.rglob("*")
-        if path.is_file()
-    ]
+    candidates = [path.relative_to(workspace_root).as_posix() for path in workspace_root.rglob("*") if path.is_file()]
     if not candidates:
         return []
 
@@ -41,11 +37,7 @@ def suggest_workspace_paths(*, workspace: Path, raw_path: str, limit: int = 5) -
 
     basename = Path(raw_path).name.lower()
     if basename:
-        prefix_matches = [
-            candidate
-            for candidate in candidates
-            if Path(candidate).name.lower().startswith(basename)
-        ]
+        prefix_matches = [candidate for candidate in candidates if Path(candidate).name.lower().startswith(basename)]
         if prefix_matches:
             return prefix_matches[:limit]
 

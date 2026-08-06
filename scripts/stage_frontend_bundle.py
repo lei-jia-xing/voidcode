@@ -10,9 +10,7 @@ def main() -> int:
     target = repo_root / "src" / "voidcode" / "_web_dist"
 
     if not source.is_dir() or not (source / "index.html").is_file():
-        raise SystemExit(
-            "frontend build output is missing; run `bun run build` in frontend/ before staging"
-        )
+        raise SystemExit("frontend build output is missing; run `bun run build` in frontend/ before staging")
 
     if target.exists():
         shutil.rmtree(target)

@@ -58,9 +58,7 @@ def catalog_metadata_from_payload(
         cost_per_input_token=optional_positive_float(payload.get("cost_per_input_token")),
         cost_per_output_token=optional_positive_float(payload.get("cost_per_output_token")),
         cost_per_cache_read_token=optional_positive_float(payload.get("cost_per_cache_read_token")),
-        cost_per_cache_write_token=optional_positive_float(
-            payload.get("cost_per_cache_write_token")
-        ),
+        cost_per_cache_write_token=optional_positive_float(payload.get("cost_per_cache_write_token")),
         supports_reasoning_effort=optional_bool(payload.get("supports_reasoning_effort")),
         default_reasoning_effort=optional_string(payload.get("default_reasoning_effort")),
         supports_reasoning_summary=optional_bool(payload.get("supports_reasoning_summary")),

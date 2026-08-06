@@ -12,7 +12,6 @@ from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
 from ..tools.local_custom import discover_local_custom_tools
-from ..tools.memory import MemoryAddTool, MemoryDeleteTool, MemoryListTool, MemorySearchTool
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
 from ..tools.web_fetch import WebFetchTool
@@ -20,33 +19,17 @@ from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 
-MEMORY_TOOL_NAMES = frozenset(
-    {
-        "memory_add",
-        "memory_delete",
-        "memory_list",
-        "memory_search",
-    }
-)
-
 BUILTIN_TOOL_NAMES = frozenset(
     {
         "apply_patch",
-        "ast_grep_preview",
-        "ast_grep_replace",
-        "ast_grep_search",
+        "ast_grep",
         "background_cancel",
-        "background_process_logs",
-        "background_process_start",
-        "background_process_stop",
         "background_output",
-        "background_retry",
         "edit",
         "format_file",
         "glob",
         "grep",
         "lsp",
-        *MEMORY_TOOL_NAMES,
         "multi_edit",
         "read_file",
         "question",
@@ -133,15 +116,11 @@ else:
     _ApplyPatchTool: _HookedToolFactory | None = ApplyPatchTool
 
 try:
-    from ..tools.ast_grep import AstGrepPreviewTool, AstGrepReplaceTool, AstGrepSearchTool
+    from ..tools.ast_grep import AstGrepTool
 except ImportError:
-    _AstGrepPreviewTool: _NoArgToolFactory | None = None
-    _AstGrepReplaceTool: _NoArgToolFactory | None = None
-    _AstGrepSearchTool: _NoArgToolFactory | None = None
+    _AstGrepTool: _NoArgToolFactory | None = None
 else:
-    _AstGrepPreviewTool: _NoArgToolFactory | None = AstGrepPreviewTool
-    _AstGrepReplaceTool: _NoArgToolFactory | None = AstGrepReplaceTool
-    _AstGrepSearchTool: _NoArgToolFactory | None = AstGrepSearchTool
+    _AstGrepTool: _NoArgToolFactory | None = AstGrepTool
 
 try:
     from ..tools.multi_edit import MultiEditTool
@@ -208,10 +187,6 @@ class BuiltinToolProvider:
     _question_tool: Tool | None
     _background_output_tool: Tool | None
     _background_cancel_tool: Tool | None
-    _background_retry_tool: Tool | None
-    _background_process_start_tool: Tool | None
-    _background_process_logs_tool: Tool | None
-    _background_process_stop_tool: Tool | None
 
     def __init__(
         self,
@@ -225,10 +200,6 @@ class BuiltinToolProvider:
         question_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
-        background_retry_tool: Tool | None = None,
-        background_process_start_tool: Tool | None = None,
-        background_process_logs_tool: Tool | None = None,
-        background_process_stop_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
         self._format_tool = format_tool
@@ -239,10 +210,6 @@ class BuiltinToolProvider:
         self._question_tool = question_tool
         self._background_output_tool = background_output_tool
         self._background_cancel_tool = background_cancel_tool
-        self._background_retry_tool = background_retry_tool
-        self._background_process_start_tool = background_process_start_tool
-        self._background_process_logs_tool = background_process_logs_tool
-        self._background_process_stop_tool = background_process_stop_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
         edit_tool = EditTool(hooks_config=self._hooks_config)
@@ -250,10 +217,6 @@ class BuiltinToolProvider:
             edit_tool,
             GlobTool(),
             GrepTool(),
-            MemoryAddTool(),
-            MemoryDeleteTool(),
-            MemoryListTool(),
-            MemorySearchTool(),
             ReadFileTool(),
             ShellExecTool(),
             WebFetchTool(),
@@ -285,29 +248,13 @@ class BuiltinToolProvider:
         if self._background_cancel_tool is not None:
             tools.append(self._background_cancel_tool)
 
-        if self._background_retry_tool is not None:
-            tools.append(self._background_retry_tool)
-
-        if self._background_process_start_tool is not None:
-            tools.append(self._background_process_start_tool)
-
-        if self._background_process_logs_tool is not None:
-            tools.append(self._background_process_logs_tool)
-
-        if self._background_process_stop_tool is not None:
-            tools.append(self._background_process_stop_tool)
-
         tools.extend(self._mcp_tools)
 
         # Add optional tools if available.
         if _ApplyPatchTool is not None:
             tools.append(_ApplyPatchTool(hooks_config=self._hooks_config))
-        if _AstGrepSearchTool is not None:
-            tools.append(_AstGrepSearchTool())
-        if _AstGrepPreviewTool is not None:
-            tools.append(_AstGrepPreviewTool())
-        if _AstGrepReplaceTool is not None:
-            tools.append(_AstGrepReplaceTool())
+        if _AstGrepTool is not None:
+            tools.append(_AstGrepTool())
         if _MultiEditTool is not None:
             tools.append(_MultiEditTool(hooks_config=self._hooks_config))
         if _TodoWriteTool is not None:

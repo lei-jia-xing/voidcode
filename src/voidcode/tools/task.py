@@ -76,9 +76,7 @@ class _TaskArgs(BaseModel):
             normalized.append(item.strip())
         return normalized
 
-    @field_validator(
-        "category", "subagent_type", "description", "session_id", "command", mode="after"
-    )
+    @field_validator("category", "subagent_type", "description", "session_id", "command", mode="after")
     @classmethod
     def _strip_optional_string(cls, value: str | None) -> str | None:
         if value is None:
@@ -136,10 +134,7 @@ class TaskTool:
                 },
                 "load_skills": {
                     "type": "array",
-                    "description": (
-                        "Required. Array of skill names to force-load in the child session. "
-                        "Pass [] when no extra skills are needed."
-                    ),
+                    "description": ("Required. Array of skill names to force-load in the child session. Pass [] when no extra skills are needed."),
                     "items": {
                         "type": "string",
                         "minLength": 1,
@@ -147,16 +142,12 @@ class TaskTool:
                 },
                 "category": {
                     "type": "string",
-                    "description": (
-                        "Runtime-selected child route. Provide this or subagent_type, but not both."
-                    ),
+                    "description": ("Runtime-selected child route. Provide this or subagent_type, but not both."),
                     "minLength": 1,
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": (
-                        "Explicit child preset. Provide this or category, but not both."
-                    ),
+                    "description": ("Explicit child preset. Provide this or category, but not both."),
                     "minLength": 1,
                 },
                 "description": {
@@ -272,9 +263,7 @@ class TaskTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=output
-            if isinstance(output, str) and output
-            else f"Delegated session {child_session.id}",
+            content=output if isinstance(output, str) and output else f"Delegated session {child_session.id}",
             data={
                 "session_id": child_session.id,
                 "parent_session_id": context.session_id,

@@ -18,10 +18,7 @@ class SkillRegistry:
         for skill in skills:
             existing = resolved.get(skill.name)
             if existing is not None:
-                raise ValueError(
-                    "duplicate skill name "
-                    f"'{skill.name}' discovered at {existing.entry_path} and {skill.entry_path}"
-                )
+                raise ValueError(f"duplicate skill name '{skill.name}' discovered at {existing.entry_path} and {skill.entry_path}")
             resolved[skill.name] = skill
         return cls(skills=resolved)
 
@@ -34,9 +31,7 @@ class SkillRegistry:
         loader: LocalSkillMetadataLoader | None = None,
     ) -> SkillRegistry:
         metadata_loader = loader or LocalSkillMetadataLoader()
-        return cls.from_skills(
-            metadata_loader.discover(workspace=workspace, search_paths=search_paths)
-        )
+        return cls.from_skills(metadata_loader.discover(workspace=workspace, search_paths=search_paths))
 
     def all(self) -> tuple[SkillMetadata, ...]:
         return tuple(self.skills.values())

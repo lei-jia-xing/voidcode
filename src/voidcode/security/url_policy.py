@@ -29,14 +29,7 @@ def _is_blocked_ip(address: str) -> bool:
         parsed = _normalize_ip(address)
     except ValueError:
         return False
-    return bool(
-        parsed.is_private
-        or parsed.is_loopback
-        or parsed.is_link_local
-        or parsed.is_reserved
-        or parsed.is_multicast
-        or parsed.is_unspecified
-    )
+    return bool(parsed.is_private or parsed.is_loopback or parsed.is_link_local or parsed.is_reserved or parsed.is_multicast or parsed.is_unspecified)
 
 
 def _resolve_ips(hostname: str) -> tuple[str, ...]:

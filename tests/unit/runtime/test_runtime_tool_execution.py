@@ -100,8 +100,6 @@ def test_runtime_tool_executor_streams_progress_without_runtime_kernel(tmp_path:
         )
     )
 
-    assert [item.payload for item in progress] == [
-        {"tool": "shell_exec", "stream": "stdout", "chunk": "working"}
-    ]
+    assert [item.payload for item in progress] == [{"tool": "shell_exec", "stream": "stdout", "chunk": "working"}]
     assert isinstance(result, ToolResult)
     assert result.content == "done"

@@ -411,12 +411,8 @@ def test_background_task_storage_prune_retains_sessions_referenced_by_kept_tasks
 
     assert counts["background_tasks"] == 0
     assert counts["sessions"] == 0
-    assert store.load_session_result(workspace=tmp_path, session_id="child-old").output == (
-        "old child output"
-    )
-    assert store.load_session_result(workspace=tmp_path, session_id="child-new").output == (
-        "new child output"
-    )
+    assert store.load_session_result(workspace=tmp_path, session_id="child-old").output == ("old child output")
+    assert store.load_session_result(workspace=tmp_path, session_id="child-new").output == ("new child output")
 
 
 def test_background_task_storage_prunes_interrupted_tasks_and_child_sessions(
@@ -488,16 +484,12 @@ def test_background_task_storage_prunes_interrupted_tasks_and_child_sessions(
 
     assert counts["background_tasks"] == 1
     assert counts["sessions"] == 1
-    assert [task.task.id for task in store.list_background_tasks(workspace=tmp_path)] == [
-        "task-new-completed"
-    ]
+    assert [task.task.id for task in store.list_background_tasks(workspace=tmp_path)] == ["task-new-completed"]
     with pytest.raises(ValueError, match="unknown background task: task-old-interrupted"):
         _ = store.load_background_task(workspace=tmp_path, task_id="task-old-interrupted")
     with pytest.raises(ValueError, match="unknown session: child-old"):
         _ = store.load_session_result(workspace=tmp_path, session_id="child-old")
-    assert store.load_session_result(workspace=tmp_path, session_id="child-new").output == (
-        "new child output"
-    )
+    assert store.load_session_result(workspace=tmp_path, session_id="child-new").output == ("new child output")
 
 
 def test_background_task_storage_lists_by_parent_session_and_preserves_order(
@@ -1331,9 +1323,7 @@ def test_background_task_storage_rejects_non_terminal_status_in_terminal_marker(
 
     with pytest.raises(
         ValueError,
-        match=(
-            "background task terminal status must be completed, failed, cancelled, or interrupted"
-        ),
+        match=("background task terminal status must be completed, failed, cancelled, or interrupted"),
     ):
         _ = store.mark_background_task_terminal(
             workspace=tmp_path,

@@ -110,21 +110,15 @@ class SessionStore(Protocol):
 
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult: ...
 
-    def revert_session(
-        self, *, workspace: Path, session_id: str, sequence: int
-    ) -> RuntimeSessionRevertMarker: ...
+    def revert_session(self, *, workspace: Path, session_id: str, sequence: int) -> RuntimeSessionRevertMarker: ...
 
     def undo_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker: ...
 
-    def unrevert_session(
-        self, *, workspace: Path, session_id: str
-    ) -> RuntimeSessionRevertMarker | None: ...
+    def unrevert_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker | None: ...
 
     def list_notifications(self, *, workspace: Path) -> tuple[RuntimeNotification, ...]: ...
 
-    def acknowledge_notification(
-        self, *, workspace: Path, notification_id: str
-    ) -> RuntimeNotification: ...
+    def acknowledge_notification(self, *, workspace: Path, notification_id: str) -> RuntimeNotification: ...
 
     def save_pending_approval(
         self,
@@ -135,9 +129,7 @@ class SessionStore(Protocol):
         pending_approval: PendingApproval,
     ) -> None: ...
 
-    def load_pending_approval(
-        self, *, workspace: Path, session_id: str
-    ) -> PendingApproval | None: ...
+    def load_pending_approval(self, *, workspace: Path, session_id: str) -> PendingApproval | None: ...
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None: ...
 
@@ -150,15 +142,11 @@ class SessionStore(Protocol):
         pending_question: PendingQuestion,
     ) -> None: ...
 
-    def load_pending_question(
-        self, *, workspace: Path, session_id: str
-    ) -> PendingQuestion | None: ...
+    def load_pending_question(self, *, workspace: Path, session_id: str) -> PendingQuestion | None: ...
 
     def clear_pending_question(self, *, workspace: Path, session_id: str) -> None: ...
 
-    def load_resume_checkpoint(
-        self, *, workspace: Path, session_id: str
-    ) -> dict[str, object] | None: ...
+    def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
 
     def create_background_task(
         self,
@@ -169,21 +157,13 @@ class SessionStore(Protocol):
 
     def load_background_task(self, *, workspace: Path, task_id: str) -> BackgroundTaskState: ...
 
-    def list_background_tasks(
-        self, *, workspace: Path
-    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+    def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
-    def list_queued_background_tasks(
-        self, *, workspace: Path
-    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+    def list_queued_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
-    def list_background_tasks_by_parent_session(
-        self, *, workspace: Path, parent_session_id: str
-    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+    def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
-    def load_background_task_by_child_session(
-        self, *, workspace: Path, child_session_id: str
-    ) -> BackgroundTaskState | None: ...
+    def load_background_task_by_child_session(self, *, workspace: Path, child_session_id: str) -> BackgroundTaskState | None: ...
 
     def mark_background_task_running(
         self,
@@ -253,21 +233,13 @@ class SessionStore(Protocol):
 
     def load_continuation_loop(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState: ...
 
-    def list_continuation_loops(
-        self, *, workspace: Path
-    ) -> tuple[StoredContinuationLoopSummary, ...]: ...
+    def list_continuation_loops(self, *, workspace: Path) -> tuple[StoredContinuationLoopSummary, ...]: ...
 
-    def record_continuation_loop_iteration(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState: ...
+    def record_continuation_loop_iteration(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState: ...
 
-    def mark_continuation_loop_verification_pending(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState: ...
+    def mark_continuation_loop_verification_pending(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState: ...
 
-    def mark_continuation_loop_verified(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState: ...
+    def mark_continuation_loop_verified(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState: ...
 
     def mark_continuation_loop_verification_failed(
         self,
@@ -286,9 +258,7 @@ class SessionStore(Protocol):
         error: str | None = None,
     ) -> ContinuationLoopState: ...
 
-    def cancel_continuation_loop(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState: ...
+    def cancel_continuation_loop(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState: ...
 
     def storage_diagnostics(self, *, workspace: Path) -> dict[str, object]: ...
 
@@ -313,9 +283,7 @@ class SessionStore(Protocol):
         source_session_id: str | None = None,
     ) -> MemoryRecord: ...
 
-    def list_memories(
-        self, *, workspace: Path, include_deleted: bool = False
-    ) -> tuple[MemoryRecord, ...]: ...
+    def list_memories(self, *, workspace: Path, include_deleted: bool = False) -> tuple[MemoryRecord, ...]: ...
 
     def search_memories(self, *, workspace: Path, query: str) -> tuple[MemorySearchResult, ...]: ...
 
@@ -349,14 +317,13 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 6
-    _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(
-        ("project", "preference", "feedback", "reference", "decision")
-    )
-    _RESUME_CHECKPOINT_KINDS = frozenset(
-        {"approval_wait", "question_wait", "provider_failure_retryable", "terminal"}
-    )
+    _SCHEMA_VERSION = 7
+    _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(("project", "preference", "feedback", "reference", "decision"))
+    _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal"})
     _sqlite_policy = _SQLitePolicy()
+
+    _DEFAULT_MAX_SESSIONS_PER_WORKSPACE: int = 50
+    _DEFAULT_MAX_SESSION_AGE_DAYS: int = 30
 
     _CANONICAL_SCHEMA: dict[str, tuple[tuple[str, str, int, str | None, int], ...]] = {
         "sessions": (
@@ -374,6 +341,7 @@ class SqliteSessionStore:
             ("created_at", "INTEGER", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
             ("last_event_sequence", "INTEGER", 1, None, 0),
+            ("created_at_unix_ms", "INTEGER", 0, None, 0),
         ),
         "session_events": (
             ("workspace_id", "TEXT", 1, None, 1),
@@ -541,10 +509,7 @@ class SqliteSessionStore:
                 break
             except RuntimeError as exc:
                 should_reset = (
-                    attempt == 0
-                    and self._database_path is None
-                    and not os.environ.get(DB_PATH_ENV)
-                    and self._is_schema_mismatch_runtime_error(exc)
+                    attempt == 0 and self._database_path is None and not os.environ.get(DB_PATH_ENV) and self._is_schema_mismatch_runtime_error(exc)
                 )
                 if should_reset:
                     if connection is not None:
@@ -572,9 +537,7 @@ class SqliteSessionStore:
     def _reset_storage_in_place(*, connection: sqlite3.Connection) -> None:
         table_rows = cast(
             list[sqlite3.Row],
-            connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchall(),
+            connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchall(),
         )
         for row in table_rows:
             table_name = cast(str, row["name"])
@@ -586,15 +549,11 @@ class SqliteSessionStore:
         deadline = time() + (self._sqlite_policy.busy_timeout_ms / 1_000)
         while True:
             try:
-                _ = connection.execute(
-                    f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}"
-                )
+                _ = connection.execute(f"PRAGMA busy_timeout = {self._sqlite_policy.busy_timeout_ms}")
                 _ = connection.execute("PRAGMA journal_mode = WAL")
                 _ = connection.execute(f"PRAGMA synchronous = {self._sqlite_policy.synchronous}")
                 _ = connection.execute("PRAGMA foreign_keys = ON")
-                _ = connection.execute(
-                    f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}"
-                )
+                _ = connection.execute(f"PRAGMA wal_autocheckpoint = {self._sqlite_policy.wal_autocheckpoint_pages}")
                 _ = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 return
             except sqlite3.OperationalError as exc:
@@ -631,6 +590,7 @@ class SqliteSessionStore:
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_event_sequence INTEGER NOT NULL,
+                created_at_unix_ms INTEGER,
                 PRIMARY KEY (workspace_id, session_id)
             )
             """
@@ -812,6 +772,13 @@ class SqliteSessionStore:
             )
             """
         )
+        # Migration: add created_at_unix_ms column for v6 → v7 upgrade.
+        current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current_version == 6:
+            try:
+                connection.execute("ALTER TABLE sessions ADD COLUMN created_at_unix_ms INTEGER")
+            except sqlite3.OperationalError:
+                pass  # Column already exists (idempotent)
         # Validate the freshly-created/already-present schema before stamping the
         # user_version. Stamping after validation keeps schema setup atomic from the
         # caller's perspective: if any CREATE TABLE / canonical check fails, the
@@ -828,52 +795,23 @@ class SqliteSessionStore:
         # SQLite database becomes user-global and serves multiple workspaces.
         # Additive: the strict canonical schema check ignores non-unique indexes,
         # so adding new indexes here is safe.
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS sessions_workspace_idx ON sessions(workspace_id, status, updated_at DESC)")
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS background_tasks_workspace_idx ON background_tasks(workspace_id, status, updated_at DESC)")
         _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS sessions_workspace_idx "
-            "ON sessions(workspace_id, status, updated_at DESC)"
+            "CREATE INDEX IF NOT EXISTS continuation_loops_workspace_idx ON continuation_loops(workspace_id, status, updated_at DESC)"
         )
-        _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS background_tasks_workspace_idx "
-            "ON background_tasks(workspace_id, status, updated_at DESC)"
-        )
-        _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS continuation_loops_workspace_idx "
-            "ON continuation_loops(workspace_id, status, updated_at DESC)"
-        )
-        _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS memories_workspace_idx "
-            "ON memories(workspace_id, status, updated_at)"
-        )
-        _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS memory_tags_tag_idx ON memory_tags(workspace_id, tag)"
-        )
-        _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS memory_recall_log_workspace_idx "
-            "ON memory_recall_log(workspace_id, created_at DESC)"
-        )
-        _ = connection.execute(
-            "CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx "
-            "ON session_notifications(workspace_id, session_id)"
-        )
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS memories_workspace_idx ON memories(workspace_id, status, updated_at)")
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS memory_tags_tag_idx ON memory_tags(workspace_id, tag)")
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS memory_recall_log_workspace_idx ON memory_recall_log(workspace_id, created_at DESC)")
+        _ = connection.execute("CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx ON session_notifications(workspace_id, session_id)")
 
     @staticmethod
     def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:
-        _ = connection.execute(
-            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('sessions', 0)"
-        )
-        _ = connection.execute(
-            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('background_tasks', 0)"
-        )
-        _ = connection.execute(
-            "INSERT OR IGNORE INTO storage_sequences (scope, value) "
-            "VALUES ('continuation_loops', 0)"
-        )
-        _ = connection.execute(
-            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('memories', 0)"
-        )
-        _ = connection.execute(
-            "INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)"
-        )
+        _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('sessions', 0)")
+        _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('background_tasks', 0)")
+        _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('continuation_loops', 0)")
+        _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('memories', 0)")
+        _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)")
         SqliteSessionStore._bump_sequence_floor(
             connection=connection,
             scope="sessions",
@@ -944,13 +882,8 @@ class SqliteSessionStore:
         )
 
     @staticmethod
-    def _max_existing_timestamp(
-        *, connection: sqlite3.Connection, table: str, columns: tuple[str, ...]
-    ) -> int:
-        maxima = [
-            int(connection.execute(f"SELECT COALESCE(MAX({column}), 0) FROM {table}").fetchone()[0])
-            for column in columns
-        ]
+    def _max_existing_timestamp(*, connection: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> int:
+        maxima = [int(connection.execute(f"SELECT COALESCE(MAX({column}), 0) FROM {table}").fetchone()[0]) for column in columns]
         return max(maxima, default=0)
 
     @staticmethod
@@ -961,9 +894,7 @@ class SqliteSessionStore:
         )
 
     @classmethod
-    def _assert_existing_schema_version(
-        cls, *, connection: sqlite3.Connection, database_path: Path
-    ) -> None:
+    def _assert_existing_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         """Validate persisted ``user_version`` before any schema mutation.
 
         Fresh databases are not stamped here. Version stamping is deferred until
@@ -981,6 +912,9 @@ class SqliteSessionStore:
             # continue through the idempotent CREATE TABLE path; the canonical
             # The schema assertion below rejects unsupported or corrupt tables before
             # the database is stamped as current.
+            return
+        if version == 6:
+            # Allow migration from v6 (adds created_at_unix_ms column).
             return
         cls._raise_schema_mismatch(
             database_path=database_path,
@@ -1001,16 +935,12 @@ class SqliteSessionStore:
             )
 
     @classmethod
-    def _assert_canonical_schema(
-        cls, *, connection: sqlite3.Connection, database_path: Path
-    ) -> None:
+    def _assert_canonical_schema(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         existing_tables = {
             cast(str, row["name"])
             for row in cast(
                 list[sqlite3.Row],
-                connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                ).fetchall(),
+                connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall(),
             )
         }
         missing_tables = sorted(set(cls._CANONICAL_SCHEMA) - existing_tables)
@@ -1056,9 +986,7 @@ class SqliteSessionStore:
         if unexpected_columns:
             cls._raise_schema_mismatch(
                 database_path=database_path,
-                detail=(
-                    f"table '{table_name}' has unexpected columns: {', '.join(unexpected_columns)}"
-                ),
+                detail=(f"table '{table_name}' has unexpected columns: {', '.join(unexpected_columns)}"),
             )
         if actual_columns != expected_columns:
             cls._raise_schema_mismatch(
@@ -1082,16 +1010,11 @@ class SqliteSessionStore:
         actual = ", ".join("(" + ", ".join(index) + ")" for index in sorted(actual_indexes))
         cls._raise_schema_mismatch(
             database_path=database_path,
-            detail=(
-                f"table '{table_name}' unique indexes do not match canonical runtime schema: "
-                f"expected [{expected}] got [{actual}]"
-            ),
+            detail=(f"table '{table_name}' unique indexes do not match canonical runtime schema: expected [{expected}] got [{actual}]"),
         )
 
     @staticmethod
-    def _table_columns(
-        *, connection: sqlite3.Connection, table_name: str
-    ) -> tuple[tuple[str, str, int, str | None, int], ...]:
+    def _table_columns(*, connection: sqlite3.Connection, table_name: str) -> tuple[tuple[str, str, int, str | None, int], ...]:
         return tuple(
             (
                 cast(str, row["name"]),
@@ -1107,17 +1030,13 @@ class SqliteSessionStore:
         )
 
     @staticmethod
-    def _table_unique_indexes(
-        *, connection: sqlite3.Connection, table_name: str
-    ) -> frozenset[tuple[str, ...]]:
+    def _table_unique_indexes(*, connection: sqlite3.Connection, table_name: str) -> frozenset[tuple[str, ...]]:
         return frozenset(
             tuple(
                 cast(str, column_row["name"])
                 for column_row in cast(
                     list[sqlite3.Row],
-                    connection.execute(
-                        f"PRAGMA index_info({cast(str, index_row['name'])})"
-                    ).fetchall(),
+                    connection.execute(f"PRAGMA index_info({cast(str, index_row['name'])})").fetchall(),
                 )
             )
             for index_row in cast(
@@ -1229,51 +1148,20 @@ class SqliteSessionStore:
         session_id: str,
         events: tuple[EventEnvelope, ...],
     ) -> None:
-        _ = connection.execute(
-            "DELETE FROM session_events WHERE workspace_id = ? AND session_id = ?",
-            (str(workspace), session_id),
-        )
+        """Idempotently insert session events — append-only, never deletes.
+
+        Boundary: uses INSERT OR IGNORE on the composite PK
+        (workspace_id, session_id, sequence) so existing events are never
+        modified or removed. No merge, no compaction, no truncation.
+        """
         _ = connection.executemany(
             """
-            INSERT INTO session_events (
+            INSERT OR IGNORE INTO session_events (
                 workspace_id, session_id, sequence, event_type, source, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             ((str(workspace), *payload) for payload in self._session_events_payload(events)),
         )
-
-    def _merged_session_events(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        workspace: Path,
-        session_id: str,
-        events: tuple[EventEnvelope, ...],
-    ) -> tuple[EventEnvelope, ...]:
-        existing_rows = cast(
-            list[sqlite3.Row],
-            connection.execute(
-                """
-                SELECT sequence, event_type, source, payload_json
-                FROM session_events
-                WHERE workspace_id = ? AND session_id = ?
-                ORDER BY sequence ASC
-                """,
-                (str(workspace), session_id),
-            ).fetchall(),
-        )
-        merged = {
-            cast(int, row["sequence"]): EventEnvelope(
-                session_id=session_id,
-                sequence=cast(int, row["sequence"]),
-                event_type=cast(str, row["event_type"]),
-                source=self._parse_event_source(cast(str, row["source"])),
-                payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
-            )
-            for row in existing_rows
-        }
-        merged.update({event.sequence: event for event in events})
-        return tuple(merged[sequence] for sequence in sorted(merged))
 
     @staticmethod
     def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
@@ -1370,11 +1258,7 @@ class SqliteSessionStore:
         if todo_state is None:
             return metadata
         raw_runtime_state = metadata.get("runtime_state")
-        runtime_state = (
-            dict(cast(dict[str, object], raw_runtime_state))
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
+        runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
         runtime_state["todos"] = todo_state
         return {**metadata, "runtime_state": runtime_state}
 
@@ -1402,13 +1286,20 @@ class SqliteSessionStore:
         pending_question_json: str | None,
         resume_checkpoint: dict[str, object],
     ) -> int:
+        """Persist session row metadata and todo state.
+
+        Boundary contract (storage is append-only truth, context_window is the
+        sole read-time projection layer):
+
+        - Events from ``response.events`` are stored verbatim — no merge with
+          existing events, no compaction, no truncation. Only new events are
+          inserted (idempotent via ``INSERT OR IGNORE`` on the composite PK).
+        - Metadata is bounded for safety via ``session_metadata_for_persistence``
+          (secret scrubbing, length limits) — that is a safety bound, not
+          context compaction. Context projection lives in ``context_window.py``.
+        """
         session_id = response.session.session.id
-        events = self._merged_session_events(
-            connection=connection,
-            workspace=workspace,
-            session_id=session_id,
-            events=response.events,
-        )
+        events = response.events
         persisted_metadata = session_metadata_for_persistence(
             response.session.metadata,
             events=events,
@@ -1418,6 +1309,13 @@ class SqliteSessionStore:
             workspace=workspace,
             session_id=session_id,
         )
+        created_at_unix_ms = self._read_created_at_unix_ms(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+        )
+        if created_at_unix_ms is None:
+            created_at_unix_ms = int(time() * 1000)
         updated_at = self._next_timestamp(connection=connection)
         _ = connection.execute(
             """
@@ -1425,8 +1323,8 @@ class SqliteSessionStore:
                 session_id, parent_session_id, workspace_id, status, turn, prompt, output,
                 metadata_json, pending_approval_json, pending_question_json,
                 resume_checkpoint_json, created_at, updated_at,
-                last_event_sequence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_event_sequence, created_at_unix_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -1443,19 +1341,20 @@ class SqliteSessionStore:
                 created_at,
                 updated_at,
                 self._session_last_event_sequence(events),
+                created_at_unix_ms,
             ),
-        )
-        self._replace_session_events(
-            connection=connection,
-            workspace=workspace,
-            session_id=session_id,
-            events=events,
         )
         self._replace_session_todos(
             connection=connection,
             workspace=workspace,
             session_id=session_id,
             metadata=persisted_metadata,
+        )
+        self._replace_session_events(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+            events=events,
         )
         return updated_at
 
@@ -1464,13 +1363,9 @@ class SqliteSessionStore:
         metadata: dict[str, object],
     ) -> tuple[object | None, object | None, dict[str, object]]:
         snapshot_payload = metadata.get("skill_snapshot")
-        snapshot = (
-            cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
-        )
+        snapshot = cast(dict[str, object], snapshot_payload) if isinstance(snapshot_payload, dict) else {}
         binding_payload = snapshot.get("binding_snapshot")
-        binding_snapshot = (
-            cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
-        )
+        binding_snapshot = cast(dict[str, object], binding_payload) if isinstance(binding_payload, dict) else {}
         return snapshot.get("snapshot_hash"), snapshot.get("snapshot_version"), binding_snapshot
 
     @classmethod
@@ -1481,9 +1376,7 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         kind: str,
     ) -> dict[str, object]:
-        snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(
-            response.session.metadata
-        )
+        snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(response.session.metadata)
         return {
             "version": 1,
             "kind": kind,
@@ -1548,19 +1441,13 @@ class SqliteSessionStore:
         return request_id if isinstance(request_id, str) else None
 
     @classmethod
-    def _background_task_runtime_state_from_session_row(
-        cls, row: sqlite3.Row | None
-    ) -> dict[str, object]:
+    def _background_task_runtime_state_from_session_row(cls, row: sqlite3.Row | None) -> dict[str, object]:
         if row is None:
             return cls._background_task_runtime_state_defaults()
         status = cast(str, row["status"])
         return {
-            "approval_request_id": cls._request_id_from_pending_payload(
-                cast(str | None, row["pending_approval_json"])
-            ),
-            "question_request_id": cls._request_id_from_pending_payload(
-                cast(str | None, row["pending_question_json"])
-            ),
+            "approval_request_id": cls._request_id_from_pending_payload(cast(str | None, row["pending_approval_json"])),
+            "question_request_id": cls._request_id_from_pending_payload(cast(str | None, row["pending_question_json"])),
             "cancellation_cause": None,
             "result_available": 1 if status in {"waiting", "completed", "failed"} else 0,
         }
@@ -1586,13 +1473,9 @@ class SqliteSessionStore:
             "status": cast(str, row["status"]),
             "result_available": bool(cast(int, row["result_available"])),
         }
-        reminder_state = SqliteSessionStore._delegated_reminder_state_from_payload(
-            cast(str | None, row["delegated_reminder_json"])
-        )
+        reminder_state = SqliteSessionStore._delegated_reminder_state_from_payload(cast(str | None, row["delegated_reminder_json"]))
         if reminder_state is not None:
-            durable_payload["delegated_reminder"] = (
-                SqliteSessionStore._delegated_reminder_state_payload(reminder_state)
-            )
+            durable_payload["delegated_reminder"] = SqliteSessionStore._delegated_reminder_state_payload(reminder_state)
         optional_fields: tuple[tuple[str, str], ...] = (
             ("requested_child_session_id", "requested_child_session_id"),
             ("child_session_id", "session_id"),
@@ -1649,9 +1532,7 @@ class SqliteSessionStore:
         raise ValueError(f"invalid delegated reminder stop condition: {value!r}")
 
     @classmethod
-    def _delegated_reminder_state_from_payload(
-        cls, payload: str | None
-    ) -> DelegatedReminderState | None:
+    def _delegated_reminder_state_from_payload(cls, payload: str | None) -> DelegatedReminderState | None:
         if payload is None:
             return None
         decoded = cls._decode_json_object_payload(
@@ -1701,10 +1582,7 @@ class SqliteSessionStore:
                     "question": prompt.question,
                     "header": prompt.header,
                     "multiple": prompt.multiple,
-                    "options": [
-                        {"label": option.label, "description": option.description}
-                        for option in prompt.options
-                    ],
+                    "options": [{"label": option.label, "description": option.description} for option in prompt.options],
                 }
                 for prompt in pending_question.prompts
             ],
@@ -1718,6 +1596,12 @@ class SqliteSessionStore:
         response: RuntimeResponse,
         clear_pending_approval: bool = True,
     ) -> None:
+        """Persist session row (metadata, todo state, checkpoint) for a completed run.
+
+        Boundary: this is durable storage only — no event compaction, no context
+        projection. Events are append-only via ``append_session_event``.
+        Context assembly lives in ``context_window.py``.
+        """
         session_id = response.session.session.id
         with self._write_connect(workspace) as connection:
             updated_at = self._write_session_snapshot(
@@ -1757,6 +1641,7 @@ class SqliteSessionStore:
             connection.commit()
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]:
+        self._auto_prune_sessions_for_list(workspace=workspace)
         with self._connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
@@ -1783,6 +1668,11 @@ class SqliteSessionStore:
             )
             for row in rows
         )
+
+    def _auto_prune_sessions_for_list(self, *, workspace: Path) -> None:
+        with self._write_connect(workspace) as connection:
+            self._auto_prune_sessions(connection=connection, workspace=workspace)
+            connection.commit()
 
     @staticmethod
     def _validate_memory_content(content: str) -> str:
@@ -1812,9 +1702,7 @@ class SqliteSessionStore:
             decoded_tags = json.loads(tags_payload)
         except json.JSONDecodeError as exc:
             raise ValueError("persisted memory tags JSON is malformed") from exc
-        if not isinstance(decoded_tags, list) or not all(
-            isinstance(tag, str) for tag in decoded_tags
-        ):
+        if not isinstance(decoded_tags, list) or not all(isinstance(tag, str) for tag in decoded_tags):
             raise ValueError("persisted memory tags payload must decode to a string list")
         scope = cast(str, row["scope"])
         if scope != "workspace":
@@ -1872,9 +1760,7 @@ class SqliteSessionStore:
             raise RuntimeError(f"memory was not persisted: {memory_id}")
         return record
 
-    def list_memories(
-        self, *, workspace: Path, include_deleted: bool = False
-    ) -> tuple[MemoryRecord, ...]:
+    def list_memories(self, *, workspace: Path, include_deleted: bool = False) -> tuple[MemoryRecord, ...]:
         status_clause = "" if include_deleted else "AND status = 'active'"
         with self._connect(workspace) as connection:
             rows = cast(
@@ -1906,9 +1792,7 @@ class SqliteSessionStore:
     @staticmethod
     def _score_memory(record: MemoryRecord, terms: tuple[str, ...]) -> tuple[int, tuple[str, ...]]:
         haystacks = (record.content.casefold(), *(tag.casefold() for tag in record.tags))
-        matched_terms = tuple(
-            term for term in terms if any(term in haystack for haystack in haystacks)
-        )
+        matched_terms = tuple(term for term in terms if any(term in haystack for haystack in haystacks))
         score = sum(haystack.count(term) for term in terms for haystack in haystacks)
         return score, matched_terms
 
@@ -1921,9 +1805,7 @@ class SqliteSessionStore:
             score, matched_terms = self._score_memory(record, terms)
             if score == 0:
                 continue
-            results.append(
-                MemorySearchResult(record=record, score=score, matched_terms=matched_terms)
-            )
+            results.append(MemorySearchResult(record=record, score=score, matched_terms=matched_terms))
         return tuple(
             sorted(
                 results,
@@ -2065,10 +1947,7 @@ class SqliteSessionStore:
                 "or `voidcode storage reset` to recover."
             ) from exc
         if not isinstance(decoded, dict):
-            raise RuntimeError(
-                f"persisted pending approval for session {session_id!r} is corrupt: "
-                "payload must decode to an object."
-            )
+            raise RuntimeError(f"persisted pending approval for session {session_id!r} is corrupt: payload must decode to an object.")
         data = cast(dict[str, object], decoded)
         required_fields = frozenset(field.name for field in fields(PendingApproval))
         missing_fields = sorted(required_fields - data.keys())
@@ -2095,17 +1974,10 @@ class SqliteSessionStore:
         try:
             policy_mode = _pending_permission_decision(raw_policy_mode)
         except ValueError as exc:
-            raise RuntimeError(
-                f"persisted pending approval for session {session_id!r} has invalid "
-                f"policy_mode {raw_policy_mode!r}: {exc}"
-            ) from exc
+            raise RuntimeError(f"persisted pending approval for session {session_id!r} has invalid policy_mode {raw_policy_mode!r}: {exc}") from exc
         request_event_sequence = data["request_event_sequence"]
-        if request_event_sequence is not None and (
-            not isinstance(request_event_sequence, int) or isinstance(request_event_sequence, bool)
-        ):
-            raise RuntimeError(
-                "persisted pending approval request_event_sequence must be an integer or null"
-            )
+        if request_event_sequence is not None and (not isinstance(request_event_sequence, int) or isinstance(request_event_sequence, bool)):
+            raise RuntimeError("persisted pending approval request_event_sequence must be an integer or null")
         nullable_string_fields = (
             "owner_session_id",
             "owner_parent_session_id",
@@ -2117,9 +1989,7 @@ class SqliteSessionStore:
         for field_name in nullable_string_fields:
             value = data[field_name]
             if value is not None and not isinstance(value, str):
-                raise RuntimeError(
-                    f"persisted pending approval {field_name} must be a string or null"
-                )
+                raise RuntimeError(f"persisted pending approval {field_name} must be a string or null")
         path_scope = _pending_path_scope(data["path_scope"])
         if data["path_scope"] is not None and path_scope is None:
             raise RuntimeError("persisted pending approval path_scope is invalid")
@@ -2134,26 +2004,14 @@ class SqliteSessionStore:
             reason=reason,
             policy_mode=policy_mode,
             request_event_sequence=request_event_sequence,
-            owner_session_id=(
-                data["owner_session_id"] if isinstance(data["owner_session_id"], str) else None
-            ),
-            owner_parent_session_id=(
-                data["owner_parent_session_id"]
-                if isinstance(data["owner_parent_session_id"], str)
-                else None
-            ),
-            delegated_task_id=(
-                data["delegated_task_id"] if isinstance(data["delegated_task_id"], str) else None
-            ),
+            owner_session_id=(data["owner_session_id"] if isinstance(data["owner_session_id"], str) else None),
+            owner_parent_session_id=(data["owner_parent_session_id"] if isinstance(data["owner_parent_session_id"], str) else None),
+            delegated_task_id=(data["delegated_task_id"] if isinstance(data["delegated_task_id"], str) else None),
             path_scope=path_scope,
             operation_class=operation_class,
-            canonical_path=(
-                data["canonical_path"] if isinstance(data["canonical_path"], str) else None
-            ),
+            canonical_path=(data["canonical_path"] if isinstance(data["canonical_path"], str) else None),
             matched_rule=(data["matched_rule"] if isinstance(data["matched_rule"], str) else None),
-            policy_surface=(
-                data["policy_surface"] if isinstance(data["policy_surface"], str) else None
-            ),
+            policy_surface=(data["policy_surface"] if isinstance(data["policy_surface"], str) else None),
         )
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
@@ -2179,9 +2037,7 @@ class SqliteSessionStore:
                 request=request,
                 response=response,
                 pending_approval_json=None,
-                pending_question_json=json.dumps(
-                    self._pending_question_payload(pending_question), sort_keys=True
-                ),
+                pending_question_json=json.dumps(self._pending_question_payload(pending_question), sort_keys=True),
                 resume_checkpoint=self._question_wait_resume_checkpoint(
                     request=request,
                     response=response,
@@ -2233,10 +2089,7 @@ class SqliteSessionStore:
                 "or `voidcode storage reset` to recover."
             ) from exc
         if not isinstance(decoded, dict):
-            raise RuntimeError(
-                f"persisted pending question for session {session_id!r} is corrupt: "
-                "payload must decode to an object."
-            )
+            raise RuntimeError(f"persisted pending question for session {session_id!r} is corrupt: payload must decode to an object.")
         data = cast(dict[str, object], decoded)
         required_fields = {"request_id", "tool_name", "arguments", "prompts"}
         missing_fields = sorted(required_fields - data.keys())
@@ -2248,33 +2101,22 @@ class SqliteSessionStore:
         request_id = data["request_id"]
         if not isinstance(request_id, str):
             raise RuntimeError(
-                f"persisted pending question for session {session_id!r} has invalid "
-                "request_id type; run `voidcode storage reset` to recover."
+                f"persisted pending question for session {session_id!r} has invalid request_id type; run `voidcode storage reset` to recover."
             )
         raw_prompts = data["prompts"]
         if not isinstance(raw_prompts, list):
-            raise RuntimeError(
-                f"persisted pending question for session {session_id!r} has invalid "
-                "prompts payload (must be a list)."
-            )
+            raise RuntimeError(f"persisted pending question for session {session_id!r} has invalid prompts payload (must be a list).")
         prompts: list[PendingQuestionPrompt] = []
         for prompt_index, raw_prompt in enumerate(cast(list[object], raw_prompts)):
             if not isinstance(raw_prompt, dict):
-                raise RuntimeError(
-                    f"persisted pending question for session {session_id!r} has invalid "
-                    f"prompts[{prompt_index}] (must be an object)."
-                )
+                raise RuntimeError(f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}] (must be an object).")
             prompt_payload = cast(dict[str, object], raw_prompt)
             if not {"question", "header", "multiple", "options"} <= prompt_payload.keys():
-                raise RuntimeError(
-                    f"persisted pending question for session {session_id!r} has incomplete "
-                    f"prompts[{prompt_index}] payload."
-                )
+                raise RuntimeError(f"persisted pending question for session {session_id!r} has incomplete prompts[{prompt_index}] payload.")
             raw_options = prompt_payload["options"]
             if not isinstance(raw_options, list):
                 raise RuntimeError(
-                    f"persisted pending question for session {session_id!r} has invalid "
-                    f"prompts[{prompt_index}].options (must be a list)."
+                    f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}].options (must be a list)."
                 )
             options_list: list[PendingQuestionOption] = []
             for option_index, raw_option in enumerate(cast(list[object], raw_options)):
@@ -2294,8 +2136,7 @@ class SqliteSessionStore:
                 option_description = option_payload["description"]
                 if not isinstance(option_label, str) or not isinstance(option_description, str):
                     raise RuntimeError(
-                        f"persisted pending question for session {session_id!r} has "
-                        f"invalid prompts[{prompt_index}].options[{option_index}] strings."
+                        f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}].options[{option_index}] strings."
                     )
                 options_list.append(
                     PendingQuestionOption(
@@ -2307,14 +2148,12 @@ class SqliteSessionStore:
             prompt_header = prompt_payload["header"]
             if not isinstance(prompt_question, str) or not isinstance(prompt_header, str):
                 raise RuntimeError(
-                    f"persisted pending question for session {session_id!r} has invalid "
-                    f"prompts[{prompt_index}].question/header (must be strings)."
+                    f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}].question/header (must be strings)."
                 )
             raw_multiple = prompt_payload["multiple"]
             if not isinstance(raw_multiple, bool):
                 raise RuntimeError(
-                    f"persisted pending question for session {session_id!r} has invalid "
-                    f"prompts[{prompt_index}].multiple (must be a boolean)."
+                    f"persisted pending question for session {session_id!r} has invalid prompts[{prompt_index}].multiple (must be a boolean)."
                 )
             prompts.append(
                 PendingQuestionPrompt(
@@ -2340,17 +2179,12 @@ class SqliteSessionStore:
     def clear_pending_question(self, *, workspace: Path, session_id: str) -> None:
         with self._write_connect(workspace) as connection:
             _ = connection.execute(
-                (
-                    "UPDATE sessions SET pending_question_json = NULL "
-                    "WHERE workspace_id = ? AND session_id = ?"
-                ),
+                ("UPDATE sessions SET pending_question_json = NULL WHERE workspace_id = ? AND session_id = ?"),
                 (str(workspace), session_id),
             )
             connection.commit()
 
-    def load_resume_checkpoint(
-        self, *, workspace: Path, session_id: str
-    ) -> dict[str, object] | None:
+    def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
         with self._connect(workspace) as connection:
             row = cast(
                 sqlite3.Row | None,
@@ -2380,6 +2214,13 @@ class SqliteSessionStore:
         payload: dict[str, object],
         dedupe_key: str | None = None,
     ) -> EventEnvelope | None:
+        """Append a single event to the session_events table — append-only, never modifies.
+
+        Boundary: no compaction, no merging, no truncation. Events are append-only
+        truth. Context projection (what the model sees) is handled exclusively by
+        ``context_window.py``. Both this method and ``_replace_session_events`` use
+        INSERT OR IGNORE for idempotent append-only writes.
+        """
         with self._write_connect(workspace) as connection:
             payload = self._enriched_background_task_event_payload(
                 connection=connection,
@@ -2473,9 +2314,7 @@ class SqliteSessionStore:
         question_request_id: str | None = None,
     ) -> None:
         background_task_id = response.session.metadata.get("background_task_id")
-        if not isinstance(background_task_id, str) or (
-            response.session.metadata.get("background_run") is not True
-        ):
+        if not isinstance(background_task_id, str) or (response.session.metadata.get("background_run") is not True):
             return
         routing = request.subagent_routing
         result_available = response.session.status in {"waiting", "completed", "failed"}
@@ -2486,15 +2325,9 @@ class SqliteSessionStore:
                 request_id = event.payload.get("request_id")
                 if not isinstance(request_id, str):
                     continue
-                if (
-                    event.event_type == RUNTIME_APPROVAL_REQUESTED
-                    and inferred_approval_request_id is None
-                ):
+                if event.event_type == RUNTIME_APPROVAL_REQUESTED and inferred_approval_request_id is None:
                     inferred_approval_request_id = request_id
-                if (
-                    event.event_type == RUNTIME_QUESTION_REQUESTED
-                    and inferred_question_request_id is None
-                ):
+                if event.event_type == RUNTIME_QUESTION_REQUESTED and inferred_question_request_id is None:
                     inferred_question_request_id = request_id
         updated_at = self._next_background_task_timestamp(connection=connection)
         _ = connection.execute(
@@ -2540,10 +2373,7 @@ class SqliteSessionStore:
         reminder_state = self._delegated_reminder_state_from_payload(existing_payload)
         if reminder_state is None:
             return None
-        if (
-            reminder_state.stop_condition is not None
-            and stop_condition == "already_sent_for_idle_episode"
-        ):
+        if reminder_state.stop_condition is not None and stop_condition == "already_sent_for_idle_episode":
             return existing_payload
         stopped_state = DelegatedReminderState(
             task_id=reminder_state.task_id,
@@ -2583,16 +2413,11 @@ class SqliteSessionStore:
             return payload
         return {**payload, **self._background_task_durable_payload(row)}
 
-    def _read_pending_approval_json(
-        self, *, connection: sqlite3.Connection, workspace: Path, session_id: str
-    ) -> str | None:
+    def _read_pending_approval_json(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> str | None:
         row = cast(
             sqlite3.Row | None,
             connection.execute(
-                (
-                    "SELECT pending_approval_json FROM sessions "
-                    "WHERE workspace_id = ? AND session_id = ?"
-                ),
+                ("SELECT pending_approval_json FROM sessions WHERE workspace_id = ? AND session_id = ?"),
                 (str(workspace), session_id),
             ).fetchone(),
         )
@@ -2660,8 +2485,7 @@ class SqliteSessionStore:
             (
                 event.payload
                 for event in reversed(response.events)
-                if event.event_type == "runtime.tool_completed"
-                and event.payload.get("status") != "error"
+                if event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error"
             ),
             cast(dict[str, object], {}),
         )
@@ -2682,9 +2506,7 @@ class SqliteSessionStore:
         }
 
     @staticmethod
-    def _terminal_resume_checkpoint(
-        *, request: RuntimeRequest, response: RuntimeResponse
-    ) -> dict[str, object]:
+    def _terminal_resume_checkpoint(*, request: RuntimeRequest, response: RuntimeResponse) -> dict[str, object]:
         return SqliteSessionStore._resume_checkpoint_base(
             request=request,
             response=response,
@@ -2692,9 +2514,7 @@ class SqliteSessionStore:
         )
 
     @staticmethod
-    def _run_resume_checkpoint(
-        *, request: RuntimeRequest, response: RuntimeResponse
-    ) -> dict[str, object]:
+    def _run_resume_checkpoint(*, request: RuntimeRequest, response: RuntimeResponse) -> dict[str, object]:
         if response.session.status != "failed":
             return SqliteSessionStore._terminal_resume_checkpoint(
                 request=request,
@@ -2714,10 +2534,7 @@ class SqliteSessionStore:
                 request=request,
                 response=response,
             )
-        if not any(
-            event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error"
-            for event in response.events
-        ):
+        if not any(event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error" for event in response.events):
             return SqliteSessionStore._terminal_resume_checkpoint(
                 request=request,
                 response=response,
@@ -2754,9 +2571,7 @@ class SqliteSessionStore:
                 if payload.get("error_summary") is not None:
                     tool_result["error_summary"] = str(payload.get("error_summary"))
                 if isinstance(payload.get("error_details"), dict):
-                    tool_result["error_details"] = cast(
-                        dict[str, object], payload.get("error_details")
-                    )
+                    tool_result["error_details"] = cast(dict[str, object], payload.get("error_details"))
                 if payload.get("retry_guidance") is not None:
                     tool_result["retry_guidance"] = str(payload.get("retry_guidance"))
             tool_results.append(tool_result)
@@ -2777,7 +2592,30 @@ class SqliteSessionStore:
             )
         return row is not None
 
+    def read_recent_tool_results(self, *, workspace: Path, session_id: str) -> str | None:
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT recent_tool_results_json
+                    FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        if row is None:
+            return None
+        return cast(str | None, row["recent_tool_results_json"])
+
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
+        """Return ALL persisted events for a session, unfiltered except for revert markers.
+
+        Boundary: storage returns every event — no compaction, no truncation, no
+        context-window projection. The caller (or context_window.py) decides what
+        subset to present to the model.
+        """
         return self._load_session_response(
             workspace=workspace,
             session_id=session_id,
@@ -2791,6 +2629,13 @@ class SqliteSessionStore:
         session_id: str,
         filter_reverted: bool,
     ) -> RuntimeResponse:
+        """Load a session with ALL events from durable storage.
+
+        Boundary: returns every stored event row unfiltered — no compaction,
+        no truncation, no context-driven dropping. The only filter applied is
+        the revert marker (when ``filter_reverted=True``), which is a user
+        intent, not a storage-level compaction.
+        """
         with self._connect(workspace) as connection:
             session_row = cast(
                 sqlite3.Row | None,
@@ -2823,9 +2668,7 @@ class SqliteSessionStore:
                 session_id=session_id,
             )
         metadata = self._metadata_with_todo_state(
-            normalize_persisted_session_metadata(
-                cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
-            ),
+            normalize_persisted_session_metadata(cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))),
             stored_todo_state,
         )
         session = SessionState(
@@ -2987,9 +2830,7 @@ class SqliteSessionStore:
             for row in event_rows
         )
         return (
-            normalize_persisted_session_metadata(
-                cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))
-            ),
+            normalize_persisted_session_metadata(cast(dict[str, object], json.loads(cast(str, session_row["metadata_json"])))),
             events,
         )
 
@@ -3021,9 +2862,7 @@ class SqliteSessionStore:
             ),
         )
 
-    def revert_session(
-        self, *, workspace: Path, session_id: str, sequence: int
-    ) -> RuntimeSessionRevertMarker:
+    def revert_session(self, *, workspace: Path, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
         if sequence < 1:
             raise ValueError("revert sequence must be a positive integer")
         with self._write_connect(workspace) as connection:
@@ -3057,8 +2896,7 @@ class SqliteSessionStore:
                 (
                     event
                     for event in reversed(events)
-                    if event.event_type == "runtime.request_received"
-                    and (active_cutoff is None or event.sequence < active_cutoff)
+                    if event.event_type == "runtime.request_received" and (active_cutoff is None or event.sequence < active_cutoff)
                 ),
                 None,
             )
@@ -3074,9 +2912,7 @@ class SqliteSessionStore:
             connection.commit()
             return marker
 
-    def unrevert_session(
-        self, *, workspace: Path, session_id: str
-    ) -> RuntimeSessionRevertMarker | None:
+    def unrevert_session(self, *, workspace: Path, session_id: str) -> RuntimeSessionRevertMarker | None:
         with self._write_connect(workspace) as connection:
             metadata, _events = self._session_metadata_and_events(
                 connection=connection,
@@ -3220,9 +3056,7 @@ class SqliteSessionStore:
             )
         return tuple(self._background_task_summary_from_row(row) for row in rows)
 
-    def list_queued_background_tasks(
-        self, *, workspace: Path
-    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+    def list_queued_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
         with self._connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
@@ -3239,9 +3073,7 @@ class SqliteSessionStore:
             )
         return tuple(self._background_task_summary_from_row(row) for row in rows)
 
-    def list_background_tasks_by_parent_session(
-        self, *, workspace: Path, parent_session_id: str
-    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+    def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]:
         with self._connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
@@ -3348,13 +3180,9 @@ class SqliteSessionStore:
         _ = parse_continuation_loop_strategy(loop.strategy)
         _ = parse_continuation_loop_verification_status(loop.verification_status)
         if loop.intensive and loop.verification_status == "not_required":
-            raise ValueError(
-                "intensive continuation loop verification_status must require verification"
-            )
+            raise ValueError("intensive continuation loop verification_status must require verification")
         if not loop.intensive and loop.verification_status != "not_required":
-            raise ValueError(
-                "non-intensive continuation loop verification_status must be not_required"
-            )
+            raise ValueError("non-intensive continuation loop verification_status must be not_required")
         if not loop.verification_promise:
             raise ValueError("continuation loop verification_promise must be non-empty")
         with self._write_connect(workspace) as connection:
@@ -3400,9 +3228,7 @@ class SqliteSessionStore:
             )
         return self._continuation_loop_state_from_row(row)
 
-    def list_continuation_loops(
-        self, *, workspace: Path
-    ) -> tuple[StoredContinuationLoopSummary, ...]:
+    def list_continuation_loops(self, *, workspace: Path) -> tuple[StoredContinuationLoopSummary, ...]:
         with self._connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
@@ -3420,9 +3246,7 @@ class SqliteSessionStore:
             )
         return tuple(self._continuation_loop_summary_from_row(row) for row in rows)
 
-    def record_continuation_loop_iteration(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState:
+    def record_continuation_loop_iteration(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState:
         loop_id = validate_continuation_loop_id(loop_id)
         with self._write_connect(workspace) as connection:
             current = self._continuation_loop_row(
@@ -3437,27 +3261,13 @@ class SqliteSessionStore:
             next_iteration = cast(int, current["iteration"]) + 1
             max_iterations = cast(int, current["max_iterations"])
             intensive = bool(cast(int, current["intensive"]))
-            verification_status = parse_continuation_loop_verification_status(
-                cast(str, current["verification_status"])
-            )
-            next_status: ContinuationLoopStatus = (
-                "exhausted" if next_iteration >= max_iterations and not intensive else "active"
-            )
+            verification_status = parse_continuation_loop_verification_status(cast(str, current["verification_status"]))
+            next_status: ContinuationLoopStatus = "exhausted" if next_iteration >= max_iterations and not intensive else "active"
             updated_at = self._next_continuation_loop_timestamp(connection=connection)
             finished_at = updated_at if next_status == "exhausted" else None
-            error = (
-                "continuation loop reached max iterations"
-                if next_status == "exhausted"
-                else cast(str | None, current["error"])
-            )
+            error = "continuation loop reached max iterations" if next_status == "exhausted" else cast(str | None, current["error"])
             next_verification_status = (
-                "pending"
-                if (
-                    intensive
-                    and next_iteration >= max_iterations
-                    and verification_status != "verified"
-                )
-                else verification_status
+                "pending" if (intensive and next_iteration >= max_iterations and verification_status != "verified") else verification_status
             )
             if next_verification_status == "pending" and error is None:
                 error = "intensive continuation loop reached verification pending state"
@@ -3487,9 +3297,7 @@ class SqliteSessionStore:
             connection.commit()
         return self._continuation_loop_state_from_row(updated_row)
 
-    def mark_continuation_loop_verification_pending(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState:
+    def mark_continuation_loop_verification_pending(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState:
         loop_id = validate_continuation_loop_id(loop_id)
         with self._write_connect(workspace) as connection:
             current = self._continuation_loop_row(
@@ -3500,9 +3308,7 @@ class SqliteSessionStore:
             if not bool(cast(int, current["intensive"])):
                 raise ValueError("only intensive continuation loops can require verification")
             current_status = self._parse_continuation_loop_status(cast(str, current["status"]))
-            current_verification_status = parse_continuation_loop_verification_status(
-                cast(str, current["verification_status"])
-            )
+            current_verification_status = parse_continuation_loop_verification_status(cast(str, current["verification_status"]))
             if current_status != "active" or current_verification_status == "verified":
                 connection.commit()
                 return self._continuation_loop_state_from_row(current)
@@ -3526,9 +3332,7 @@ class SqliteSessionStore:
             connection.commit()
         return self._continuation_loop_state_from_row(updated_row)
 
-    def mark_continuation_loop_verified(
-        self, *, workspace: Path, loop_id: str
-    ) -> ContinuationLoopState:
+    def mark_continuation_loop_verified(self, *, workspace: Path, loop_id: str) -> ContinuationLoopState:
         loop_id = validate_continuation_loop_id(loop_id)
         with self._write_connect(workspace) as connection:
             current = self._continuation_loop_row(
@@ -3611,9 +3415,7 @@ class SqliteSessionStore:
         error: str | None = None,
     ) -> ContinuationLoopState:
         if status not in ("completed", "cancelled", "exhausted"):
-            raise ValueError(
-                "continuation loop terminal status must be completed, cancelled, or exhausted"
-            )
+            raise ValueError("continuation loop terminal status must be completed, cancelled, or exhausted")
         loop_id = validate_continuation_loop_id(loop_id)
         with self._write_connect(workspace) as connection:
             current = self._continuation_loop_row(
@@ -3631,10 +3433,7 @@ class SqliteSessionStore:
             if (
                 bool(cast(int, current["intensive"]))
                 and status == "completed"
-                and parse_continuation_loop_verification_status(
-                    cast(str, current["verification_status"])
-                )
-                != "verified"
+                and parse_continuation_loop_verification_status(cast(str, current["verification_status"])) != "verified"
             ):
                 updated_at = self._next_continuation_loop_timestamp(connection=connection)
                 _ = connection.execute(
@@ -3720,10 +3519,7 @@ class SqliteSessionStore:
         error: str | None = None,
     ) -> BackgroundTaskState:
         if status not in ("completed", "failed", "cancelled", "interrupted"):
-            raise ValueError(
-                "background task terminal status must be completed, failed, cancelled, "
-                "or interrupted"
-            )
+            raise ValueError("background task terminal status must be completed, failed, cancelled, or interrupted")
         task_id = validate_background_task_id(task_id)
         with self._write_connect(workspace) as connection:
             current = self._background_task_runtime_row(
@@ -3881,9 +3677,7 @@ class SqliteSessionStore:
             if is_background_task_terminal(current_status):
                 connection.commit()
                 return self._background_task_state_from_row(current)
-            existing_state = self._delegated_reminder_state_from_payload(
-                cast(str | None, current["delegated_reminder_json"])
-            )
+            existing_state = self._delegated_reminder_state_from_payload(cast(str | None, current["delegated_reminder_json"]))
             if existing_state is not None and existing_state.stop_condition in {
                 "result_read",
                 "explicit_retry",
@@ -3942,9 +3736,7 @@ class SqliteSessionStore:
                 workspace=workspace,
                 task_id=task_id,
             )
-            reminder_state = self._delegated_reminder_state_from_payload(
-                cast(str | None, current["delegated_reminder_json"])
-            )
+            reminder_state = self._delegated_reminder_state_from_payload(cast(str | None, current["delegated_reminder_json"]))
             if reminder_state is None or reminder_state.idle_episode_id != idle_episode_id:
                 connection.commit()
                 return self._background_task_state_from_row(current)
@@ -4029,11 +3821,7 @@ class SqliteSessionStore:
         message: str,
         include_queued: bool = True,
     ) -> tuple[BackgroundTaskState, ...]:
-        incomplete_status_predicate = (
-            "background_tasks.status IN ('queued', 'running')"
-            if include_queued
-            else "background_tasks.status = 'running'"
-        )
+        incomplete_status_predicate = "background_tasks.status IN ('queued', 'running')" if include_queued else "background_tasks.status = 'running'"
         with self._write_connect(workspace) as connection:
             rows = cast(
                 list[sqlite3.Row],
@@ -4130,10 +3918,7 @@ class SqliteSessionStore:
                     )
                 reconciled_task_ids.append(task_id)
             connection.commit()
-        return tuple(
-            self.load_background_task(workspace=workspace, task_id=task_id)
-            for task_id in reconciled_task_ids
-        )
+        return tuple(self.load_background_task(workspace=workspace, task_id=task_id) for task_id in reconciled_task_ids)
 
     def persist_background_task_runtime_state(
         self,
@@ -4152,9 +3937,7 @@ class SqliteSessionStore:
                 workspace=workspace,
                 task_id=task_id,
             )
-            if is_background_task_terminal(
-                self._parse_background_task_status(cast(str, current["status"]))
-            ):
+            if is_background_task_terminal(self._parse_background_task_status(cast(str, current["status"]))):
                 connection.commit()
                 return self._background_task_state_from_row(current)
             updated_at = self._next_background_task_timestamp(connection=connection)
@@ -4169,22 +3952,10 @@ class SqliteSessionStore:
                 WHERE workspace_id = ? AND task_id = ?
                 """,
                 (
-                    approval_request_id
-                    if approval_request_id is not None
-                    else cast(str | None, current["approval_request_id"]),
-                    question_request_id
-                    if question_request_id is not None
-                    else cast(str | None, current["question_request_id"]),
-                    cancellation_cause
-                    if cancellation_cause is not None
-                    else cast(str | None, current["cancellation_cause"]),
-                    (
-                        1
-                        if result_available
-                        else 0
-                        if result_available is not None
-                        else cast(int, current["result_available"])
-                    ),
+                    approval_request_id if approval_request_id is not None else cast(str | None, current["approval_request_id"]),
+                    question_request_id if question_request_id is not None else cast(str | None, current["question_request_id"]),
+                    cancellation_cause if cancellation_cause is not None else cast(str | None, current["cancellation_cause"]),
+                    (1 if result_available else 0 if result_available is not None else cast(int, current["result_available"])),
                     updated_at,
                     str(workspace),
                     task_id,
@@ -4222,9 +3993,7 @@ class SqliteSessionStore:
             started_at_unix_ms=cast(int | None, row["started_at_unix_ms"]),
             finished_at_unix_ms=cast(int | None, row["finished_at_unix_ms"]),
             cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
-            delegated_reminder=self._delegated_reminder_state_from_payload(
-                cast(str | None, row["delegated_reminder_json"])
-            ),
+            delegated_reminder=self._delegated_reminder_state_from_payload(cast(str | None, row["delegated_reminder_json"])),
         )
 
     @staticmethod
@@ -4284,9 +4053,7 @@ class SqliteSessionStore:
             iteration=cast(int, row["iteration"]),
             intensive=bool(cast(int, row["intensive"])),
             strategy=parse_continuation_loop_strategy(cast(str, row["strategy"])),
-            verification_status=parse_continuation_loop_verification_status(
-                cast(str, row["verification_status"])
-            ),
+            verification_status=parse_continuation_loop_verification_status(cast(str, row["verification_status"])),
             verification_promise=cast(str, row["verification_promise"]),
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
@@ -4295,9 +4062,7 @@ class SqliteSessionStore:
             error=cast(str | None, row["error"]),
         )
 
-    def _continuation_loop_summary_from_row(
-        self, row: sqlite3.Row
-    ) -> StoredContinuationLoopSummary:
+    def _continuation_loop_summary_from_row(self, row: sqlite3.Row) -> StoredContinuationLoopSummary:
         return StoredContinuationLoopSummary(
             loop=ContinuationLoopRef(id=cast(str, row["loop_id"])),
             status=self._parse_continuation_loop_status(cast(str, row["status"])),
@@ -4306,9 +4071,7 @@ class SqliteSessionStore:
             iteration=cast(int, row["iteration"]),
             max_iterations=cast(int, row["max_iterations"]),
             intensive=bool(cast(int, row["intensive"])),
-            verification_status=parse_continuation_loop_verification_status(
-                cast(str, row["verification_status"])
-            ),
+            verification_status=parse_continuation_loop_verification_status(cast(str, row["verification_status"])),
             verification_promise=cast(str, row["verification_promise"]),
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
@@ -4349,9 +4112,7 @@ class SqliteSessionStore:
         )
         return self._background_task_runtime_state_from_session_row(row)
 
-    def acknowledge_notification(
-        self, *, workspace: Path, notification_id: str
-    ) -> RuntimeNotification:
+    def acknowledge_notification(self, *, workspace: Path, notification_id: str) -> RuntimeNotification:
         with self._write_connect(workspace) as connection:
             existing_row = cast(
                 sqlite3.Row | None,
@@ -4570,9 +4331,7 @@ class SqliteSessionStore:
             "wal": database_path.with_name(f"{database_path.name}-wal"),
             "shm": database_path.with_name(f"{database_path.name}-shm"),
         }
-        return {
-            name: path.stat().st_size if path.exists() else 0 for name, path in candidates.items()
-        }
+        return {name: path.stat().st_size if path.exists() else 0 for name, path in candidates.items()}
 
     @staticmethod
     def _storage_table_counts(*, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
@@ -4620,9 +4379,7 @@ class SqliteSessionStore:
         return counts
 
     @staticmethod
-    def _background_task_status_counts(
-        *, connection: sqlite3.Connection, workspace: Path
-    ) -> dict[str, int]:
+    def _background_task_status_counts(*, connection: sqlite3.Connection, workspace: Path) -> dict[str, int]:
         return {
             cast(str, row["status"]): cast(int, row["count"])
             for row in cast(
@@ -4675,10 +4432,7 @@ class SqliteSessionStore:
         parameters: tuple[object, ...] = (*ids, str(workspace)) if workspace is not None else ids
         return int(
             connection.execute(
-                (
-                    f"SELECT COUNT(*) FROM {table} "
-                    f"WHERE {column} IN ({placeholders}){workspace_clause}"
-                ),
+                (f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders}){workspace_clause}"),
                 parameters,
             ).fetchone()[0]
         )
@@ -4808,6 +4562,56 @@ class SqliteSessionStore:
             tuple(parameters),
         ).fetchall()
         return tuple(cast(str, row["task_id"]) for row in cast(list[sqlite3.Row], rows))
+
+    def _auto_prune_sessions(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+    ) -> int:
+        age_cutoff_ms = int((time() - self._DEFAULT_MAX_SESSION_AGE_DAYS * 86_400) * 1000)
+        age_rows = cast(
+            list[sqlite3.Row],
+            connection.execute(
+                """
+                SELECT session_id FROM sessions
+                WHERE workspace_id = ?
+                  AND status IN ('completed', 'failed')
+                  AND created_at_unix_ms IS NOT NULL
+                  AND created_at_unix_ms < ?
+                ORDER BY created_at_unix_ms ASC, session_id ASC
+                """,
+                (str(workspace), age_cutoff_ms),
+            ).fetchall(),
+        )
+        age_ids = tuple(cast(str, row["session_id"]) for row in age_rows)
+
+        count_ids = self._prunable_session_ids(
+            connection=connection,
+            workspace=workspace,
+            keep_sessions=self._DEFAULT_MAX_SESSIONS_PER_WORKSPACE,
+            older_than=None,
+            protected_session_ids=(),
+        )
+        pruned_ids = tuple(dict.fromkeys(count_ids + age_ids))
+        if not pruned_ids:
+            return 0
+
+        for table in (
+            "session_events",
+            "session_todos",
+            "session_event_deliveries",
+            "session_notifications",
+            "sessions",
+        ):
+            self._delete_for_ids(
+                connection=connection,
+                table=table,
+                column="session_id",
+                ids=pruned_ids,
+                workspace=workspace,
+            )
+        return len(pruned_ids)
 
     @staticmethod
     def _result_summary(*, response: RuntimeResponse, prompt: str) -> tuple[str, str | None]:
@@ -5031,10 +4835,7 @@ class SqliteSessionStore:
                         "header": prompt.header,
                         "question": prompt.question,
                         "multiple": prompt.multiple,
-                        "options": [
-                            {"label": option.label, "description": option.description}
-                            for option in prompt.options
-                        ],
+                        "options": [{"label": option.label, "description": option.description} for option in prompt.options],
                     }
                     for prompt in pending_question.prompts
                 ],
@@ -5091,9 +4892,7 @@ class SqliteSessionStore:
             payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
         )
 
-    def _read_created_at(
-        self, *, connection: sqlite3.Connection, workspace: Path, session_id: str
-    ) -> int:
+    def _read_created_at(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
         row = cast(
             sqlite3.Row | None,
             connection.execute(
@@ -5104,6 +4903,18 @@ class SqliteSessionStore:
         if row is not None:
             return cast(int, row["created_at"])
         return self._next_auxiliary_timestamp(connection=connection)
+
+    def _read_created_at_unix_ms(self, *, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int | None:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT created_at_unix_ms FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if row is not None and row["created_at_unix_ms"] is not None:
+            return cast(int, row["created_at_unix_ms"])
+        return None
 
     @staticmethod
     def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int:

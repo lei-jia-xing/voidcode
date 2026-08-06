@@ -154,9 +154,7 @@ def test_parse_mcp_config_defaults_transport_and_preserves_public_dataclasses() 
         pytest.param([], "runtime config field 'mcp'", id="mcp-shape"),
         pytest.param({"enabled": "yes"}, "runtime config field 'mcp.enabled'", id="enabled-type"),
         pytest.param({"servers": []}, "runtime config field 'mcp.servers'", id="servers-shape"),
-        pytest.param(
-            {"servers": {"echo": []}}, "runtime config field 'mcp.servers.echo'", id="server-shape"
-        ),
+        pytest.param({"servers": {"echo": []}}, "runtime config field 'mcp.servers.echo'", id="server-shape"),
         pytest.param(
             {"servers": {"echo": {"command": [False]}}},
             "runtime config field 'mcp.servers.echo.command\\[0\\]'",

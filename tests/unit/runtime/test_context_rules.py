@@ -49,9 +49,7 @@ def test_runtime_file_rule_contexts_ignore_external_paths(tmp_path: Path) -> Non
         ),
     )
 
-    assert [(context.path, context.content) for context in contexts] == [
-        ("AGENTS.md", "Root rules")
-    ]
+    assert [(context.path, context.content) for context in contexts] == [("AGENTS.md", "Root rules")]
 
 
 def test_runtime_file_rule_contexts_load_root_rules_without_touched_paths(tmp_path: Path) -> None:
@@ -60,9 +58,7 @@ def test_runtime_file_rule_contexts_load_root_rules_without_touched_paths(tmp_pa
 
     contexts = runtime_file_rule_contexts(workspace=workspace, tool_results=())
 
-    assert [(context.path, context.content) for context in contexts] == [
-        ("AGENTS.md", "Root rules")
-    ]
+    assert [(context.path, context.content) for context in contexts] == [("AGENTS.md", "Root rules")]
 
 
 def test_runtime_file_rule_contexts_cap_preserves_nearest_rules(tmp_path: Path) -> None:
@@ -115,9 +111,7 @@ def test_runtime_file_rule_contexts_skip_invalid_utf8_rule_files(tmp_path: Path)
         ),
     )
 
-    assert [(context.path, context.content) for context in contexts] == [
-        ("src/AGENTS.md", "Src rules")
-    ]
+    assert [(context.path, context.content) for context in contexts] == [("src/AGENTS.md", "Src rules")]
 
 
 def test_runtime_file_rule_contexts_extracts_apply_patch_change_paths(

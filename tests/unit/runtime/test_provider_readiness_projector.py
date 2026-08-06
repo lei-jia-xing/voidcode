@@ -12,9 +12,7 @@ from voidcode.runtime.provider_inspection import (
     ("facts", "expected_status", "expected_ok"),
     [
         (
-            ProviderReadinessFacts(
-                provider="openai", model="gpt-4o", configured=True, auth_present=True
-            ),
+            ProviderReadinessFacts(provider="openai", model="gpt-4o", configured=True, auth_present=True),
             "ready",
             True,
         ),
@@ -35,16 +33,12 @@ from voidcode.runtime.provider_inspection import (
             False,
         ),
         (
-            ProviderReadinessFacts(
-                provider="custom", model="model-a", configured=False, auth_present=None
-            ),
+            ProviderReadinessFacts(provider="custom", model="model-a", configured=False, auth_present=None),
             "unconfigured",
             False,
         ),
         (
-            ProviderReadinessFacts(
-                provider="openai", model="gpt-4o", configured=True, auth_present=False
-            ),
+            ProviderReadinessFacts(provider="openai", model="gpt-4o", configured=True, auth_present=False),
             "missing_auth",
             False,
         ),

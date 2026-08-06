@@ -98,10 +98,7 @@ class ProviderGraph:
         if (
             self._pending_tool_calls
             and self._pending_tool_calls_session_id == session_id
-            and (
-                self._pending_tool_calls_run_id == run_id
-                or self._is_approval_resume(request.metadata)
-            )
+            and (self._pending_tool_calls_run_id == run_id or self._is_approval_resume(request.metadata))
             and self._pending_tool_calls_min_tool_result_count is not None
             and len(tool_results) >= self._pending_tool_calls_min_tool_result_count
         ):
@@ -261,11 +258,7 @@ class ProviderGraph:
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
                 if stream_event.text is not None:
                     output_parts.append(stream_event.text)
-            if (
-                stream_event.kind in {"delta", "content"}
-                and stream_event.channel == "tool"
-                and stream_event.text is not None
-            ):
+            if stream_event.kind in {"delta", "content"} and stream_event.channel == "tool" and stream_event.text is not None:
                 tool_payload_parts.append(stream_event.text)
             if stream_event.kind == "error":
                 if stream_event.error_kind == "cancelled":
@@ -283,11 +276,7 @@ class ProviderGraph:
                     except json.JSONDecodeError:
                         error_payload = {"message": stream_event.error}
                     else:
-                        error_payload = (
-                            cast(dict[str, object], raw_payload)
-                            if isinstance(raw_payload, dict)
-                            else {"message": stream_event.error}
-                        )
+                        error_payload = cast(dict[str, object], raw_payload) if isinstance(raw_payload, dict) else {"message": stream_event.error}
                 else:
                     error_payload = {"message": "provider stream error"}
 

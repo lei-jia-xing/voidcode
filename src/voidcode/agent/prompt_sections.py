@@ -78,15 +78,12 @@ def prompt_activation_guidance_block(
 ) -> str:
     refs = _clean_lines(profile_refs)
     refs_line = ", ".join(refs) if refs else "runtime default"
-    return f"""<prompt_activation_guidance>
-Activation: {activation_id.strip()}
-Mode: {mode.strip()}
-Intent slot: {intent_slot.strip()}
-Policy refs: {refs_line}
-This is one-time guidance for this session slot only. It helps you interpret the active role
-prompt, but it does not grant tools, delegation authority, approvals, memory access, or any
-other runtime capability. Runtime policy and tool checks remain the enforcement truth.
-</prompt_activation_guidance>"""
+    return (
+        f"Activation {activation_id.strip()} mode={mode.strip()} intent={intent_slot.strip()}. "
+        f"Policy refs: {refs_line}. "
+        "Guidance-only; does not grant tools, delegation, or capabilities. "
+        "Runtime policy and tool checks remain authoritative."
+    )
 
 
 def dynamic_boundary_marker() -> str:

@@ -90,13 +90,9 @@ class AgentPromptMaterialization:
             raise ValueError("AgentPromptMaterialization.version must be >= 1")
         if self.source == "custom_markdown":
             if self.body is None or not self.body.strip():
-                raise ValueError(
-                    "AgentPromptMaterialization.body must be non-empty for custom_markdown"
-                )
+                raise ValueError("AgentPromptMaterialization.body must be non-empty for custom_markdown")
             if self.format != "markdown":
-                raise ValueError(
-                    "AgentPromptMaterialization.format must be markdown for custom_markdown"
-                )
+                raise ValueError("AgentPromptMaterialization.format must be markdown for custom_markdown")
         if self.prompt_append is not None and not self.prompt_append.strip():
             raise ValueError("AgentPromptMaterialization.prompt_append must be a non-empty string")
         if self.source_scope is not None and self.source_scope not in {
@@ -109,15 +105,9 @@ class AgentPromptMaterialization:
             raise ValueError("AgentPromptMaterialization.source_path must be a non-empty string")
         for family, override_profile in self.model_family_overrides.items():
             if not family.strip():
-                raise ValueError(
-                    "AgentPromptMaterialization.model_family_overrides keys "
-                    "must be non-empty strings"
-                )
+                raise ValueError("AgentPromptMaterialization.model_family_overrides keys must be non-empty strings")
             if not override_profile.strip():
-                raise ValueError(
-                    "AgentPromptMaterialization.model_family_overrides values "
-                    "must be non-empty strings"
-                )
+                raise ValueError("AgentPromptMaterialization.model_family_overrides values must be non-empty strings")
 
     def select_profile(self, model_family: str | None = None) -> str:
         """Return the profile to materialize for the given model family hint.

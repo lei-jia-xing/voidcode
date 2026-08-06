@@ -44,9 +44,7 @@ from voidcode.runtime.tool_provider import (
     scoped_tool_registry_for_agent,
 )
 from voidcode.tools import (
-    AstGrepPreviewTool,
-    AstGrepReplaceTool,
-    AstGrepSearchTool,
+    AstGrepTool,
     BackgroundCancelTool,
     BackgroundOutputTool,
     EditTool,
@@ -98,11 +96,7 @@ class _StubGraph:
     ) -> GraphStep:
         _ = session
         if not tool_results:
-            return _StubStep(
-                tool_call=ToolCall(
-                    tool_name="grep", arguments={"pattern": "alpha", "path": "sample.txt"}
-                )
-            )
+            return _StubStep(tool_call=ToolCall(tool_name="grep", arguments={"pattern": "alpha", "path": "sample.txt"}))
         return _StubStep(output=request.prompt, is_finished=True)
 
 
@@ -156,9 +150,7 @@ class _InjectedToolGraph:
         _ = request, tool_results, session
         self._step_count += 1
         if self._step_count == 1:
-            return _StubStep(
-                tool_call=ToolCall(tool_name="mcp/echo/echo", arguments={"message": "hi"})
-            )
+            return _StubStep(tool_call=ToolCall(tool_name="mcp/echo/echo", arguments={"message": "hi"}))
         if self._step_count == 2:
             return _StubStep(tool_call=ToolCall(tool_name="injected_tool", arguments={}))
         return _StubStep(output="done", is_finished=True)
@@ -271,9 +263,7 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         ShellExecTool,
         QuestionTool,
         SkillTool,
-        AstGrepSearchTool,
-        AstGrepPreviewTool,
-        AstGrepReplaceTool,
+        AstGrepTool,
         WebFetchTool,
         WebSearchTool,
         WriteFileTool,
@@ -379,9 +369,7 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
     # Optional tools
     optional_tools = {
         "apply_patch",
-        "ast_grep_search",
-        "ast_grep_preview",
-        "ast_grep_replace",
+        "ast_grep",
         "multi_edit",
         "todo_write",
     }
@@ -409,7 +397,7 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
                 "read_file",
                 "glob",
                 "grep",
-                "ast_grep_search",
+                "ast_grep",
                 "lsp",
             ),
         ),
@@ -472,9 +460,7 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     assert agent["preset"] == "leader"
     effective_config = runtime._effective_runtime_config_from_metadata(response.session.metadata)
     scoped_registry = runtime._tool_registry_for_effective_config(effective_config)
-    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(
-        scoped_registry.tools
-    )
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(scoped_registry.tools)
     assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
     assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
 
@@ -507,9 +493,7 @@ def test_disabled_memory_runtime_does_not_expose_memory_tools(tmp_path: Path) ->
 
     registry = runtime._tool_registry_for_effective_config(effective_config)
 
-    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(
-        registry.tools
-    )
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(registry.tools)
     assert runtime.memory_status().total_count == 0
 
 
@@ -523,25 +507,7 @@ def test_memory_tools_are_conservative_without_explicit_runtime_policy(tmp_path:
 
     registry = runtime._tool_registry_for_effective_config(effective_config)
 
-    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(
-        registry.tools
-    )
-
-
-def test_memory_command_context_exposes_memory_tools_when_memory_enabled(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
-        graph=_StubGraph(),
-    )
-    effective_config = runtime._effective_runtime_config_from_metadata(None)
-
-    registry = runtime._tool_registry_for_effective_config(
-        effective_config,
-        {"command": {"name": "memory"}},
-    )
-
-    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.issubset(registry.tools)
+    assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(registry.tools)
 
 
 def test_read_only_mode_direct_invocation_denies_mutating_tool_before_execution(
@@ -642,43 +608,6 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
     }
 
 
-def test_memory_tool_direct_invocation_denies_without_explicit_runtime_policy(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_ToolCallGraph(
-            ToolCall(
-                tool_name="memory_add",
-                arguments={"content": "persist me", "kind": "project"},
-            )
-        ),
-        config=RuntimeConfig(execution_engine="deterministic"),
-        permission_policy=PermissionPolicy(mode="allow"),
-    )
-    events = []
-
-    with pytest.raises(ValueError, match="memory tools require explicit runtime memory policy"):
-        for chunk in runtime.run_stream(
-            RuntimeRequest(prompt="go", session_id="memory-tool-denied")
-        ):
-            if chunk.event is not None:
-                events.append(chunk.event)
-
-    failed = events[-1]
-    assert failed.event_type == "runtime.failed"
-    assert failed.payload["kind"] == "runtime_tool_policy_denied"
-    assert failed.payload["tool"] == "memory_add"
-    assert failed.payload["tool_policy"] == {
-        "tool": "memory_add",
-        "mode": "normal",
-        "read_only": False,
-        "decision": "deny",
-        "reason": "memory tools require explicit runtime memory policy allowance",
-    }
-    assert runtime.memory_status().active_count == 0
-
-
 def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
     tmp_path: Path,
 ) -> None:
@@ -737,50 +666,24 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
     definitions = {definition.name: definition for definition in registry.definitions()}
 
     assert definitions["write_file"].description.startswith("Writes a file to the local workspace.")
-    assert (
-        "new file or intentionally replacing the whole file"
-        in definitions["write_file"].description
-    )
+    assert "new file or intentionally replacing the whole file" in definitions["write_file"].description
     assert "a prior read is not required" in definitions["write_file"].description
-    assert (
-        "Prefer this tool when the desired file content is already known"
-        in definitions["write_file"].description
-    )
+    assert "Prefer this tool when the desired file content is already known" in definitions["write_file"].description
     assert "Provide the complete final content directly" in definitions["write_file"].description
     assert "Do not create placeholder files" in definitions["write_file"].description
-    assert (
-        "produced or transformed by running a real program" in definitions["write_file"].description
-    )
-    assert (
-        "Do not use this tool to start a long-lived dev server"
-        in definitions["shell_exec"].description
-    )
+    assert "produced or transformed by running a real program" in definitions["write_file"].description
+    assert "Do not use this tool to start a long-lived dev server" in definitions["shell_exec"].description
     assert "When the desired file content is already known" in definitions["shell_exec"].description
-    assert (
-        "Use shell execution when the work is inherently command-driven"
-        in definitions["shell_exec"].description
-    )
-    assert definitions["ast_grep_search"].description.startswith(
-        "Use ast-grep tools for structural code matching"
-    )
-    assert (
-        "ast_grep_replace applies a structural rewrite"
-        in definitions["ast_grep_search"].description
-    )
+    assert "Use shell execution when the work is inherently command-driven" in definitions["shell_exec"].description
+    assert definitions["ast_grep"].description.startswith("Use ast-grep tools for structural code matching")
     assert definitions["web_fetch"].description.startswith("- Fetches content from a specified URL")
     assert "http or https URL" in definitions["web_fetch"].description
-    assert definitions["memory_search"].description.startswith("Use memory_search")
-    assert "memory_add" in definitions["memory_search"].description
-    assert "temporary task state" in definitions["memory_add"].description
-    assert "secrets" in definitions["memory_add"].description
 
 
 def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
     runtime_tool_names = {
         "apply_patch",
-        "ast_grep_preview",
-        "ast_grep_replace",
-        "ast_grep_search",
+        "ast_grep",
         "background_cancel",
         "background_output",
         "edit",
@@ -788,10 +691,6 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "glob",
         "grep",
         "lsp",
-        "memory_add",
-        "memory_delete",
-        "memory_list",
-        "memory_search",
         "multi_edit",
         "question",
         "read_file",
@@ -813,18 +712,8 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
 def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() -> None:
     assert "Do not sleep, poll in a loop" in guidance_for_tool("task")
     assert "Do not guess or fabricate a background task's result" in guidance_for_tool("task")
-    assert "Do not repeatedly poll this tool in a tight loop" in guidance_for_tool(
-        "background_output"
-    )
-    assert "Do not read a running child transcript just to peek" in guidance_for_tool(
-        "background_output"
-    )
-    assert "instead of repeatedly starting replacement processes" in guidance_for_tool(
-        "background_process_start"
-    )
-    assert "Prefer this tool over launching another process" in guidance_for_tool(
-        "background_process_logs"
-    )
+    assert "Do not repeatedly poll this tool in a tight loop" in guidance_for_tool("background_output")
+    assert "Do not read a running child transcript just to peek" in guidance_for_tool("background_output")
 
 
 def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
@@ -919,9 +808,7 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
     # Verify optional tools if present
     optional_tools = [
         "apply_patch",
-        "ast_grep_search",
-        "ast_grep_preview",
-        "ast_grep_replace",
+        "ast_grep",
         "multi_edit",
         "todo_write",
     ]
@@ -996,9 +883,7 @@ def test_local_custom_tool_invokes_command_with_runtime_context(tmp_path: Path) 
             session_id="ses_local",
         )
     ):
-        result = tool.invoke(
-            ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path
-        )
+        result = tool.invoke(ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path)
 
     assert result.status == "ok"
     assert result.source == "local_custom_tool"
@@ -1081,9 +966,7 @@ def test_local_custom_tool_accepts_safe_manifest_dir_parts_and_literal_flags(
         config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
     ).provide_tools()[0]
 
-    result = tool.invoke(
-        ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path
-    )
+    result = tool.invoke(ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path)
 
     assert result.status == "ok"
     assert result.content is not None
@@ -1116,9 +999,7 @@ def test_local_custom_tool_accepts_safe_embedded_manifest_dir_argument(
         config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
     ).provide_tools()[0]
 
-    result = tool.invoke(
-        ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path
-    )
+    result = tool.invoke(ToolCall(tool_name="local/echo", arguments={"message": "hi"}), workspace=tmp_path)
 
     assert result.status == "ok"
     assert result.content is not None
@@ -1228,9 +1109,7 @@ def test_runtime_capability_snapshot_uses_the_executed_local_tool_registry(
 
     response = runtime.run(RuntimeRequest(prompt="go", session_id="local-tool-snapshot"))
 
-    capability_snapshot = cast(
-        dict[str, object], response.session.metadata["agent_capability_snapshot"]
-    )
+    capability_snapshot = cast(dict[str, object], response.session.metadata["agent_capability_snapshot"])
     tool_snapshot = cast(dict[str, object], capability_snapshot["tools"])
     assert "local/echo" in cast(list[str], tool_snapshot["effective_names"])
     assert isinstance(tool_snapshot["generation"], str)
@@ -1314,9 +1193,7 @@ def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:
 
     assert metadata["tools"] == {"local": {"enabled": True, "path": ".voidcode/tools"}}
     effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
-    assert effective.tools == RuntimeToolsConfig(
-        local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools")
-    )
+    assert effective.tools == RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"))
 
 
 def test_runtime_rejects_local_custom_tool_name_collisions(tmp_path: Path) -> None:
@@ -1389,9 +1266,7 @@ class _LocalToolGraph:
             return _StubStep(output=tool_results[-1].content or "done", is_finished=True)
         self._step_count += 1
         if self._step_count == 1:
-            return _StubStep(
-                tool_call=ToolCall(tool_name="local/echo", arguments={"message": "hi"})
-            )
+            return _StubStep(tool_call=ToolCall(tool_name="local/echo", arguments={"message": "hi"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -1468,13 +1343,8 @@ def test_local_custom_tools_are_blocked_by_deny_policy(tmp_path: Path) -> None:
     response = runtime.run(RuntimeRequest(prompt="go"))
 
     assert response.session.status == "running"
-    assert any(
-        event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "deny"
-        for event in response.events
-    )
-    denied_event = next(
-        event for event in response.events if event.event_type == "runtime.tool_completed"
-    )
+    assert any(event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "deny" for event in response.events)
+    denied_event = next(event for event in response.events if event.event_type == "runtime.tool_completed")
     assert denied_event.payload["tool"] == "local/echo"
     assert denied_event.payload["status"] == "error"
     assert denied_event.payload["permission_denied"] is True
@@ -1547,15 +1417,9 @@ def test_runtime_registry_includes_discovered_mcp_tools(tmp_path: Path) -> None:
 
     assert response.output == "done"
     assert mcp_manager.list_tools_calls == 1
+    assert any(event.event_type == "runtime.tool_lookup_succeeded" and event.payload == {"tool": "mcp/echo/echo"} for event in response.events)
     assert any(
-        event.event_type == "runtime.tool_lookup_succeeded"
-        and event.payload == {"tool": "mcp/echo/echo"}
-        for event in response.events
-    )
-    assert any(
-        event.event_type == "runtime.tool_completed"
-        and event.payload["server"] == "echo"
-        and event.payload["tool"] == "echo"
+        event.event_type == "runtime.tool_completed" and event.payload["server"] == "echo" and event.payload["tool"] == "echo"
         for event in response.events
     )
 
@@ -1621,11 +1485,7 @@ def test_runtime_refresh_preserves_injected_tool_registry_entries(tmp_path: Path
     response = runtime.run(RuntimeRequest(prompt="go"))
 
     assert response.output == "done"
-    assert any(
-        event.event_type == "runtime.tool_lookup_succeeded"
-        and event.payload == {"tool": "injected_tool"}
-        for event in response.events
-    )
+    assert any(event.event_type == "runtime.tool_lookup_succeeded" and event.payload == {"tool": "injected_tool"} for event in response.events)
 
 
 def test_runtime_default_registry_behavior_remains_unchanged(tmp_path: Path) -> None:
@@ -1664,7 +1524,5 @@ def test_runtime_default_registry_includes_runtime_backed_agent_tools(tmp_path: 
 
 def test_tools_package_exports_optional_tools() -> None:
     tools_module = __import__("voidcode.tools", fromlist=["__all__"])
-    assert "AstGrepSearchTool" in tools_module.__all__
-    assert "AstGrepPreviewTool" in tools_module.__all__
-    assert "AstGrepReplaceTool" in tools_module.__all__
+    assert "AstGrepTool" in tools_module.__all__
     assert "McpTool" in tools_module.__all__

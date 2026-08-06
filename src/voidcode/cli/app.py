@@ -159,10 +159,7 @@ def _parse_question_responses(
             answers: list[str] = []
             for answer_index, raw_answer in enumerate(raw_answers):
                 if not isinstance(raw_answer, str) or not raw_answer.strip():
-                    raise ValueError(
-                        f"--response-json[{index}].answers[{answer_index}] "
-                        "must be a non-empty string"
-                    )
+                    raise ValueError(f"--response-json[{index}].answers[{answer_index}] must be a non-empty string")
                 answers.append(raw_answer)
             parsed.append(QuestionResponse(header=raw_header, answers=tuple(answers)))
         return tuple(parsed)
@@ -438,10 +435,7 @@ def _incomplete_runtime_stream_message(result: RuntimeStreamResult) -> str | Non
     last_event = _last_event(result)
     if last_event is not None and last_event.event_type == "runtime.failed":
         return None
-    return (
-        "runtime stream ended without a terminal outcome; "
-        f"last session status was {result.session.status}"
-    )
+    return f"runtime stream ended without a terminal outcome; last session status was {result.session.status}"
 
 
 def _last_event_is_permission_denied_tool_result(event: EventEnvelope | None) -> bool:
@@ -945,10 +939,7 @@ def _handle_sessions_list_command(args: SessionsArgs) -> int:
 
 
 def _format_session_summary(session: StoredSessionSummary) -> str:
-    return (
-        f"SESSION id={session.session.id} status={session.status} "
-        f"turn={session.turn} updated_at={session.updated_at} prompt={session.prompt!r}"
-    )
+    return f"SESSION id={session.session.id} status={session.status} turn={session.turn} updated_at={session.updated_at} prompt={session.prompt!r}"
 
 
 _MEMORY_KINDS: tuple[MemoryKind, ...] = (
@@ -1031,9 +1022,7 @@ def _handle_memory_add_command(args: MemoryArgs) -> int:
     return _emit_output(
         args,
         {"memory": _memory_payload(memory)},
-        lambda: print(
-            f"Added memory {memory.id} kind={memory.kind} tags={','.join(memory.tags) or '-'}"
-        ),
+        lambda: print(f"Added memory {memory.id} kind={memory.kind} tags={','.join(memory.tags) or '-'}"),
     )
 
 
@@ -1045,12 +1034,7 @@ def _memory_filter_records(
     limit: int | None,
 ) -> tuple[MemoryRecord, ...]:
     parsed_kind = _parse_memory_kind(kind) if kind is not None else None
-    filtered = [
-        memory
-        for memory in memories
-        if (parsed_kind is None or memory.kind == parsed_kind)
-        and all(tag in memory.tags for tag in tags)
-    ]
+    filtered = [memory for memory in memories if (parsed_kind is None or memory.kind == parsed_kind) and all(tag in memory.tags for tag in tags)]
     if limit is not None:
         if limit < 0:
             raise CliError(code=EXIT_USAGE_ERROR, message="limit must be non-negative")
@@ -1233,10 +1217,7 @@ def _background_task_error_type(error: str | None) -> str | None:
     normalized = error.lower()
     if any(token in normalized for token in ("provider", "model", "api key", "unreachable")):
         return "provider"
-    if any(
-        token in normalized
-        for token in ("tool", "write_file", "read_file", "shell_exec", "permission")
-    ):
+    if any(token in normalized for token in ("tool", "write_file", "read_file", "shell_exec", "permission")):
         return "tool"
     return "runtime"
 
@@ -1263,10 +1244,7 @@ def _background_task_next_steps(
         )
         steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
     elif question_request_id is not None and child_session_id is not None:
-        steps.append(
-            "Inspect waiting child session before answering questions: "
-            f"voidcode sessions debug {child_session_id} {workspace_arg}"
-        )
+        steps.append(f"Inspect waiting child session before answering questions: voidcode sessions debug {child_session_id} {workspace_arg}")
         steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
     elif status in {"queued", "running"}:
         steps.append(f"Refresh state: voidcode tasks status {task_id} {workspace_arg}")
@@ -1275,43 +1253,31 @@ def _background_task_next_steps(
     elif status == "completed":
         steps.append(f"Read output: voidcode tasks output {task_id} {workspace_arg}")
         if child_session_id is not None:
-            steps.append(
-                f"Replay child session: voidcode sessions resume {child_session_id} {workspace_arg}"
-            )
+            steps.append(f"Replay child session: voidcode sessions resume {child_session_id} {workspace_arg}")
     elif status == "failed":
         error_type = _background_task_error_type(error)
         if result_available:
             steps.append(f"Inspect failure output: voidcode tasks output {task_id} {workspace_arg}")
         if child_session_id is not None:
-            steps.append(
-                f"Resume child context: voidcode sessions resume {child_session_id} {workspace_arg}"
-            )
+            steps.append(f"Resume child context: voidcode sessions resume {child_session_id} {workspace_arg}")
         if error_type == "provider":
             steps.append("Check provider configuration: voidcode provider inspect <provider>")
         elif error_type == "tool":
-            steps.append(
-                "Inspect the child session events to find the failed tool call and approval state."
-            )
+            steps.append("Inspect the child session events to find the failed tool call and approval state.")
         else:
-            steps.append(
-                "Inspect runtime events and retry explicitly from the parent flow if needed."
-            )
+            steps.append("Inspect runtime events and retry explicitly from the parent flow if needed.")
         steps.append(f"Retry delegated task: voidcode tasks retry {task_id} {workspace_arg}")
     elif status == "cancelled":
         steps.append(f"Inspect final task state: voidcode tasks status {task_id} {workspace_arg}")
         steps.append(f"Retry delegated task: voidcode tasks retry {task_id} {workspace_arg}")
     elif status == "interrupted":
         if result_available:
-            steps.append(
-                f"Inspect interrupted output: voidcode tasks output {task_id} {workspace_arg}"
-            )
+            steps.append(f"Inspect interrupted output: voidcode tasks output {task_id} {workspace_arg}")
         steps.append(f"Retry delegated task: voidcode tasks retry {task_id} {workspace_arg}")
     return steps
 
 
-def _background_task_state_payload(
-    task: BackgroundTaskState, *, workspace: Path
-) -> dict[str, object]:
+def _background_task_state_payload(task: BackgroundTaskState, *, workspace: Path) -> dict[str, object]:
     error = getattr(task, "error", None)
     cancellation_cause = getattr(task, "cancellation_cause", None)
     error_type = _background_task_error_type(error)
@@ -1345,9 +1311,7 @@ def _background_task_state_payload(
     return payload
 
 
-def _background_task_result_payload(
-    result: BackgroundTaskResult, *, workspace: Path
-) -> dict[str, object]:
+def _background_task_result_payload(result: BackgroundTaskResult, *, workspace: Path) -> dict[str, object]:
     cancellation_cause = getattr(result, "cancellation_cause", None)
     error_type = _background_task_error_type(result.error)
     next_steps = _background_task_next_steps(
@@ -1639,9 +1603,7 @@ def _serialize_provider_context_snapshot(
                 "blocked": snapshot.policy_decision.blocked,
                 "diagnostic_count": snapshot.policy_decision.diagnostic_count,
                 "diagnostic_codes": list(snapshot.policy_decision.diagnostic_codes),
-                "blocking_diagnostic_codes": list(
-                    snapshot.policy_decision.blocking_diagnostic_codes
-                ),
+                "blocking_diagnostic_codes": list(snapshot.policy_decision.blocking_diagnostic_codes),
                 "message": snapshot.policy_decision.message,
             }
             if snapshot.policy_decision is not None
@@ -1690,9 +1652,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
     assert session_id is not None
     dry_run = args.dry_run
     approval_decision = args.approval_decision
-    approval_decision_typed: PermissionResolution | None = (
-        cast(PermissionResolution | None, approval_decision)
-    )
+    approval_decision_typed: PermissionResolution | None = cast(PermissionResolution | None, approval_decision)
     show_thinking = args.show_thinking
     with _runtime_session(workspace) as runtime:
         if dry_run:
@@ -1756,9 +1716,7 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
         {
             "workspace": str(workspace),
             "session": serialize_session_state(result.session),
-            "events": [
-                serialize_event(event, show_thinking=show_thinking) for event in result.events
-            ],
+            "events": [serialize_event(event, show_thinking=show_thinking) for event in result.events],
             "output": result.output,
         },
         lambda: _print_runtime_response(result, show_thinking=show_thinking),
@@ -1928,18 +1886,14 @@ def _handle_tasks_output_command(args: TasksArgs) -> int:
             task_result = runtime.load_background_task_result(task_id)
             if task_result.result_available and task_result.child_session_id is not None:
                 try:
-                    session_output = runtime.session_result(
-                        session_id=task_result.child_session_id
-                    ).output
+                    session_output = runtime.session_result(session_id=task_result.child_session_id).output
                 except ValueError as exc:
                     print(f"warning: session result output unavailable: {exc}", file=sys.stderr)
                     session_output = None
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
-    fallback_output = (
-        task_result.summary_output if task_result.summary_output is not None else task_result.error
-    )
+    fallback_output = task_result.summary_output if task_result.summary_output is not None else task_result.error
     if session_output is None and fallback_output is not None:
         print("warning: WARN: session output unavailable; using fallback output", file=sys.stderr)
     output = session_output if session_output is not None else fallback_output
@@ -2111,19 +2065,13 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
             "approval_mode": effective_config.approval_mode,
             "execution_engine": effective_config.execution_engine,
             "model": effective_config.model,
-            "fallback_models": (
-                list(effective_config.provider_fallback.fallback_models)
-                if effective_config.provider_fallback is not None
-                else []
-            ),
+            "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
             "max_steps": effective_config.max_steps,
             "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
             "agents": agents,
             "categories": categories,
-            "resolved_provider": resolved_provider_snapshot(
-                getattr(effective_config, "resolved_provider", None)
-            ),
+            "resolved_provider": resolved_provider_snapshot(getattr(effective_config, "resolved_provider", None)),
             "provider_readiness": _provider_readiness_payload(readiness),
             "context_budget": {
                 "context_window": readiness.context_window,
@@ -2383,10 +2331,7 @@ def _handle_provider_models_command(args: ProviderArgs) -> int:
         "provider": provider,
         "refreshed": refresh,
         "models": list(result.models),
-        "model_metadata": {
-            model: _provider_model_metadata_payload(metadata)
-            for model, metadata in result.model_metadata.items()
-        },
+        "model_metadata": {model: _provider_model_metadata_payload(metadata) for model, metadata in result.model_metadata.items()},
         "source": result.source,
         "last_refresh_status": result.last_refresh_status,
         "last_error": result.last_error,
@@ -2394,8 +2339,7 @@ def _handle_provider_models_command(args: ProviderArgs) -> int:
     }
     if refresh and result.source == "fallback":
         print(
-            "WARN provider.models.refresh "
-            f"provider={provider} source=fallback reason={result.last_error}",
+            f"WARN provider.models.refresh provider={provider} source=fallback reason={result.last_error}",
             file=sys.stderr,
             flush=True,
         )
@@ -2428,12 +2372,8 @@ def _provider_model_metadata_payload(
             "supports_thinking_budget": metadata.supports_thinking_budget,
             "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
             "reasoning_visibility": metadata.reasoning_visibility,
-            "modalities_input": list(metadata.modalities_input)
-            if metadata.modalities_input is not None
-            else None,
-            "modalities_output": list(metadata.modalities_output)
-            if metadata.modalities_output is not None
-            else None,
+            "modalities_input": list(metadata.modalities_input) if metadata.modalities_input is not None else None,
+            "modalities_output": list(metadata.modalities_output) if metadata.modalities_output is not None else None,
             "model_status": metadata.model_status,
         }.items()
         if value is not None
@@ -2458,9 +2398,7 @@ def _provider_readiness_payload(readiness: ProviderReadinessResult) -> dict[str,
     }
 
 
-def _provider_inspect_payload(
-    result: ProviderInspectResult, *, workspace: Path
-) -> dict[str, object]:
+def _provider_inspect_payload(result: ProviderInspectResult, *, workspace: Path) -> dict[str, object]:
     return {
         "workspace": str(workspace),
         "provider": {
@@ -2473,10 +2411,7 @@ def _provider_inspect_payload(
             "provider": result.models.provider,
             "configured": result.models.configured,
             "models": list(result.models.models),
-            "model_metadata": {
-                model: _provider_model_metadata_payload(metadata)
-                for model, metadata in result.models.model_metadata.items()
-            },
+            "model_metadata": {model: _provider_model_metadata_payload(metadata) for model, metadata in result.models.model_metadata.items()},
             "source": result.models.source,
             "last_refresh_status": result.models.last_refresh_status,
             "last_error": result.models.last_error,
@@ -2494,14 +2429,10 @@ def _provider_inspect_payload(
             "failure_kind": result.validation.failure_kind,
             "guidance": result.validation.guidance,
         },
-        "readiness": (
-            _provider_readiness_payload(result.readiness) if result.readiness is not None else None
-        ),
+        "readiness": (_provider_readiness_payload(result.readiness) if result.readiness is not None else None),
         "current_model": result.current_model,
         "current_model_metadata": (
-            None
-            if result.current_model_metadata is None
-            else _provider_model_metadata_payload(result.current_model_metadata)
+            None if result.current_model_metadata is None else _provider_model_metadata_payload(result.current_model_metadata)
         ),
     }
 
@@ -2631,9 +2562,7 @@ def _show_thinking_option(
 
 
 def _command_discovery_options(function: Callable[..., object]) -> Callable[..., object]:
-    function = _workspace_option("Workspace root used to discover project-local commands.")(
-        function
-    )
+    function = _workspace_option("Workspace root used to discover project-local commands.")(function)
     return click.option(
         "--user-commands-dir",
         type=click.Path(path_type=Path),
@@ -3056,9 +2985,7 @@ def sessions_import(bundle_path: Path, workspace: Path, dry_run: bool) -> int:
 @sessions.command(help="Show a minimal runtime-owned debug snapshot for one session.")
 @click.argument("session_id")
 @_workspace_option("Workspace root used to resolve the local session database.")
-@_show_thinking_option(
-    "Include reasoning/thinking text in debug event payloads; hidden by default."
-)
+@_show_thinking_option("Include reasoning/thinking text in debug event payloads; hidden by default.")
 def debug(session_id: str, workspace: Path, show_thinking: bool) -> int:
     return _handle_sessions_debug_command(
         SessionsArgs(
@@ -3370,9 +3297,7 @@ def config_show(workspace: Path, session_id: str | None) -> int:
 
 @config.command(name="schema", help="Print the JSON Schema for .voidcode.json.")
 def config_schema() -> int:
-    return _handle_config_schema_command(
-        ConfigArgs()
-    )
+    return _handle_config_schema_command(ConfigArgs())
 
 
 @config.command(name="init", help="Generate a starter workspace .voidcode.json.")

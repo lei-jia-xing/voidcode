@@ -100,9 +100,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             "hooks": {
                 "type": "object",
                 "additionalProperties": False,
-                "description": (
-                    "Runtime-managed lifecycle hooks (pre/post tool, session, background)."
-                ),
+                "description": ("Runtime-managed lifecycle hooks (pre/post tool, session, background)."),
                 "properties": {
                     "enabled": {"type": "boolean"},
                     "timeout_seconds": {"type": "number", "minimum": 1},
@@ -121,7 +119,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "on_background_task_notification_enqueued": {"$ref": "#/$defs/commandList"},
                     "on_background_task_result_read": {"$ref": "#/$defs/commandList"},
                     "on_delegated_result_available": {"$ref": "#/$defs/commandList"},
-                    "on_context_pressure": {"$ref": "#/$defs/commandList"},
                     "on_turn_progress": {"$ref": "#/$defs/commandList"},
                     "on_stuck_detected": {"$ref": "#/$defs/commandList"},
                     "formatter_presets": {
@@ -181,10 +178,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                                     "type": "string",
                                     "format": "uri",
                                     "minLength": 1,
-                                    "description": (
-                                        "Remote HTTP MCP endpoint URL. Required when "
-                                        "transport is remote-http."
-                                    ),
+                                    "description": ("Remote HTTP MCP endpoint URL. Required when transport is remote-http."),
                                 },
                                 "env": {
                                     "type": "object",
@@ -194,8 +188,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                                     "type": "string",
                                     "enum": ["runtime", "session"],
                                     "description": (
-                                        "Runtime-scoped servers are shared by the runtime; "
-                                        "session-scoped servers are isolated per session."
+                                        "Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."
                                     ),
                                 },
                             },
@@ -259,10 +252,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             "providers": {
                 "type": "object",
                 "additionalProperties": True,
-                "description": (
-                    "Provider-level configuration. Credential fields are sensitive; "
-                    "prefer environment variables for secrets."
-                ),
+                "description": ("Provider-level configuration. Credential fields are sensitive; prefer environment variables for secrets."),
             },
             "background_task": {
                 "type": "object",
@@ -321,8 +311,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             "commandList": {
                 "type": "array",
                 "description": (
-                    "Array of commands; each command is a non-empty argv array of strings. "
-                    "Commands are executed directly without an implicit shell."
+                    "Array of commands; each command is a non-empty argv array of strings. Commands are executed directly without an implicit shell."
                 ),
                 "items": {
                     "type": "array",
@@ -385,8 +374,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "properties": {
                     "version": {"type": "integer", "const": 1},
                     "auto_compaction": {"type": "boolean"},
-                    "max_tool_result_tokens": {"type": "integer", "minimum": 1},
-                    "max_context_ratio": {"type": "number", "exclusiveMinimum": 0},
                     "model_context_window_tokens": {"type": "integer", "minimum": 1},
                     "reserved_output_tokens": {"type": "integer", "minimum": 1},
                     "default_tool_result_tokens": {"type": "integer", "minimum": 1},
@@ -395,23 +382,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "additionalProperties": {"type": "integer", "minimum": 1},
                     },
                     "tokenizer_model": {"type": "string", "minLength": 1},
-                    "continuity_preview_items": {"type": "integer", "minimum": 1},
-                    "continuity_preview_chars": {"type": "integer", "minimum": 1},
-                    "continuity_distillation_enabled": {"type": "boolean"},
-                    "continuity_distillation_max_input_items": {
-                        "type": "integer",
-                        "minimum": 1,
-                    },
-                    "continuity_distillation_max_input_chars": {
-                        "type": "integer",
-                        "minimum": 64,
-                    },
-                    "context_pressure_threshold": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "maximum": 1,
-                    },
-                    "context_pressure_cooldown_steps": {"type": "integer", "minimum": 1},
                     "provider_context_diagnostics": {
                         "type": "string",
                         "enum": ["off", "warn", "block"],
@@ -425,9 +395,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "provider_context_oversized_feedback_chars": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": (
-                            "Character threshold for oversized retained tool feedback diagnostics."
-                        ),
+                        "description": ("Character threshold for oversized retained tool feedback diagnostics."),
                     },
                     "context_transform_failure_policy": {
                         "type": "string",
@@ -477,19 +445,14 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "path": {
                         "type": "string",
                         "minLength": 1,
-                        "description": (
-                            "Workspace-relative directory containing *.json tool manifests."
-                        ),
+                        "description": ("Workspace-relative directory containing *.json tool manifests."),
                     },
                 },
             },
             "memoryConfig": {
                 "type": "object",
                 "additionalProperties": False,
-                "description": (
-                    "Workspace-local explicit memory storage. Prompt recall and semantic search "
-                    "remain opt-in. "
-                ),
+                "description": ("Workspace-local explicit memory storage. Prompt recall and semantic search remain opt-in. "),
                 "properties": {
                     "enabled": {
                         "type": "boolean",
@@ -509,16 +472,11 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["off", "auto", "required"],
                         "default": "auto",
-                        "description": (
-                            "Semantic search mode for memory lookup. auto defers until "
-                            "embeddings are available."
-                        ),
+                        "description": ("Semantic search mode for memory lookup. auto defers until embeddings are available."),
                     },
                     "sqlite_vec": {
                         "$ref": "#/$defs/memorySqliteVecConfig",
-                        "description": (
-                            "Optional sqlite-vec integration used for embeddings-backed lookup."
-                        ),
+                        "description": ("Optional sqlite-vec integration used for embeddings-backed lookup."),
                     },
                 },
             },
@@ -555,9 +513,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["auto", "off", "required"],
                         "default": "auto",
-                        "description": (
-                            "Auto keeps sqlite-vec optional until embeddings are needed."
-                        ),
+                        "description": ("Auto keeps sqlite-vec optional until embeddings are needed."),
                     },
                 },
             },
@@ -578,9 +534,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "prompt_append": {
                         "type": "string",
                         "minLength": 1,
-                        "description": (
-                            "Additional local guidance appended to the resolved base prompt."
-                        ),
+                        "description": ("Additional local guidance appended to the resolved base prompt."),
                     },
                     "prompt_materialization": {"type": "object"},
                     "prompt_ref": {"type": "string", "minLength": 1},
@@ -699,7 +653,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                                 "background_task_notification_enqueued",
                                 "background_task_result_read",
                                 "delegated_result_available",
-                                "context_pressure",
                                 "turn_progress",
                                 "stuck_detected",
                             ],
@@ -747,17 +700,12 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "tool": {
                         "type": "string",
                         "minLength": 1,
-                        "description": (
-                            "Tool name glob, for example read_file, grep, or shell_exec."
-                        ),
+                        "description": ("Tool name glob, for example read_file, grep, or shell_exec."),
                     },
                     "path": {
                         "type": "string",
                         "minLength": 1,
-                        "description": (
-                            "Workspace-relative or canonical path glob for filesystem-related "
-                            "tool calls."
-                        ),
+                        "description": ("Workspace-relative or canonical path glob for filesystem-related tool calls."),
                     },
                     "command": {
                         "type": "string",
@@ -792,13 +740,9 @@ def generate_starter_runtime_config(
     include_schema_reference: bool = True,
 ) -> dict[str, object]:
     if approval_mode not in {"allow", "deny", "ask"}:
-        raise ValueError(
-            f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}"
-        )
+        raise ValueError(f"approval_mode must be one of: allow, deny, ask; received {approval_mode!r}")
     if max_steps is not None and max_steps < 0:
-        raise ValueError(
-            "max_steps must be a non-negative integer (0 = unlimited, relies on context overflow)"
-        )
+        raise ValueError("max_steps must be a non-negative integer (0 = unlimited, relies on context overflow)")
     if model is not None:
         _validate_model_reference(model)
 

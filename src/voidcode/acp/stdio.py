@@ -119,9 +119,7 @@ class StdioAcpServer:
             return
         method = payload.get("method")
         if not isinstance(method, str) or not method:
-            self._write_error(
-                request_id, _ERROR_INVALID_REQUEST, "method must be a non-empty string"
-            )
+            self._write_error(request_id, _ERROR_INVALID_REQUEST, "method must be a non-empty string")
             return
         params = payload.get("params", {})
         if params is None:
@@ -261,9 +259,7 @@ class StdioAcpServer:
                 if chunk.event is not None:
                     if _optional_attr(chunk.event, "event_type") == "runtime.failed":
                         failed_execution = True
-                        failure_message = _runtime_failure_summary(
-                            _mapping_attr(chunk.event, "payload")
-                        )
+                        failure_message = _runtime_failure_summary(_mapping_attr(chunk.event, "payload"))
                     self._write_runtime_event_update(
                         acp_session_id=acp_session_id,
                         runtime_session_id=chunk.session.session.id,
@@ -317,11 +313,7 @@ class StdioAcpServer:
             raise ValueError(f"unknown ACP session id: {acp_session_id}")
         binding.cancel_requested = True
         cancel_payload: dict[str, object] | None = None
-        can_cancel_runtime = (
-            binding.active
-            and binding.runtime_session_id is not None
-            and binding.active_run_id is not None
-        )
+        can_cancel_runtime = binding.active and binding.runtime_session_id is not None and binding.active_run_id is not None
         if can_cancel_runtime:
             result = self.runtime.cancel_session(
                 binding.runtime_session_id,
@@ -329,9 +321,7 @@ class StdioAcpServer:
                 reason="acp session/cancel",
             )
             cancel_payload = result.as_payload()
-        interrupted = (
-            bool(cancel_payload.get("interrupted")) if cancel_payload is not None else False
-        )
+        interrupted = bool(cancel_payload.get("interrupted")) if cancel_payload is not None else False
         return {
             "sessionId": acp_session_id,
             "runtimeSessionId": binding.runtime_session_id,
@@ -374,9 +364,7 @@ class StdioAcpServer:
                 acp_session_id,
                 {
                     "sessionUpdate": "tool_call_update",
-                    "toolCallId": binding.tool_call_ids_by_tool.get(
-                        tool_name, _tool_call_id(payload, runtime_session_id)
-                    ),
+                    "toolCallId": binding.tool_call_ids_by_tool.get(tool_name, _tool_call_id(payload, runtime_session_id)),
                     "status": "completed",
                 },
             )

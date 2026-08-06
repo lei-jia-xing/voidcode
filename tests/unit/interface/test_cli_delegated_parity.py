@@ -30,7 +30,6 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.contracts import RuntimeRequestMetadataPayload
 from voidcode.runtime.task import BackgroundTaskStatus, is_background_task_terminal
 from voidcode.tools import ToolCall
 
@@ -44,9 +43,7 @@ def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
 
 
-def _run_module_cli(
-    *args: str, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
+def _run_module_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "voidcode", *args],
         capture_output=True,
@@ -70,10 +67,7 @@ def _wait_for_background_task(
         if predicate(last_state):
             return last_state
         time.sleep(0.01)
-    raise AssertionError(
-        f"background task {task_id} did not reach expected state; last_status="
-        f"{getattr(last_state, 'status', None)!r}"
-    )
+    raise AssertionError(f"background task {task_id} did not reach expected state; last_status={getattr(last_state, 'status', None)!r}")
 
 
 def _is_terminal_background_task(task: Any) -> bool:
@@ -215,9 +209,7 @@ def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(
-                ["run", "delegate this", "--workspace", str(workspace), "--approval-mode", "allow"]
-            )
+            result = cli.main(["run", "delegate this", "--workspace", str(workspace), "--approval-mode", "allow"])
 
     assert result == 0
     runtime_class.return_value.run_stream.assert_called_once()
@@ -430,9 +422,7 @@ def test_cli_sessions_answer_completes_real_question_wait(tmp_path: Path) -> Non
         graph=_QuestionThenDoneGraph(),
         config=config_module.RuntimeConfig(approval_mode="ask"),
     )
-    waiting = runtime.run(
-        runtime_module.RuntimeRequest(prompt="ask", session_id="question-session")
-    )
+    waiting = runtime.run(runtime_module.RuntimeRequest(prompt="ask", session_id="question-session"))
     question_request_id = waiting.events[-1].payload["request_id"]
     runtime.__exit__(None, None, None)
 
@@ -513,9 +503,7 @@ def test_cli_sessions_list_shows_delegated_child_sessions(tmp_path: Path) -> Non
     (workspace / "sample.txt").write_text("hello\n", encoding="utf-8")
 
     runtime = runtime_module.VoidCodeRuntime(workspace=workspace)
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session")
-    )
+    _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
     _ = runtime.run(
         runtime_module.RuntimeRequest(
             prompt="read sample.txt",
@@ -647,9 +635,7 @@ def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
             runtime.resume_stream.return_value = iter(resume_stream)
             with patch.object(cli.sys, "stdin", _StubStdin()):
                 with patch.object(cli.sys, "stderr", _StubStderr()):
-                    result = cli.main(
-                        ["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"]
-                    )
+                    result = cli.main(["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     assert result == 0
     captured = capsys.readouterr()
@@ -740,9 +726,7 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
             runtime.run_stream.return_value = iter(first_stream)
             with patch.object(cli.sys, "stdin", _StubStdin()):
                 with patch.object(cli.sys, "stderr", _StubStderr()):
-                    result = cli.main(
-                        ["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"]
-                    )
+                    result = cli.main(["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     assert result == 13
     runtime.resume_stream.assert_not_called()
@@ -896,31 +880,24 @@ def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
 
     with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
         runtime_class.return_value.load_background_task.return_value = task_state
-        result = cli.main(
-            ["tasks", "status", "task-shell", "--workspace", str(workspace), "--json"]
-        )
+        result = cli.main(["tasks", "status", "task-shell", "--workspace", str(workspace), "--json"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert result == 0
     assert payload["task"]["next_steps"] == [
         "Read output: voidcode tasks output task-shell --workspace '/tmp/demo repo; rm -rf no'",
-        "Replay child session: voidcode sessions resume child-session "
-        "--workspace '/tmp/demo repo; rm -rf no'",
+        "Replay child session: voidcode sessions resume child-session --workspace '/tmp/demo repo; rm -rf no'",
     ]
 
 
-def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(
-    tmp_path: Path, capsys: Any
-) -> None:
+def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(tmp_path: Path, capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     runtime_module = importlib.import_module("voidcode.runtime")
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session")
-    )
+    _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
         runtime_module.RuntimeRequest(
             prompt="read sample.txt",
@@ -1033,9 +1010,7 @@ def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
         runtime = runtime_class.return_value
         runtime.load_background_task_result.return_value = task_result
         runtime.session_result.return_value = session_result
-        result = cli.main(
-            ["tasks", "output", "task-failed-json", "--workspace", str(workspace), "--json"]
-        )
+        result = cli.main(["tasks", "output", "task-failed-json", "--workspace", str(workspace), "--json"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1048,9 +1023,7 @@ def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
     assert any("child session events" in step for step in payload["task"]["next_steps"])
 
 
-def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(
-    tmp_path: Path, capsys: Any
-) -> None:
+def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(tmp_path: Path, capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     runtime_module = importlib.import_module("voidcode.runtime")
     config_module = importlib.import_module("voidcode.runtime.config")
@@ -1065,9 +1038,7 @@ def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(
         permission_policy=permission_module.PermissionPolicy(mode="ask"),
     )
     (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session")
-    )
+    _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
         runtime_module.RuntimeRequest(
             prompt="write child.txt delegated",
@@ -1363,9 +1334,7 @@ def test_cli_tasks_list_filters_by_parent_session(capsys: Any) -> None:
 
     captured = capsys.readouterr()
     assert result == 0
-    runtime_class.return_value.list_background_tasks_by_parent_session.assert_called_once_with(
-        parent_session_id="leader-session"
-    )
+    runtime_class.return_value.list_background_tasks_by_parent_session.assert_called_once_with(parent_session_id="leader-session")
     runtime_class.return_value.list_background_tasks.assert_not_called()
     assert "TASK id=task-3 status=running" in captured.out
 
@@ -1419,38 +1388,6 @@ def test_runtime_background_child_inherits_parent_read_only_policy(tmp_path: Pat
     assert child_result.error is not None
     assert "read-only runtime policy denies mutating tools" in child_result.error
     assert not (tmp_path / "child.txt").exists()
-
-
-def test_runtime_background_child_cannot_enable_memory_when_parent_forbids(
-    tmp_path: Path,
-) -> None:
-    runtime_module = importlib.import_module("voidcode.runtime")
-    (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
-    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(
-            prompt="read sample.txt",
-            session_id="leader-no-memory",
-        )
-    )
-
-    started = runtime.start_background_task(
-        runtime_module.RuntimeRequest(
-            prompt="read sample.txt",
-            parent_session_id="leader-no-memory",
-            metadata=cast(RuntimeRequestMetadataPayload, {"memory_tools_allowed": True}),
-        )
-    )
-    completed = _wait_for_background_task(
-        runtime,
-        started.task.id,
-        predicate=_is_terminal_background_task,
-    )
-    child_result = runtime.session_result(session_id=cast(str, completed.child_session_id))
-
-    assert completed.status == "completed"
-    assert "memory_tools_allowed" not in completed.request.metadata
-    assert "memory_tools_allowed" not in child_result.session.metadata
 
 
 def test_runtime_exposes_load_background_task(tmp_path: Path) -> None:
@@ -1526,9 +1463,7 @@ def test_runtime_exposes_list_background_tasks_by_parent_session(tmp_path: Path)
     runtime_module = importlib.import_module("voidcode.runtime")
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session")
-    )
+    _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
         runtime_module.RuntimeRequest(
             prompt="child work",

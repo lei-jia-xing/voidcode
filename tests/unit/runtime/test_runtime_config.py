@@ -132,9 +132,7 @@ def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path
 
 def test_runtime_config_defaults_missing_external_write_rule_to_ask(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {"permission": {"external_directory_read": {"~/.config/voidcode/skills/**": "allow"}}}
-        ),
+        json.dumps({"permission": {"external_directory_read": {"~/.config/voidcode/skills/**": "allow"}}}),
         encoding="utf-8",
     )
 
@@ -261,7 +259,7 @@ def test_runtime_config_defaults_to_provider_for_product_runs(
     assert config.execution_engine == "provider"
     assert config.model is None
     assert RuntimeConfig().execution_engine == "provider"
-    assert RuntimeContextWindowConfig().max_tool_result_tokens is None
+    assert RuntimeContextWindowConfig().model_context_window_tokens is None
     assert RuntimeContextWindowConfig().default_tool_result_tokens == 1_500
     assert RuntimeContextWindowConfig().tokenizer_model == "cl100k_base"
 
@@ -288,20 +286,11 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
             {
                 "context_window": {
                     "auto_compaction": False,
-                    "max_tool_result_tokens": 2_000,
-                    "max_context_ratio": 0.25,
                     "model_context_window_tokens": 128_000,
                     "reserved_output_tokens": 20_000,
                     "default_tool_result_tokens": 1_000,
                     "per_tool_result_tokens": {"grep": 500},
                     "tokenizer_model": "gpt-4o",
-                    "continuity_preview_items": 4,
-                    "continuity_preview_chars": 120,
-                    "continuity_distillation_enabled": True,
-                    "continuity_distillation_max_input_items": 9,
-                    "continuity_distillation_max_input_chars": 2048,
-                    "context_pressure_threshold": 0.75,
-                    "context_pressure_cooldown_steps": 5,
                     "provider_context_diagnostics": "block",
                     "provider_context_oversized_feedback_chars": 16_000,
                     "context_transform_failure_policy": "block",
@@ -315,20 +304,11 @@ def test_runtime_config_loads_context_window_policy_from_repo_file(tmp_path: Pat
 
     assert config.context_window == RuntimeContextWindowConfig(
         auto_compaction=False,
-        max_tool_result_tokens=2_000,
-        max_context_ratio=0.25,
         model_context_window_tokens=128_000,
         reserved_output_tokens=20_000,
         default_tool_result_tokens=1_000,
         per_tool_result_tokens={"grep": 500},
         tokenizer_model="gpt-4o",
-        continuity_preview_items=4,
-        continuity_preview_chars=120,
-        continuity_distillation_enabled=True,
-        continuity_distillation_max_input_items=9,
-        continuity_distillation_max_input_chars=2048,
-        context_pressure_threshold=0.75,
-        context_pressure_cooldown_steps=5,
         provider_context_diagnostics="block",
         provider_context_oversized_feedback_chars=16_000,
         context_transform_failure_policy="block",
@@ -358,8 +338,6 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
     config = RuntimeContextWindowConfig(
         reserved_output_tokens=100,
         per_tool_result_tokens={"shell_exec": 400},
-        context_pressure_threshold=0.72,
-        context_pressure_cooldown_steps=4,
         provider_context_diagnostics="block",
         provider_context_oversized_feedback_chars=12_000,
         context_transform_failure_policy="ignore",
@@ -374,55 +352,10 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
     assert parsed == config
 
 
-def test_runtime_context_window_config_includes_distillation_controls() -> None:
-    config = RuntimeContextWindowConfig(
-        continuity_distillation_enabled=True,
-        continuity_distillation_max_input_items=11,
-        continuity_distillation_max_input_chars=3072,
-    )
-
-    payload = serialize_runtime_context_window_config(config)
-    assert payload is not None
-    assert payload["continuity_distillation_enabled"] is True
-    assert payload["continuity_distillation_max_input_items"] == 11
-    assert payload["continuity_distillation_max_input_chars"] == 3072
-
-    parsed = parse_runtime_context_window_payload(
-        payload,
-        source="test runtime_config.context_window.distillation",
-    )
-    assert parsed == config
-
-
-def test_runtime_config_rejects_distillation_max_input_chars_below_minimum(
-    tmp_path: Path,
-) -> None:
-    config_path = tmp_path / RUNTIME_CONFIG_FILE_NAME
-    config_path.write_text(
-        json.dumps(
-            {
-                "context_window": {
-                    "continuity_distillation_enabled": True,
-                    "continuity_distillation_max_input_chars": 63,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            "context_window.continuity_distillation_max_input_chars.*greater than or equal to 64"
-        ),
-    ):
-        _ = load_runtime_config(tmp_path, env={})
-
-
 def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
     _ = (tmp_path / "README.md").write_text("context window\n", encoding="utf-8")
     context_window = RuntimeContextWindowConfig(
-        max_tool_result_tokens=500,
+        model_context_window_tokens=500,
         reserved_output_tokens=100,
         per_tool_result_tokens={"shell_exec": 400},
     )
@@ -538,9 +471,7 @@ def test_runtime_config_rejects_empty_reasoning_effort_in_repo_file(tmp_path: Pa
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {"approval_mode": "allow", "model": "opencode/gpt-5.4", "hooks": {"enabled": True}}
-        ),
+        json.dumps({"approval_mode": "allow", "model": "opencode/gpt-5.4", "hooks": {"enabled": True}}),
         encoding="utf-8",
     )
 
@@ -568,12 +499,9 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
                     "on_background_task_completed": [["python", "scripts/task_completed.py"]],
                     "on_background_task_failed": [["python", "scripts/task_failed.py"]],
                     "on_background_task_cancelled": [["python", "scripts/task_cancelled.py"]],
-                    "on_background_task_notification_enqueued": [
-                        ["python", "scripts/task_notify.py"]
-                    ],
+                    "on_background_task_notification_enqueued": [["python", "scripts/task_notify.py"]],
                     "on_background_task_result_read": [["python", "scripts/task_result_read.py"]],
                     "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
-                    "on_context_pressure": [["python", "scripts/context_pressure.py"]],
                     "on_turn_progress": [["python", "scripts/turn_progress.py"]],
                     "on_stuck_detected": [["python", "scripts/stuck_detected.py"]],
                 }
@@ -600,7 +528,6 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
         on_background_task_notification_enqueued=(("python", "scripts/task_notify.py"),),
         on_background_task_result_read=(("python", "scripts/task_result_read.py"),),
         on_delegated_result_available=(("python", "scripts/delegated_result.py"),),
-        on_context_pressure=(("python", "scripts/context_pressure.py"),),
         on_turn_progress=(("python", "scripts/turn_progress.py"),),
         on_stuck_detected=(("python", "scripts/stuck_detected.py"),),
     )
@@ -640,9 +567,7 @@ def test_runtime_config_rejects_repo_file_execution_engine(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    with pytest.raises(
-        ValueError, match="runtime config field 'execution_engine' is not supported"
-    ):
+    with pytest.raises(ValueError, match="runtime config field 'execution_engine' is not supported"):
         _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
 
 
@@ -895,12 +820,8 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
     assert config.providers is not None
     assert config.providers.openai == OpenAIProviderConfig(api_key="openai-env-key")
     assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-env-key")
-    assert config.providers.google == GoogleProviderConfig(
-        auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key")
-    )
-    assert config.providers.copilot == CopilotProviderConfig(
-        auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
-    )
+    assert config.providers.google == GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-env-key"))
+    assert config.providers.copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN"))
     assert config.providers.litellm == LiteLLMProviderConfig(
         api_key="litellm-env-key",
         base_url="http://localhost:4000",
@@ -942,12 +863,8 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
     assert config.providers is not None
     assert config.providers.openai == OpenAIProviderConfig(api_key="openai-repo-key")
     assert config.providers.anthropic == AnthropicProviderConfig(api_key="anthropic-repo-key")
-    assert config.providers.google == GoogleProviderConfig(
-        auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key")
-    )
-    assert config.providers.copilot == CopilotProviderConfig(
-        auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token")
-    )
+    assert config.providers.google == GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="google-repo-key"))
+    assert config.providers.copilot == CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token="copilot-repo-token"))
     assert config.providers.litellm == LiteLLMProviderConfig(
         api_key="litellm-repo-key",
         auth_scheme="bearer",
@@ -1026,9 +943,7 @@ def test_runtime_config_accepts_lsp_preset_aliases(
     )
 
 
-def test_runtime_config_derives_python_lsp_defaults_when_workspace_matches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_derives_python_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
@@ -1044,9 +959,7 @@ def test_runtime_config_derives_python_lsp_defaults_when_workspace_matches(
     )
 
 
-def test_runtime_config_derives_typescript_lsp_defaults_when_workspace_matches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_derives_typescript_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "tsconfig.json").write_text("{}\n", encoding="utf-8")
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
@@ -1062,9 +975,7 @@ def test_runtime_config_derives_typescript_lsp_defaults_when_workspace_matches(
     )
 
 
-def test_runtime_config_keeps_explicit_repo_lsp_config_over_derived_defaults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_keeps_explicit_repo_lsp_config_over_derived_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps({"lsp": {"enabled": False, "servers": {"pyright": {}}}}),
         encoding="utf-8",
@@ -1083,9 +994,7 @@ def test_runtime_config_keeps_explicit_repo_lsp_config_over_derived_defaults(
     )
 
 
-def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
         return {}
@@ -1097,9 +1006,7 @@ def test_runtime_config_leaves_lsp_unset_when_no_derived_defaults_exist(
     assert config.lsp is None
 
 
-def test_runtime_config_derives_go_lsp_defaults_when_workspace_matches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_derives_go_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "go.mod").write_text("module example.com/demo\n", encoding="utf-8")
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
@@ -1115,9 +1022,7 @@ def test_runtime_config_derives_go_lsp_defaults_when_workspace_matches(
     )
 
 
-def test_runtime_config_derives_rust_lsp_defaults_when_workspace_matches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_derives_rust_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "Cargo.toml").write_text("[package]\nname = 'demo'\n", encoding="utf-8")
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
@@ -1133,9 +1038,7 @@ def test_runtime_config_derives_rust_lsp_defaults_when_workspace_matches(
     )
 
 
-def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "pom.xml").write_text("<project/>\n", encoding="utf-8")
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
@@ -2153,9 +2056,7 @@ def test_runtime_config_rejects_invalid_environment_execution_engine(tmp_path: P
 
 
 @pytest.mark.parametrize("raw_value", ["-1", "four"])
-def test_runtime_config_rejects_invalid_environment_max_steps(
-    tmp_path: Path, raw_value: str
-) -> None:
+def test_runtime_config_rejects_invalid_environment_max_steps(tmp_path: Path, raw_value: str) -> None:
     with pytest.raises(ValueError, match=MAX_STEPS_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: raw_value})
 
@@ -2166,17 +2067,13 @@ def test_runtime_config_environment_max_steps_zero_means_unlimited(tmp_path: Pat
 
 
 @pytest.mark.parametrize("raw_value", ["0", "-1", "four"])
-def test_runtime_config_rejects_invalid_environment_tool_timeout(
-    tmp_path: Path, raw_value: str
-) -> None:
+def test_runtime_config_rejects_invalid_environment_tool_timeout(tmp_path: Path, raw_value: str) -> None:
     with pytest.raises(ValueError, match=TOOL_TIMEOUT_ENV_VAR):
         _ = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: raw_value})
 
 
 @pytest.mark.parametrize("raw_value", [0, -1, True, False])
-def test_runtime_config_rejects_invalid_explicit_tool_timeout(
-    tmp_path: Path, raw_value: object
-) -> None:
+def test_runtime_config_rejects_invalid_explicit_tool_timeout(tmp_path: Path, raw_value: object) -> None:
     with pytest.raises(ValueError, match="explicit runtime config override 'tool_timeout_seconds'"):
         _ = load_runtime_config(tmp_path, tool_timeout_seconds=cast(int | None, raw_value), env={})
 
@@ -2216,12 +2113,8 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
 @pytest.mark.parametrize(
     ("payload", "match"),
     [
-        pytest.param(
-            {"max_steps": -1}, "runtime config field 'max_steps'", id="max-steps-negative"
-        ),
-        pytest.param(
-            {"max_steps": "four"}, "runtime config field 'max_steps'", id="max-steps-type"
-        ),
+        pytest.param({"max_steps": -1}, "runtime config field 'max_steps'", id="max-steps-negative"),
+        pytest.param({"max_steps": "four"}, "runtime config field 'max_steps'", id="max-steps-type"),
         pytest.param(
             {"tool_timeout_seconds": 0},
             "runtime config field 'tool_timeout_seconds'",
@@ -2249,21 +2142,8 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
         ),
         pytest.param(
             {"context_window": {"reserved_output_tokens": 0}},
-            "runtime config field 'context_window.reserved_output_tokens'"
-            ".*greater than or equal to 1",
+            "runtime config field 'context_window.reserved_output_tokens'.*greater than or equal to 1",
             id="context-window-reserved-output-zero",
-        ),
-        pytest.param(
-            {"context_window": {"context_pressure_threshold": 0}},
-            "runtime config field 'context_window.context_pressure_threshold'"
-            ".*greater than 0 and less than or equal to 1",
-            id="context-window-pressure-threshold-zero",
-        ),
-        pytest.param(
-            {"context_window": {"context_pressure_cooldown_steps": 0}},
-            "runtime config field 'context_window.context_pressure_cooldown_steps'"
-            ".*greater than or equal to 1",
-            id="context-window-pressure-cooldown-zero",
         ),
         pytest.param(
             {"context_window": {"provider_context_diagnostics": "error"}},
@@ -2272,15 +2152,12 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
         ),
         pytest.param(
             {"context_window": {"provider_context_oversized_feedback_chars": 0}},
-            "runtime config field 'context_window.provider_context_oversized_feedback_chars'"
-            ".*greater than or equal to 1",
+            "runtime config field 'context_window.provider_context_oversized_feedback_chars'.*greater than or equal to 1",
             id="context-window-provider-context-threshold-zero",
         ),
     ],
 )
-def test_runtime_config_rejects_invalid_max_steps(
-    tmp_path: Path, payload: dict[str, object], match: str
-) -> None:
+def test_runtime_config_rejects_invalid_max_steps(tmp_path: Path, payload: dict[str, object], match: str) -> None:
     runtime_config_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match=match):
@@ -2369,8 +2246,7 @@ def test_runtime_config_explicit_max_steps_zero_means_unlimited(tmp_path: Path) 
         ),
         pytest.param(
             {"permission": {"external_directory_read": {"": "ask"}}},
-            "runtime config field 'permission.external_directory_read'"
-            " keys must be non-empty strings",
+            "runtime config field 'permission.external_directory_read' keys must be non-empty strings",
             id="permission-read-empty-key",
         ),
         pytest.param(
@@ -2533,32 +2409,17 @@ def test_runtime_config_explicit_max_steps_zero_means_unlimited(tmp_path: Path) 
             id="providers-google-api-key-missing",
         ),
         pytest.param(
-            {
-                "providers": {
-                    "google": {"auth": {"method": "oauth", "api_key": "x", "access_token": "y"}}
-                }
-            },
+            {"providers": {"google": {"auth": {"method": "oauth", "api_key": "x", "access_token": "y"}}}},
             "runtime config field 'providers.google.auth.api_key'",
             id="providers-google-oauth-conflict",
         ),
         pytest.param(
-            {
-                "providers": {
-                    "copilot": {"auth": {"method": "token", "token": "a", "token_env_var": "TOKEN"}}
-                }
-            },
-            (
-                "runtime config field 'providers.copilot.auth.token'.*"
-                "runtime config field 'providers.copilot.auth.token_env_var'"
-            ),
+            {"providers": {"copilot": {"auth": {"method": "token", "token": "a", "token_env_var": "TOKEN"}}}},
+            ("runtime config field 'providers.copilot.auth.token'.*runtime config field 'providers.copilot.auth.token_env_var'"),
             id="providers-copilot-token-conflict",
         ),
         pytest.param(
-            {
-                "providers": {
-                    "copilot": {"auth": {"method": "token", "token": "a", "refresh_token": "b"}}
-                }
-            },
+            {"providers": {"copilot": {"auth": {"method": "token", "token": "a", "refresh_token": "b"}}}},
             "runtime config field 'providers.copilot.auth.refresh_token'",
             id="providers-copilot-refresh-token-invalid-for-token-method",
         ),
@@ -2665,9 +2526,7 @@ def test_runtime_config_rejects_invalid_extension_domain_shapes(
         _ = load_runtime_config(tmp_path, env={})
 
 
-def test_user_runtime_config_path_uses_windows_appdata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_user_runtime_config_path_uses_windows_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
@@ -2676,9 +2535,7 @@ def test_user_runtime_config_path_uses_windows_appdata(
     assert user_runtime_config_path() == tmp_path / "Roaming" / "voidcode" / "config.json"
 
 
-def test_load_global_web_settings_uses_windows_appdata_from_explicit_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_global_web_settings_uses_windows_appdata_from_explicit_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     config_path = tmp_path / "Roaming" / "voidcode" / "config.json"
     config_path.parent.mkdir(parents=True)
@@ -2720,9 +2577,7 @@ def test_parse_tui_config_preserves_preferences_shape() -> None:
     )
 
 
-def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
@@ -2762,9 +2617,7 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
     )
 
 
-def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
@@ -2791,9 +2644,7 @@ def test_load_runtime_config_resolves_tui_preferences_from_global_when_workspace
     )
 
 
-def test_load_runtime_config_uses_builtin_tui_preference_defaults_when_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_runtime_config_uses_builtin_tui_preference_defaults_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
 
     config = load_runtime_config(tmp_path, env={})
@@ -2805,9 +2656,7 @@ def test_load_runtime_config_uses_builtin_tui_preference_defaults_when_missing(
     )
 
 
-def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets_preferences(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets_preferences(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
@@ -2838,9 +2687,7 @@ def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets
     )
 
 
-def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -2859,14 +2706,10 @@ def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(
 
     assert config.tui is not None
     assert config.tui.preferences is not None
-    assert config.tui.preferences.theme == RuntimeTuiThemePreferences(
-        name="unknown-theme", mode="dark"
-    )
+    assert config.tui.preferences.theme == RuntimeTuiThemePreferences(name="unknown-theme", mode="dark")
 
 
-def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -2896,9 +2739,7 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
     }
 
 
-def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -2929,9 +2770,7 @@ def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(
     }
 
 
-def test_save_workspace_tui_preferences_writes_only_local_override_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_workspace_tui_preferences_writes_only_local_override_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     runtime_config_path(tmp_path).write_text(
         json.dumps(
@@ -2957,9 +2796,7 @@ def test_save_workspace_tui_preferences_writes_only_local_override_values(
     assert payload["tui"]["preferences"] == {"reading": {"wrap": False}}
 
 
-def test_save_global_tui_preferences_writes_user_config_shape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_global_tui_preferences_writes_user_config_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
 
@@ -2981,9 +2818,7 @@ def test_save_global_tui_preferences_writes_user_config_shape(
     }
 
 
-def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
     user_runtime_config_path().parent.mkdir(parents=True, exist_ok=True)
@@ -3009,15 +2844,11 @@ def test_save_global_tui_preferences_preserves_unrelated_global_config_fields(
 
 
 @pytest.mark.parametrize("provider", ["deepseek", "grok"])
-def test_save_global_web_settings_writes_simplified_builtin_provider_api_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
-) -> None:
+def test_save_global_web_settings_writes_simplified_builtin_provider_api_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     global_config_dir = tmp_path / "global-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(global_config_dir))
 
-    save_global_web_settings(
-        RuntimeWebSettings(provider=provider, provider_api_key=f"{provider}-key")
-    )
+    save_global_web_settings(RuntimeWebSettings(provider=provider, provider_api_key=f"{provider}-key"))
 
     payload = json.loads(user_runtime_config_path().read_text(encoding="utf-8"))
     assert payload["web"] == {"provider": provider}
@@ -3034,12 +2865,8 @@ def test_save_global_web_settings_writes_simplified_builtin_provider_api_keys(
         ("grok", {"XAI_API_KEY": "xai-env-key"}),
     ],
 )
-def test_load_global_web_settings_detects_simplified_builtin_provider_env_keys(
-    tmp_path: Path, provider: str, env: dict[str, str]
-) -> None:
-    settings = load_global_web_settings(
-        env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env}
-    )
+def test_load_global_web_settings_detects_simplified_builtin_provider_env_keys(tmp_path: Path, provider: str, env: dict[str, str]) -> None:
+    settings = load_global_web_settings(env={"XDG_CONFIG_HOME": str(tmp_path / "global-config"), **env})
 
     assert settings == RuntimeWebSettings(provider=provider, provider_api_key_present=True)
 
@@ -3101,8 +2928,7 @@ def test_parse_tui_config_preserves_valid_leader_key_and_keymap() -> None:
         ),
         pytest.param(
             {"keymap": {"n": "quit"}},
-            "runtime config field 'tui.keymap' values must be one of: "
-            "command_palette, session_new, session_resume",
+            "runtime config field 'tui.keymap' values must be one of: command_palette, session_new, session_resume",
             id="keymap-value-enum",
         ),
         pytest.param(
@@ -3229,9 +3055,7 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
             max_steps=7,
         ),
     )
-    _ = initial_runtime.run(
-        RuntimeRequest(prompt="read sample.txt", session_id="resume-config-precedence")
-    )
+    _ = initial_runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="resume-config-precedence"))
 
     resumed_runtime = VoidCodeRuntime(
         workspace=tmp_path,

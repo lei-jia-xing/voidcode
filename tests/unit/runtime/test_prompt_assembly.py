@@ -241,10 +241,7 @@ def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profile
         session_runtime_state={"model": "opencode/test-model"},
     )
 
-    assert any(
-        section.source == "agent_profile_overlay" and "<search_agent_contract>" in section.content
-        for section in explore_plan.sections
-    )
+    assert any(section.source == "agent_profile_overlay" and "<search_agent_contract>" in section.content for section in explore_plan.sections)
     assert not any("<search_agent_contract>" in section.content for section in worker_plan.sections)
     assert not any("<delegation_envelope>" in section.content for section in worker_plan.sections)
 
@@ -261,9 +258,7 @@ def test_builtin_prompt_profiles_render_with_expected_overlay_boundaries() -> No
             prompt_profile_name=profile,
             session_runtime_state={"model": "opencode/test-model"},
         )
-        rendered_system_text = "\n\n".join(
-            section.content for section in plan.sections if section.role == "system"
-        )
+        rendered_system_text = "\n\n".join(section.content for section in plan.sections if section.role == "system")
 
         assert rendered_system_text.count(base_prompt) == 1
         assert ("<delegation_envelope>" in rendered_system_text) is (profile in DELEGATION_PROFILES)
@@ -314,9 +309,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
     assert fragment_payload["preview_chars"] == 240
     assert [fragment["order"] for fragment in fragments] == list(range(len(fragments)))
     assert all("priority" not in fragment for fragment in fragments)
-    assert [fragment["id"] for fragment in fragments] == [
-        f"{index:03d}:{section.source}" for index, section in enumerate(plan.sections)
-    ]
+    assert [fragment["id"] for fragment in fragments] == [f"{index:03d}:{section.source}" for index, section in enumerate(plan.sections)]
     assert [fragment["source"] for fragment in fragments] == [
         "runtime_base_safety",
         "runtime_instruction_precedence",

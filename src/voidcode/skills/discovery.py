@@ -25,9 +25,7 @@ class LocalSkillMetadataLoader:
         discovered: list[SkillMetadata] = []
 
         for search_path in search_paths:
-            skill_root = resolve_workspace_relative_path(
-                workspace=resolved_workspace, configured_path=search_path
-            )
+            skill_root = resolve_workspace_relative_path(workspace=resolved_workspace, configured_path=search_path)
             if not skill_root.exists() or not skill_root.is_dir():
                 continue
             for entry_path in sorted(skill_root.glob(f"**/{SKILL_ENTRY_FILE_NAME}")):

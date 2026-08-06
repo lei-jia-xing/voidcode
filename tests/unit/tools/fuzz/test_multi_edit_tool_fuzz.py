@@ -41,9 +41,7 @@ def _invoke_multi_edit(*, content: str, edits: list[dict[str, object]]) -> tuple
     replacements=st.lists(_replacement_text, min_size=1, max_size=5),
     replace_all=st.lists(_replace_all_flag, min_size=1, max_size=5),
 )
-def test_multi_edit_reports_applied_count_and_indexed_details_for_successful_edits(
-    replacements: list[str], replace_all: list[bool]
-) -> None:
+def test_multi_edit_reports_applied_count_and_indexed_details_for_successful_edits(replacements: list[str], replace_all: list[bool]) -> None:
     assume_count = min(len(replacements), len(replace_all))
     replacements = replacements[:assume_count]
     replace_all = replace_all[:assume_count]
@@ -107,9 +105,7 @@ def test_multi_edit_applies_edits_sequentially_against_updated_file_state(steps:
     replacements=st.lists(_replacement_text, min_size=1, max_size=4),
     occurrence_counts=st.lists(st.integers(min_value=1, max_value=4), min_size=1, max_size=4),
 )
-def test_multi_edit_replace_all_sequence_matches_python_replace_oracle(
-    replacements: list[str], occurrence_counts: list[int]
-) -> None:
+def test_multi_edit_replace_all_sequence_matches_python_replace_oracle(replacements: list[str], occurrence_counts: list[int]) -> None:
     count = min(len(replacements), len(occurrence_counts))
     replacements = replacements[:count]
     occurrence_counts = occurrence_counts[:count]

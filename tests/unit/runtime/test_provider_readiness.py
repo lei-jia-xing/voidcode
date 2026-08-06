@@ -170,9 +170,7 @@ def test_provider_readiness_does_not_allocate_oauth_callback_state(tmp_path: Pat
         config=RuntimeConfig(
             model="google/gemini-2.5-pro",
             execution_engine="provider",
-            providers=ProviderConfigs(
-                google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))
-            ),
+            providers=ProviderConfigs(google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))),
         ),
     )
     try:

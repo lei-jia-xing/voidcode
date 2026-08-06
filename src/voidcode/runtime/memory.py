@@ -142,9 +142,7 @@ class _KeywordMemoryManager:
             mode="enabled",
             sqlite_vec=capability,
             semantic_search_available=semantic_search_available,
-            keyword_search_available=not (
-                _semantic_search_required(self.config) and not semantic_search_available
-            ),
+            keyword_search_available=not (_semantic_search_required(self.config) and not semantic_search_available),
         )
 
     def remember(self, text: str, *, source: str | None = None) -> None:
@@ -166,9 +164,7 @@ class _KeywordMemoryManager:
             entry_folded = entry.casefold()
             score = sum(entry_folded.count(term) for term in terms)
             if score:
-                results.append(
-                    MemoryManagerSearchResult(text=entry, search_mode="keyword", score=score)
-                )
+                results.append(MemoryManagerSearchResult(text=entry, search_mode="keyword", score=score))
         ordered = sorted(
             results,
             key=lambda result: (-result.score, self._entries.index(result.text)),

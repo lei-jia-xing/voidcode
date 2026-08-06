@@ -81,15 +81,11 @@ class RuntimeTransport(Protocol):
 
     def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
 
-    def load_background_task_result_by_child_session(
-        self, *, child_session_id: str
-    ) -> BackgroundTaskResult | None: ...
+    def load_background_task_result_by_child_session(self, *, child_session_id: str) -> BackgroundTaskResult | None: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
-    def list_background_tasks_by_parent_session(
-        self, *, parent_session_id: str
-    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+    def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
@@ -420,11 +416,7 @@ class RuntimeTransportApp:
 
     @contextmanager
     def _active_request_scope(self) -> Iterator[None]:
-        request_scope = (
-            self._workspace_coordinator.active_request()
-            if self._workspace_coordinator is not None
-            else nullcontext()
-        )
+        request_scope = self._workspace_coordinator.active_request() if self._workspace_coordinator is not None else nullcontext()
         with request_scope:
             yield
 
@@ -719,9 +711,7 @@ class RuntimeTransportApp:
             is_undo_route = session_path.endswith("/undo")
             is_revert_route = session_path.endswith("/revert")
             is_unrevert_route = session_path.endswith("/unrevert")
-            is_cancel_route = session_path.endswith("/cancel") or session_path.endswith(
-                "/interrupt"
-            )
+            is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
             session_id = (
                 session_path.removesuffix("/tasks")
                 if is_task_list_route
@@ -1088,27 +1078,21 @@ class RuntimeTransportApp:
                     runtime = self._runtime_factory()
                 except Exception:
                     logger.exception("unexpected transport streaming failure")
-                    await self._json_response(
-                        send, status=500, payload={"error": "internal server error"}
-                    )
+                    await self._json_response(send, status=500, payload={"error": "internal server error"})
                     return
                 stream = self._stream_runtime_chunks(runtime, request)
                 try:
                     first_chunk = await anext(stream)
                 except StopAsyncIteration:
                     logger.exception("runtime stream emitted no chunks before response start")
-                    await self._json_response(
-                        send, status=500, payload={"error": "internal server error"}
-                    )
+                    await self._json_response(send, status=500, payload={"error": "internal server error"})
                     return
                 except RuntimeRequestError as exc:
                     await self._json_response(send, status=400, payload={"error": str(exc)})
                     return
                 except Exception:
                     logger.exception("unexpected transport streaming failure")
-                    await self._json_response(
-                        send, status=500, payload={"error": "internal server error"}
-                    )
+                    await self._json_response(send, status=500, payload={"error": "internal server error"})
                     return
 
                 await self._send_stream_start(send)
@@ -1171,9 +1155,7 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_stored_session_summary(item) for item in runtime.list_sessions()
-                ]
+                payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions()]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
@@ -1205,10 +1187,7 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_background_task_summary(item)
-                    for item in runtime.list_background_tasks()
-                ]
+                payload = [self._serialize_background_task_summary(item) for item in runtime.list_background_tasks()]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
@@ -1224,9 +1203,7 @@ class RuntimeTransportApp:
             try:
                 payload = [
                     self._serialize_background_task_summary(item)
-                    for item in runtime.list_background_tasks_by_parent_session(
-                        parent_session_id=parent_session_id
-                    )
+                    for item in runtime.list_background_tasks_by_parent_session(parent_session_id=parent_session_id)
                 ]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
@@ -1262,9 +1239,7 @@ class RuntimeTransportApp:
                 child_session_result: RuntimeSessionResult | None = None
                 if task_result.child_session_id is not None:
                     try:
-                        child_session_result = runtime.session_result(
-                            session_id=task_result.child_session_id
-                        )
+                        child_session_result = runtime.session_result(session_id=task_result.child_session_id)
                     except ValueError:
                         child_session_result = None
             except ValueError as exc:
@@ -1411,9 +1386,7 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_notification(item) for item in runtime.list_notifications()
-                ]
+                payload = [self._serialize_notification(item) for item in runtime.list_notifications()]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
@@ -1431,9 +1404,7 @@ class RuntimeTransportApp:
         if self._workspace_coordinator is None:
             await self._json_response(send, status=404, payload={"error": "not found"})
             return
-        payload = self._serialize_workspace_registry_snapshot(
-            self._workspace_coordinator.snapshot()
-        )
+        payload = self._serialize_workspace_registry_snapshot(self._workspace_coordinator.snapshot())
         await self._json_response(send, status=200, payload=payload)
 
     async def _handle_open_workspace(self, receive: Receive, send: Send) -> None:
@@ -1470,10 +1441,7 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_provider_summary(provider)
-                    for provider in runtime.list_provider_summaries()
-                ]
+                payload = [self._serialize_provider_summary(provider) for provider in runtime.list_provider_summaries()]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
@@ -1486,9 +1454,7 @@ class RuntimeTransportApp:
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         status = 200 if result.configured else 409
-        await self._json_response(
-            send, status=status, payload=self._serialize_provider_models_result(result)
-        )
+        await self._json_response(send, status=status, payload=self._serialize_provider_models_result(result))
 
     async def _handle_provider_inspect(self, *, provider_name: str, send: Send) -> None:
         with self._active_request_scope():
@@ -1501,9 +1467,7 @@ class RuntimeTransportApp:
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         status = 200 if result.summary.configured else 409
-        await self._json_response(
-            send, status=status, payload=self._serialize_provider_inspect_result(result)
-        )
+        await self._json_response(send, status=status, payload=self._serialize_provider_inspect_result(result))
 
     async def _handle_provider_validation(self, *, provider_name: str, send: Send) -> None:
         with self._active_request_scope():
@@ -1516,17 +1480,13 @@ class RuntimeTransportApp:
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         status = 200 if result.ok else 409
-        await self._json_response(
-            send, status=status, payload=self._serialize_provider_validation_result(result)
-        )
+        await self._json_response(send, status=status, payload=self._serialize_provider_validation_result(result))
 
     async def _handle_list_agents(self, send: Send) -> None:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_agent_summary(agent) for agent in runtime.list_agent_summaries()
-                ]
+                payload = [self._serialize_agent_summary(agent) for agent in runtime.list_agent_summaries()]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)
@@ -1535,9 +1495,7 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()
-                ]
+                payload = [self._serialize_skill_summary(skill) for skill in runtime.list_skill_summaries()]
             finally:
                 self._close_runtime(
                     runtime,
@@ -1549,10 +1507,7 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [
-                    self._serialize_command_summary(command)
-                    for command in runtime.list_command_summaries()
-                ]
+                payload = [self._serialize_command_summary(command) for command in runtime.list_command_summaries()]
             finally:
                 self._close_runtime(
                     runtime,
@@ -1713,9 +1668,7 @@ class RuntimeTransportApp:
         send: Send,
     ) -> None:
         try:
-            payload = _SessionRevertRequestPayload.model_validate_json(
-                await self._read_body(receive)
-            )
+            payload = _SessionRevertRequestPayload.model_validate_json(await self._read_body(receive))
         except (ValidationError, ValueError) as exc:
             await self._json_response(send, status=400, payload={"error": str(exc)})
             return
@@ -1987,10 +1940,7 @@ class RuntimeTransportApp:
     ) -> dict[str, object]:
         return {
             "session": RuntimeTransportApp._serialize_session_state(response.session),
-            "events": [
-                RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking)
-                for event in response.events
-            ],
+            "events": [RuntimeTransportApp._serialize_event(event, show_thinking=show_thinking) for event in response.events],
             "output": response.output,
         }
 
@@ -2038,9 +1988,7 @@ class RuntimeTransportApp:
         return {
             "task": {"id": task.task.id},
             "status": task.status,
-            "request": RuntimeTransportApp._serialize_background_task_request_snapshot(
-                task.request
-            ),
+            "request": RuntimeTransportApp._serialize_background_task_request_snapshot(task.request),
             "parent_session_id": task.parent_session_id,
             "requested_child_session_id": task.request.session_id,
             "child_session_id": task.child_session_id,
@@ -2058,9 +2006,7 @@ class RuntimeTransportApp:
             "finished_at_unix_ms": task.finished_at_unix_ms,
             "cancel_requested_at": task.cancel_requested_at,
             "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
-            "observability": (
-                None if task.observability is None else task.observability.as_payload()
-            ),
+            "observability": (None if task.observability is None else task.observability.as_payload()),
         }
 
     @staticmethod
@@ -2074,9 +2020,7 @@ class RuntimeTransportApp:
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "created_at_unix_ms": task.created_at_unix_ms,
-            "observability": (
-                None if task.observability is None else task.observability.as_payload()
-            ),
+            "observability": (None if task.observability is None else task.observability.as_payload()),
         }
 
     @staticmethod
@@ -2103,9 +2047,7 @@ class RuntimeTransportApp:
                             show_thinking=show_thinking,
                         ),
                     ),
-                    "reverted": result.revert_marker is not None
-                    and result.revert_marker.active
-                    and event.sequence >= result.revert_marker.sequence,
+                    "reverted": result.revert_marker is not None and result.revert_marker.active and event.sequence >= result.revert_marker.sequence,
                 }
                 for event in result.transcript
             ],
@@ -2192,12 +2134,8 @@ class RuntimeTransportApp:
                 if snapshot.last_tool is not None
                 else None
             ),
-            "provider_context": RuntimeTransportApp._serialize_provider_context_snapshot(
-                snapshot.provider_context
-            ),
-            "hook_presets": RuntimeTransportApp._serialize_hook_preset_snapshot(
-                snapshot.hook_presets
-            ),
+            "provider_context": RuntimeTransportApp._serialize_provider_context_snapshot(snapshot.provider_context),
+            "hook_presets": RuntimeTransportApp._serialize_hook_preset_snapshot(snapshot.hook_presets),
             "suggested_operator_action": snapshot.suggested_operator_action,
             "operator_guidance": snapshot.operator_guidance,
         }
@@ -2269,9 +2207,7 @@ class RuntimeTransportApp:
                     "blocked": snapshot.policy_decision.blocked,
                     "diagnostic_count": snapshot.policy_decision.diagnostic_count,
                     "diagnostic_codes": list(snapshot.policy_decision.diagnostic_codes),
-                    "blocking_diagnostic_codes": list(
-                        snapshot.policy_decision.blocking_diagnostic_codes
-                    ),
+                    "blocking_diagnostic_codes": list(snapshot.policy_decision.blocking_diagnostic_codes),
                     "message": snapshot.policy_decision.message,
                 }
                 if snapshot.policy_decision is not None
@@ -2332,9 +2268,7 @@ class RuntimeTransportApp:
             "duration_seconds": result.duration_seconds,
             "tool_call_count": result.tool_call_count,
             "routing": RuntimeTransportApp._serialize_subagent_routing(result.routing),
-            "observability": (
-                None if result.observability is None else result.observability.as_payload()
-            ),
+            "observability": (None if result.observability is None else result.observability.as_payload()),
             "hook_reminder": result.hook_reminder,
             "delegation": result.delegated_execution.as_payload(),
             "message": result.delegated_message.as_payload(),
@@ -2355,18 +2289,9 @@ class RuntimeTransportApp:
         snapshot: WorkspaceRegistrySnapshot,
     ) -> dict[str, object]:
         return {
-            "current": (
-                None
-                if snapshot.current is None
-                else RuntimeTransportApp._serialize_workspace_summary(snapshot.current)
-            ),
-            "recent": [
-                RuntimeTransportApp._serialize_workspace_summary(item) for item in snapshot.recent
-            ],
-            "candidates": [
-                RuntimeTransportApp._serialize_workspace_summary(item)
-                for item in snapshot.candidates
-            ],
+            "current": (None if snapshot.current is None else RuntimeTransportApp._serialize_workspace_summary(snapshot.current)),
+            "recent": [RuntimeTransportApp._serialize_workspace_summary(item) for item in snapshot.recent],
+            "candidates": [RuntimeTransportApp._serialize_workspace_summary(item) for item in snapshot.candidates],
         }
 
     @staticmethod
@@ -2401,12 +2326,8 @@ class RuntimeTransportApp:
                 "supports_thinking_budget": metadata.supports_thinking_budget,
                 "supports_interleaved_reasoning": metadata.supports_interleaved_reasoning,
                 "reasoning_visibility": metadata.reasoning_visibility,
-                "modalities_input": list(metadata.modalities_input)
-                if metadata.modalities_input is not None
-                else None,
-                "modalities_output": list(metadata.modalities_output)
-                if metadata.modalities_output is not None
-                else None,
+                "modalities_input": list(metadata.modalities_input) if metadata.modalities_input is not None else None,
+                "modalities_output": list(metadata.modalities_output) if metadata.modalities_output is not None else None,
                 "model_status": metadata.model_status,
                 "tool_feedback_mode": metadata.tool_feedback_mode,
             }.items()
@@ -2420,8 +2341,7 @@ class RuntimeTransportApp:
             "configured": result.configured,
             "models": list(result.models),
             "model_metadata": {
-                model: RuntimeTransportApp._serialize_provider_model_metadata(metadata)
-                for model, metadata in result.model_metadata.items()
+                model: RuntimeTransportApp._serialize_provider_model_metadata(metadata) for model, metadata in result.model_metadata.items()
             },
             "source": result.source,
             "last_refresh_status": result.last_refresh_status,
@@ -2434,22 +2354,14 @@ class RuntimeTransportApp:
         return {
             "provider": RuntimeTransportApp._serialize_provider_summary(result.summary),
             "models": RuntimeTransportApp._serialize_provider_models_result(result.models),
-            "validation": RuntimeTransportApp._serialize_provider_validation_result(
-                result.validation
-            ),
+            "validation": RuntimeTransportApp._serialize_provider_validation_result(result.validation),
             "current_model": result.current_model,
             "current_model_metadata": (
                 None
                 if result.current_model_metadata is None
-                else RuntimeTransportApp._serialize_provider_model_metadata(
-                    result.current_model_metadata
-                )
+                else RuntimeTransportApp._serialize_provider_model_metadata(result.current_model_metadata)
             ),
-            "readiness": (
-                None
-                if result.readiness is None
-                else RuntimeTransportApp._serialize_provider_readiness_result(result.readiness)
-            ),
+            "readiness": (None if result.readiness is None else RuntimeTransportApp._serialize_provider_readiness_result(result.readiness)),
         }
 
     @staticmethod
@@ -2586,9 +2498,7 @@ class RuntimeTransportApp:
             "name": node.name,
             "kind": node.kind,
             "changed": node.changed,
-            "children": [
-                RuntimeTransportApp._serialize_review_tree_node(child) for child in node.children
-            ],
+            "children": [RuntimeTransportApp._serialize_review_tree_node(child) for child in node.children],
         }
 
     @staticmethod
@@ -2598,13 +2508,8 @@ class RuntimeTransportApp:
         return {
             "root": snapshot.root,
             "git": RuntimeTransportApp._serialize_git_status_snapshot(snapshot.git),
-            "changed_files": [
-                RuntimeTransportApp._serialize_review_changed_file(item)
-                for item in snapshot.changed_files
-            ],
-            "tree": [
-                RuntimeTransportApp._serialize_review_tree_node(node) for node in snapshot.tree
-            ],
+            "changed_files": [RuntimeTransportApp._serialize_review_changed_file(item) for item in snapshot.changed_files],
+            "tree": [RuntimeTransportApp._serialize_review_tree_node(node) for node in snapshot.tree],
         }
 
     @staticmethod
@@ -2667,9 +2572,7 @@ class RuntimeTransportApp:
             ),
         }
         if delegated is not None:
-            payload["delegated_lifecycle"] = (
-                RuntimeTransportApp._serialize_delegated_lifecycle_event(delegated)
-            )
+            payload["delegated_lifecycle"] = RuntimeTransportApp._serialize_delegated_lifecycle_event(delegated)
         return payload
 
     @staticmethod

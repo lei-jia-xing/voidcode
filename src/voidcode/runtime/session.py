@@ -52,8 +52,7 @@ def _scrub_text(value: str) -> str:
     if len(scrubbed) <= _PERSISTED_STRING_LIMIT:
         return scrubbed
     return scrubbed[:_PERSISTED_STRING_LIMIT] + (
-        f"\n... [truncated by runtime metadata: kept first "
-        f"{_PERSISTED_STRING_LIMIT} of {len(scrubbed)} chars]"
+        f"\n... [truncated by runtime metadata: kept first {_PERSISTED_STRING_LIMIT} of {len(scrubbed)} chars]"
     )
 
 
@@ -70,9 +69,7 @@ def _bounded_redacted(value: object, *, key: str | None = None) -> object:
             result[item_key] = _bounded_redacted(item, key=item_key)
         return result
     if isinstance(value, list):
-        result = [
-            _bounded_redacted(item) for item in cast(list[object], value[:_PERSISTED_LIST_LIMIT])
-        ]
+        result = [_bounded_redacted(item) for item in cast(list[object], value[:_PERSISTED_LIST_LIMIT])]
         if len(value) > _PERSISTED_LIST_LIMIT:
             result.append({"__truncated__": True, "original_length": len(value)})
         return result
@@ -141,9 +138,7 @@ def _policy_observations(events: tuple[object, ...]) -> dict[str, object]:
     for event in events:
         event_type = _event_type(event)
         payload = _event_payload(event)
-        if payload.get("kind") == "runtime_tool_policy_denied" and isinstance(
-            payload.get("tool_policy"), dict
-        ):
+        if payload.get("kind") == "runtime_tool_policy_denied" and isinstance(payload.get("tool_policy"), dict):
             tool_policy_denial = {
                 "event_sequence": _event_sequence(event),
                 **cast(dict[str, object], _bounded_redacted(payload["tool_policy"])),
@@ -182,7 +177,13 @@ def session_metadata_for_persistence(
     *,
     events: tuple[object, ...] = (),
 ) -> dict[str, object]:
-    """Return bounded, redacted session metadata safe for durable storage."""
+    """Return bounded, redacted session metadata safe for durable storage.
+
+    Boundary: this applies safety bounds (secret scrubbing, string-length caps,
+    dict/list depth limits) — NOT context compaction. Context window projection
+    is owned by ``context_window.py``. The bounds here prevent unbounded metadata
+    bloat in the sessions row.
+    """
 
     persisted = cast(dict[str, object], _bounded_redacted(metadata))
     persisted.pop("_prompt_activation_this_run", None)

@@ -243,9 +243,7 @@ def test_tool_output_artifact_rejects_untrusted_paths(tmp_path: Path) -> None:
 
     read_result = read_tool_output_artifact(forged_artifact)
     search_result = search_tool_output_artifact(forged_artifact, pattern="must")
-    resolved = resolve_tool_output_artifact(
-        [{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_forged"
-    )
+    resolved = resolve_tool_output_artifact([{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_forged")
 
     assert read_result["status"] == "invalid"
     assert "content" not in read_result
@@ -290,9 +288,7 @@ def test_tool_output_artifact_rejects_short_id_for_another_artifact_path(
 
     read_result = read_tool_output_artifact(forged_artifact)
     search_result = search_tool_output_artifact(forged_artifact, pattern="three")
-    resolved = resolve_tool_output_artifact(
-        [{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_"
-    )
+    resolved = resolve_tool_output_artifact([{"payload": {"artifact": forged_artifact}}], artifact_id="artifact_")
 
     assert read_result["status"] == "invalid"
     assert "content" not in read_result
@@ -315,9 +311,7 @@ def test_tool_output_artifact_rejects_valid_shaped_id_for_another_artifact_path(
 
     read_result = read_tool_output_artifact(forged_artifact)
     search_result = search_tool_output_artifact(forged_artifact, pattern="three")
-    resolved = resolve_tool_output_artifact(
-        [{"payload": {"artifact": forged_artifact}}], artifact_id=forged_id
-    )
+    resolved = resolve_tool_output_artifact([{"payload": {"artifact": forged_artifact}}], artifact_id=forged_id)
 
     assert read_result["status"] == "invalid"
     assert "content" not in read_result

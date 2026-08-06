@@ -68,18 +68,14 @@ def _wait_for_url_from_stream(
             if poll_fn() is not None:
                 output = "".join(buffered_lines).strip()
                 raise SystemExit(
-                    "packaged launcher exited before printing its local URL"
-                    + (f"\nlauncher output:\n{output}" if output else "")
+                    "packaged launcher exited before printing its local URL" + (f"\nlauncher output:\n{output}" if output else "")
                 ) from None
             continue
 
         if item is None:
             if poll_fn() is not None:
                 output = "".join(buffered_lines).strip()
-                raise SystemExit(
-                    "packaged launcher exited before printing its local URL"
-                    + (f"\nlauncher output:\n{output}" if output else "")
-                )
+                raise SystemExit("packaged launcher exited before printing its local URL" + (f"\nlauncher output:\n{output}" if output else ""))
             continue
 
         buffered_lines.append(item)

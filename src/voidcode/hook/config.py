@@ -26,7 +26,6 @@ type RuntimeHookSurface = Literal[
     "background_task_notification_enqueued",
     "background_task_result_read",
     "delegated_result_available",
-    "context_pressure",
     "turn_progress",
     "stuck_detected",
 ]
@@ -52,12 +51,9 @@ class RuntimeHooksConfig:
     on_background_task_notification_enqueued: tuple[tuple[str, ...], ...] = ()
     on_background_task_result_read: tuple[tuple[str, ...], ...] = ()
     on_delegated_result_available: tuple[tuple[str, ...], ...] = ()
-    on_context_pressure: tuple[tuple[str, ...], ...] = ()
     on_turn_progress: tuple[tuple[str, ...], ...] = ()
     on_stuck_detected: tuple[tuple[str, ...], ...] = ()
-    formatter_presets: Mapping[str, RuntimeFormatterPresetConfig] = field(
-        default_factory=default_formatter_presets
-    )
+    formatter_presets: Mapping[str, RuntimeFormatterPresetConfig] = field(default_factory=default_formatter_presets)
 
     def commands_for_surface(self, surface: RuntimeHookSurface) -> tuple[tuple[str, ...], ...]:
         return {
@@ -75,7 +71,6 @@ class RuntimeHooksConfig:
             "background_task_notification_enqueued": self.on_background_task_notification_enqueued,
             "background_task_result_read": self.on_background_task_result_read,
             "delegated_result_available": self.on_delegated_result_available,
-            "context_pressure": self.on_context_pressure,
             "turn_progress": self.on_turn_progress,
             "stuck_detected": self.on_stuck_detected,
         }[surface]

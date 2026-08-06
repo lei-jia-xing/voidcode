@@ -9,9 +9,7 @@ from .models import AgentManifest, AgentPromptMaterialization
 
 _AGENT_DIR = Path(__file__).resolve().parent
 _PROMPT_FILE_NAME = "base.txt"
-_BUILTIN_PROMPT_PROFILES = frozenset(
-    {"leader", "worker", "advisor", "explore", "researcher", "product"}
-)
+_BUILTIN_PROMPT_PROFILES = frozenset({"leader", "worker", "advisor", "explore", "researcher", "product"})
 
 
 def _prompt_path(prompt_profile: str) -> Path:

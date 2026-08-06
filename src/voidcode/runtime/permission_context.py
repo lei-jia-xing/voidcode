@@ -25,6 +25,7 @@ class RuntimePermissionContextResolver:
             tool_call.tool_name,
             tool.read_only,
             tool_instance=tool_instance,
+            arguments=tool_call.arguments,
         )
         candidate_paths = self.candidate_paths_for_tool_call(
             tool_call,
@@ -120,7 +121,10 @@ def operation_class_for_tool(
     read_only: bool,
     *,
     tool_instance: Tool,
+    arguments: dict[str, object] | None = None,
 ) -> OperationClass:
     if tool_name == "shell_exec" or isinstance(tool_instance, LocalCustomTool):
         return "execute"
+    if tool_name == "ast_grep" and arguments is not None:
+        return "write" if arguments.get("mode") == "replace" else "read"
     return "read" if read_only else "write"

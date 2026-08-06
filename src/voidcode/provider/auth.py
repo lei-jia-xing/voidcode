@@ -94,12 +94,8 @@ class ProviderAuthResolutionError(ValueError):
         return self.message
 
 
-_OPENAI_METHODS: tuple[ProviderAuthMethod, ...] = (
-    ProviderAuthMethod(id="api_key", label="API Key"),
-)
-_ANTHROPIC_METHODS: tuple[ProviderAuthMethod, ...] = (
-    ProviderAuthMethod(id="api_key", label="API Key"),
-)
+_OPENAI_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
+_ANTHROPIC_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
 _GOOGLE_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="api_key", label="API Key"),
     ProviderAuthMethod(id="oauth", label="OAuth", requires_callback=True),
@@ -113,9 +109,7 @@ _LITELLM_METHODS: tuple[ProviderAuthMethod, ...] = (
     ProviderAuthMethod(id="api_key", label="API Key"),
     ProviderAuthMethod(id="none", label="No Auth"),
 )
-_SIMPLIFIED_METHODS: tuple[ProviderAuthMethod, ...] = (
-    ProviderAuthMethod(id="api_key", label="API Key"),
-)
+_SIMPLIFIED_METHODS: tuple[ProviderAuthMethod, ...] = (ProviderAuthMethod(id="api_key", label="API Key"),)
 
 
 class ProviderAuthResolver:
@@ -288,10 +282,7 @@ class ProviderAuthResolver:
                 provider=provider_name,
                 code="unsupported_method",
                 kind="invalid_model",
-                message=(
-                    f"provider auth method '{method}' for provider '{provider_name}' "
-                    "must be one of: api_key, none"
-                ),
+                message=(f"provider auth method '{method}' for provider '{provider_name}' must be one of: api_key, none"),
             )
 
         if method == "none":
@@ -320,10 +311,7 @@ class ProviderAuthResolver:
                 provider=provider_name,
                 code="missing_credentials",
                 kind="missing_auth",
-                message=(
-                    f"provider auth field '{provider_name}.api_key' must be provided "
-                    f"for {provider_name} api_key auth"
-                ),
+                message=(f"provider auth field '{provider_name}.api_key' must be provided for {provider_name} api_key auth"),
             )
         return ProviderAuthAuthorizeResult(
             provider=provider_name,
@@ -338,9 +326,7 @@ class ProviderAuthResolver:
         request: ProviderAuthAuthorizeRequest,
         provider_config: SimplifiedProviderConfig,
     ) -> ProviderAuthAuthorizeResult:
-        method = self._resolve_method(
-            request, default_method="api_key", allowed_methods={"api_key"}
-        )
+        method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
         payload = {} if request.payload is None else dict(request.payload)
         token = self._resolve_api_key(
             payload=payload,
@@ -364,10 +350,7 @@ class ProviderAuthResolver:
                 provider=request.provider,
                 code="callback_not_supported",
                 kind="invalid_model",
-                message=(
-                    f"provider auth callback is not supported for provider '{request.provider}' "
-                    f"method '{request.method}'"
-                ),
+                message=(f"provider auth callback is not supported for provider '{request.provider}' method '{request.method}'"),
             )
 
         if not self._validate_callback_state(request.state, request.provider, request.method):
@@ -375,10 +358,7 @@ class ProviderAuthResolver:
                 provider=request.provider,
                 code="invalid_state",
                 kind="invalid_model",
-                message=(
-                    f"provider auth callback state for provider '{request.provider}' "
-                    f"and method '{request.method}' is invalid"
-                ),
+                message=(f"provider auth callback state for provider '{request.provider}' and method '{request.method}' is invalid"),
             )
         self._pending_callback_states.pop(request.state, None)
 
@@ -418,18 +398,11 @@ class ProviderAuthResolver:
             provider=request.provider,
             code="callback_not_supported",
             kind="invalid_model",
-            message=(
-                f"provider auth callback is not supported for provider '{request.provider}' "
-                f"method '{request.method}'"
-            ),
+            message=(f"provider auth callback is not supported for provider '{request.provider}' method '{request.method}'"),
         )
 
-    def _authorize_openai(
-        self, request: ProviderAuthAuthorizeRequest
-    ) -> ProviderAuthAuthorizeResult:
-        method = self._resolve_method(
-            request, default_method="api_key", allowed_methods={"api_key"}
-        )
+    def _authorize_openai(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
+        method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
         provider_config = self._providers.openai
         payload = {} if request.payload is None else dict(request.payload)
         token = self._resolve_api_key(
@@ -445,12 +418,8 @@ class ProviderAuthResolver:
             material=self._bearer_material("openai", method, token),
         )
 
-    def _authorize_anthropic(
-        self, request: ProviderAuthAuthorizeRequest
-    ) -> ProviderAuthAuthorizeResult:
-        method = self._resolve_method(
-            request, default_method="api_key", allowed_methods={"api_key"}
-        )
+    def _authorize_anthropic(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
+        method = self._resolve_method(request, default_method="api_key", allowed_methods={"api_key"})
         provider_config = self._providers.anthropic
         payload = {} if request.payload is None else dict(request.payload)
         token = self._resolve_api_key(
@@ -471,9 +440,7 @@ class ProviderAuthResolver:
             ),
         )
 
-    def _authorize_google(
-        self, request: ProviderAuthAuthorizeRequest
-    ) -> ProviderAuthAuthorizeResult:
+    def _authorize_google(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
         provider_config: GoogleProviderConfig | None = self._providers.google
         configured_method = None
         if provider_config is not None and provider_config.auth is not None:
@@ -520,10 +487,7 @@ class ProviderAuthResolver:
                     provider="google",
                     code="missing_credentials",
                     kind="missing_auth",
-                    message=(
-                        "provider auth field 'google.service_account_json_path' "
-                        "must be provided for google service_account auth"
-                    ),
+                    message=("provider auth field 'google.service_account_json_path' must be provided for google service_account auth"),
                 )
             return ProviderAuthAuthorizeResult(
                 provider="google",
@@ -562,9 +526,7 @@ class ProviderAuthResolver:
             ),
         )
 
-    def _authorize_copilot(
-        self, request: ProviderAuthAuthorizeRequest
-    ) -> ProviderAuthAuthorizeResult:
+    def _authorize_copilot(self, request: ProviderAuthAuthorizeRequest) -> ProviderAuthAuthorizeResult:
         provider_config: CopilotProviderConfig | None = self._providers.copilot
         configured_method = None
         if provider_config is not None and provider_config.auth is not None:
@@ -595,10 +557,7 @@ class ProviderAuthResolver:
                     provider="copilot",
                     code="missing_credentials",
                     kind="missing_auth",
-                    message=(
-                        "provider auth field 'copilot.token' "
-                        "must be provided for copilot token auth"
-                    ),
+                    message=("provider auth field 'copilot.token' must be provided for copilot token auth"),
                 )
             return ProviderAuthAuthorizeResult(
                 provider="copilot",
@@ -663,10 +622,7 @@ class ProviderAuthResolver:
             provider=provider,
             code="missing_credentials",
             kind="missing_auth",
-            message=(
-                f"provider auth field '{provider}.{field_name}' "
-                f"must be provided for {provider} api_key auth"
-            ),
+            message=(f"provider auth field '{provider}.{field_name}' must be provided for {provider} api_key auth"),
         )
 
     def _resolve_method(
@@ -684,23 +640,15 @@ class ProviderAuthResolver:
                 provider=request.provider,
                 code="unsupported_method",
                 kind="invalid_model",
-                message=(
-                    f"provider auth method '{method}' for provider '{request.provider}' "
-                    f"must be one of: {allowed}"
-                ),
+                message=(f"provider auth method '{method}' for provider '{request.provider}' must be one of: {allowed}"),
             )
-        if (
-            configured_method is not None
-            and request.method is not None
-            and request.method != configured_method
-        ):
+        if configured_method is not None and request.method is not None and request.method != configured_method:
             raise self._error(
                 provider=request.provider,
                 code="invalid_payload",
                 kind="invalid_model",
                 message=(
-                    f"provider auth method '{request.method}' for provider '{request.provider}' "
-                    f"must match configured method '{configured_method}'"
+                    f"provider auth method '{request.method}' for provider '{request.provider}' must match configured method '{configured_method}'"
                 ),
             )
         return method

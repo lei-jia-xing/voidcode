@@ -86,9 +86,7 @@ def _sanitize_value(value: object, *, key: str | None = None, argument: bool = F
             for item_key, item_value in cast(dict[object, object], value).items()
         }
     if isinstance(value, list):
-        return [
-            _sanitize_value(item, key=key, argument=argument) for item in cast(list[object], value)
-        ]
+        return [_sanitize_value(item, key=key, argument=argument) for item in cast(list[object], value)]
     if isinstance(value, tuple):
         return [_sanitize_value(item, key=key, argument=argument) for item in value]
     return value
@@ -140,14 +138,9 @@ def strip_redaction_sentinels(
             for item_key, item in raw_value.items()
         }
     if isinstance(value, list):
-        return [
-            strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key)
-            for item in cast(list[object], value)
-        ]
+        return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in cast(list[object], value)]
     if isinstance(value, tuple):
-        return [
-            strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value
-        ]
+        return [strip_redaction_sentinels(item, redacted_keys=redacted_keys, key=key) for item in value]
     return value
 
 
@@ -170,9 +163,7 @@ def _safe_artifact_segment(value: str | None, *, fallback: str) -> str:
     return safe[:96] or fallback
 
 
-def _diagnostics_with(
-    existing_data: dict[str, object], diagnostic: dict[str, object]
-) -> list[object]:
+def _diagnostics_with(existing_data: dict[str, object], diagnostic: dict[str, object]) -> list[object]:
     current = existing_data.get("diagnostics")
     if isinstance(current, list):
         return [*cast(list[object], current), diagnostic]
@@ -231,9 +222,7 @@ def _artifact_id(
     tool_name: str,
     content_hash: str,
 ) -> str:
-    digest = hashlib.sha256(
-        f"{session_id or ''}\0{tool_call_id or ''}\0{tool_name}\0{content_hash}".encode()
-    ).hexdigest()[:24]
+    digest = hashlib.sha256(f"{session_id or ''}\0{tool_call_id or ''}\0{tool_name}\0{content_hash}".encode()).hexdigest()[:24]
     return f"artifact_{digest}"
 
 

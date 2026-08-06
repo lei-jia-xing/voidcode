@@ -57,7 +57,6 @@ from ..provider.protocol import (
     ProviderAbortSignal,
     ProviderErrorKind,
     ProviderTokenUsage,
-    ProviderTurnRequest,
 )
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
@@ -68,10 +67,7 @@ from ..provider.snapshot import (
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
-from ..tools.background_process_logs import BackgroundProcessLogsTool
-from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
-from ..tools.background_process_stop import BackgroundProcessStopTool
-from ..tools.background_retry import BackgroundRetryTool
+from ..tools.background_process_start import BackgroundProcessManager
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -167,13 +163,11 @@ from .context_window import (
     assemble_provider_context,
     continuity_state_from_metadata_payload,
     prepare_provider_context,
-    project_tool_results_for_context_window,
 )
 from .context_window_policy import (
     context_window_config_from_policy,
     context_window_policy_from_config,
 )
-from .continuity_distillation import build_distillation_input_envelope
 from .contracts import (
     AgentSummary,
     BackgroundTaskResult,
@@ -485,10 +479,7 @@ def _render_workspace_memory_context(
 ) -> str:
     if not memories:
         return ""
-    header = (
-        "Workspace Memory:\n"
-        "Memories may be stale; prefer current repository files when conflicts exist."
-    )
+    header = "Workspace Memory:\nMemories may be stale; prefer current repository files when conflicts exist."
     if len(header) > max_chars:
         return header[:max_chars]
     lines = [header]
@@ -558,9 +549,7 @@ class VoidCodeRuntime:
         context_transform_registry: RuntimeContextTransformRegistry | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
-        self._permission_context_resolver = RuntimePermissionContextResolver(
-            workspace=self._workspace
-        )
+        self._permission_context_resolver = RuntimePermissionContextResolver(workspace=self._workspace)
         self._agent_registry = self._runtime_agent_registry()
         self._config = config or load_runtime_config(self._workspace)
         self._bind_tool_scope_resolver()
@@ -569,15 +558,10 @@ class VoidCodeRuntime:
             _permission_config=self._config.permission,
             _patch_path_extractor=extract_paths_from_patch,
         )
-        self._model_provider_registry = (
-            model_provider_registry
-            or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
-        )
+        self._model_provider_registry = model_provider_registry or ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
         self._bind_provider_catalog_collaborators()
         self._provider_summary_projector = ProviderSummaryProjector()
-        self._config_workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata(
-            {}
-        )
+        self._config_workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata({})
         self._hydrate_provider_model_catalog_cache()
         initial_agent = self._config.agent
         if initial_agent is None and self._config.execution_engine == "provider":
@@ -594,11 +578,7 @@ class VoidCodeRuntime:
                 initial_agent,
                 source="runtime config agent",
             )
-        initial_model = (
-            initial_agent.model
-            if initial_agent is not None and initial_agent.model is not None
-            else self._config.model
-        )
+        initial_model = initial_agent.model if initial_agent is not None and initial_agent.model is not None else self._config.model
         initial_execution_engine = _agent_effective_execution_engine(
             self._config.execution_engine,
             initial_agent,
@@ -631,9 +611,7 @@ class VoidCodeRuntime:
         self._tool_registry = self._tool_materialization.registry
         self._graph_override = graph
         self._graph_cache = {}
-        self._context_window_config_override = self._context_window_config_from_policy(
-            context_window_policy
-        )
+        self._context_window_config_override = self._context_window_config_from_policy(context_window_policy)
         initial_context_window = self._context_window_config_override or self._config.context_window
         self._initial_effective_config = EffectiveRuntimeConfig(
             approval_mode=self._config.approval_mode,
@@ -656,14 +634,10 @@ class VoidCodeRuntime:
             self._graph = self._build_graph_for_engine_from_config(self._initial_effective_config)
         else:
             self._graph = None
-        self._permission_policy = permission_policy or PermissionPolicy(
-            mode=self._config.approval_mode
-        )
+        self._permission_policy = permission_policy or PermissionPolicy(mode=self._config.approval_mode)
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
-        self._context_transform_registry = (
-            context_transform_registry or default_runtime_context_transform_registry()
-        )
+        self._context_transform_registry = context_transform_registry or default_runtime_context_transform_registry()
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
             resolved_provider=None,
@@ -728,10 +702,6 @@ class VoidCodeRuntime:
             question_tool=QuestionTool(),
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
-            background_retry_tool=BackgroundRetryTool(runtime=self),
-            background_process_start_tool=BackgroundProcessStartTool(runtime=self),
-            background_process_logs_tool=BackgroundProcessLogsTool(runtime=self),
-            background_process_stop_tool=BackgroundProcessStopTool(runtime=self),
         )
 
     @property
@@ -788,11 +758,7 @@ class VoidCodeRuntime:
             "last_request_type": acp_state.last_request_type,
             "last_request_id": acp_state.last_request_id,
             "last_event_type": acp_state.last_event_type,
-            "last_delegation": (
-                acp_state.last_delegation.as_payload()
-                if acp_state.last_delegation is not None
-                else None
-            ),
+            "last_delegation": (acp_state.last_delegation.as_payload() if acp_state.last_delegation is not None else None),
         }
         return {**metadata, "runtime_state": runtime_state_metadata}
 
@@ -886,9 +852,7 @@ class VoidCodeRuntime:
         ):
             sequence = acp_event.sequence
             current_session = self._session_with_current_acp_metadata(current_session)
-            emitted.append(
-                RuntimeStreamChunk(kind="event", session=current_session, event=acp_event)
-            )
+            emitted.append(RuntimeStreamChunk(kind="event", session=current_session, event=acp_event))
         return tuple(emitted), current_session, sequence
 
     def _emit_current_acp_drain(
@@ -1059,9 +1023,7 @@ class VoidCodeRuntime:
             if isinstance(raw_command_workflow_mode, str):
                 command_workflow_mode = raw_command_workflow_mode
             elif isinstance(command_payload.get("name"), str):
-                command_definition = load_command_registry(workspace=self._workspace).get(
-                    cast(str, command_payload["name"])
-                )
+                command_definition = load_command_registry(workspace=self._workspace).get(cast(str, command_payload["name"]))
                 if command_definition is not None:
                     command_workflow_mode = command_definition.workflow_mode
         raw_workflow_mode = metadata.get("workflow_mode")
@@ -1073,9 +1035,7 @@ class VoidCodeRuntime:
         inherited_workflow_mode: str | None = None
         raw_workflow = metadata.get("workflow")
         if isinstance(raw_workflow, dict):
-            normalized_workflow = self._workflow_snapshot_from_metadata(
-                {"workflow": cast(dict[str, object], raw_workflow)}
-            )
+            normalized_workflow = self._workflow_snapshot_from_metadata({"workflow": cast(dict[str, object], raw_workflow)})
             if normalized_workflow is not None:
                 raw_effective = normalized_workflow.get("effective")
                 if isinstance(raw_effective, dict):
@@ -1103,14 +1063,7 @@ class VoidCodeRuntime:
         if resolution is None:
             return ""
         mode = resolution.mode
-        return "\n".join(
-            (
-                f"Workflow mode: {mode.id}.",
-                mode.description,
-                "Apply this mode as runtime guidance without expanding tool permissions, "
-                "approval policy, lifecycle hook execution, or active agent scope.",
-            )
-        )
+        return f"Workflow mode: {mode.id}. {mode.description} Guidance only; does not expand tool permissions or agent scope."
 
     @staticmethod
     def _metadata_without_workflow_mode(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -1179,15 +1132,11 @@ class VoidCodeRuntime:
     ) -> dict[str, object]:
         payload = dict(workflow_snapshot)
         raw_requested = payload.get("requested")
-        requested = (
-            dict(cast(dict[str, object], raw_requested)) if isinstance(raw_requested, dict) else {}
-        )
+        requested = dict(cast(dict[str, object], raw_requested)) if isinstance(raw_requested, dict) else {}
         requested["workflow_mode"] = workflow_mode
         payload["requested"] = requested
         raw_effective = payload.get("effective")
-        effective = (
-            dict(cast(dict[str, object], raw_effective)) if isinstance(raw_effective, dict) else {}
-        )
+        effective = dict(cast(dict[str, object], raw_effective)) if isinstance(raw_effective, dict) else {}
         effective["mode"] = workflow_mode
         payload["effective"] = effective
         payload["mode"] = workflow_mode
@@ -1233,11 +1182,7 @@ class VoidCodeRuntime:
         inherited_snapshot = self._workflow_snapshot_from_metadata(metadata)
         if inherited_snapshot is None and parent_session_id is not None:
             parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
-            parent_metadata = (
-                parent_response.session.metadata
-                if parent_response is not None
-                else self._active_session_metadata(parent_session_id)
-            )
+            parent_metadata = parent_response.session.metadata if parent_response is not None else self._active_session_metadata(parent_session_id)
             inherited_snapshot = self._workflow_snapshot_from_metadata(parent_metadata)
         _ = selected_child_preset
         return inherited_snapshot or {}
@@ -1288,9 +1233,7 @@ class VoidCodeRuntime:
     ) -> SkillRegistry:
         if self._skill_registry_is_injected:
             return self._skill_registry
-        return self._build_skill_registry(
-            self._skills_config_for_effective_config(effective_config)
-        )
+        return self._build_skill_registry(self._skills_config_for_effective_config(effective_config))
 
     def _build_lsp_tool(self) -> Tool | None:
         if self._lsp_manager.current_state().mode != "managed":
@@ -1329,9 +1272,7 @@ class VoidCodeRuntime:
     def _refresh_mcp_tools(self) -> None:
         if self._mcp_manager.current_state().mode != "managed":
             return
-        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(
-            self._build_mcp_tools()
-        )
+        self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._build_mcp_tools())
         self._tool_registry = self._tool_materialization.registry
 
     def _refresh_mcp_tools_for_session(
@@ -1360,10 +1301,7 @@ class VoidCodeRuntime:
                 start_sequence=sequence + 1,
                 mcp_events=self._mcp_manager.drain_events(),
             )
-            emitted = tuple(
-                RuntimeStreamChunk(kind="event", session=session, event=event)
-                for event in emitted_events
-            )
+            emitted = tuple(RuntimeStreamChunk(kind="event", session=session, event=event) for event in emitted_events)
             last_sequence = emitted_events[-1].sequence if emitted_events else sequence
             return emitted, session, last_sequence, None
         return (), session, sequence, None
@@ -1377,9 +1315,7 @@ class VoidCodeRuntime:
     ) -> bool:
         if request_metadata.get("background_run") is not True:
             return False
-        agent_binding = (
-            effective_config.agent.mcp_binding if effective_config.agent is not None else None
-        )
+        agent_binding = effective_config.agent.mcp_binding if effective_config.agent is not None else None
         if agent_binding is not None:
             return False
         if workflow_snapshot is not None:
@@ -1410,9 +1346,7 @@ class VoidCodeRuntime:
         # though that graph cannot depend on runtime-selected MCP tools.  Keep
         # discovery enabled when a caller injected an MCP manager so MCP integration
         # tests and custom managers retain their explicit behavior.
-        return (
-            effective_config.execution_engine == "deterministic" or self._graph_override is not None
-        )
+        return effective_config.execution_engine == "deterministic" or self._graph_override is not None
 
     def _build_mcp_tools_for_owner(self, *, owner_session_id: str | None) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":
@@ -1498,9 +1432,6 @@ class VoidCodeRuntime:
         metadata: dict[str, object] | None,
     ) -> bool:
         return self._tool_scope_resolver.effective_read_only(metadata)
-
-    def _memory_tools_allowed(self, metadata: dict[str, object] | None) -> bool:
-        return self._tool_scope_resolver.memory_tools_allowed(metadata)
 
     def _tool_policy_denial(
         self,
@@ -1686,9 +1617,7 @@ class VoidCodeRuntime:
         )
 
     def request_acp(self, *, request_type: str, payload: dict[str, object]) -> AcpResponseEnvelope:
-        return self._acp_adapter.request(
-            AcpRequestEnvelope(request_type=request_type, payload=payload)
-        )
+        return self._acp_adapter.request(AcpRequestEnvelope(request_type=request_type, payload=payload))
 
     def request_delegated_acp(
         self,
@@ -1705,11 +1634,7 @@ class VoidCodeRuntime:
             parent_session_id=task.parent_session_id,
             delegation=self._delegated_execution_for_task(
                 task=task,
-                lifecycle_status=(
-                    "waiting_approval"
-                    if task.status == "running" and task.approval_request_id
-                    else task.status
-                ),
+                lifecycle_status=("waiting_approval" if task.status == "running" and task.approval_request_id else task.status),
             ),
             payload=payload,
         )
@@ -1747,11 +1672,7 @@ class VoidCodeRuntime:
         except ValueError:
             routing = None
         delegation_metadata = task.request.metadata.get("delegation")
-        delegation_dict = (
-            cast(dict[str, object], delegation_metadata)
-            if isinstance(delegation_metadata, dict)
-            else {}
-        )
+        delegation_dict = cast(dict[str, object], delegation_metadata) if isinstance(delegation_metadata, dict) else {}
         return AcpDelegatedExecution(
             parent_session_id=task.parent_session_id,
             requested_child_session_id=task.request.session_id,
@@ -1764,15 +1685,9 @@ class VoidCodeRuntime:
             routing_subagent_type=routing.subagent_type if routing is not None else None,
             routing_description=routing.description if routing is not None else None,
             routing_command=routing.command if routing is not None else None,
-            selected_preset=(
-                cast(str, delegation_dict["selected_preset"])
-                if isinstance(delegation_dict.get("selected_preset"), str)
-                else None
-            ),
+            selected_preset=(cast(str, delegation_dict["selected_preset"]) if isinstance(delegation_dict.get("selected_preset"), str) else None),
             selected_execution_engine=(
-                cast(str, delegation_dict["selected_execution_engine"])
-                if isinstance(delegation_dict.get("selected_execution_engine"), str)
-                else None
+                cast(str, delegation_dict["selected_execution_engine"]) if isinstance(delegation_dict.get("selected_execution_engine"), str) else None
             ),
             lifecycle_status=cast(
                 Literal[
@@ -1785,12 +1700,8 @@ class VoidCodeRuntime:
                 ],
                 lifecycle_status,
             ),
-            approval_blocked=(
-                approval_blocked if approval_blocked is not None else task.status == "running"
-            ),
-            result_available=(
-                result_available if result_available is not None else task.result_available
-            ),
+            approval_blocked=(approval_blocked if approval_blocked is not None else task.status == "running"),
+            result_available=(result_available if result_available is not None else task.result_available),
             cancellation_cause=task.cancellation_cause,
         )
 
@@ -1846,9 +1757,7 @@ class VoidCodeRuntime:
             approval_blocked=approval_blocked,
             result_available=result_available,
         )
-        correlation_id = (
-            task.approval_request_id or task.question_request_id or task.session_id or "none"
-        )
+        correlation_id = task.approval_request_id or task.question_request_id or task.session_id or "none"
         try:
             _ = session_event_appender.append_session_event(
                 workspace=self._workspace,
@@ -1861,10 +1770,7 @@ class VoidCodeRuntime:
                     "delegation": delegation.as_payload(),
                     **payload,
                 },
-                dedupe_key=(
-                    f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:"
-                    f"{correlation_id}"
-                ),
+                dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{correlation_id}"),
             )
         except UnknownSessionError:
             logger.debug(
@@ -1924,9 +1830,7 @@ class VoidCodeRuntime:
             except Exception:
                 if final_session is not None and final_session.status == "failed":
                     final_session = self._disconnect_acp_for_session_state(final_session)
-                    response = RuntimeResponse(
-                        session=final_session, events=tuple(events), output=output
-                    )
+                    response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
                     self._persist_response(request=request, response=response)
                 raise
 
@@ -1986,9 +1890,7 @@ class VoidCodeRuntime:
         events: tuple[EventEnvelope, ...],
         force_loaded_skills: tuple[dict[str, object], ...] = (),
     ) -> SessionState:
-        loaded_payloads = [
-            event.payload for event in events if event.event_type == "runtime.skill_loaded"
-        ]
+        loaded_payloads = [event.payload for event in events if event.event_type == "runtime.skill_loaded"]
         implicit_force_loaded: tuple[dict[str, object], ...] = ()
         raw_snapshot = session.metadata.get("skill_snapshot")
         if isinstance(raw_snapshot, dict):
@@ -2029,9 +1931,7 @@ class VoidCodeRuntime:
         stream_metadata = {**request.metadata, "provider_stream": True}
         self._validate_explicit_workflow_mode_metadata(stream_metadata)
         self._validate_command_workflow_metadata(stream_metadata)
-        validated_stream_metadata = validate_runtime_request_metadata(
-            self._metadata_without_workflow_mode(stream_metadata)
-        )
+        validated_stream_metadata = validate_runtime_request_metadata(self._metadata_without_workflow_mode(stream_metadata))
         validated_stream_metadata = self._restore_explicit_workflow_mode(
             validated_stream_metadata,
             stream_metadata,
@@ -2057,12 +1957,8 @@ class VoidCodeRuntime:
         effective_config = self._runtime_config_for_request(request)
         if self._graph_override is None:
             self._validate_provider_execution_ready(effective_config)
-        request_metadata = self._request_metadata_with_workflow_defaults(
-            self._fresh_request_metadata(request.metadata)
-        )
-        workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata(
-            request_metadata
-        )
+        request_metadata = self._request_metadata_with_workflow_defaults(self._fresh_request_metadata(request.metadata))
+        workflow_mode_resolution = self._workflow_mode_resolution_for_request_metadata(request_metadata)
         self._config_workflow_mode_resolution = workflow_mode_resolution
         workflow_snapshot = self._workflow_snapshot_for_resolution(workflow_mode_resolution)
         existing_workflow = request_metadata.get("workflow")
@@ -2073,9 +1969,7 @@ class VoidCodeRuntime:
                 workflow_snapshot,
                 workflow_mode_resolution.workflow_mode,
             )
-        explicit_workflow_mode = (
-            workflow_mode_resolution.source != "default" or "workflow_mode" in request_metadata
-        )
+        explicit_workflow_mode = workflow_mode_resolution.source != "default" or "workflow_mode" in request_metadata
         if explicit_workflow_mode:
             workflow_snapshot_for_session = workflow_snapshot
             request_metadata = {
@@ -2092,11 +1986,9 @@ class VoidCodeRuntime:
             if request.session_id is not None
             else None
         )
-        rehydrated_conversation_segments = (
-            self._rehydrated_conversation_segments_for_existing_session(
-                stored=existing_session,
-                parent_session_id=request.parent_session_id,
-            )
+        rehydrated_conversation_segments = self._rehydrated_conversation_segments_for_existing_session(
+            stored=existing_session,
+            parent_session_id=request.parent_session_id,
         )
         rehydrated_tool_results = self._rehydrated_tool_results_for_existing_session(
             stored=existing_session,
@@ -2132,10 +2024,7 @@ class VoidCodeRuntime:
                         raise ValueError("persisted parent runtime_policy must be an object")
                     parent_runtime_policy = cast(dict[str, object], raw_parent_runtime_policy)
         persisted_runtime_policy = None
-        if (
-            existing_session is not None
-            and existing_session.session.session.parent_id == request.parent_session_id
-        ):
+        if existing_session is not None and existing_session.session.session.parent_id == request.parent_session_id:
             raw_persisted_runtime_policy = existing_session.session.metadata.get("runtime_policy")
             if raw_persisted_runtime_policy is not None:
                 if not isinstance(raw_persisted_runtime_policy, dict):
@@ -2150,36 +2039,24 @@ class VoidCodeRuntime:
                 "workspace": str(self._workspace),
                 "runtime_config": self._runtime_config_metadata(
                     effective_config,
-                    workflow_snapshot=workflow_snapshot_for_session
-                    if explicit_workflow_mode
-                    else None,
+                    workflow_snapshot=workflow_snapshot_for_session if explicit_workflow_mode else None,
                     workflow_mode_resolution=hook_workflow_mode_resolution,
                 ),
                 "runtime_policy": materialize_runtime_policy_snapshot(
                     persisted_session_policy=persisted_runtime_policy,
-                    agent_preset=effective_config.agent.preset
-                    if effective_config.agent is not None
-                    else "leader",
-                    agent_manifest_id=effective_config.agent.preset
-                    if effective_config.agent is not None
-                    else "leader",
+                    agent_preset=effective_config.agent.preset if effective_config.agent is not None else "leader",
+                    agent_manifest_id=effective_config.agent.preset if effective_config.agent is not None else "leader",
                     runtime_config={
                         **self._runtime_config_metadata(
                             effective_config,
-                            workflow_snapshot=workflow_snapshot_for_session
-                            if explicit_workflow_mode
-                            else None,
+                            workflow_snapshot=workflow_snapshot_for_session if explicit_workflow_mode else None,
                             workflow_mode_resolution=hook_workflow_mode_resolution,
                         ),
                     },
                     request_metadata=request_metadata,
                     parent_snapshot=parent_runtime_policy,
                 ).as_payload(),
-                **(
-                    {"resolved_hook_presets": resolved_hook_presets.to_payload()}
-                    if resolved_hook_presets.presets
-                    else {}
-                ),
+                **({"resolved_hook_presets": resolved_hook_presets.to_payload()} if resolved_hook_presets.presets else {}),
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
@@ -2191,16 +2068,10 @@ class VoidCodeRuntime:
         runtime_policy_snapshot = session.metadata.get("runtime_policy")
         request_received_payload: dict[str, object] = {
             "prompt": request.prompt,
-            **(
-                {"agent_preset": active_agent.preset}
-                if (active_agent := effective_config.agent) is not None
-                else {}
-            ),
+            **({"agent_preset": active_agent.preset} if (active_agent := effective_config.agent) is not None else {}),
         }
         if isinstance(runtime_policy_snapshot, dict):
-            request_received_payload["runtime_policy"] = runtime_policy_observability_payload(
-                cast(dict[str, object], runtime_policy_snapshot)
-            )
+            request_received_payload["runtime_policy"] = runtime_policy_observability_payload(cast(dict[str, object], runtime_policy_snapshot))
         yield RuntimeStreamChunk(
             kind="event",
             session=session,
@@ -2397,9 +2268,7 @@ class VoidCodeRuntime:
                 ),
             )
 
-        hook_preset_snapshot = self._hook_preset_event_payload_from_session_metadata(
-            session.metadata
-        )
+        hook_preset_snapshot = self._hook_preset_event_payload_from_session_metadata(session.metadata)
         if hook_preset_snapshot is not None:
             sequence += 1
             yield RuntimeStreamChunk(
@@ -2419,9 +2288,7 @@ class VoidCodeRuntime:
             tool_results=rehydrated_tool_results,
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context,
-            workflow_mode_prompt_context=self._workflow_mode_prompt_context(
-                workflow_mode_resolution if explicit_workflow_mode else None
-            ),
+            workflow_mode_prompt_context=self._workflow_mode_prompt_context(workflow_mode_resolution if explicit_workflow_mode else None),
             replayed_conversation_segments=rehydrated_conversation_segments,
         )
         session = self._session_with_context_window_payload_metadata(
@@ -2441,9 +2308,7 @@ class VoidCodeRuntime:
             assembled_context=assembled_context,
             metadata={
                 **request_metadata,
-                "agent_preset": serialize_runtime_agent_config(
-                    self._effective_runtime_config_from_metadata(session.metadata).agent
-                ),
+                "agent_preset": serialize_runtime_agent_config(self._effective_runtime_config_from_metadata(session.metadata).agent),
                 "provider_attempt": 0,
                 "provider_stream": _coerce_bool_like(
                     request_metadata.get("provider_stream", False),
@@ -2451,8 +2316,7 @@ class VoidCodeRuntime:
                 ),
                 **(
                     {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None
-                    and "reasoning_effort" not in request_metadata
+                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in request_metadata
                     else {}
                 ),
             },
@@ -2516,11 +2380,7 @@ class VoidCodeRuntime:
                 )
                 if hook_failed_chunk is not None:
                     yield hook_failed_chunk
-                    release_sequence = (
-                        hook_failed_chunk.event.sequence
-                        if hook_failed_chunk.event is not None
-                        else release_sequence
-                    )
+                    release_sequence = hook_failed_chunk.event.sequence if hook_failed_chunk.event is not None else release_sequence
             for release_event in self._release_mcp_session_events(
                 session_id=finalized_session.session.id,
                 start_sequence=release_sequence + 1,
@@ -2592,11 +2452,7 @@ class VoidCodeRuntime:
             )
             if failed_chunk is not None:
                 yield failed_chunk
-                release_sequence = (
-                    failed_chunk.event.sequence
-                    if failed_chunk.event is not None
-                    else release_sequence
-                )
+                release_sequence = failed_chunk.event.sequence if failed_chunk.event is not None else release_sequence
         for event in self._release_mcp_session_events(
             session_id=finalized_session.session.id,
             start_sequence=release_sequence + 1,
@@ -2798,9 +2654,7 @@ class VoidCodeRuntime:
     def _retry_guidance_for_runtime_failure(payload: dict[str, object]) -> str | None:
         provider_error_kind = payload.get("provider_error_kind")
         if isinstance(provider_error_kind, str) and provider_error_kind:
-            guidance = guidance_for_provider_error_kind(
-                cast(ProviderErrorKind, provider_error_kind)
-            )
+            guidance = guidance_for_provider_error_kind(cast(ProviderErrorKind, provider_error_kind))
             if guidance:
                 return guidance
         if payload.get("cancelled") is True:
@@ -2851,13 +2705,13 @@ class VoidCodeRuntime:
         sequence: int,
         permission_policy: PermissionPolicy,
     ) -> _PermissionOutcome:
+        effective_permission = self._effective_runtime_config_from_metadata(session.metadata).permission
         eval_result = self._permission_engine.evaluate(
             tool=tool,
             tool_instance=tool_instance,
             tool_call=tool_call,
-            permission_rules=self._effective_runtime_config_from_metadata(
-                session.metadata
-            ).permission.rules,
+            permission_rules=effective_permission.rules,
+            permission_config=effective_permission,
         )
 
         path_scope = eval_result.path_scope
@@ -2883,9 +2737,7 @@ class VoidCodeRuntime:
             owner_session_id=session.session.id,
             owner_parent_session_id=session.session.parent_id,
             delegated_task_id=(
-                cast(str, session.metadata["background_task_id"])
-                if isinstance(session.metadata.get("background_task_id"), str)
-                else None
+                cast(str, session.metadata["background_task_id"]) if isinstance(session.metadata.get("background_task_id"), str) else None
             ),
             runtime_mode=runtime_mode_from_metadata(session.metadata),
         )
@@ -2972,9 +2824,7 @@ class VoidCodeRuntime:
         )
         pending = replace(pending, request_event_sequence=request_event.sequence)
         return _PermissionOutcome(
-            chunks=(
-                RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),
-            ),
+            chunks=(RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),),
             last_sequence=sequence,
             pending_approval=pending,
         )
@@ -3081,10 +2931,7 @@ class VoidCodeRuntime:
             workspace=self._workspace,
         ).current_state()
         if not (manager_state.semantic_search_available or manager_state.keyword_search_available):
-            raise RuntimeError(
-                "workspace memory search requires semantic search, "
-                "but semantic search is unavailable"
-            )
+            raise RuntimeError("workspace memory search requires semantic search, but semantic search is unavailable")
         return self._session_store.search_memories(workspace=self._workspace, query=query)
 
     def workspace_memory_prompt_context(self, memory_config: MemoryConfig | None = None) -> str:
@@ -3218,13 +3065,9 @@ class VoidCodeRuntime:
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
-        return self._background_task_supervisor.summaries_with_observability(
-            self._session_store.list_background_tasks(workspace=self._workspace)
-        )
+        return self._background_task_supervisor.summaries_with_observability(self._session_store.list_background_tasks(workspace=self._workspace))
 
-    def list_background_tasks_by_parent_session(
-        self, *, parent_session_id: str
-    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+    def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         validated_parent_session_id = validate_session_reference_id(
             parent_session_id,
@@ -3356,9 +3199,7 @@ class VoidCodeRuntime:
                 stop_condition="result_read",
             )
         _ = self._load_session_result(session_id=session_id)
-        self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
-            parent_session_id=session_id
-        )
+        self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
         return self._load_session_result(session_id=session_id)
 
     def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
@@ -3546,14 +3387,11 @@ class VoidCodeRuntime:
         )
         checkpoint_kind = (
             cast(str, resume_checkpoint.get("kind"))
-            if isinstance(resume_checkpoint, dict)
-            and isinstance(resume_checkpoint.get("kind"), str)
+            if isinstance(resume_checkpoint, dict) and isinstance(resume_checkpoint.get("kind"), str)
             else None
         )
         terminal = result.session.status in {"completed", "failed"}
-        resumable = result.session.status == "waiting" or (
-            result.session.status == "failed" and checkpoint_kind == "provider_failure_retryable"
-        )
+        resumable = result.session.status == "waiting" or (result.session.status == "failed" and checkpoint_kind == "provider_failure_retryable")
         replayable = bool(result.transcript) or result.output is not None or terminal
         last_relevant_event = self._debug_event(
             next(
@@ -3576,11 +3414,7 @@ class VoidCodeRuntime:
         )
         last_failure_event = self._debug_event(
             next(
-                (
-                    event
-                    for event in reversed(result.transcript)
-                    if event.event_type == "runtime.failed"
-                ),
+                (event for event in reversed(result.transcript) if event.event_type == "runtime.failed"),
                 None,
             )
         )
@@ -3658,11 +3492,7 @@ class VoidCodeRuntime:
 
     def list_notifications(self) -> tuple[RuntimeNotification, ...]:
         notifications = self._session_store.list_notifications(workspace=self._workspace)
-        return tuple(
-            notification
-            for notification in notifications
-            if self._session_belongs_to_workspace(notification.session.id)
-        )
+        return tuple(notification for notification in notifications if self._session_belongs_to_workspace(notification.session.id))
 
     def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
         if not notification_id:
@@ -3734,11 +3564,7 @@ class VoidCodeRuntime:
             "session_id": session_id,
             "approval_mode": effective_config.approval_mode,
             "model": effective_config.model,
-            "fallback_models": (
-                list(effective_config.provider_fallback.fallback_models)
-                if effective_config.provider_fallback is not None
-                else []
-            ),
+            "fallback_models": (list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []),
             "max_steps": effective_config.max_steps,
             "reasoning_effort": effective_config.reasoning_effort,
             "agent": serialize_runtime_agent_config(effective_config.agent),
@@ -3786,12 +3612,8 @@ class VoidCodeRuntime:
         response = self._load_stored_response(session_id=session_id)
         return self._effective_runtime_config_from_metadata(response.session.metadata)
 
-    def effective_category_model_config(
-        self, *, session_id: str | None = None
-    ) -> dict[str, object]:
-        categories, agents, base_model, _base_provider_fallback = self._display_routing_config(
-            session_id=session_id
-        )
+    def effective_category_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
+        categories, agents, base_model, _base_provider_fallback = self._display_routing_config(session_id=session_id)
         payload: dict[str, object] = {}
         for category in supported_subagent_categories():
             route = runtime_subagent_route_from_metadata(
@@ -3810,18 +3632,14 @@ class VoidCodeRuntime:
             )
             payload[category] = {
                 "model": category_config.model if category_config is not None else None,
-                "fallback_models": (
-                    list(category_config.fallback_models) if category_config is not None else []
-                ),
+                "fallback_models": (list(category_config.fallback_models) if category_config is not None else []),
                 "effective_model": model,
                 "selected_preset": route.selected_preset,
             }
         return payload
 
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
-        _categories, agents, base_model, base_provider_fallback = self._display_routing_config(
-            session_id=session_id
-        )
+        _categories, agents, base_model, base_provider_fallback = self._display_routing_config(session_id=session_id)
         payload: dict[str, object] = {}
         for manifest in self._agent_registry.list_manifests():
             preset_agent = agents.get(manifest.id)
@@ -3833,9 +3651,7 @@ class VoidCodeRuntime:
                 preset_agent=preset_agent,
                 base_provider_fallback=base_provider_fallback,
             )
-            fallback_models = (
-                list(provider_fallback.fallback_models) if provider_fallback is not None else []
-            )
+            fallback_models = list(provider_fallback.fallback_models) if provider_fallback is not None else []
             payload[manifest.id] = {
                 "model": preset_agent.model if preset_agent is not None else None,
                 "fallback_models": fallback_models,
@@ -3902,9 +3718,7 @@ class VoidCodeRuntime:
     def _persist_provider_model_catalog_cache(self) -> None:
         self._provider_catalog_cache.persist()
 
-    def _metadata_for_provider_model(
-        self, provider_name: str, model_name: str
-    ) -> ProviderModelMetadata | None:
+    def _metadata_for_provider_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
         return self._provider_catalog_query.metadata_for_model(provider_name, model_name)
 
     def _context_window_policy_for_provider_attempt(
@@ -3952,16 +3766,11 @@ class VoidCodeRuntime:
         effective_config = self.effective_runtime_config(session_id=session_id)
         return self._provider_readiness_for_effective_config(effective_config)
 
-    def _provider_readiness_for_effective_config(
-        self, effective_config: EffectiveRuntimeConfig
-    ) -> ProviderReadinessResult:
+    def _provider_readiness_for_effective_config(self, effective_config: EffectiveRuntimeConfig) -> ProviderReadinessResult:
         active_target = effective_config.resolved_provider.active_target
         provider_name = active_target.selection.provider
         model_name = active_target.selection.model
-        fallback_chain = tuple(
-            _provider_target_label(target)
-            for target in effective_config.resolved_provider.target_chain.all_targets
-        )
+        fallback_chain = tuple(_provider_target_label(target) for target in effective_config.resolved_provider.target_chain.all_targets)
         streaming_configured = None
         streaming_supported = None
         context_window = None
@@ -4065,11 +3874,7 @@ class VoidCodeRuntime:
         if not provider_name or "/" in provider_name:
             raise ValueError("provider_name must be a non-empty provider id without '/'")
         summary = next(
-            (
-                provider
-                for provider in self.list_provider_summaries()
-                if provider.name == provider_name
-            ),
+            (provider for provider in self.list_provider_summaries() if provider.name == provider_name),
             self._provider_summary_projector.project_one(
                 provider_name,
                 current_provider=self._current_provider_name(),
@@ -4079,16 +3884,8 @@ class VoidCodeRuntime:
         )
         validation = self.validate_provider_credentials(provider_name)
         models = self.provider_models_result(provider_name)
-        current_model = (
-            self._provider_model.selection.model
-            if self._provider_model.selection.provider == provider_name
-            else None
-        )
-        current_metadata = (
-            self._metadata_for_provider_model(provider_name, current_model)
-            if current_model is not None
-            else None
-        )
+        current_model = self._provider_model.selection.model if self._provider_model.selection.provider == provider_name else None
+        current_metadata = self._metadata_for_provider_model(provider_name, current_model) if current_model is not None else None
         return ProviderInspectResult(
             summary=summary,
             models=models,
@@ -4135,9 +3932,7 @@ class VoidCodeRuntime:
             )
         )
 
-    def _provider_auth_presence(
-        self, provider_name: str | None
-    ) -> tuple[bool | None, str | None, str | None]:
+    def _provider_auth_presence(self, provider_name: str | None) -> tuple[bool | None, str | None, str | None]:
         return self._provider_auth_inspector.presence(provider_name).as_tuple()
 
     @staticmethod
@@ -4177,11 +3972,7 @@ class VoidCodeRuntime:
             if manifest.mode != "primary":
                 continue
 
-            agent_config = (
-                configured_agent
-                if configured_agent is not None and configured_agent.preset == manifest.id
-                else None
-            )
+            agent_config = configured_agent if configured_agent is not None and configured_agent.preset == manifest.id else None
             execution_engine = (
                 agent_config.execution_engine
                 if agent_config is not None and agent_config.execution_engine is not None
@@ -4222,11 +4013,7 @@ class VoidCodeRuntime:
                 if self._config.model is not None or provider_fallback is not None
                 else None
             )
-            configured = (
-                agent_config is not None
-                or self._config.model is not None
-                or provider_fallback is not None
-            )
+            configured = agent_config is not None or self._config.model is not None or provider_fallback is not None
             summaries.append(
                 AgentSummary(
                     id=manifest.id,
@@ -4242,10 +4029,7 @@ class VoidCodeRuntime:
                     model_label=active_selection.model,
                     model_source=model_source,
                     provider=active_selection.provider,
-                    fallback_chain=tuple(
-                        _provider_target_label(target)
-                        for target in resolved_provider.target_chain.all_targets
-                    ),
+                    fallback_chain=tuple(_provider_target_label(target) for target in resolved_provider.target_chain.all_targets),
                 )
             )
         return tuple(summaries)
@@ -4328,8 +4112,7 @@ class VoidCodeRuntime:
                         server_state.status
                         if server_state is not None
                         else "disabled"
-                        if lsp_state.mode != "managed"
-                        or not lsp_state.configuration.configured_enabled
+                        if lsp_state.mode != "managed" or not lsp_state.configuration.configured_enabled
                         else "stopped"
                     ),
                     "available": bool(server_state and server_state.available),
@@ -4341,9 +4124,7 @@ class VoidCodeRuntime:
         for server_name, server_config in sorted(mcp_configured_servers.items()):
             runtime_state = mcp_state.servers.get(server_name)
             command = (
-                list(runtime_state.command)
-                if runtime_state is not None and runtime_state.command
-                else list(server_config.command)
+                list(runtime_state.command) if runtime_state is not None and runtime_state.command else list(getattr(server_config, "command", ()))
             )
             server_status = (
                 runtime_state.status
@@ -4356,19 +4137,13 @@ class VoidCodeRuntime:
                 {
                     "server": server_name,
                     "status": server_status,
-                    "scope": (
-                        runtime_state.scope if runtime_state is not None else server_config.scope
-                    ),
-                    "transport": server_config.transport,
-                    "workspace_root": (
-                        None if runtime_state is None else runtime_state.workspace_root
-                    ),
+                    "scope": (runtime_state.scope if runtime_state is not None else getattr(server_config, "scope", "runtime")),
+                    "transport": getattr(server_config, "transport", "stdio"),
+                    "workspace_root": (None if runtime_state is None else runtime_state.workspace_root),
                     "stage": None if runtime_state is None else runtime_state.stage,
                     "error": None if runtime_state is None else runtime_state.error,
                     "command": redact_mcp_command(command),
-                    "retry_available": (
-                        False if runtime_state is None else runtime_state.retry_available
-                    ),
+                    "retry_available": (False if runtime_state is None else runtime_state.retry_available),
                 }
             )
         background_status_counts = self._background_task_supervisor.status_counts()
@@ -4382,12 +4157,8 @@ class VoidCodeRuntime:
                     "configured": bool(lsp_state.configuration.servers),
                     "configured_enabled": lsp_state.configuration.configured_enabled,
                     "configured_server_count": len(lsp_state.configuration.servers),
-                    "running_server_count": sum(
-                        1 for server in lsp_servers if server.status == "running"
-                    ),
-                    "failed_server_count": sum(
-                        1 for server in lsp_servers if server.status == "failed"
-                    ),
+                    "running_server_count": sum(1 for server in lsp_servers if server.status == "running"),
+                    "failed_server_count": sum(1 for server in lsp_servers if server.status == "failed"),
                     "servers": lsp_server_details,
                 },
             ),
@@ -4400,12 +4171,8 @@ class VoidCodeRuntime:
                     "configured_enabled": mcp_state.configuration.configured_enabled,
                     "configured_server_count": len(mcp_configured_servers),
                     "active_server_count": len(mcp_servers),
-                    "running_server_count": sum(
-                        1 for server in mcp_servers if server.status == "running"
-                    ),
-                    "failed_server_count": sum(
-                        1 for server in mcp_servers if server.status == "failed"
-                    ),
+                    "running_server_count": sum(1 for server in mcp_servers if server.status == "running"),
+                    "failed_server_count": sum(1 for server in mcp_servers if server.status == "failed"),
                     "retry_available": any(server.retry_available for server in mcp_servers),
                     "servers": mcp_server_details,
                 },
@@ -4415,10 +4182,7 @@ class VoidCodeRuntime:
                 active_worker_slots=self._background_task_supervisor.active_worker_slots(),
                 queued_count=background_status_counts.get("queued", 0),
                 running_count=background_status_counts.get("running", 0),
-                terminal_count=sum(
-                    background_status_counts.get(status, 0)
-                    for status in ("completed", "failed", "cancelled", "interrupted")
-                ),
+                terminal_count=sum(background_status_counts.get(status, 0) for status in ("completed", "failed", "cancelled", "interrupted")),
                 default_concurrency=self._config.background_task.default_concurrency,
                 provider_concurrency=dict(self._config.background_task.provider_concurrency),
                 model_concurrency=dict(self._config.background_task.model_concurrency),
@@ -4468,9 +4232,7 @@ class VoidCodeRuntime:
         return self.current_status()
 
     def review_snapshot(self) -> WorkspaceReviewSnapshot:
-        return WorkspaceReviewService(workspace=self._workspace).snapshot(
-            git=self._git_status_snapshot()
-        )
+        return WorkspaceReviewService(workspace=self._workspace).snapshot(git=self._git_status_snapshot())
 
     def review_diff(self, path: str) -> ReviewFileDiff:
         return WorkspaceReviewService(workspace=self._workspace).diff(
@@ -4496,9 +4258,7 @@ class VoidCodeRuntime:
             return GitStatusSnapshot(
                 state="git_ready",
                 root=stdout.strip() or str(self._workspace),
-                branch=branch_result.stdout.strip() or None
-                if branch_result.returncode == 0
-                else None,
+                branch=branch_result.stdout.strip() or None if branch_result.returncode == 0 else None,
             )
         if "not a git repository" in stderr.lower():
             return GitStatusSnapshot(
@@ -4594,9 +4354,7 @@ class VoidCodeRuntime:
         self._agent_registry = self._runtime_agent_registry()
         self._config = load_runtime_config(self._workspace)
         self._bind_tool_scope_resolver()
-        self._model_provider_registry = ModelProviderRegistry.with_defaults(
-            provider_configs=self._config.providers
-        )
+        self._model_provider_registry = ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
         self._bind_provider_catalog_collaborators()
         self._provider_auth_resolver = ProviderAuthResolver(
             providers=self._config.providers,
@@ -4618,11 +4376,7 @@ class VoidCodeRuntime:
                 initial_agent,
                 source="runtime config agent",
             )
-        initial_model = (
-            initial_agent.model
-            if initial_agent is not None and initial_agent.model is not None
-            else self._config.model
-        )
+        initial_model = initial_agent.model if initial_agent is not None and initial_agent.model is not None else self._config.model
         initial_execution_engine = (
             initial_agent.execution_engine
             if initial_agent is not None and initial_agent.execution_engine is not None
@@ -4756,9 +4510,7 @@ class VoidCodeRuntime:
                     segments=assembled_context.segments,
                     metadata={
                         **assembled_context.metadata,
-                        "context_transforms": dict(
-                            cast(dict[str, object], preserved_transform_metadata)
-                        ),
+                        "context_transforms": dict(cast(dict[str, object], preserved_transform_metadata)),
                     },
                     loaded_skills=assembled_context.loaded_skills,
                 )
@@ -4786,9 +4538,7 @@ class VoidCodeRuntime:
             execution_engine=effective_config.execution_engine,
             available_tool_count=len(tool_registry.definitions()),
             tool_feedback_mode=self._tool_feedback_mode_for_effective_config(effective_config),
-            oversized_tool_feedback_chars=(
-                context_window_config.provider_context_oversized_feedback_chars
-            ),
+            oversized_tool_feedback_chars=(context_window_config.provider_context_oversized_feedback_chars),
             diagnostic_policy_mode=context_window_config.provider_context_diagnostics,
         )
 
@@ -4802,8 +4552,7 @@ class VoidCodeRuntime:
         inferred_metadata = infer_model_metadata(provider, model) if provider != "unknown" else None
         return (
             active_target.metadata.tool_feedback_mode
-            if active_target.metadata is not None
-            and active_target.metadata.tool_feedback_mode is not None
+            if active_target.metadata is not None and active_target.metadata.tool_feedback_mode is not None
             else inferred_metadata.tool_feedback_mode
             if inferred_metadata is not None and inferred_metadata.tool_feedback_mode is not None
             else "standard"
@@ -4818,10 +4567,7 @@ class VoidCodeRuntime:
         if effective_config.execution_engine != "provider":
             return None
         context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
-        if (
-            context_window_config.provider_context_diagnostics == "off"
-            and context_window_config.context_transform_failure_policy != "block"
-        ):
+        if context_window_config.provider_context_diagnostics == "off" and context_window_config.context_transform_failure_policy != "block":
             return None
         snapshot = self._provider_context_snapshot_for_assembled_context(
             assembled_context=cast(RuntimeAssembledContext, graph_request.assembled_context),
@@ -4874,18 +4620,10 @@ class VoidCodeRuntime:
         active_metadata = self._active_session_metadata(session_id) or {}
         request_metadata = active_metadata.get("request_metadata")
         session_metadata = {
-            **(
-                dict(cast(dict[str, object], request_metadata))
-                if isinstance(request_metadata, dict)
-                else {}
-            ),
+            **(dict(cast(dict[str, object], request_metadata)) if isinstance(request_metadata, dict) else {}),
             "workspace": str(self._workspace),
         }
-        prompt = (
-            cast(str, active_metadata["prompt"])
-            if isinstance(active_metadata.get("prompt"), str)
-            else ""
-        )
+        prompt = cast(str, active_metadata["prompt"]) if isinstance(active_metadata.get("prompt"), str) else ""
         session = SessionState(
             session=SessionRef(id=session_id),
             status="running",
@@ -4920,12 +4658,8 @@ class VoidCodeRuntime:
         request_metadata = active_metadata.get("request_metadata")
         if not isinstance(request_metadata, dict):
             return False
-        active_request_metadata = VoidCodeRuntime._fresh_request_metadata(
-            cast(RuntimeRequestMetadataPayload, request_metadata)
-        )
-        persisted_request_metadata = VoidCodeRuntime._request_metadata_from_session_metadata(
-            result.session.metadata
-        )
+        active_request_metadata = VoidCodeRuntime._fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
+        persisted_request_metadata = VoidCodeRuntime._request_metadata_from_session_metadata(result.session.metadata)
         if active_request_metadata != persisted_request_metadata:
             return True
         active_prompt = active_metadata.get("prompt")
@@ -4944,12 +4678,8 @@ class VoidCodeRuntime:
             "background_run",
             "background_task_id",
         }
-        request_metadata = {
-            key: value for key, value in metadata.items() if key in request_metadata_keys
-        }
-        return VoidCodeRuntime._fresh_request_metadata(
-            cast(RuntimeRequestMetadataPayload, request_metadata)
-        )
+        request_metadata = {key: value for key, value in metadata.items() if key in request_metadata_keys}
+        return VoidCodeRuntime._fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
 
     @staticmethod
     def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
@@ -4966,17 +4696,13 @@ class VoidCodeRuntime:
         if approval_request_id is None and approval_decision is None:
             checkpoint = self._load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
-                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
-                    parent_session_id=session_id
-                )
+                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
                 return self._resume_provider_failure_response(
                     session_id=session_id,
                     checkpoint=checkpoint,
                     finalize_background_task=True,
                 )
-            self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
-                parent_session_id=session_id
-            )
+            self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             return self._load_replay_response(session_id=session_id)
         if approval_request_id is None or approval_decision is None:
             raise ValueError("approval resume requires request id and decision")
@@ -4989,9 +4715,7 @@ class VoidCodeRuntime:
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
         )
-        self._background_task_supervisor.finalize_background_task_from_session_response(
-            session_response=response
-        )
+        self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
         return response
 
     def resume_stream(
@@ -5005,9 +4729,7 @@ class VoidCodeRuntime:
         if approval_request_id is None and approval_decision is None:
             checkpoint = self._load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
-                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
-                    parent_session_id=session_id
-                )
+                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
                 run_id = os.urandom(8).hex()
                 abort_signal = self._register_active_session_id(
                     session_id,
@@ -5029,9 +4751,7 @@ class VoidCodeRuntime:
                 finally:
                     self._unregister_active_session_id(session_id, run_id=run_id)
                 return
-            self._background_task_supervisor.reconcile_parent_background_task_events_for_session(
-                parent_session_id=session_id
-            )
+            self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             response = self._load_replay_response(session_id=session_id)
             yield from self._replay_response(response)
             return
@@ -5082,9 +4802,7 @@ class VoidCodeRuntime:
         if pending is None:
             return
         if pending.owner_session_id is not None and pending.owner_session_id != session_id:
-            raise ValueError(
-                "approval resume must target the child session that owns the approval request"
-            )
+            raise ValueError("approval resume must target the child session that owns the approval request")
         if pending.request_id != approval_request_id:
             return
 
@@ -5129,20 +4847,14 @@ class VoidCodeRuntime:
                     workspace=self._workspace,
                     task_id=task_summary.task.id,
                 )
-                child_response = (
-                    self._background_task_supervisor.load_background_task_child_response(task=task)
-                )
+                child_response = self._background_task_supervisor.load_background_task_child_response(task=task)
                 owned_request_id = (
                     self._waiting_request_id_from_response(
                         child_response,
                         request_kind=request_kind,
                     )
                     if child_response is not None
-                    else (
-                        task.approval_request_id
-                        if request_kind == "approval"
-                        else task.question_request_id
-                    )
+                    else (task.approval_request_id if request_kind == "approval" else task.question_request_id)
                 )
                 if owned_request_id == request_id:
                     raise ValueError(wrong_target_error)
@@ -5164,9 +4876,7 @@ class VoidCodeRuntime:
             question_request_id=question_request_id,
             responses=responses,
         )
-        self._background_task_supervisor.finalize_background_task_from_session_response(
-            session_response=response
-        )
+        self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
         return response
 
     def answer_question_stream(
@@ -5234,86 +4944,39 @@ class VoidCodeRuntime:
             request_id=pending.request_id,
         )
         if resolved:
-            raise ValueError(
-                "approval request was already resolved; stale approval replay is not allowed"
-            )
+            raise ValueError("approval request was already resolved; stale approval replay is not allowed")
         if request_event is None:
             if checkpoint is None:
-                raise ValueError(
-                    "persisted pending approval has no matching approval request event"
-                )
+                raise ValueError("persisted pending approval has no matching approval request event")
             if checkpoint.get("pending_approval_request_id") != pending.request_id:
-                raise ValueError(
-                    "persisted approval resume checkpoint request id "
-                    "does not match pending approval"
-                )
-            if (
-                checkpoint.get("pending_approval_tool_name") != pending.tool_name
-                or checkpoint.get("pending_approval_arguments") != pending.arguments
-            ):
-                raise ValueError(
-                    "persisted pending approval no longer matches "
-                    "the recorded approval request payload"
-                )
+                raise ValueError("persisted approval resume checkpoint request id does not match pending approval")
+            if checkpoint.get("pending_approval_tool_name") != pending.tool_name or checkpoint.get("pending_approval_arguments") != pending.arguments:
+                raise ValueError("persisted pending approval no longer matches the recorded approval request payload")
             if checkpoint.get("pending_approval_owner_session_id") != pending.owner_session_id:
-                raise ValueError(
-                    "persisted pending approval owner_session_id "
-                    "does not match the recorded approval request"
-                )
-            if (
-                checkpoint.get("pending_approval_owner_parent_session_id")
-                != pending.owner_parent_session_id
-            ):
-                raise ValueError(
-                    "persisted pending approval owner_parent_session_id "
-                    "does not match the recorded approval request"
-                )
+                raise ValueError("persisted pending approval owner_session_id does not match the recorded approval request")
+            if checkpoint.get("pending_approval_owner_parent_session_id") != pending.owner_parent_session_id:
+                raise ValueError("persisted pending approval owner_parent_session_id does not match the recorded approval request")
             if checkpoint.get("pending_approval_delegated_task_id") != pending.delegated_task_id:
-                raise ValueError(
-                    "persisted pending approval delegated_task_id "
-                    "does not match the recorded approval request"
-                )
+                raise ValueError("persisted pending approval delegated_task_id does not match the recorded approval request")
             checkpoint_sequence = checkpoint.get("pending_approval_request_event_sequence")
             if (
                 pending.request_event_sequence is not None
                 and checkpoint_sequence is not None
                 and checkpoint_sequence != pending.request_event_sequence
             ):
-                raise ValueError(
-                    "persisted pending approval sequence "
-                    "does not match the recorded approval request"
-                )
+                raise ValueError("persisted pending approval sequence does not match the recorded approval request")
             return
-        if (
-            pending.request_event_sequence is not None
-            and request_event.sequence != pending.request_event_sequence
-        ):
-            raise ValueError(
-                "persisted pending approval sequence does not match the recorded approval request"
-            )
+        if pending.request_event_sequence is not None and request_event.sequence != pending.request_event_sequence:
+            raise ValueError("persisted pending approval sequence does not match the recorded approval request")
         payload = request_event.payload
-        if (
-            payload.get("tool") != pending.tool_name
-            or payload.get("arguments") != pending.arguments
-        ):
-            raise ValueError(
-                "persisted pending approval no longer matches the recorded approval request payload"
-            )
+        if payload.get("tool") != pending.tool_name or payload.get("arguments") != pending.arguments:
+            raise ValueError("persisted pending approval no longer matches the recorded approval request payload")
         if payload.get("owner_session_id") != pending.owner_session_id:
-            raise ValueError(
-                "persisted pending approval owner_session_id "
-                "does not match the recorded approval request"
-            )
+            raise ValueError("persisted pending approval owner_session_id does not match the recorded approval request")
         if payload.get("owner_parent_session_id") != pending.owner_parent_session_id:
-            raise ValueError(
-                "persisted pending approval owner_parent_session_id "
-                "does not match the recorded approval request"
-            )
+            raise ValueError("persisted pending approval owner_parent_session_id does not match the recorded approval request")
         if payload.get("delegated_task_id") != pending.delegated_task_id:
-            raise ValueError(
-                "persisted pending approval delegated_task_id "
-                "does not match the recorded approval request"
-            )
+            raise ValueError("persisted pending approval delegated_task_id does not match the recorded approval request")
 
     def _validate_pending_question_matches_recorded_request(
         self,
@@ -5329,9 +4992,7 @@ class VoidCodeRuntime:
             request_id=pending.request_id,
         )
         if resolved:
-            raise ValueError(
-                "question request was already answered; stale question replay is not allowed"
-            )
+            raise ValueError("question request was already answered; stale question replay is not allowed")
         expected_questions = [
             {
                 "header": prompt.header,
@@ -5349,33 +5010,19 @@ class VoidCodeRuntime:
         ]
         if request_event is None:
             if checkpoint is None:
-                raise ValueError(
-                    "persisted pending question has no matching question request event"
-                )
+                raise ValueError("persisted pending question has no matching question request event")
             if checkpoint.get("pending_question_request_id") != pending.request_id:
-                raise ValueError(
-                    "persisted question resume checkpoint request id "
-                    "does not match pending question"
-                )
+                raise ValueError("persisted question resume checkpoint request id does not match pending question")
             if checkpoint.get("pending_question_tool_name") != pending.tool_name:
-                raise ValueError(
-                    "persisted pending question tool does not match the recorded question request"
-                )
+                raise ValueError("persisted pending question tool does not match the recorded question request")
             if checkpoint.get("pending_question_prompts") != expected_questions:
-                raise ValueError(
-                    "persisted pending question no longer matches "
-                    "the recorded question request payload"
-                )
+                raise ValueError("persisted pending question no longer matches the recorded question request payload")
             return
         payload = request_event.payload
         if payload.get("tool") != pending.tool_name:
-            raise ValueError(
-                "persisted pending question tool does not match the recorded question request"
-            )
+            raise ValueError("persisted pending question tool does not match the recorded question request")
         if payload.get("questions") != expected_questions:
-            raise ValueError(
-                "persisted pending question no longer matches the recorded question request payload"
-            )
+            raise ValueError("persisted pending question no longer matches the recorded question request payload")
 
     def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
         return pending_question_from_response(response)
@@ -5622,9 +5269,7 @@ class VoidCodeRuntime:
                 kind="output",
                 session=VoidCodeRuntime._session_with_status(
                     response.session,
-                    "completed"
-                    if response.session.status == "completed"
-                    else response.session.status,
+                    "completed" if response.session.status == "completed" else response.session.status,
                 ),
                 output=response.output,
             )
@@ -5639,9 +5284,7 @@ class VoidCodeRuntime:
         )
 
     @staticmethod
-    def _replayed_chunk_session(
-        *, response_session: SessionState, event: EventEnvelope
-    ) -> SessionState:
+    def _replayed_chunk_session(*, response_session: SessionState, event: EventEnvelope) -> SessionState:
         status: SessionStatus = "running"
         if event.event_type in {"runtime.approval_requested", "runtime.question_requested"}:
             status = "waiting"
@@ -5700,11 +5343,7 @@ class VoidCodeRuntime:
             allow_internal_fields=allow_internal_metadata,
         )
         metadata = self._restore_explicit_workflow_mode(metadata, raw_metadata)
-        existing_session = (
-            self._load_existing_session_if_present(session_id=session_id)
-            if session_id is not None
-            else None
-        )
+        existing_session = self._load_existing_session_if_present(session_id=session_id) if session_id is not None else None
         governance_parent_session_id = parent_session_id
         if governance_parent_session_id is None and existing_session is not None:
             governance_parent_session_id = existing_session.session.session.parent_id
@@ -5729,14 +5368,9 @@ class VoidCodeRuntime:
             if parent_session_id is None:
                 resolved_parent_session_id = existing_parent_session_id
             elif existing_parent_session_id != parent_session_id:
-                existing_parent_label = (
-                    existing_parent_session_id
-                    if existing_parent_session_id is not None
-                    else "<top-level>"
-                )
+                existing_parent_label = existing_parent_session_id if existing_parent_session_id is not None else "<top-level>"
                 raise RuntimeRequestError(
-                    f"session {session_id} already belongs to {existing_parent_label} "
-                    f"and cannot be rebound to parent session {parent_session_id}"
+                    f"session {session_id} already belongs to {existing_parent_label} and cannot be rebound to parent session {parent_session_id}"
                 )
 
         prompt, metadata = self._resolve_prompt_command_for_request(
@@ -5799,8 +5433,6 @@ class VoidCodeRuntime:
         if parent_read_only or child_read_only or "read_only" in child_metadata:
             inherited["read_only"] = parent_read_only or child_read_only
 
-        if not self._memory_tools_allowed(parent_metadata):
-            inherited.pop("memory_tools_allowed", None)
         return inherited
 
     @staticmethod
@@ -5884,25 +5516,16 @@ class VoidCodeRuntime:
         if parent_session_id is not None:
             parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
             if parent_response is not None:
-                parent_depth = self._delegation_depth_from_metadata(
-                    parent_response.session.metadata
-                )
-                remaining_spawn_budget = self._remaining_spawn_budget_from_metadata(
-                    parent_response.session.metadata
-                )
-            elif (
-                active_parent_metadata := self._active_session_metadata(parent_session_id)
-            ) is not None:
+                parent_depth = self._delegation_depth_from_metadata(parent_response.session.metadata)
+                remaining_spawn_budget = self._remaining_spawn_budget_from_metadata(parent_response.session.metadata)
+            elif (active_parent_metadata := self._active_session_metadata(parent_session_id)) is not None:
                 parent_depth = self._delegation_depth_from_metadata(active_parent_metadata)
-                remaining_spawn_budget = self._remaining_spawn_budget_from_metadata(
-                    active_parent_metadata
-                )
+                remaining_spawn_budget = self._remaining_spawn_budget_from_metadata(active_parent_metadata)
 
         request_depth = parent_depth + 1
         if request_depth > _DELEGATION_GOVERNANCE.max_depth:
             raise RuntimeRequestError(
-                "delegation depth limit exceeded: "
-                f"requested depth {request_depth} exceeds max {_DELEGATION_GOVERNANCE.max_depth}"
+                f"delegation depth limit exceeded: requested depth {request_depth} exceeds max {_DELEGATION_GOVERNANCE.max_depth}"
             )
 
         if existing_session_id is None:
@@ -6057,21 +5680,6 @@ class VoidCodeRuntime:
             resolved_provider=effective_config.resolved_provider,
             provider_attempt=provider_attempt,
         )
-        if policy.continuity_distillation_enabled and self._should_fetch_distillation_candidate(
-            tool_results=tool_results,
-            policy=policy,
-            prompt=prompt,
-            session_metadata=session_metadata,
-        ):
-            session_metadata = self._session_metadata_with_distillation_candidate(
-                prompt=prompt,
-                tool_results=tool_results,
-                session_metadata=session_metadata,
-                policy=policy,
-                effective_config=effective_config,
-                abort_signal=abort_signal,
-                provider_attempt=provider_attempt,
-            )
         return prepare_provider_context(
             prompt=prompt,
             tool_results=tool_results,
@@ -6175,164 +5783,6 @@ class VoidCodeRuntime:
                 eligible.append(result)
         return eligible
 
-    @staticmethod
-    def _should_fetch_distillation_candidate(
-        *,
-        tool_results: tuple[ToolResult, ...],
-        policy: ContextWindowPolicy,
-        prompt: str,
-        session_metadata: dict[str, object],
-    ) -> bool:
-        if not tool_results:
-            return False
-        probe = prepare_provider_context(
-            prompt=prompt,
-            tool_results=tool_results,
-            session_metadata=session_metadata,
-            policy=policy,
-        )
-        return probe.compacted
-
-    def _session_metadata_with_distillation_candidate(
-        self,
-        *,
-        prompt: str,
-        tool_results: tuple[ToolResult, ...],
-        session_metadata: dict[str, object],
-        policy: ContextWindowPolicy,
-        effective_config: EffectiveRuntimeConfig,
-        abort_signal: ProviderAbortSignal | None,
-        provider_attempt: int,
-    ) -> dict[str, object]:
-        candidate, failure_reason = self._distillation_candidate_from_provider(
-            prompt=prompt,
-            tool_results=tool_results,
-            session_metadata=session_metadata,
-            policy=policy,
-            effective_config=effective_config,
-            abort_signal=abort_signal,
-            provider_attempt=provider_attempt,
-        )
-        raw_runtime_state = session_metadata.get("runtime_state")
-        runtime_state = (
-            dict(cast(dict[str, object], raw_runtime_state))
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
-        if candidate is not None:
-            runtime_state["distillation_candidate"] = candidate
-            runtime_state.pop("distillation_failure_reason", None)
-        elif failure_reason is not None:
-            runtime_state.pop("distillation_candidate", None)
-            runtime_state["distillation_failure_reason"] = failure_reason
-        return {**session_metadata, "runtime_state": runtime_state}
-
-    def _distillation_candidate_from_provider(
-        self,
-        *,
-        prompt: str,
-        tool_results: tuple[ToolResult, ...],
-        session_metadata: dict[str, object],
-        policy: ContextWindowPolicy,
-        effective_config: EffectiveRuntimeConfig,
-        abort_signal: ProviderAbortSignal | None,
-        provider_attempt: int,
-    ) -> tuple[dict[str, object] | None, str | None]:
-        if not tool_results:
-            return None, "empty_tool_results"
-        projection = project_tool_results_for_context_window(
-            tool_results=tool_results,
-            policy=policy,
-        )
-        if not projection.dropped_results:
-            return None, "no_compaction_needed"
-        if len(projection.retained_results) == 1 and len(tool_results) > 3:
-            projection = project_tool_results_for_context_window(
-                tool_results=tool_results,
-                policy=ContextWindowPolicy(
-                    auto_compaction=policy.auto_compaction,
-                    max_tool_result_tokens=None,
-                    max_context_ratio=policy.max_context_ratio,
-                    model_context_window_tokens=None,
-                    reserved_output_tokens=policy.reserved_output_tokens,
-                    default_tool_result_tokens=policy.default_tool_result_tokens,
-                    per_tool_result_tokens=policy.per_tool_result_tokens,
-                    tokenizer_model=policy.tokenizer_model,
-                    context_pressure_threshold=policy.context_pressure_threshold,
-                    continuity_preview_items=policy.continuity_preview_items,
-                    continuity_preview_chars=policy.continuity_preview_chars,
-                    continuity_distillation_enabled=policy.continuity_distillation_enabled,
-                    continuity_distillation_max_input_items=(
-                        policy.continuity_distillation_max_input_items
-                    ),
-                    continuity_distillation_max_input_chars=(
-                        policy.continuity_distillation_max_input_chars
-                    ),
-                ),
-            )
-        previous_continuity: dict[str, object] | None = None
-        runtime_state = session_metadata.get("runtime_state")
-        if isinstance(runtime_state, dict):
-            raw_continuity = cast(dict[str, object], runtime_state).get("continuity")
-            if isinstance(raw_continuity, dict):
-                previous_continuity = cast(dict[str, object], raw_continuity)
-        envelope = build_distillation_input_envelope(
-            prompt=prompt,
-            dropped_results=projection.dropped_results,
-            retained_results=projection.retained_results,
-            previous_continuity=previous_continuity,
-            max_items=policy.continuity_distillation_max_input_items,
-            max_chars=policy.continuity_distillation_max_input_chars,
-        )
-        provider_target = effective_config.resolved_provider.target_chain.target_at(
-            provider_attempt
-        )
-        if provider_target is None:
-            provider_target = effective_config.resolved_provider.active_target
-        selection = provider_target.selection
-        provider_name = selection.provider
-        if provider_name is None:
-            return None, "missing_provider"
-        provider = self._model_provider_registry.resolve(provider_name)
-        turn_provider = provider.turn_provider()
-        schema_prompt = (
-            "Return ONLY valid JSON matching these keys: "
-            "objective_current_goal, verbatim_user_constraints, completed_progress, "
-            "blockers_open_questions, key_decisions_with_rationale, "
-            "relevant_files_commands_errors, verification_state, next_steps, source_references. "
-            "No markdown; output JSON object only.\n\n"
-            f"INPUT={json.dumps(envelope, ensure_ascii=False)}"
-        )
-        distill_context = RuntimeAssembledContext(
-            prompt=schema_prompt,
-            tool_results=(),
-            continuity_state=None,
-            segments=(RuntimeContextSegment(role="user", content=schema_prompt),),
-            metadata={"source": "continuity_distillation"},
-        )
-        request = ProviderTurnRequest(
-            assembled_context=distill_context,
-            available_tools=(),
-            raw_model=selection.raw_model,
-            provider_name=selection.provider,
-            model_name=selection.model,
-            model_metadata=provider_target.metadata,
-            abort_signal=abort_signal,
-        )
-        try:
-            result = turn_provider.propose_turn(request)
-        except Exception:
-            return None, "provider_error"
-        if not isinstance(result.output, str) or not result.output.strip():
-            return None, "empty_output"
-        try:
-            payload = json.loads(result.output)
-        except json.JSONDecodeError:
-            return None, "invalid_json"
-        if not isinstance(payload, dict):
-            return None, "invalid_schema"
-        return cast(dict[str, object], payload), None
-
     def _assemble_provider_context(
         self,
         *,
@@ -6348,11 +5798,7 @@ class VoidCodeRuntime:
             workflow = self._workflow_snapshot_from_metadata(session_metadata)
             if workflow is not None:
                 raw_effective = workflow.get("effective")
-                raw_mode = (
-                    cast(dict[str, object], raw_effective).get("mode")
-                    if isinstance(raw_effective, dict)
-                    else None
-                )
+                raw_mode = cast(dict[str, object], raw_effective).get("mode") if isinstance(raw_effective, dict) else None
                 if isinstance(raw_mode, str) and raw_mode:
                     mode = get_builtin_workflow_mode(raw_mode)
                     if mode is not None:
@@ -6392,11 +5838,7 @@ class VoidCodeRuntime:
             raw_runtime_config = session_metadata.get("runtime_config")
             if isinstance(raw_runtime_config, dict):
                 raw_agent_preset = cast(dict[str, object], raw_runtime_config).get("agent")
-        agent_preset = (
-            cast(dict[str, object], raw_agent_preset)
-            if isinstance(raw_agent_preset, dict)
-            else None
-        )
+        agent_preset = cast(dict[str, object], raw_agent_preset) if isinstance(raw_agent_preset, dict) else None
         model_family = effective_config.resolved_provider.active_target.selection.provider
         tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
         agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
@@ -6420,18 +5862,14 @@ class VoidCodeRuntime:
             session_metadata=session_metadata,
             policy=policy or self._default_context_window_policy,
             agent_prompt_context=agent_prompt_context,
-            prompt_profile_name=effective_config.agent.prompt_profile
-            if effective_config.agent is not None
-            else None,
+            prompt_profile_name=effective_config.agent.prompt_profile if effective_config.agent is not None else None,
             hook_preset_context=hook_preset_context,
             context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,
             workflow_mode_prompt_context=workflow_mode_prompt_context,
             preserved_system_segments=preserved_system_segments,
             loaded_skills=loaded_skills,
-            preserved_continuity_state=self._continuity_state_from_session_metadata(
-                session_metadata
-            ),
+            preserved_continuity_state=self._continuity_state_from_session_metadata(session_metadata),
             workspace_memory_context=workspace_memory_context,
             workspace=self._workspace,
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
@@ -6464,17 +5902,11 @@ class VoidCodeRuntime:
         return continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
 
     @staticmethod
-    def _session_with_context_window_metadata(
-        session: SessionState, context_window: RuntimeContextWindow
-    ) -> SessionState:
-        return VoidCodeRuntime._session_with_context_window_payload_metadata(
-            session, context_window.metadata_payload()
-        )
+    def _session_with_context_window_metadata(session: SessionState, context_window: RuntimeContextWindow) -> SessionState:
+        return VoidCodeRuntime._session_with_context_window_payload_metadata(session, context_window.metadata_payload())
 
     @staticmethod
-    def _session_with_context_window_payload_metadata(
-        session: SessionState, context_window_payload: dict[str, object]
-    ) -> SessionState:
+    def _session_with_context_window_payload_metadata(session: SessionState, context_window_payload: dict[str, object]) -> SessionState:
         return session_with_context_window_payload_metadata(session, context_window_payload)
 
     @staticmethod
@@ -6487,9 +5919,7 @@ class VoidCodeRuntime:
         return session_with_todo_state(session, raw_todos=raw_todos, revision=revision)
 
     @staticmethod
-    def _session_with_provider_usage_metadata(
-        session: SessionState, usage: ProviderTokenUsage | None
-    ) -> SessionState:
+    def _session_with_provider_usage_metadata(session: SessionState, usage: ProviderTokenUsage | None) -> SessionState:
         return session_with_provider_usage_metadata(session, usage)
 
     @staticmethod
@@ -6513,11 +5943,7 @@ class VoidCodeRuntime:
         active_target = effective_config.resolved_provider.active_target.selection
         provider_name = active_target.provider
         model_name = active_target.model
-        metadata = (
-            self._metadata_for_provider_model(provider_name, model_name)
-            if provider_name is not None and model_name is not None
-            else None
-        )
+        metadata = self._metadata_for_provider_model(provider_name, model_name) if provider_name is not None and model_name is not None else None
         supports_reasoning = metadata.supports_reasoning if metadata is not None else None
         if capture_state.reasoning_observed:
             severity = "info"
@@ -6608,13 +6034,9 @@ class VoidCodeRuntime:
             persisted_snapshot = self._skill_snapshot_from_metadata(metadata)
             if persisted_snapshot is not None:
                 if binding_snapshot is None:
-                    raise ValueError(
-                        "persisted skill snapshot requires agent capability binding snapshot"
-                    )
+                    raise ValueError("persisted skill snapshot requires agent capability binding snapshot")
                 if persisted_snapshot.binding_snapshot != binding_snapshot:
-                    raise ValueError(
-                        "persisted skill snapshot binding does not match agent capability snapshot"
-                    )
+                    raise ValueError("persisted skill snapshot binding does not match agent capability snapshot")
                 return persisted_snapshot
         if source != "run":
             raise ValueError(f"{source} requires a persisted skill snapshot")
@@ -6622,9 +6044,7 @@ class VoidCodeRuntime:
         selected_skill_names = self._selected_skill_names_for_agent(
             agent,
             request_skill_names=self._request_skill_names_from_metadata(metadata, key="skills"),
-            persisted_selected_skill_names=(
-                self._persisted_selected_skill_names(metadata) if metadata is not None else None
-            ),
+            persisted_selected_skill_names=(self._persisted_selected_skill_names(metadata) if metadata is not None else None),
         )
         force_load_skill_names = self._request_skill_names_from_metadata(
             metadata,
@@ -6661,9 +6081,7 @@ class VoidCodeRuntime:
                 if not isinstance(raw_capability_snapshot, dict):
                     raise ValueError("persisted agent_capability_snapshot must be an object")
                 validate_agent_capability_snapshot(cast(dict[str, object], raw_capability_snapshot))
-                return self._skill_binding_snapshot_from_agent_capability_snapshot(
-                    cast(dict[str, object], raw_capability_snapshot)
-                )
+                return self._skill_binding_snapshot_from_agent_capability_snapshot(cast(dict[str, object], raw_capability_snapshot))
         if require_capability:
             raise ValueError("persisted session requires agent_capability_snapshot")
         source_runtime_config = None
@@ -6672,9 +6090,7 @@ class VoidCodeRuntime:
             if isinstance(raw_runtime_config, dict):
                 source_runtime_config = cast(dict[str, object], raw_runtime_config)
         if source_runtime_config is None:
-            source_runtime_config = self._runtime_config_metadata(
-                self._effective_runtime_config_from_metadata(metadata)
-            )
+            source_runtime_config = self._runtime_config_metadata(self._effective_runtime_config_from_metadata(metadata))
         snapshot: dict[str, object] = {}
         for key in _SKILL_BINDING_SCOPE_KEYS:
             if key in source_runtime_config:
@@ -6699,9 +6115,7 @@ class VoidCodeRuntime:
         parent_capability_snapshot: dict[str, object] | None = None,
     ) -> dict[str, object]:
         runtime_config = metadata.get("runtime_config")
-        runtime_config_payload = (
-            cast(dict[str, object], runtime_config) if isinstance(runtime_config, dict) else {}
-        )
+        runtime_config_payload = cast(dict[str, object], runtime_config) if isinstance(runtime_config, dict) else {}
         agent = effective_config.agent
         manifest = self._agent_registry.get(agent.preset) if agent is not None else None
         force_load_skills = self._request_skill_names_from_metadata(
@@ -6725,11 +6139,7 @@ class VoidCodeRuntime:
         skill_snapshot = {
             "manifest_refs": list(agent.manifest_skill_refs) if agent is not None else [],
             "selected_names": list(selected_skills or ()),
-            "force_loaded_names": list(
-                dict.fromkeys(force_load_skills or ()).keys()
-                if force_load_skills is not None
-                else ()
-            ),
+            "force_loaded_names": list(dict.fromkeys(force_load_skills or ()).keys() if force_load_skills is not None else ()),
             "scope": "target_session",
         }
         hook_snapshot = {
@@ -6761,16 +6171,11 @@ class VoidCodeRuntime:
                 ],
                 "notes": {
                     "skills": (
-                        "manifest skill_refs select catalog-visible defaults; request skills and "
-                        "force_load_skills apply only to this session"
+                        "manifest skill_refs select catalog-visible defaults; request skills and force_load_skills apply only to this session"
                     ),
-                    "hooks": (
-                        "hook preset refs materialize guidance snapshots only and do not "
-                        "execute lifecycle commands or expand permissions"
-                    ),
+                    "hooks": ("hook preset refs materialize guidance snapshots only and do not execute lifecycle commands or expand permissions"),
                     "mcp": (
-                        "agent MCP binding is declarative intent; runtime/session-scoped MCP "
-                        "lifecycle and tool allowlists remain runtime-governed"
+                        "agent MCP binding is declarative intent; runtime/session-scoped MCP lifecycle and tool allowlists remain runtime-governed"
                     ),
                 },
             },
@@ -6804,9 +6209,7 @@ class VoidCodeRuntime:
                 "execution_engine": effective_config.execution_engine,
                 "model": effective_config.model,
                 "fallback_models": (
-                    list(effective_config.provider_fallback.fallback_models)
-                    if effective_config.provider_fallback is not None
-                    else []
+                    list(effective_config.provider_fallback.fallback_models) if effective_config.provider_fallback is not None else []
                 ),
                 "resolved_provider": runtime_config_payload.get("resolved_provider"),
                 "reasoning_effort": effective_config.reasoning_effort,
@@ -6989,9 +6392,7 @@ class VoidCodeRuntime:
     ) -> dict[str, object]:
         effective_config = config or self._effective_runtime_config_from_metadata(None)
         runtime_config_metadata = serialize_runtime_config_core(effective_config)
-        runtime_config_metadata["resolved_provider"] = resolved_provider_snapshot(
-            effective_config.resolved_provider
-        )
+        runtime_config_metadata["resolved_provider"] = resolved_provider_snapshot(effective_config.resolved_provider)
         resolved_hook_presets = self._build_hook_preset_snapshot(
             effective_config.agent,
             workflow_mode_resolution=workflow_mode_resolution,
@@ -7016,11 +6417,7 @@ class VoidCodeRuntime:
             "configured_enabled": mcp_state.configuration.configured_enabled,
             "servers": list(mcp_state.configuration.servers),
         }
-        if (
-            isinstance(workflow_snapshot, dict)
-            and "delegated_child" in workflow_snapshot
-            and workflow_mode_resolution is not None
-        ):
+        if isinstance(workflow_snapshot, dict) and "delegated_child" in workflow_snapshot and workflow_mode_resolution is not None:
             workflow_snapshot = self._workflow_snapshot_with_effective_mode(
                 cast(dict[str, object], workflow_snapshot),
                 workflow_mode_resolution.workflow_mode,
@@ -7028,9 +6425,7 @@ class VoidCodeRuntime:
         if isinstance(workflow_snapshot, dict):
             runtime_config_metadata["workflow"] = dict(cast(dict[str, object], workflow_snapshot))
         elif workflow_mode_resolution is not None:
-            runtime_config_metadata["workflow"] = self._workflow_snapshot_for_resolution(
-                workflow_mode_resolution
-            )
+            runtime_config_metadata["workflow"] = self._workflow_snapshot_for_resolution(workflow_mode_resolution)
         return runtime_config_metadata
 
     def _config_with_request_agent_override(
@@ -7065,47 +6460,19 @@ class VoidCodeRuntime:
         )
         model = agent.model if agent.model is not None else resolved.model
         execution_engine = _agent_effective_execution_engine(resolved.execution_engine, agent)
-        provider_fallback = (
-            agent.provider_fallback
-            if agent.provider_fallback is not None
-            else resolved.provider_fallback
-        )
+        provider_fallback = agent.provider_fallback if agent.provider_fallback is not None else resolved.provider_fallback
         merged_agent = RuntimeAgentConfig(
             preset=agent.preset,
             prompt_profile=(
-                agent.prompt_profile
-                if agent.prompt_profile is not None
-                else resolved.agent.prompt_profile
-                if resolved.agent is not None
-                else None
+                agent.prompt_profile if agent.prompt_profile is not None else resolved.agent.prompt_profile if resolved.agent is not None else None
             ),
-            prompt=(
-                agent.prompt
-                if agent.prompt is not None
-                else resolved.agent.prompt
-                if resolved.agent is not None
-                else None
-            ),
+            prompt=(agent.prompt if agent.prompt is not None else resolved.agent.prompt if resolved.agent is not None else None),
             prompt_append=(
-                agent.prompt_append
-                if agent.prompt_append is not None
-                else resolved.agent.prompt_append
-                if resolved.agent is not None
-                else None
+                agent.prompt_append if agent.prompt_append is not None else resolved.agent.prompt_append if resolved.agent is not None else None
             ),
-            prompt_ref=(
-                agent.prompt_ref
-                if agent.prompt_ref is not None
-                else resolved.agent.prompt_ref
-                if resolved.agent is not None
-                else None
-            ),
+            prompt_ref=(agent.prompt_ref if agent.prompt_ref is not None else resolved.agent.prompt_ref if resolved.agent is not None else None),
             prompt_source=(
-                agent.prompt_source
-                if agent.prompt_source is not None
-                else resolved.agent.prompt_source
-                if resolved.agent is not None
-                else None
+                agent.prompt_source if agent.prompt_source is not None else resolved.agent.prompt_source if resolved.agent is not None else None
             ),
             prompt_materialization=(
                 agent.prompt_materialization
@@ -7121,13 +6488,7 @@ class VoidCodeRuntime:
             manifest_tool_allowlist=agent.manifest_tool_allowlist,
             manifest_skill_refs=agent.manifest_skill_refs,
             manifest_hook_refs=agent.manifest_hook_refs,
-            hook_refs=(
-                agent.hook_refs
-                if agent.hook_refs
-                else resolved.agent.hook_refs
-                if resolved.agent is not None
-                else ()
-            ),
+            hook_refs=(agent.hook_refs if agent.hook_refs else resolved.agent.hook_refs if resolved.agent is not None else ()),
             context_transform_refs=(
                 agent.context_transform_refs
                 if agent.context_transform_refs
@@ -7137,27 +6498,9 @@ class VoidCodeRuntime:
             ),
             model=model,
             execution_engine=execution_engine,
-            tools=(
-                agent.tools
-                if agent.tools is not None
-                else resolved.agent.tools
-                if resolved.agent is not None
-                else None
-            ),
-            skills=(
-                agent.skills
-                if agent.skills is not None
-                else resolved.agent.skills
-                if resolved.agent is not None
-                else None
-            ),
-            mcp_binding=(
-                agent.mcp_binding
-                if agent.mcp_binding is not None
-                else resolved.agent.mcp_binding
-                if resolved.agent is not None
-                else None
-            ),
+            tools=(agent.tools if agent.tools is not None else resolved.agent.tools if resolved.agent is not None else None),
+            skills=(agent.skills if agent.skills is not None else resolved.agent.skills if resolved.agent is not None else None),
+            mcp_binding=(agent.mcp_binding if agent.mcp_binding is not None else resolved.agent.mcp_binding if resolved.agent is not None else None),
             provider_fallback=provider_fallback,
         )
         resolved_provider = resolve_provider_config(
@@ -7202,8 +6545,7 @@ class VoidCodeRuntime:
             valid = ", ".join(sorted((*executable_primary, *executable_subagents)))
         if allow_subagent_presets:
             raise ValueError(
-                f"{source}: agent preset '{agent.preset}' is not executable for this "
-                f"runtime delegation path; executable agent presets are: {valid}"
+                f"{source}: agent preset '{agent.preset}' is not executable for this runtime delegation path; executable agent presets are: {valid}"
             )
         raise ValueError(
             f"{source}: agent preset '{agent.preset}' cannot be executed as the top-level "
@@ -7227,9 +6569,7 @@ class VoidCodeRuntime:
         normalized_metadata = dict(cast(dict[str, object], metadata))
         raw_delegation_metadata = normalized_metadata["delegation"]
         if not isinstance(raw_delegation_metadata, dict):
-            raise RuntimeRequestError(
-                "request metadata 'delegation' must be an object when provided"
-            )
+            raise RuntimeRequestError("request metadata 'delegation' must be an object when provided")
         delegation_metadata = dict(cast(dict[str, object], raw_delegation_metadata))
         delegation_metadata["selected_preset"] = resolved_route.selected_preset
         delegation_metadata["selected_execution_engine"] = resolved_route.execution_engine
@@ -7256,11 +6596,7 @@ class VoidCodeRuntime:
                 {
                     "preset": resolved_route.selected_preset,
                     **({"model": delegated_model} if delegated_model is not None else {}),
-                    **(
-                        {"fallback_models": list(delegated_provider_fallback.fallback_models)}
-                        if delegated_provider_fallback is not None
-                        else {}
-                    ),
+                    **({"fallback_models": list(delegated_provider_fallback.fallback_models)} if delegated_provider_fallback is not None else {}),
                 },
                 source="delegation.selected_preset",
                 hooks=self._config.hooks,
@@ -7275,14 +6611,9 @@ class VoidCodeRuntime:
                 agent_registry=self._agent_registry,
             )
             if agent is None:
-                raise RuntimeRequestError(
-                    "request metadata 'agent' must be an object when provided"
-                )
+                raise RuntimeRequestError("request metadata 'agent' must be an object when provided")
             if agent.preset != resolved_route.selected_preset:
-                raise RuntimeRequestError(
-                    "request metadata 'agent.preset' must match delegated child preset "
-                    f"'{resolved_route.selected_preset}'"
-                )
+                raise RuntimeRequestError(f"request metadata 'agent.preset' must match delegated child preset '{resolved_route.selected_preset}'")
             if agent.model is None:
                 delegated_model = self._delegated_model_for_route(
                     category=resolved_route.requested.category,
@@ -7320,12 +6651,7 @@ class VoidCodeRuntime:
                         "mode": normalized_workflow["mode"],
                         "source": normalized_workflow["source"],
                     }
-                    if (
-                        normalized_workflow := self._workflow_snapshot_from_metadata(
-                            {"workflow": workflow_snapshot}
-                        )
-                    )
-                    is not None
+                    if (normalized_workflow := self._workflow_snapshot_from_metadata({"workflow": workflow_snapshot})) is not None
                     else {}
                 ),
                 "delegated_child": {
@@ -7402,11 +6728,7 @@ class VoidCodeRuntime:
         if category_config is not None and category_config.fallback_models and model is not None:
             return RuntimeProviderFallbackConfig(
                 preferred_model=model,
-                fallback_models=tuple(
-                    fallback_model
-                    for fallback_model in category_config.fallback_models
-                    if fallback_model != model
-                ),
+                fallback_models=tuple(fallback_model for fallback_model in category_config.fallback_models if fallback_model != model),
             )
         preset_agent = self._preset_agent_config(selected_preset)
         provider_fallback = self._provider_fallback_for_agent_selection(
@@ -7476,10 +6798,7 @@ class VoidCodeRuntime:
                 "requested_category": "brain",
                 "provider": provider_name,
                 "model": model_name,
-                "message": (
-                    "task category 'brain' resolved to a model whose provider metadata "
-                    "does not support reasoning"
-                ),
+                "message": ("task category 'brain' resolved to a model whose provider metadata does not support reasoning"),
             },
         )
 
@@ -7500,11 +6819,7 @@ class VoidCodeRuntime:
                 "last_request_type": acp_state.last_request_type,
                 "last_request_id": acp_state.last_request_id,
                 "last_event_type": acp_state.last_event_type,
-                "last_delegation": (
-                    acp_state.last_delegation.as_payload()
-                    if acp_state.last_delegation is not None
-                    else None
-                ),
+                "last_delegation": (acp_state.last_delegation.as_payload() if acp_state.last_delegation is not None else None),
             },
         }
 
@@ -7569,9 +6884,7 @@ class VoidCodeRuntime:
             mcp_events=mcp_events,
         )
 
-    def _permission_policy_for_session(
-        self, metadata: dict[str, object] | None
-    ) -> PermissionPolicy:
+    def _permission_policy_for_session(self, metadata: dict[str, object] | None) -> PermissionPolicy:
         # Referenced via extracted resume collaborator.
         return permission_policy_for_session(base_policy=self._permission_policy, metadata=metadata)
 
@@ -7588,9 +6901,7 @@ class VoidCodeRuntime:
     ) -> str | None:
         return waiting_request_id_from_response(response, request_kind=request_kind)
 
-    def _effective_runtime_config_from_metadata(
-        self, metadata: dict[str, object] | None
-    ) -> EffectiveRuntimeConfig:
+    def _effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig:
         approval_mode: PermissionDecision = self._config.approval_mode
         model = self._config.model
         execution_engine = self._config.execution_engine
@@ -7635,17 +6946,9 @@ class VoidCodeRuntime:
                 agent,
                 source="runtime config agent",
             )
-        execution_engine_override = (
-            agent.execution_engine
-            if agent is not None and agent.execution_engine is not None
-            else None
-        )
+        execution_engine_override = agent.execution_engine if agent is not None and agent.execution_engine is not None else None
         model_override = agent.model if agent is not None and agent.model is not None else None
-        provider_fallback_override = (
-            agent.provider_fallback
-            if agent is not None and agent.provider_fallback is not None
-            else None
-        )
+        provider_fallback_override = agent.provider_fallback if agent is not None and agent.provider_fallback is not None else None
         if execution_engine != "deterministic" and execution_engine_override is not None:
             execution_engine = execution_engine_override
         if model_override is not None:
@@ -7692,7 +6995,7 @@ class VoidCodeRuntime:
             "tool_timeout_seconds",
             "fallback_models",
         }
-        if not required_keys.issubset(runtime_config):
+        if not required_keys.issubset(runtime_config) and "permission" not in runtime_config:
             partial_tools = self._config.tools
             if "tools" in runtime_config:
                 partial_tools = parse_runtime_tools_payload(
@@ -7717,7 +7020,10 @@ class VoidCodeRuntime:
                 tools=partial_tools,
                 policy=self._config.policy,
             )
-        materialized = parse_persisted_runtime_config(runtime_config)
+        materialized = parse_persisted_runtime_config(
+            runtime_config,
+            allow_legacy_permission_scopes=True,
+        )
         approval_mode = materialized.approval_mode
         permission = materialized.permission
         policy = materialized.policy
@@ -7777,9 +7083,7 @@ class VoidCodeRuntime:
             policy=policy,
         )
 
-    def _provider_chain_for_session_metadata(
-        self, metadata: dict[str, object] | None
-    ) -> ResolvedProviderChain:
+    def _provider_chain_for_session_metadata(self, metadata: dict[str, object] | None) -> ResolvedProviderChain:
         effective_config = self._effective_runtime_config_from_metadata(metadata)
         return effective_config.resolved_provider.target_chain
 
@@ -7797,8 +7101,7 @@ class VoidCodeRuntime:
             and effective_config.model == self._initial_effective_config.model
             and effective_config.max_steps == self._initial_effective_config.max_steps
             and effective_config.reasoning_effort == self._initial_effective_config.reasoning_effort
-            and effective_config.provider_fallback
-            == self._initial_effective_config.provider_fallback
+            and effective_config.provider_fallback == self._initial_effective_config.provider_fallback
             and effective_config.providers == self._initial_effective_config.providers
             and effective_config.agent == self._initial_effective_config.agent
             and effective_config.context_window == self._initial_effective_config.context_window
@@ -7833,6 +7136,10 @@ class VoidCodeRuntime:
 
     def _load_replay_response(self, *, session_id: str) -> RuntimeResponse:
         response = self._load_stored_response(session_id=session_id)
+        # Replay is still a runtime boundary: reject malformed persisted
+        # configuration instead of silently projecting unverifiable state.
+        if "runtime_config" in response.session.metadata:
+            self._effective_runtime_config_from_metadata(response.session.metadata)
         projected_metadata = session_metadata_for_replay(response.session.metadata)
         replay_events = self._events_with_runtime_policy_projection(
             response.events,
@@ -7871,9 +7178,7 @@ class VoidCodeRuntime:
                     source=event.source,
                     payload={
                         **event.payload,
-                        "runtime_policy": runtime_policy_observability_payload(
-                            cast(dict[str, object], raw_policy)
-                        ),
+                        "runtime_policy": runtime_policy_observability_payload(cast(dict[str, object], raw_policy)),
                     },
                 )
             )

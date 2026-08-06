@@ -77,9 +77,7 @@ class InteractiveShellTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         if os.name == "nt":
-            raise ValueError(
-                "interactive_shell currently requires tmux and is unsupported on Windows"
-            )
+            raise ValueError("interactive_shell currently requires tmux and is unsupported on Windows")
 
         tmux_binary = shutil.which("tmux")
         if tmux_binary is None:
@@ -109,9 +107,7 @@ class InteractiveShellTool:
         stderr = completed.stderr.replace("\r\n", "\n")
         output = stdout if not stderr else f"{stdout}{stderr}" if stdout else stderr
         status = "ok" if completed.returncode == 0 else "error"
-        error = (
-            None if status == "ok" else output or f"tmux exited with status {completed.returncode}"
-        )
+        error = None if status == "ok" else output or f"tmux exited with status {completed.returncode}"
         return ToolResult(
             tool_name=self.definition.name,
             status=status,

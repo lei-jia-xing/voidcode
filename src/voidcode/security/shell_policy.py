@@ -20,10 +20,7 @@ class ShellExecutionPolicy:
 def non_interactive_shell_env(command: str) -> dict[str, str]:
     for segment in _command_segments(command):
         normalized = tuple(_normalize_command_token(token) for token in _shell_tokens(segment))
-        if any(
-            candidate in _PROJECT_PACKAGE_MANAGERS_WITH_PROMPTS
-            for candidate in _command_candidates(normalized)
-        ):
+        if any(candidate in _PROJECT_PACKAGE_MANAGERS_WITH_PROMPTS for candidate in _command_candidates(normalized)):
             return dict(_NON_INTERACTIVE_PACKAGE_MANAGER_ENV)
     return {}
 

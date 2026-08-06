@@ -15,17 +15,13 @@ def resolve_lsp_server_config(
 ) -> ResolvedLspServerConfig:
     effective_override = override or LspServerConfigOverride()
 
-    if effective_override.preset is not None and not has_builtin_lsp_server_preset(
-        effective_override.preset
-    ):
+    if effective_override.preset is not None and not has_builtin_lsp_server_preset(effective_override.preset):
         raise ValueError(f"unknown LSP preset: {effective_override.preset}")
 
     preset = _resolve_preset(server_name=server_name, override=effective_override)
     command = effective_override.command or (preset.command if preset is not None else ())
     if not command:
-        raise ValueError(
-            f"LSP server '{server_name}' must define a command or reference a known preset"
-        )
+        raise ValueError(f"LSP server '{server_name}' must define a command or reference a known preset")
 
     return ResolvedLspServerConfig(
         id=server_name,
@@ -59,19 +55,14 @@ def resolve_lsp_server_configs(
 ) -> dict[str, ResolvedLspServerConfig]:
     if not servers:
         return {}
-    return {
-        server_name: resolve_lsp_server_config(server_name, override)
-        for server_name, override in servers.items()
-    }
+    return {server_name: resolve_lsp_server_config(server_name, override) for server_name, override in servers.items()}
 
 
 def match_lsp_servers_for_path(
     servers: Mapping[str, ResolvedLspServerConfig],
     file_path: Path,
 ) -> tuple[str, ...]:
-    return tuple(
-        server_name for server_name, config in servers.items() if config.matches_path(file_path)
-    )
+    return tuple(server_name for server_name, config in servers.items() if config.matches_path(file_path))
 
 
 def derive_workspace_lsp_defaults(

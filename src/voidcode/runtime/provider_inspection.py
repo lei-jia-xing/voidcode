@@ -76,9 +76,7 @@ class RuntimeProviderAuthInspector:
         except ProviderAuthResolutionError as exc:
             return ProviderAuthPresence(
                 present=False,
-                failure_kind=(
-                    "missing_auth" if exc.code == "missing_credentials" else exc.provider_error_kind
-                ),
+                failure_kind=("missing_auth" if exc.code == "missing_credentials" else exc.provider_error_kind),
                 message=str(exc),
             )
         return ProviderAuthPresence(present=result.status == "authorized")
@@ -97,10 +95,7 @@ class RuntimeProviderAuthInspector:
             return ProviderAuthPresence(
                 present=False,
                 failure_kind="missing_auth",
-                message=(
-                    "provider auth field 'google.access_token' must be provided "
-                    "for google oauth auth"
-                ),
+                message=("provider auth field 'google.access_token' must be provided for google oauth auth"),
             )
         if provider_name == "copilot":
             config = providers.copilot
@@ -112,9 +107,7 @@ class RuntimeProviderAuthInspector:
             return ProviderAuthPresence(
                 present=False,
                 failure_kind="missing_auth",
-                message=(
-                    "provider auth field 'copilot.token' must be provided for copilot oauth auth"
-                ),
+                message=("provider auth field 'copilot.token' must be provided for copilot oauth auth"),
             )
         return None
 
@@ -241,19 +234,11 @@ class RuntimeProviderValidationProjector:
             configured=True,
             ok=ok,
             status=status,
-            message=(
-                "Remote provider validation succeeded."
-                if ok
-                else "Provider credentials are configured; remote validation is unavailable."
-            ),
+            message=("Remote provider validation succeeded." if ok else "Provider credentials are configured; remote validation is unavailable."),
             source=models.source,
             last_error=models.last_error,
             discovery_mode=models.discovery_mode,
-            guidance=(
-                "Provider model discovery succeeded."
-                if ok
-                else "Credentials are present, but remote validation could not confirm readiness."
-            ),
+            guidance=("Provider model discovery succeeded." if ok else "Credentials are present, but remote validation could not confirm readiness."),
         )
 
 

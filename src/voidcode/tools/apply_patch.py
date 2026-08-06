@@ -67,11 +67,7 @@ def _strip_heredoc(input_text: str) -> str:
 def _looks_like_marker_patch(patch_text: str) -> bool:
     lines = _strip_heredoc(patch_text.strip()).split("\n")
     envelope_lines = [line.strip() for line in lines if line.strip()]
-    return (
-        len(envelope_lines) >= 2
-        and envelope_lines[0] == "*** Begin Patch"
-        and envelope_lines[-1] == "*** End Patch"
-    )
+    return len(envelope_lines) >= 2 and envelope_lines[0] == "*** Begin Patch" and envelope_lines[-1] == "*** End Patch"
 
 
 def _parse_marker_header(lines: list[str], index: int) -> tuple[str, str, str | None, int] | None:
@@ -106,9 +102,7 @@ def _parse_marker_add_content(lines: list[str], index: int) -> tuple[str, int]:
     return "\n".join(content_lines), current
 
 
-def _parse_marker_update_chunks(
-    lines: list[str], index: int
-) -> tuple[tuple[_MarkerChunk, ...], int]:
+def _parse_marker_update_chunks(lines: list[str], index: int) -> tuple[tuple[_MarkerChunk, ...], int]:
     chunks: list[_MarkerChunk] = []
     current = index
     while current < len(lines) and not lines[current].startswith("***"):
@@ -121,11 +115,7 @@ def _parse_marker_update_chunks(
         old_lines: list[str] = []
         new_lines: list[str] = []
         is_end_of_file = False
-        while (
-            current < len(lines)
-            and not lines[current].startswith("@@")
-            and not lines[current].startswith("***")
-        ):
+        while current < len(lines) and not lines[current].startswith("@@") and not lines[current].startswith("***"):
             change_line = lines[current]
             if change_line == "*** End of File":
                 is_end_of_file = True
@@ -160,10 +150,7 @@ def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
     )
     if begin_index == -1 or end_index == -1 or begin_index >= end_index:
         raise ValueError("Invalid patch format: missing Begin/End markers")
-    if (
-        lines[begin_index].strip() != "*** Begin Patch"
-        or lines[end_index].strip() != "*** End Patch"
-    ):
+    if lines[begin_index].strip() != "*** Begin Patch" or lines[end_index].strip() != "*** End Patch":
         raise ValueError("Invalid patch format: missing Begin/End markers")
 
     hunks: list[_MarkerHunk] = []
@@ -175,10 +162,7 @@ def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
             continue
         header = _parse_marker_header(lines, current)
         if header is None:
-            raise ValueError(
-                "malformed patch: expected a file operation "
-                f"(*** Add File / *** Update File / *** Delete File), got: {current_line}"
-            )
+            raise ValueError(f"malformed patch: expected a file operation (*** Add File / *** Update File / *** Delete File), got: {current_line}")
 
         action, path, move_path, next_index = header
         if action == "add":
@@ -189,9 +173,7 @@ def _parse_marker_patch(patch_text: str) -> tuple[_MarkerHunk, ...]:
             current = next_index
         else:
             chunks, current = _parse_marker_update_chunks(lines, next_index)
-            hunks.append(
-                _MarkerHunk(action="update", path=path, move_path=move_path, chunks=chunks)
-            )
+            hunks.append(_MarkerHunk(action="update", path=path, move_path=move_path, chunks=chunks))
 
     if not hunks:
         raise ValueError("patch rejected: empty patch")
@@ -225,16 +207,10 @@ def _seek_sequence(
     def search_with(compare: Callable[[str, str], bool]) -> int:
         if eof:
             from_end = len(lines) - len(pattern)
-            if from_end >= start_index and all(
-                compare(lines[from_end + offset], expected)
-                for offset, expected in enumerate(pattern)
-            ):
+            if from_end >= start_index and all(compare(lines[from_end + offset], expected) for offset, expected in enumerate(pattern)):
                 return from_end
         for line_index in range(start_index, len(lines) - len(pattern) + 1):
-            if all(
-                compare(lines[line_index + offset], expected)
-                for offset, expected in enumerate(pattern)
-            ):
+            if all(compare(lines[line_index + offset], expected) for offset, expected in enumerate(pattern)):
                 return line_index
         return -1
 
@@ -307,9 +283,7 @@ def _derive_marker_update_content_from_text(
                 message="\n".join(lines),
                 error_kind="tool_input_mismatch",
                 reason="expected_lines_not_found",
-                retry_guidance=(
-                    "Re-read the target file and rebuild this patch hunk from current content."
-                ),
+                retry_guidance=("Re-read the target file and rebuild this patch hunk from current content."),
                 details={
                     "path": str(file_path),
                     "expected_preview": expected[:500],
@@ -345,9 +319,7 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
                 raise ValueError(f"Add File destination already exists: {hunk.path}")
             planned_add_paths.add(hunk.path)
             staged_contents[hunk.path] = hunk.contents or ""
-            prepared.append(
-                _PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents or "")
-            )
+            prepared.append(_PreparedMarkerChange(status="A", path=hunk.path, content=hunk.contents or ""))
         elif hunk.action == "delete":
             target = workspace / hunk.path
             if not target.exists():
@@ -484,9 +456,7 @@ def _normalize_diff_block(header: str, block_lines: list[str]) -> str:
         old_path, new_path = diff_paths
         header_line = _format_diff_git_line(old_path, new_path)
 
-    has_mode = any(line.startswith("old mode ") for line in block_lines) and any(
-        line.startswith("new mode ") for line in block_lines
-    )
+    has_mode = any(line.startswith("old mode ") for line in block_lines) and any(line.startswith("new mode ") for line in block_lines)
     has_markers = any(line.startswith("--- ") or line.startswith("+++ ") for line in block_lines)
     has_hunks = any(line.startswith("@@ ") for line in block_lines)
 
@@ -655,9 +625,7 @@ def _with_formatter_feedback(
         data["formatters"] = formatter_results
     if diagnostics:
         data["diagnostics"] = diagnostics
-    changed_paths = [
-        cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)
-    ]
+    changed_paths = [cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)]
     lsp_diagnostics = post_edit_lsp_diagnostics(
         workspace=workspace,
         paths=changed_paths,
@@ -757,16 +725,8 @@ def _changes_from_unified_diff(patch_text: str) -> list[dict[str, object]]:
 
     changes: list[dict[str, object]] = []
     for patched_file in patch_set:
-        old_path = (
-            None
-            if patched_file.source_file == "/dev/null"
-            else _strip_diff_prefix(patched_file.source_file)
-        )
-        new_path = (
-            None
-            if patched_file.target_file == "/dev/null"
-            else _strip_diff_prefix(patched_file.target_file)
-        )
+        old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)
+        new_path = None if patched_file.target_file == "/dev/null" else _strip_diff_prefix(patched_file.target_file)
 
         if old_path is not None and '"' in old_path:
             old_path = None
@@ -848,9 +808,7 @@ def _changes_from_patch(patch_text: str) -> list[dict[str, object]]:
     return _dedupe_changes(changes)
 
 
-_APPLY_PATCH_DESCRIPTION = (
-    "Apply structured file patches or unified diff patches inside the current workspace."
-)
+_APPLY_PATCH_DESCRIPTION = "Apply structured file patches or unified diff patches inside the current workspace."
 
 
 class ApplyPatchTool:
@@ -897,12 +855,7 @@ class ApplyPatchTool:
             if check.returncode != 0:
                 error = check.stdout or "Patch check failed"
                 if _looks_like_mode_only_patch(patch_text):
-                    content = "\n".join(
-                        f"M {c['path']}"
-                        if c.get("status") != "R"
-                        else f"M {c['old_path']} -> {c['path']}"
-                        for c in changes
-                    )
+                    content = "\n".join(f"M {c['path']}" if c.get("status") != "R" else f"M {c['old_path']} -> {c['path']}" for c in changes)
                     return ToolResult(
                         tool_name=self.definition.name,
                         status="ok",
@@ -916,12 +869,7 @@ class ApplyPatchTool:
             if apply.returncode != 0:
                 error = apply.stdout or "Patch apply failed"
                 if _looks_like_mode_only_patch(patch_text):
-                    content = "\n".join(
-                        f"M {c['path']}"
-                        if c.get("status") != "R"
-                        else f"M {c['old_path']} -> {c['path']}"
-                        for c in changes
-                    )
+                    content = "\n".join(f"M {c['path']}" if c.get("status") != "R" else f"M {c['old_path']} -> {c['path']}" for c in changes)
                     return ToolResult(
                         tool_name=self.definition.name,
                         status="ok",

@@ -88,9 +88,7 @@ def test_websearch_tool_reports_missing_query_and_invalid_num_results() -> None:
 def test_websearch_tool_respects_num_results_limit() -> None:
     tool = WebSearchTool()
 
-    fake_response = {
-        "results": [{"title": "Example", "url": "https://example.com", "snippet": "snippet"}]
-    }
+    fake_response = {"results": [{"title": "Example", "url": "https://example.com", "snippet": "snippet"}]}
 
     with (
         patch.dict("os.environ", {"EXA_API_KEY": "test-key"}, clear=False),
@@ -111,9 +109,7 @@ def test_websearch_tool_respects_num_results_limit() -> None:
 def test_websearch_tool_defaults_to_8_results() -> None:
     tool = WebSearchTool()
 
-    fake_response = {
-        "results": [{"title": "Example", "url": "https://example.com", "snippet": "snippet"}]
-    }
+    fake_response = {"results": [{"title": "Example", "url": "https://example.com", "snippet": "snippet"}]}
 
     with (
         patch.dict("os.environ", {"EXA_API_KEY": "test-key"}, clear=False),

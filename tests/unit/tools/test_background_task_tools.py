@@ -20,7 +20,6 @@ from voidcode.runtime.task import (
 from voidcode.tools import (
     BackgroundCancelTool,
     BackgroundOutputTool,
-    BackgroundRetryTool,
     ToolCall,
 )
 
@@ -72,20 +71,8 @@ class _StubBackgroundRuntime:
         return BackgroundTaskState(
             task=BackgroundTaskRef(id="task-1"),
             status="cancelled",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="delegated", parent_session_id="leader-session"
-            ),
+            request=BackgroundTaskRequestSnapshot(prompt="delegated", parent_session_id="leader-session"),
             error="cancelled before start",
-        )
-
-    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
-        assert task_id == "task-1"
-        return BackgroundTaskState(
-            task=BackgroundTaskRef(id="task-2"),
-            status="queued",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="delegated", parent_session_id="leader-session"
-            ),
         )
 
 
@@ -191,10 +178,7 @@ class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
                     event_type="runtime.failed",
                     source="runtime",
                     payload={
-                        "error": (
-                            "provider fallback exhausted after deepseek/"
-                            "deepseek-v4-pro failed at attempt 1"
-                        ),
+                        "error": ("provider fallback exhausted after deepseek/deepseek-v4-pro failed at attempt 1"),
                         "provider_error_kind": "transient_failure",
                         "provider": "deepseek",
                         "model": "deepseek-v4-pro",
@@ -378,10 +362,7 @@ class _SummaryPresentEmptyOutputBackgroundRuntime(_EmptyOutputBackgroundRuntime)
             parent_session_id="leader-session",
             child_session_id="child-session",
             status="completed",
-            summary_output=(
-                "Completed child session child-session; full output is preserved outside "
-                "active context."
-            ),
+            summary_output=("Completed child session child-session; full output is preserved outside active context."),
             result_available=True,
         )
 
@@ -400,17 +381,12 @@ class _SummaryPresentEmptyOutputNoSessionReadRuntime(_StubBackgroundRuntime):
             parent_session_id="leader-session",
             child_session_id="child-session",
             status="completed",
-            summary_output=(
-                "Completed child session child-session; full output is preserved outside "
-                "active context."
-            ),
+            summary_output=("Completed child session child-session; full output is preserved outside active context."),
             result_available=True,
         )
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
-        raise AssertionError(
-            f"session_result should not be called for default background_output: {session_id}"
-        )
+        raise AssertionError(f"session_result should not be called for default background_output: {session_id}")
 
 
 class _MissingChildSessionBackgroundRuntime(_StubBackgroundRuntime):
@@ -425,9 +401,7 @@ class _CompletedCancelRuntime(_StubBackgroundRuntime):
         return BackgroundTaskState(
             task=BackgroundTaskRef(id="task-1"),
             status="completed",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="delegated", parent_session_id="leader-session"
-            ),
+            request=BackgroundTaskRequestSnapshot(prompt="delegated", parent_session_id="leader-session"),
             session_id="child-session",
             result_available=True,
         )
@@ -439,9 +413,7 @@ class _RunningCancelRuntime(_StubBackgroundRuntime):
         return BackgroundTaskState(
             task=BackgroundTaskRef(id="task-1"),
             status="running",
-            request=BackgroundTaskRequestSnapshot(
-                prompt="delegated", parent_session_id="leader-session"
-            ),
+            request=BackgroundTaskRequestSnapshot(prompt="delegated", parent_session_id="leader-session"),
             session_id="child-session",
             cancel_requested_at=3,
         )
@@ -453,28 +425,11 @@ class _UnknownCancelRuntime(_StubBackgroundRuntime):
         raise ValueError("unknown background task: missing-task")
 
 
-class _UnknownRetryRuntime(_StubBackgroundRuntime):
-    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
-        assert task_id == "missing-task"
-        raise ValueError("unknown background task: missing-task")
-
-
-class _NonTerminalRetryRuntime(_StubBackgroundRuntime):
-    def retry_background_task(self, task_id: str) -> BackgroundTaskState:
-        assert task_id == "task-1"
-        raise ValueError(
-            "background task retry requires a failed, cancelled, or interrupted task; "
-            "task task-1 is running"
-        )
-
-
 def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
     tool = BackgroundOutputTool(runtime=_StubBackgroundRuntime())
 
     result = tool.invoke(
-        ToolCall(
-            tool_name="background_output", arguments={"task_id": "task-1", "full_session": True}
-        ),
+        ToolCall(tool_name="background_output", arguments={"task_id": "task-1", "full_session": True}),
         workspace=tmp_path,
     )
 
@@ -578,9 +533,7 @@ def test_background_output_default_returns_safe_summary_reference(tmp_path: Path
     assert result.content is not None
     assert "Completed child session child-session" in result.content
     assert "raw child secret sentinel" not in result.content
-    assert result.data["summary_output"] == (
-        "Completed child session child-session; full output is preserved outside active context."
-    )
+    assert result.data["summary_output"] == ("Completed child session child-session; full output is preserved outside active context.")
     assert "raw child secret sentinel" not in str(result.data["message"])
     assert result.reference == "session:child-session"
 
@@ -602,9 +555,7 @@ def test_background_output_full_session_preserves_approval_summary(tmp_path: Pat
     assert "Running child session" not in result.content
     assert result.data["summary_output"] == ("Approval blocked on write_file: write_file alpha.txt")
     message_payload = cast(dict[str, object], result.data["message"])
-    assert message_payload["summary_output"] == (
-        "Approval blocked on write_file: write_file alpha.txt"
-    )
+    assert message_payload["summary_output"] == ("Approval blocked on write_file: write_file alpha.txt")
 
 
 def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -> None:
@@ -679,7 +630,6 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
     assert result.status == "ok"
     assert result.content is not None
     assert "do not retry automatically" in result.content
-    assert "background_retry(task_id='task-1')" in result.content
     assert "After repeated failures" in result.content
     assert "do not retry automatically" in str(result.data["guidance"])
     assert result.data["guidance"] == result.retry_guidance
@@ -700,7 +650,6 @@ def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Pat
     handoff = cast(dict[str, object], result.data["handoff_summary"])
     assert handoff["blocked_reason"] == "background task interrupted before completion"
     assert "interrupted before completion" in str(result.data["guidance"])
-    assert "background_retry" in str(result.data["guidance"])
 
 
 def test_background_output_full_session_surfaces_provider_failure_details_for_interrupted_child(
@@ -721,10 +670,7 @@ def test_background_output_full_session_surfaces_provider_failure_details_for_in
     assert provider_failure["provider_error_kind"] == "transient_failure"
     assert provider_failure["provider"] == "deepseek"
     assert provider_failure["model"] == "deepseek-v4-pro"
-    assert (
-        cast(dict[str, object], provider_failure["provider_error_details"])["exception_type"]
-        == "APIConnectionError"
-    )
+    assert cast(dict[str, object], provider_failure["provider_error_details"])["exception_type"] == "APIConnectionError"
 
 
 def test_background_output_full_session_scans_older_failed_events_for_provider_details(
@@ -757,10 +703,7 @@ def test_background_output_tool_guides_unavailable_result_without_looping(tmp_pa
 
     assert result.status == "ok"
     assert result.content is not None
-    assert (
-        "background_output again later with block=true only when you intentionally "
-        "want to wait in this turn" in result.content
-    )
+    assert "background_output again later with block=true only when you intentionally want to wait in this turn" in result.content
     assert "do not loop indefinitely" in result.content
     assert result.data["result_available"] is False
     assert result.retry_guidance is not None
@@ -815,14 +758,10 @@ def test_background_output_full_session_falls_back_when_child_session_unavailabl
     )
 
     assert result.status == "ok"
-    assert result.content == (
-        "Completed child session child-session; full output is preserved outside active context."
-    )
+    assert result.content == ("Completed child session child-session; full output is preserved outside active context.")
     assert result.reference == "session:child-session"
     assert result.data["child_session_id"] == "child-session"
-    assert result.data["summary_output"] == (
-        "Completed child session child-session; full output is preserved outside active context."
-    )
+    assert result.data["summary_output"] == ("Completed child session child-session; full output is preserved outside active context.")
     assert "session" not in result.data
 
 
@@ -940,84 +879,6 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
     with pytest.raises(ValueError, match=missing_task_id_error):
         tool.invoke(
             ToolCall(tool_name="background_cancel", arguments={}),
-            workspace=tmp_path,
-        )
-
-
-def test_background_retry_tool_starts_fresh_task(tmp_path: Path) -> None:
-    tool = BackgroundRetryTool(runtime=_StubBackgroundRuntime())
-
-    result = tool.invoke(
-        ToolCall(tool_name="background_retry", arguments={"task_id": "task-1"}),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert result.data["task_id"] == "task-1"
-    assert result.data["retry_task_id"] == "task-2"
-    assert result.data["status"] == "queued"
-    assert result.data["retry_started"] is True
-    assert result.data["terminal"] is False
-    assert result.data["retrieval_instruction"] == 'background_output(task_id="task-2")'
-    assert result.content is not None
-    assert "Retried background task task-1 as task-2" in result.content
-
-
-def test_background_retry_tool_reports_unknown_task_deterministically(
-    tmp_path: Path,
-) -> None:
-    tool = BackgroundRetryTool(runtime=_UnknownRetryRuntime())
-
-    result = tool.invoke(
-        ToolCall(tool_name="background_retry", arguments={"task_id": "missing-task"}),
-        workspace=tmp_path,
-    )
-
-    assert result.status == "ok"
-    assert result.data == {
-        "task_id": "missing-task",
-        "retry_task_id": None,
-        "status": "unknown",
-        "session_id": None,
-        "parent_session_id": None,
-        "error": "unknown background task: missing-task",
-        "terminal": True,
-        "retry_started": False,
-    }
-
-
-def test_background_retry_tool_rejects_non_terminal_retry(tmp_path: Path) -> None:
-    tool = BackgroundRetryTool(runtime=_NonTerminalRetryRuntime())
-
-    with pytest.raises(ValueError, match="task task-1 is running"):
-        tool.invoke(
-            ToolCall(tool_name="background_retry", arguments={"task_id": "task-1"}),
-            workspace=tmp_path,
-        )
-
-
-def test_background_retry_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
-    tool = BackgroundRetryTool(runtime=_StubBackgroundRuntime())
-    task_id_type_error = (
-        r"background_retry Validation error: task_id: "
-        r"Input should be a valid string \(received int\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-
-    with pytest.raises(ValueError, match=task_id_type_error):
-        tool.invoke(
-            ToolCall(tool_name="background_retry", arguments={"task_id": 123}),
-            workspace=tmp_path,
-        )
-
-    task_id_empty_error = (
-        r"background_retry Validation error: task_id: Value error, "
-        r"task_id must be a non-empty string \(received str\)"
-        r"\. Please retry with corrected arguments that satisfy the tool schema\."
-    )
-    with pytest.raises(ValueError, match=task_id_empty_error):
-        tool.invoke(
-            ToolCall(tool_name="background_retry", arguments={"task_id": "   "}),
             workspace=tmp_path,
         )
 

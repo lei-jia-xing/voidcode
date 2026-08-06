@@ -24,9 +24,7 @@ class RuntimeProviderCatalogQuery:
         return {
             "provider": catalog.provider,
             "models": list(catalog.models),
-            "model_metadata": {
-                model: metadata.payload() for model, metadata in catalog.model_metadata.items()
-            },
+            "model_metadata": {model: metadata.payload() for model, metadata in catalog.model_metadata.items()},
             "refreshed": catalog.refreshed,
             "source": catalog.source,
             "last_refresh_status": catalog.last_refresh_status,

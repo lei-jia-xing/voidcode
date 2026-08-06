@@ -52,9 +52,7 @@ class WriteFileTool:
         )
         workspace_root = resolution.workspace_root
         candidate = resolution.candidate
-        display_path = (
-            str(candidate.resolve()) if resolution.is_external else resolution.relative_path
-        )
+        display_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
 
         enforce_read_before_write(
             tool_name=self.definition.name,
@@ -79,11 +77,7 @@ class WriteFileTool:
             content += f" Formatter warning: {diagnostics[0]['message']}"
 
         new_content = candidate.read_text(encoding="utf-8")
-        relative_output_path = (
-            candidate.relative_to(workspace_root).as_posix()
-            if not resolution.is_external
-            else candidate.as_posix()
-        )
+        relative_output_path = candidate.relative_to(workspace_root).as_posix() if not resolution.is_external else candidate.as_posix()
         diff = "".join(
             difflib.unified_diff(
                 old_content.splitlines(keepends=True),

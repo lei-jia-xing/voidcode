@@ -36,9 +36,7 @@ _text_chars = st.characters(
     blacklist_categories=["Cs"],
     blacklist_characters=["\x00", "\n", "\r"],
 )
-_non_blank_text = st.text(alphabet=_text_chars, min_size=1, max_size=20).filter(
-    lambda text: text.strip() != "" and text == text.strip()
-)
+_non_blank_text = st.text(alphabet=_text_chars, min_size=1, max_size=20).filter(lambda text: text.strip() != "" and text == text.strip())
 _blank_text = st.sampled_from(("", " ", "  ", "\t", " \t "))
 _json_scalar = st.one_of(
     st.none(),
@@ -48,9 +46,7 @@ _json_scalar = st.one_of(
 )
 _json_like = st.recursive(
     _json_scalar | _non_blank_text,
-    lambda children: (
-        st.lists(children, max_size=3) | st.dictionaries(_non_blank_text, children, max_size=3)
-    ),
+    lambda children: st.lists(children, max_size=3) | st.dictionaries(_non_blank_text, children, max_size=3),
     max_leaves=6,
 )
 _invalid_text_value = st.one_of(_blank_text, _json_scalar, st.lists(_json_like, max_size=3))

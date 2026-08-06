@@ -170,9 +170,7 @@ def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
 
 
 def test_builtin_top_level_selectability_matches_runtime_executable_presets() -> None:
-    top_level_manifest_ids = {
-        manifest.id for manifest in list_builtin_agent_manifests() if manifest.top_level_selectable
-    }
+    top_level_manifest_ids = {manifest.id for manifest in list_builtin_agent_manifests() if manifest.top_level_selectable}
     executable_agent_presets = cast(
         frozenset[str],
         vars(runtime_service_module)["_EXECUTABLE_AGENT_PRESETS"],
@@ -210,13 +208,13 @@ def test_builtin_callable_child_presets_align_with_runtime_delegation_routes() -
         _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="product"))
 
 
-def test_builtin_leader_manifest_allows_memory_tools_for_memory_command() -> None:
+def test_builtin_manifests_omit_removed_memory_tools() -> None:
     leader = get_builtin_agent_manifest("leader")
     product = get_builtin_agent_manifest("product")
     memory_tools = {"memory_add", "memory_delete", "memory_list", "memory_search"}
 
     assert leader is not None
-    assert memory_tools.issubset(leader.tool_allowlist)
+    assert memory_tools.isdisjoint(leader.tool_allowlist)
     assert product is not None
     assert memory_tools.isdisjoint(product.tool_allowlist)
 
@@ -264,10 +262,10 @@ def test_builtin_delegated_executor_roles_do_not_receive_recursive_task_tool() -
         assert "task" not in manifest.tool_allowlist
 
 
-def test_builtin_retry_tool_is_leader_only_runtime_recovery_surface() -> None:
+def test_builtin_leader_recovery_surface_omits_removed_retry_tool() -> None:
     leader = get_builtin_agent_manifest("leader")
     assert leader is not None
-    assert "background_retry" in leader.tool_allowlist
+    assert "background_retry" not in leader.tool_allowlist
     assert "todo_write" in leader.tool_allowlist
     assert "background_output" in leader.tool_allowlist
     assert "question" in leader.tool_allowlist
@@ -418,9 +416,7 @@ def test_render_agent_prompt_uses_model_family_materialization_override() -> Non
         ("product", "VoidCode's product agent"),
     ],
 )
-def test_render_agent_prompt_materializes_builtin_profiles(
-    preset: str, expected_fragment: str
-) -> None:
+def test_render_agent_prompt_materializes_builtin_profiles(preset: str, expected_fragment: str) -> None:
     prompt = render_agent_prompt({"preset": preset, "prompt_profile": preset})
 
     assert prompt is not None
@@ -658,8 +654,6 @@ def test_product_manifest_excludes_all_delegation_helpers() -> None:
 
 def test_product_delegation_denial_exposes_stable_policy_reason() -> None:
     with pytest.raises(ValueError) as exc_info:
-        _ = resolve_subagent_route(
-            SubagentRoutingIdentity(mode="background", subagent_type="product")
-        )
+        _ = resolve_subagent_route(SubagentRoutingIdentity(mode="background", subagent_type="product"))
 
     assert "delegation_denied_product_top_level_only" in str(exc_info.value)

@@ -20,8 +20,7 @@ def validate_agent_capability_snapshot(
     version = snapshot.get("snapshot_version")
     if version != AGENT_CAPABILITY_SNAPSHOT_VERSION:
         raise AgentCapabilitySnapshotVersionError(
-            "unsupported agent_capability_snapshot snapshot_version: "
-            f"{version!r}; expected {AGENT_CAPABILITY_SNAPSHOT_VERSION!r}"
+            f"unsupported agent_capability_snapshot snapshot_version: {version!r}; expected {AGENT_CAPABILITY_SNAPSHOT_VERSION!r}"
         )
     object_fields = (
         "precedence",
@@ -38,9 +37,7 @@ def validate_agent_capability_snapshot(
     )
     for field in object_fields:
         if not isinstance(snapshot.get(field), dict):
-            raise AgentCapabilitySnapshotVersionError(
-                f"agent_capability_snapshot v2 requires a {field} object"
-            )
+            raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v2 requires a {field} object")
     tools = cast(dict[str, object], snapshot["tools"])
     required_tool_fields = {
         "manifest_allowlist",
@@ -53,15 +50,10 @@ def validate_agent_capability_snapshot(
     }
     missing_tool_fields = sorted(required_tool_fields - tools.keys())
     if missing_tool_fields:
-        raise AgentCapabilitySnapshotVersionError(
-            "agent_capability_snapshot v2 tools is missing required fields: "
-            f"{missing_tool_fields!r}"
-        )
+        raise AgentCapabilitySnapshotVersionError(f"agent_capability_snapshot v2 tools is missing required fields: {missing_tool_fields!r}")
     generation = tools["generation"]
     if not isinstance(generation, str) or not generation:
-        raise AgentCapabilitySnapshotVersionError(
-            "agent_capability_snapshot v2 requires tools.generation"
-        )
+        raise AgentCapabilitySnapshotVersionError("agent_capability_snapshot v2 requires tools.generation")
     return snapshot
 
 
@@ -100,14 +92,8 @@ def agent_capability_prompt_snapshot(
     if "materialization" not in prompt and manifest is not None:
         materialization = getattr(manifest, "prompt_materialization", None)
         if materialization is not None:
-            prompt["materialization"] = materialization.to_payload(
-                profile=agent.prompt_profile if agent is not None else None
-            )
-    if (
-        "materialization" not in prompt
-        and agent is not None
-        and agent.prompt_materialization is not None
-    ):
+            prompt["materialization"] = materialization.to_payload(profile=agent.prompt_profile if agent is not None else None)
+    if "materialization" not in prompt and agent is not None and agent.prompt_materialization is not None:
         prompt["materialization"] = dict(agent.prompt_materialization)
     return {key: value for key, value in prompt.items() if value is not None}
 
@@ -123,14 +109,9 @@ def agent_capability_tool_snapshot(
         "request_allowlist": list(agent.tools.allowlist)
         if agent is not None and agent.tools is not None and agent.tools.allowlist is not None
         else None,
-        "request_default": list(agent.tools.default)
-        if agent is not None and agent.tools is not None and agent.tools.default is not None
-        else None,
+        "request_default": list(agent.tools.default) if agent is not None and agent.tools is not None and agent.tools.default is not None else None,
         "builtin_tools_enabled": not (
-            agent is not None
-            and agent.tools is not None
-            and agent.tools.builtin is not None
-            and agent.tools.builtin.enabled is False
+            agent is not None and agent.tools is not None and agent.tools.builtin is not None and agent.tools.builtin.enabled is False
         ),
         "builtin_tool_names": sorted(BUILTIN_TOOL_NAMES),
         "effective_names": sorted(registry.tools),
@@ -148,8 +129,7 @@ def agent_capability_delegation_snapshot(
     selected_preset = delegation.get("selected_preset")
     parent_delegation = (
         cast(dict[str, object], parent_capability_snapshot.get("delegation"))
-        if parent_capability_snapshot is not None
-        and isinstance(parent_capability_snapshot.get("delegation"), dict)
+        if parent_capability_snapshot is not None and isinstance(parent_capability_snapshot.get("delegation"), dict)
         else {}
     )
     parent_allowed = parent_delegation.get("allowed_child_presets")
@@ -158,11 +138,7 @@ def agent_capability_delegation_snapshot(
         if isinstance(parent_allowed, list)
         else ("advisor", "explore", "researcher", "worker")
     )
-    allowed_child_presets = [
-        preset
-        for preset in ("advisor", "explore", "researcher", "worker")
-        if preset in allowed_parent_presets
-    ]
+    allowed_child_presets = [preset for preset in ("advisor", "explore", "researcher", "worker") if preset in allowed_parent_presets]
     return {
         "selected_preset": selected_preset if isinstance(selected_preset, str) else None,
         "allowed_child_presets": allowed_child_presets,

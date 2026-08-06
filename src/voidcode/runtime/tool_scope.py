@@ -5,7 +5,7 @@ from typing import cast
 
 from .config import RuntimeAgentConfig
 from .contracts import RuntimeRequestError
-from .tool_provider import MEMORY_TOOL_NAMES, scoped_tool_registry_for_agent
+from .tool_provider import scoped_tool_registry_for_agent
 from .tool_registry import ToolPolicyDecision, ToolRegistry
 
 
@@ -39,10 +39,7 @@ class RuntimeToolScopeResolver:
         *,
         metadata: dict[str, object] | None,
     ) -> tuple[ToolPolicyDecision, ...]:
-        return tuple(
-            self.decision(tool_name=name, registry=registry, metadata=metadata)
-            for name in registry.tools
-        )
+        return tuple(self.decision(tool_name=name, registry=registry, metadata=metadata) for name in registry.tools)
 
     def decision(
         self,
@@ -53,16 +50,6 @@ class RuntimeToolScopeResolver:
     ) -> ToolPolicyDecision:
         mode = self.runtime_mode(metadata)
         read_only = self.effective_read_only(metadata)
-
-        if tool_name in MEMORY_TOOL_NAMES and not self.memory_tools_allowed(metadata):
-            return ToolPolicyDecision(
-                tool_name=tool_name,
-                allowed=False,
-                mode=mode,
-                read_only=read_only,
-                decision="deny",
-                reason="memory tools require explicit runtime memory policy allowance",
-            )
 
         tool = registry.tools.get(tool_name)
         if read_only and tool_name == "shell_exec":
@@ -118,9 +105,7 @@ class RuntimeToolScopeResolver:
     ) -> str | None:
         if not delegated_child or agent is None or not agent.manifest_tool_allowlist:
             return None
-        if any(
-            fnmatchcase(tool_name, pattern) for pattern in agent.manifest_tool_allowlist if pattern
-        ):
+        if any(fnmatchcase(tool_name, pattern) for pattern in agent.manifest_tool_allowlist if pattern):
             return None
         if tool_name not in base_registry.tools:
             return None
@@ -153,14 +138,6 @@ class RuntimeToolScopeResolver:
 
     def effective_read_only(self, metadata: dict[str, object] | None) -> bool:
         return self.runtime_read_only(metadata)
-
-    def memory_tools_allowed(self, metadata: dict[str, object] | None) -> bool:
-        if not self._memory_enabled or metadata is None:
-            return False
-        command = metadata.get("command")
-        if isinstance(command, dict) and cast(dict[str, object], command).get("name") == "memory":
-            return True
-        return metadata.get("memory_tools_allowed") is True
 
 
 __all__ = ["RuntimeToolScopeResolver"]

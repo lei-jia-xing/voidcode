@@ -1020,9 +1020,7 @@ for raw_line in sys.stdin:
 
         assert retry.content == [{"type": "text", "text": f"echo:{mode}"}]
         failure_events = manager.drain_events()
-        failed_event = next(
-            event for event in failure_events if event.event_type == "runtime.mcp_server_failed"
-        )
+        failed_event = next(event for event in failure_events if event.event_type == "runtime.mcp_server_failed")
         assert failed_event.payload["stage"] == "call"
         assert failed_event.payload["method"] == "tools/call"
 
@@ -1156,9 +1154,7 @@ for raw_line in sys.stdin:
     assert all(not thread.is_alive() for thread in threads)
     assert not drainer.is_alive()
 
-    failure_events = [
-        event for event in drained_events if event.event_type == "runtime.mcp_server_failed"
-    ]
+    failure_events = [event for event in drained_events if event.event_type == "runtime.mcp_server_failed"]
     assert len(failure_events) == worker_count
     assert {event.payload["stage"] for event in failure_events} == {"call"}
     assert {event.payload["method"] for event in failure_events} == {"tools/call"}
@@ -1462,9 +1458,7 @@ stops.write_text(
     ]
     assert manager.current_state().servers["session"].status == "running"
     assert stops_path.read_text(encoding="utf-8").splitlines() == ["stop"]
-    assert [
-        tool.tool_name for tool in manager.list_tools(workspace=tmp_path, owner_session_id="b")
-    ] == ["echo"]
+    assert [tool.tool_name for tool in manager.list_tools(workspace=tmp_path, owner_session_id="b")] == ["echo"]
 
     released_b_events: tuple[McpRuntimeEvent, ...] = release_session(session_id="b")
 

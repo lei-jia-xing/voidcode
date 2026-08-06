@@ -23,9 +23,7 @@ def test_grep_tool_searches_utf8_file_inside_workspace(tmp_path: Path) -> None:
 
     assert result.tool_name == "grep"
     assert result.status == "ok"
-    assert result.content == (
-        "Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha beta\nsample.txt:3: alpha"
-    )
+    assert result.content == ("Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha beta\nsample.txt:3: alpha")
     assert result.data == {
         "path": "sample.txt",
         "pattern": "alpha",
@@ -150,12 +148,7 @@ def test_grep_tool_sorts_directory_targets_deterministically(tmp_path: Path) -> 
         "src/nested/beta.py",
         "src/nested/zeta.py",
     ]
-    assert result.content == (
-        "Found 3 match(es) for 'alpha' in src\n"
-        "src/alpha.py:1: alpha\n"
-        "src/nested/beta.py:1: alpha\n"
-        "src/nested/zeta.py:1: alpha"
-    )
+    assert result.content == ("Found 3 match(es) for 'alpha' in src\nsrc/alpha.py:1: alpha\nsrc/nested/beta.py:1: alpha\nsrc/nested/zeta.py:1: alpha")
 
 
 def test_grep_tool_ignores_common_directories_by_default(tmp_path: Path) -> None:
@@ -337,7 +330,3 @@ def test_tools_package_and_default_registry_export_grep_tool() -> None:
     assert "GrepTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("grep").definition.name == "grep"
     assert registry.resolve("grep").definition.read_only is True
-
-
-def test_tools_package_exports_background_retry_tool() -> None:
-    assert "BackgroundRetryTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__

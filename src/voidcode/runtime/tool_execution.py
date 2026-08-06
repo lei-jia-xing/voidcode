@@ -63,9 +63,7 @@ class RuntimeToolExecutor:
         remaining_spawn_budget: int | None,
         abort_signal: ProviderAbortSignal | None,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:
-        if tool_call.tool_name == "shell_exec" or (
-            tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
-        ):
+        if tool_call.tool_name == "shell_exec" or (tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)):
             return (
                 yield from self._invoke_with_progress(
                     tool=tool,
@@ -181,11 +179,7 @@ class RuntimeToolExecutor:
         worker.start()
 
         terminal_item: _ToolResultItem | _ToolExceptionItem | None = None
-        deadline = (
-            time.monotonic() + tool_timeout
-            if tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)
-            else None
-        )
+        deadline = time.monotonic() + tool_timeout if tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool) else None
         while terminal_item is None:
             try:
                 poll_timeout = _PROGRESS_POLL_SECONDS
@@ -193,10 +187,7 @@ class RuntimeToolExecutor:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         terminal_item = _ToolExceptionItem(
-                            RuntimeToolTimeoutError(
-                                f"tool '{tool_call.tool_name}' exceeded runtime timeout of "
-                                f"{tool_timeout}s"
-                            )
+                            RuntimeToolTimeoutError(f"tool '{tool_call.tool_name}' exceeded runtime timeout of {tool_timeout}s")
                         )
                         break
                     poll_timeout = min(poll_timeout, remaining)
@@ -204,16 +195,11 @@ class RuntimeToolExecutor:
             except queue.Empty:
                 if abort_signal is not None and abort_signal.cancelled:
                     reason = getattr(abort_signal, "reason", None)
-                    terminal_item = _ToolExceptionItem(
-                        RuntimeError(reason if isinstance(reason, str) else "run interrupted")
-                    )
+                    terminal_item = _ToolExceptionItem(RuntimeError(reason if isinstance(reason, str) else "run interrupted"))
                     break
                 if deadline is not None and time.monotonic() >= deadline:
                     terminal_item = _ToolExceptionItem(
-                        RuntimeToolTimeoutError(
-                            f"tool '{tool_call.tool_name}' exceeded runtime timeout of "
-                            f"{tool_timeout}s"
-                        )
+                        RuntimeToolTimeoutError(f"tool '{tool_call.tool_name}' exceeded runtime timeout of {tool_timeout}s")
                     )
                     break
                 continue
@@ -230,10 +216,7 @@ class RuntimeToolExecutor:
             if isinstance(item, ToolExecutionProgress):
                 yield item
 
-        if not (
-            isinstance(terminal_item, _ToolExceptionItem)
-            and isinstance(terminal_item.exception, RuntimeToolTimeoutError)
-        ):
+        if not (isinstance(terminal_item, _ToolExceptionItem) and isinstance(terminal_item.exception, RuntimeToolTimeoutError)):
             worker.join(timeout=1)
         if isinstance(terminal_item, _ToolExceptionItem):
             return terminal_item.exception

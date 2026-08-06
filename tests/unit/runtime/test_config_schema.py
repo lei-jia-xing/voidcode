@@ -106,10 +106,7 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     assert mcp_server_properties["scope"] == {
         "type": "string",
         "enum": ["runtime", "session"],
-        "description": (
-            "Runtime-scoped servers are shared by the runtime; "
-            "session-scoped servers are isolated per session."
-        ),
+        "description": ("Runtime-scoped servers are shared by the runtime; session-scoped servers are isolated per session."),
     }
     background_task_schema = cast(dict[str, object], properties["background_task"])
     assert background_task_schema["additionalProperties"] is False
@@ -125,16 +122,13 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
         "type": "integer",
         "minimum": 1,
     }
-    provider_concurrency = cast(
-        dict[str, object], background_task_properties["provider_concurrency"]
-    )
+    provider_concurrency = cast(dict[str, object], background_task_properties["provider_concurrency"])
     assert provider_concurrency["additionalProperties"] == {
         "type": "integer",
         "minimum": 1,
     }
     hooks_schema = cast(dict[str, object], properties["hooks"])
     hooks_properties = cast(dict[str, object], hooks_schema["properties"])
-    assert hooks_properties["on_context_pressure"] == {"$ref": "#/$defs/commandList"}
     formatter_presets = cast(dict[str, object], hooks_properties["formatter_presets"])
     assert formatter_presets["additionalProperties"] == {"$ref": "#/$defs/formatterPresetConfig"}
     formatter_preset_config = cast(dict[str, object], defs["formatterPresetConfig"])
@@ -152,26 +146,11 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     for key in ("reserved_output_tokens",):
         numeric_property = cast(dict[str, object], context_window_properties[key])
         assert numeric_property["minimum"] == 1
-    pressure_threshold = cast(
-        dict[str, object], context_window_properties["context_pressure_threshold"]
-    )
-    assert pressure_threshold["exclusiveMinimum"] == 0
-    assert pressure_threshold["maximum"] == 1
-    pressure_cooldown = cast(
-        dict[str, object], context_window_properties["context_pressure_cooldown_steps"]
-    )
-    assert pressure_cooldown["minimum"] == 1
-    provider_context_diagnostics = cast(
-        dict[str, object], context_window_properties["provider_context_diagnostics"]
-    )
+    provider_context_diagnostics = cast(dict[str, object], context_window_properties["provider_context_diagnostics"])
     assert provider_context_diagnostics["enum"] == ["off", "warn", "block"]
-    transform_failure_policy = cast(
-        dict[str, object], context_window_properties["context_transform_failure_policy"]
-    )
+    transform_failure_policy = cast(dict[str, object], context_window_properties["context_transform_failure_policy"])
     assert transform_failure_policy["enum"] == ["ignore", "warn", "block"]
-    provider_context_threshold = cast(
-        dict[str, object], context_window_properties["provider_context_oversized_feedback_chars"]
-    )
+    provider_context_threshold = cast(dict[str, object], context_window_properties["provider_context_oversized_feedback_chars"])
     assert provider_context_threshold["minimum"] == 1
     tools_config = cast(dict[str, object], defs["runtimeToolsConfig"])
     assert tools_config["additionalProperties"] is False
@@ -312,9 +291,7 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
     assert "metadata" not in policy_properties
     assert policy_properties["version"] == {"type": "string", "const": "v1"}
     assert policy_properties["tool_policy"] == {"$ref": "#/$defs/runtimePolicyToolPolicyConfig"}
-    assert policy_properties["delegation_policy"] == {
-        "$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"
-    }
+    assert policy_properties["delegation_policy"] == {"$ref": "#/$defs/runtimePolicyDelegationPolicyConfig"}
     assert policy_properties["hook_policy"] == {"$ref": "#/$defs/runtimePolicyHookPolicyConfig"}
 
     hook_policy = cast(dict[str, object], defs["runtimePolicyHookPolicyConfig"])
@@ -335,7 +312,6 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
         "background_task_notification_enqueued",
         "background_task_result_read",
         "delegated_result_available",
-        "context_pressure",
         "turn_progress",
         "stuck_detected",
     ]

@@ -51,20 +51,8 @@ def hook_preset_event_payload_from_session_metadata(
     if snapshot is None or not snapshot.presets:
         return None
     kinds = [cast(str, preset["kind"]) for preset in snapshot.presets]
-    event_scopes = sorted(
-        {
-            scope
-            for preset in snapshot.presets
-            for scope in cast(tuple[str, ...], preset["event_scopes"])
-        }
-    )
-    allowed_actions = sorted(
-        {
-            action
-            for preset in snapshot.presets
-            for action in cast(tuple[str, ...], preset["allowed_actions"])
-        }
-    )
+    event_scopes = sorted({scope for preset in snapshot.presets for scope in cast(tuple[str, ...], preset["event_scopes"])})
+    allowed_actions = sorted({action for preset in snapshot.presets for action in cast(tuple[str, ...], preset["allowed_actions"])})
     return {
         "refs": list(snapshot.refs),
         "kinds": kinds,

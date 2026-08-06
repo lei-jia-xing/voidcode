@@ -283,18 +283,9 @@ def _run_app(
     }
     asyncio.run(app(scope, _receive, _send))
 
-    start_message = next(
-        message for message in sent if cast(str, message["type"]) == "http.response.start"
-    )
-    headers = {
-        key.decode("utf-8").lower(): value.decode("utf-8")
-        for key, value in cast(list[tuple[bytes, bytes]], start_message["headers"])
-    }
-    body_parts = [
-        cast(bytes, message.get("body", b""))
-        for message in sent
-        if cast(str, message["type"]) == "http.response.body"
-    ]
+    start_message = next(message for message in sent if cast(str, message["type"]) == "http.response.start")
+    headers = {key.decode("utf-8").lower(): value.decode("utf-8") for key, value in cast(list[tuple[bytes, bytes]], start_message["headers"])}
+    body_parts = [cast(bytes, message.get("body", b"")) for message in sent if cast(str, message["type"]) == "http.response.body"]
     return _TransportResponse(
         status=cast(int, start_message["status"]),
         headers=headers,
@@ -311,9 +302,7 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
 
     class AgentSummaryRuntime:
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def list_agent_summaries(self) -> tuple[object, ...]:
             return (
@@ -364,9 +353,7 @@ def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> Non
         calls: list[tuple[str, str | None, str | None]] = []
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def cancel_session(
             self,
@@ -410,9 +397,7 @@ def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
 
     class SessionCancelRuntime:
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
     app = RuntimeTransportApp(runtime_factory=cast(Any, SessionCancelRuntime))
 
@@ -569,9 +554,7 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     ]
 
 
-def test_transport_reads_runtime_web_settings_as_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transport_reads_runtime_web_settings_as_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     service_module = importlib.import_module("voidcode.runtime.service")
     create_runtime_app = _load_transport_app_factory()
@@ -594,9 +577,7 @@ def test_transport_reads_runtime_web_settings_as_json(
     }
 
 
-def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -627,9 +608,7 @@ def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(
     assert read_payload == update_payload
 
 
-def test_transport_reports_configured_opencode_go_validation_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transport_reports_configured_opencode_go_validation_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -662,9 +641,7 @@ def test_transport_reports_configured_opencode_go_validation_unavailable(
     }
 
 
-def test_transport_provider_inspect_exposes_model_capabilities(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transport_provider_inspect_exposes_model_capabilities(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
@@ -698,9 +675,7 @@ def test_transport_provider_inspect_exposes_model_capabilities(
     assert current_metadata["supports_reasoning"] is True
 
 
-def test_transport_lists_only_explicit_provider_configs_as_configured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transport_lists_only_explicit_provider_configs_as_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
@@ -708,19 +683,14 @@ def test_transport_lists_only_explicit_provider_configs_as_configured(
     app = create_runtime_app(workspace=tmp_path)
 
     response = _run_app(app, method="GET", path="/api/providers")
-    providers = {
-        cast(str, item["name"]): cast(bool, item["configured"])
-        for item in cast(list[dict[str, object]], response.json())
-    }
+    providers = {cast(str, item["name"]): cast(bool, item["configured"]) for item in cast(list[dict[str, object]], response.json())}
 
     assert response.status == 200
     assert providers["openai"] is False
     assert providers["opencode-go"] is False
 
 
-def test_transport_rejects_unconfigured_provider_validation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_transport_rejects_unconfigured_provider_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     create_runtime_app = _load_transport_app_factory()
@@ -839,9 +809,7 @@ def test_transport_closes_request_scoped_runtime_after_list_sessions(tmp_path: P
             raise AssertionError("list_notifications should not be called")
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
@@ -1012,9 +980,9 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert payload["output"] == "result payload"
     assert payload["error"] is None
     assert payload["last_event_sequence"] == cast(Any, stored.events[-1]).sequence
-    assert [
-        event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])
-    ] == [cast(Any, event).event_type for event in stored.events]
+    assert [event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])] == [
+        cast(Any, event).event_type for event in stored.events
+    ]
 
 
 def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:
@@ -1051,9 +1019,7 @@ def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None
             return result
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def __exit__(self, *_: object) -> None:
             return None
@@ -1115,9 +1081,7 @@ def test_transport_resume_response_redacts_reasoning_until_query_opt_in() -> Non
             return response
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def __exit__(self, *_: object) -> None:
             return None
@@ -1183,9 +1147,7 @@ def test_transport_run_stream_ignores_show_thinking_request_metadata() -> None:
             )
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def __exit__(self, *_: object) -> None:
             return None
@@ -1271,9 +1233,7 @@ def test_transport_background_task_output_redacts_reasoning_until_query_opt_in()
             return session_result
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def __exit__(self, *_: object) -> None:
             return None
@@ -1332,10 +1292,7 @@ def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
     assert payload["pending_approval"] is None
     assert payload["pending_question"] is None
     assert payload["last_event_sequence"] == cast(Any, stored.events[-1]).sequence
-    assert (
-        cast(dict[str, object], payload["last_relevant_event"])["event_type"]
-        == "graph.response_ready"
-    )
+    assert cast(dict[str, object], payload["last_relevant_event"])["event_type"] == "graph.response_ready"
     assert payload["last_failure_event"] is None
     assert payload["failure"] is None
     provider_context = cast(dict[str, object], payload["provider_context"])
@@ -1378,9 +1335,7 @@ def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> 
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt approved later", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="approval-session"))
     approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
 
     app = create_runtime_app(
@@ -1439,9 +1394,7 @@ def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
-    _ = runtime.run(
-        runtime_request(prompt="write danger.txt approved later", session_id="notification-session")
-    )
+    _ = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="notification-session"))
 
     app = create_runtime_app(
         workspace=tmp_path,
@@ -1822,9 +1775,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt denied later", session_id="deny-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt denied later", session_id="deny-session"))
     approval_request_id = cast(str, cast(Any, waiting.events[-1]).payload["request_id"])
 
     app = create_runtime_app(
@@ -1871,9 +1822,7 @@ def test_transport_resolves_pending_approval_deny_over_http(tmp_path: Path) -> N
             "runtime.tool_completed",
         ],
     )
-    feedback_payload = cast(
-        dict[str, object], _event_by_type(events, "runtime.tool_completed", reverse=True)["payload"]
-    )
+    feedback_payload = cast(dict[str, object], _event_by_type(events, "runtime.tool_completed", reverse=True)["payload"])
     assert feedback_payload["status"] == "error"
     assert feedback_payload["permission_denied"] is True
     assert feedback_payload["denied_by"] == "user"
@@ -1898,9 +1847,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     waiting_payloads = _parse_sse_payloads(waiting_response)
     approval_request_id = cast(
         str,
-        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])[
-            "request_id"
-        ],
+        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])["request_id"],
     )
     approve_response = _run_app(
         app,
@@ -1939,9 +1886,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
             "runtime.approval_requested",
         ],
     )
-    assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {
-        "id": "http-loop-session"
-    }
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {"id": "http-loop-session"}
     assert cast(dict[str, object], waiting_payloads[-1]["session"])["status"] == "waiting"
     assert cast(dict[str, object], waiting_payloads[-1]["session"])["turn"] == 1
     _assert_runtime_session_metadata(
@@ -1950,18 +1895,14 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     )
 
     assert approve_response.status == 200
-    assert cast(dict[str, object], approve_payload["session"])["session"] == {
-        "id": "http-loop-session"
-    }
+    assert cast(dict[str, object], approve_payload["session"])["session"] == {"id": "http-loop-session"}
     assert cast(dict[str, object], approve_payload["session"])["status"] == "completed"
     assert cast(dict[str, object], approve_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], approve_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert approve_payload["output"] == (
-        "Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"
-    )
+    assert approve_payload["output"] == ("Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker")
     approve_events = cast(list[dict[str, object]], approve_payload["events"])
     _assert_ordered_event_types(
         _event_types_from_payload_events(approve_payload),
@@ -1994,9 +1935,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
             "graph.response_ready",
         ],
     )
-    assert [event["sequence"] for event in approve_events] == list(
-        range(1, cast(int, approve_events[-1]["sequence"]) + 1)
-    )
+    assert [event["sequence"] for event in approve_events] == list(range(1, cast(int, approve_events[-1]["sequence"]) + 1))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -2013,9 +1952,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     replay_metadata = cast(dict[str, object], replay_session["metadata"])
     approve_metadata = cast(dict[str, object], approve_session["metadata"])
     assert replay_payload["output"] == approve_payload["output"]
-    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(
-        approve_payload
-    )
+    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(approve_payload)
     assert replay_session["session"] == approve_session["session"]
     assert replay_session["status"] == approve_session["status"]
     assert replay_session["turn"] == approve_session["turn"]
@@ -2045,9 +1982,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     waiting_payloads = _parse_sse_payloads(waiting_response)
     approval_request_id = cast(
         str,
-        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])[
-            "request_id"
-        ],
+        cast(dict[str, object], cast(dict[str, object], waiting_payloads[-1]["event"])["payload"])["request_id"],
     )
     deny_response = _run_app(
         app,
@@ -2067,12 +2002,8 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
 
     assert waiting_response.status == 200
     assert all(payload["kind"] == "event" for payload in waiting_payloads)
-    assert cast(dict[str, object], waiting_payloads[-1]["event"])["event_type"] == (
-        "runtime.approval_requested"
-    )
-    assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {
-        "id": "http-deny-loop-session"
-    }
+    assert cast(dict[str, object], waiting_payloads[-1]["event"])["event_type"] == ("runtime.approval_requested")
+    assert cast(dict[str, object], waiting_payloads[-1]["session"])["session"] == {"id": "http-deny-loop-session"}
     assert cast(dict[str, object], waiting_payloads[-1]["session"])["status"] == "waiting"
     assert cast(dict[str, object], waiting_payloads[-1]["session"])["turn"] == 1
     _assert_runtime_session_metadata(
@@ -2081,9 +2012,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     )
 
     assert deny_response.status == 200
-    assert cast(dict[str, object], deny_payload["session"])["session"] == {
-        "id": "http-deny-loop-session"
-    }
+    assert cast(dict[str, object], deny_payload["session"])["session"] == {"id": "http-deny-loop-session"}
     assert cast(dict[str, object], deny_payload["session"])["status"] == "running"
     assert cast(dict[str, object], deny_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
@@ -2113,9 +2042,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
             "runtime.tool_completed",
         ],
     )
-    assert [event["sequence"] for event in deny_events] == list(
-        range(1, cast(int, deny_events[-1]["sequence"]) + 1)
-    )
+    assert [event["sequence"] for event in deny_events] == list(range(1, cast(int, deny_events[-1]["sequence"]) + 1))
     assert list_response.status == 200
     assert list_response.json() == [
         {
@@ -2132,9 +2059,7 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     replay_metadata = cast(dict[str, object], replay_session["metadata"])
     deny_metadata = cast(dict[str, object], deny_session["metadata"])
     assert replay_payload["output"] == deny_payload["output"]
-    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(
-        deny_payload
-    )
+    assert _event_types_from_payload_events(replay_payload) == _event_types_from_payload_events(deny_payload)
     assert replay_session["session"] == deny_session["session"]
     assert replay_session["status"] == deny_session["status"]
     assert replay_session["turn"] == deny_session["turn"]
@@ -2292,9 +2217,7 @@ def test_transport_answers_pending_question_over_http(tmp_path: Path) -> None:
             raise AssertionError("list_notifications should not be called")
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
@@ -2380,9 +2303,7 @@ def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path
             raise AssertionError("list_notifications should not be called")
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def resume(self, session_id: str, **_: object) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
@@ -2395,9 +2316,7 @@ def test_transport_returns_not_found_for_missing_pending_question(tmp_path: Path
             responses: tuple[object, ...],
         ) -> RuntimeResponseLike:
             _ = session_id, question_request_id, responses
-            raise contracts_module.NoPendingQuestionError(
-                "no pending question for session: question-session"
-            )
+            raise contracts_module.NoPendingQuestionError("no pending question for session: question-session")
 
     app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: StubRuntime())
     response = _run_app(
@@ -2479,9 +2398,7 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
 
-    app = create_runtime_app(
-        workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime()
-    )
+    app = create_runtime_app(workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime())
 
     response = _run_app(
         app,
@@ -2501,11 +2418,10 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
     assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
     assert len(payloads) == 3
     assert [payload["kind"] for payload in payloads] == ["event", "event", "output"]
-    assert [
-        cast(dict[str, object], payload["event"])["event_type"]
-        for payload in payloads
-        if payload["event"] is not None
-    ] == ["runtime.request_received", "graph.response_ready"]
+    assert [cast(dict[str, object], payload["event"])["event_type"] for payload in payloads if payload["event"] is not None] == [
+        "runtime.request_received",
+        "graph.response_ready",
+    ]
     assert payloads[-1]["output"] == "transported"
 
 
@@ -2553,9 +2469,7 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
         def resume(self, session_id: str) -> RuntimeResponseLike:
             raise AssertionError(f"resume should not be called: {session_id}")
 
-    app = create_runtime_app(
-        workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime()
-    )
+    app = create_runtime_app(workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime())
 
     response = _run_app(
         app,
@@ -2737,9 +2651,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         }
     ]
     assert replay_response.status == 200
-    assert cast(dict[str, object], replay_payload["session"])["session"] == {
-        "id": "streamed-session"
-    }
+    assert cast(dict[str, object], replay_payload["session"])["session"] == {"id": "streamed-session"}
     assert cast(dict[str, object], replay_payload["session"])["status"] == "completed"
     assert cast(dict[str, object], replay_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
@@ -2788,22 +2700,16 @@ def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) 
 
     first_session_id = cast(
         str,
-        cast(dict[str, object], cast(dict[str, object], first_payloads[0]["session"])["session"])[
-            "id"
-        ],
+        cast(dict[str, object], cast(dict[str, object], first_payloads[0]["session"])["session"])["id"],
     )
     second_session_id = cast(
         str,
-        cast(dict[str, object], cast(dict[str, object], second_payloads[0]["session"])["session"])[
-            "id"
-        ],
+        cast(dict[str, object], cast(dict[str, object], second_payloads[0]["session"])["session"])["id"],
     )
 
     list_response = _run_app(app, method="GET", path="/api/sessions")
     listed_sessions = cast(list[dict[str, object]], list_response.json())
-    listed_session_ids = [
-        cast(str, cast(dict[str, object], item["session"])["id"]) for item in listed_sessions
-    ]
+    listed_session_ids = [cast(str, cast(dict[str, object], item["session"])["id"]) for item in listed_sessions]
 
     first_replay_response = _run_app(app, method="GET", path=f"/api/sessions/{first_session_id}")
     second_replay_response = _run_app(app, method="GET", path=f"/api/sessions/{second_session_id}")
@@ -2820,18 +2726,14 @@ def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) 
     assert [item["prompt"] for item in listed_sessions] == ["read sample.txt", "read sample.txt"]
     assert first_replay_response.status == 200
     assert second_replay_response.status == 200
-    assert cast(dict[str, object], first_replay_payload["session"])["session"] == {
-        "id": first_session_id
-    }
+    assert cast(dict[str, object], first_replay_payload["session"])["session"] == {"id": first_session_id}
     assert cast(dict[str, object], first_replay_payload["session"])["status"] == "completed"
     assert cast(dict[str, object], first_replay_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
         cast(dict[str, object], first_replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert cast(dict[str, object], second_replay_payload["session"])["session"] == {
-        "id": second_session_id
-    }
+    assert cast(dict[str, object], second_replay_payload["session"])["session"] == {"id": second_session_id}
     assert cast(dict[str, object], second_replay_payload["session"])["status"] == "completed"
     assert cast(dict[str, object], second_replay_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
@@ -2981,9 +2883,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         }
     ]
     assert replay_response.status == 200
-    assert cast(dict[str, object], replay_payload["session"])["session"] == {
-        "id": "failed-stream-session"
-    }
+    assert cast(dict[str, object], replay_payload["session"])["session"] == {"id": "failed-stream-session"}
     assert cast(dict[str, object], replay_payload["session"])["status"] == "failed"
     assert cast(dict[str, object], replay_payload["session"])["turn"] == 1
     _assert_runtime_session_metadata(
@@ -3188,12 +3088,8 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
         def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
-        def list_background_tasks_by_parent_session(
-            self, *, parent_session_id: str
-        ) -> tuple[object, ...]:
-            raise AssertionError(
-                f"list_background_tasks_by_parent_session should not be called: {parent_session_id}"
-            )
+        def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[object, ...]:
+            raise AssertionError(f"list_background_tasks_by_parent_session should not be called: {parent_session_id}")
 
         def cancel_background_task(self, task_id: str) -> object:
             raise AssertionError(f"cancel_background_task should not be called: {task_id}")
@@ -3230,9 +3126,7 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
             runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
             GitStatusSnapshot = runtime_contracts.GitStatusSnapshot
             CapabilityStatusSnapshot = runtime_contracts.CapabilityStatusSnapshot
-            RuntimeBackgroundTaskStatusSnapshot = (
-                runtime_contracts.RuntimeBackgroundTaskStatusSnapshot
-            )
+            RuntimeBackgroundTaskStatusSnapshot = runtime_contracts.RuntimeBackgroundTaskStatusSnapshot
             RuntimeStatusSnapshot = runtime_contracts.RuntimeStatusSnapshot
             return RuntimeStatusSnapshot(
                 git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)),
@@ -3276,9 +3170,7 @@ def test_transport_retries_mcp_and_returns_status_snapshot(tmp_path: Path) -> No
             return ()
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def resume(
             self,
@@ -3383,12 +3275,8 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
         def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
             return ()
 
-        def list_background_tasks_by_parent_session(
-            self, *, parent_session_id: str
-        ) -> tuple[object, ...]:
-            raise AssertionError(
-                f"list_background_tasks_by_parent_session should not be called: {parent_session_id}"
-            )
+        def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[object, ...]:
+            raise AssertionError(f"list_background_tasks_by_parent_session should not be called: {parent_session_id}")
 
         def cancel_background_task(self, task_id: str) -> object:
             raise AssertionError(f"cancel_background_task should not be called: {task_id}")
@@ -3434,9 +3322,7 @@ def test_transport_retry_mcp_value_error_returns_http_400_and_closes_runtime_onc
             return ()
 
         def acknowledge_notification(self, *, notification_id: str) -> RuntimeNotification:
-            raise AssertionError(
-                f"acknowledge_notification should not be called: {notification_id}"
-            )
+            raise AssertionError(f"acknowledge_notification should not be called: {notification_id}")
 
         def resume(
             self,
@@ -3578,10 +3464,7 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
             return _ImmediateStep(output="hello", is_finished=True)
 
     class _FailingMcpManager:
-        startup_error = (
-            "MCP[context7]: failed to start server - cmd not found "
-            "(command not found): missing-context7"
-        )
+        startup_error = "MCP[context7]: failed to start server - cmd not found (command not found): missing-context7"
 
         def __init__(self) -> None:
             self._failed = False
@@ -3591,7 +3474,7 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
         def configuration(self) -> object:
             return mcp_module.McpConfigState(
                 configured_enabled=True,
-                servers={"context7": object()},
+                servers={"context7": mcp_module.McpServerConfig()},
             )
 
         def current_state(self) -> object:
@@ -3611,16 +3494,12 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
                 },
             )
 
-        def list_tools(
-            self, *, workspace: Path, owner_session_id: str | None = None
-        ) -> tuple[object, ...]:
+        def list_tools(self, *, workspace: Path, owner_session_id: str | None = None) -> tuple[object, ...]:
             _ = workspace, owner_session_id
             self._failed = True
             raise ValueError(self.startup_error)
 
-        def call_tool(
-            self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path
-        ) -> object:
+        def call_tool(self, *, server_name: str, tool_name: str, arguments: dict[str, object], workspace: Path) -> object:
             _ = server_name, tool_name, arguments, workspace
             raise AssertionError("call_tool should not be used")
 
@@ -3667,11 +3546,7 @@ def test_transport_run_stream_continues_after_mcp_startup_failure_and_status_sta
     status_response = _run_app(app, method="GET", path="/api/status")
 
     payloads = _parse_sse_payloads(run_response)
-    event_types = [
-        cast(dict[str, object], payload["event"])["event_type"]
-        for payload in payloads
-        if payload["event"] is not None
-    ]
+    event_types = [cast(dict[str, object], payload["event"])["event_type"] for payload in payloads if payload["event"] is not None]
 
     assert run_response.status == 200
     assert event_types[0] == "runtime.request_received"
@@ -3773,16 +3648,11 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
     status_response = _run_app(app, method="GET", path="/api/status")
 
     payloads = _parse_sse_payloads(run_response)
-    event_types = [
-        cast(dict[str, object], payload["event"])["event_type"]
-        for payload in payloads
-        if payload["event"] is not None
-    ]
+    event_types = [cast(dict[str, object], payload["event"])["event_type"] for payload in payloads if payload["event"] is not None]
     failed_payloads = [
         cast(dict[str, object], cast(dict[str, object], payload["event"])["payload"])
         for payload in payloads
-        if payload["event"] is not None
-        and cast(dict[str, object], payload["event"])["event_type"] == "runtime.failed"
+        if payload["event"] is not None and cast(dict[str, object], payload["event"])["event_type"] == "runtime.failed"
     ]
 
     assert run_response.status == 200

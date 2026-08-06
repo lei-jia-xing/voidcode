@@ -17,9 +17,7 @@ def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) ->
     tool = ReadFileTool()
 
     result = tool.invoke(
-        ToolCall(
-            tool_name="read_file", arguments={"filePath": "sample.txt", "offset": 2, "limit": 2}
-        ),
+        ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt", "offset": 2, "limit": 2}),
         workspace=tmp_path,
     )
 
@@ -44,9 +42,7 @@ def test_read_file_tool_rejects_directories_with_suggestions(tmp_path: Path) -> 
     tool = ReadFileTool()
 
     with pytest.raises(ValueError, match="does not support directories") as exc_info:
-        tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "."}), workspace=tmp_path
-        )
+        tool.invoke(ToolCall(tool_name="read_file", arguments={"filePath": "."}), workspace=tmp_path)
 
     assert "Did you mean:" in str(exc_info.value)
 
@@ -105,9 +101,7 @@ def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> 
     _ = sample.write_text("alpha\nbeta\n", encoding="utf-8")
     tool = ReadFileTool()
 
-    with patch.object(
-        Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")
-    ):
+    with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
         result = tool.invoke(
             ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
             workspace=tmp_path,
@@ -186,9 +180,7 @@ def test_read_file_tool_rejects_oversized_attachment_before_read_bytes(tmp_path:
     _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * MAX_ATTACHMENT_BYTES))
     tool = ReadFileTool()
 
-    with patch.object(
-        Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")
-    ):
+    with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
         with pytest.raises(ValueError, match="attachment exceeds the maximum supported size"):
             tool.invoke(
                 ToolCall(tool_name="read_file", arguments={"filePath": "image.png"}),

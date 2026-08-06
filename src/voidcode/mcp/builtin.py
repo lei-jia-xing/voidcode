@@ -69,10 +69,7 @@ _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
         transport="remote-http",
         url="https://mcp.grep.app",
         lifecycle="descriptor_only_config_gated",
-        description=(
-            "Code search MCP via grep.app remote endpoint. "
-            "Requires mcp.enabled=true in .voidcode.json to connect."
-        ),
+        description=("Code search MCP via grep.app remote endpoint. Requires mcp.enabled=true in .voidcode.json to connect."),
         tags=("code-search", "research"),
     ),
     "playwright": BuiltinMcpDescriptor(
@@ -80,9 +77,7 @@ _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
         transport="stdio",
         command=("npx", "@playwright/mcp@latest"),
         lifecycle="skill_scoped_descriptor_only_config_gated",
-        description=(
-            "Playwright browser automation MCP descriptor scoped to the builtin playwright skill."
-        ),
+        description=("Playwright browser automation MCP descriptor scoped to the builtin playwright skill."),
         scope="session",
         skill_scoped=True,
         skill_name="playwright",

@@ -60,10 +60,6 @@ class ToolRegistry:
         question_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
-        background_retry_tool: Tool | None = None,
-        background_process_start_tool: Tool | None = None,
-        background_process_logs_tool: Tool | None = None,
-        background_process_stop_tool: Tool | None = None,
     ) -> ToolRegistry:
         return cls.from_tools(
             BuiltinToolProvider(
@@ -76,10 +72,6 @@ class ToolRegistry:
                 question_tool=question_tool,
                 background_output_tool=background_output_tool,
                 background_cancel_tool=background_cancel_tool,
-                background_retry_tool=background_retry_tool,
-                background_process_start_tool=background_process_start_tool,
-                background_process_logs_tool=background_process_logs_tool,
-                background_process_stop_tool=background_process_stop_tool,
             ).provide_tools()
         )
 
@@ -95,21 +87,13 @@ class ToolRegistry:
     def filtered(self, patterns: Iterable[str]) -> ToolRegistry:
         normalized_patterns = tuple(pattern for pattern in patterns if pattern)
         return ToolRegistry(
-            tools={
-                name: tool
-                for name, tool in self.tools.items()
-                if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)
-            }
+            tools={name: tool for name, tool in self.tools.items() if any(fnmatchcase(name, pattern) for pattern in normalized_patterns)}
         )
 
     def excluding(self, tool_names: Iterable[str]) -> ToolRegistry:
         excluded = frozenset(tool_names)
-        return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if name not in excluded}
-        )
+        return ToolRegistry(tools={name: tool for name, tool in self.tools.items() if name not in excluded})
 
     def allowed_by_policy(self, policy: Iterable[ToolPolicyDecision]) -> ToolRegistry:
         allowed_names = frozenset(decision.tool_name for decision in policy if decision.allowed)
-        return ToolRegistry(
-            tools={name: tool for name, tool in self.tools.items() if name in allowed_names}
-        )
+        return ToolRegistry(tools={name: tool for name, tool in self.tools.items() if name in allowed_names})

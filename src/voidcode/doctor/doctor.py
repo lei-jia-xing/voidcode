@@ -259,9 +259,7 @@ def create_doctor_for_config(
                     "configured_enabled": False,
                     "scope_boundary": "runtime/session-scoped when configured",
                 },
-                error_message=(
-                    "MCP is not configured; set mcp.enabled and mcp.servers to enable it."
-                ),
+                error_message=("MCP is not configured; set mcp.enabled and mcp.servers to enable it."),
             )
         )
     elif mcp_config.enabled is not True:
@@ -313,11 +311,7 @@ def create_doctor_for_config(
                     check_type=DoctorCheckType.PROVIDER_READINESS.value,
                     details={
                         "model": config.model,
-                        "fallback_models": (
-                            list(config.provider_fallback.fallback_models)
-                            if config.provider_fallback is not None
-                            else []
-                        ),
+                        "fallback_models": (list(config.provider_fallback.fallback_models) if config.provider_fallback is not None else []),
                         "status": "invalid_config",
                     },
                     error_message=str(exc),

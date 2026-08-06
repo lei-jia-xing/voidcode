@@ -44,7 +44,6 @@ from .context_window import (
 )
 from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
-    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_MEMORY_REFRESHED,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
@@ -147,9 +146,7 @@ def _context_transform_applied_payloads(
             value = trace.get(key)
             if value is not None:
                 payload[key] = value
-        fingerprint_payload = {
-            key: value for key, value in payload.items() if key != "tool_result_count"
-        }
+        fingerprint_payload = {key: value for key, value in payload.items() if key != "tool_result_count"}
         payloads.append((json.dumps(fingerprint_payload, sort_keys=True), payload))
     return tuple(payloads)
 
@@ -160,31 +157,19 @@ def _unseen_context_transform_payloads(
     payloads: tuple[tuple[str, dict[str, object]], ...],
 ) -> tuple[tuple[str, dict[str, object]], ...]:
     raw_runtime_state = session.metadata.get("runtime_state")
-    runtime_state = (
-        cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
-    )
+    runtime_state = cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
     current_run_id_raw = runtime_state.get("run_id")
     current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
     raw_transform_state = runtime_state.get("context_transform_applied")
-    transform_state = (
-        cast(dict[str, object], raw_transform_state)
-        if isinstance(raw_transform_state, dict)
-        else {}
-    )
+    transform_state = cast(dict[str, object], raw_transform_state) if isinstance(raw_transform_state, dict) else {}
     last_run_id_raw = transform_state.get("last_emitted_run_id")
     last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
     emitted_fingerprints: set[str] = set()
     if current_run_id is None or last_run_id == current_run_id:
         raw_fingerprints = transform_state.get("last_emitted_fingerprints")
         if isinstance(raw_fingerprints, list):
-            emitted_fingerprints = {
-                item for item in raw_fingerprints if isinstance(item, str) and item.strip()
-            }
-    return tuple(
-        (fingerprint, payload)
-        for fingerprint, payload in payloads
-        if fingerprint not in emitted_fingerprints
-    )
+            emitted_fingerprints = {item for item in raw_fingerprints if isinstance(item, str) and item.strip()}
+    return tuple((fingerprint, payload) for fingerprint, payload in payloads if fingerprint not in emitted_fingerprints)
 
 
 def _session_with_context_transform_applied_state(
@@ -193,32 +178,16 @@ def _session_with_context_transform_applied_state(
     fingerprints: tuple[str, ...],
 ) -> SessionState:
     raw_runtime_state = session.metadata.get("runtime_state")
-    runtime_state = (
-        dict(cast(dict[str, object], raw_runtime_state))
-        if isinstance(raw_runtime_state, dict)
-        else {}
-    )
-    current_run_id = (
-        runtime_state.get("run_id") if isinstance(runtime_state.get("run_id"), str) else None
-    )
+    runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
+    current_run_id = runtime_state.get("run_id") if isinstance(runtime_state.get("run_id"), str) else None
     raw_transform_state = runtime_state.get("context_transform_applied")
-    transform_state = (
-        dict(cast(dict[str, object], raw_transform_state))
-        if isinstance(raw_transform_state, dict)
-        else {}
-    )
-    last_run_id = (
-        transform_state.get("last_emitted_run_id")
-        if isinstance(transform_state.get("last_emitted_run_id"), str)
-        else None
-    )
+    transform_state = dict(cast(dict[str, object], raw_transform_state)) if isinstance(raw_transform_state, dict) else {}
+    last_run_id = transform_state.get("last_emitted_run_id") if isinstance(transform_state.get("last_emitted_run_id"), str) else None
     existing_fingerprints: set[str] = set()
     if current_run_id is None or last_run_id == current_run_id:
         raw_existing = transform_state.get("last_emitted_fingerprints")
         if isinstance(raw_existing, list):
-            existing_fingerprints = {
-                item for item in raw_existing if isinstance(item, str) and item.strip()
-            }
+            existing_fingerprints = {item for item in raw_existing if isinstance(item, str) and item.strip()}
     existing_fingerprints.update(fingerprints)
     runtime_state["context_transform_applied"] = {
         "last_emitted_fingerprints": sorted(existing_fingerprints),
@@ -634,9 +603,7 @@ class RuntimeRunLoopCoordinator:
             )
             return
 
-        tool_timeout = runtime._effective_runtime_config_from_metadata(
-            session.metadata
-        ).tool_timeout_seconds
+        tool_timeout = runtime._effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
         explicit_tool_call_id = tool_call.tool_call_id
         tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
         sequence += 1
@@ -676,10 +643,7 @@ class RuntimeRunLoopCoordinator:
             )
             return
 
-        tool_exception_recovery_enabled = (
-            runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
-            == "provider"
-        )
+        tool_exception_recovery_enabled = runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine == "provider"
         try:
             tool_outcome, sequence = yield from self._invoke_tool(
                 tool=tool,
@@ -695,9 +659,7 @@ class RuntimeRunLoopCoordinator:
                 abort_signal=abort_signal,
                 parent_session_id=session.session.parent_id,
                 delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
-                remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
-                    session.metadata
-                ),
+                remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(session.metadata),
             )
             if isinstance(tool_outcome, Exception):
                 raise tool_outcome
@@ -979,9 +941,7 @@ class RuntimeRunLoopCoordinator:
         active_permission_policy = permission_policy or runtime._permission_policy
         continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
-        provider_retry_attempt: int = runtime._provider_retry_attempt_from_metadata(
-            graph_request.metadata
-        )
+        provider_retry_attempt: int = runtime._provider_retry_attempt_from_metadata(graph_request.metadata)
         reasoning_capture_state = runtime._reasoning_capture_state()
         active_graph_request: GraphRunRequest = graph_request
         pending_provider_attempt_reset: _ProviderAttemptReset | None = None
@@ -997,15 +957,9 @@ class RuntimeRunLoopCoordinator:
             sequence = int(sequence)
             current_graph_request: Any = active_graph_request
             current_prompt: str = cast(str, current_graph_request.prompt)
-            current_available_tools: tuple[ToolDefinition, ...] = cast(
-                tuple[ToolDefinition, ...], current_graph_request.available_tools
-            )
-            current_assembled_context: ProviderAssembledContext = cast(
-                ProviderAssembledContext, current_graph_request.assembled_context
-            )
-            current_segments: tuple[ProviderContextSegmentLike, ...] = (
-                current_assembled_context.segments
-            )
+            current_available_tools: tuple[ToolDefinition, ...] = cast(tuple[ToolDefinition, ...], current_graph_request.available_tools)
+            current_assembled_context: ProviderAssembledContext = cast(ProviderAssembledContext, current_graph_request.assembled_context)
+            current_segments: tuple[ProviderContextSegmentLike, ...] = current_assembled_context.segments
             current_metadata: dict[str, object] = current_graph_request.metadata
             current_abort_signal: ProviderAbortSignal | None = current_graph_request.abort_signal
             current_session: SessionState = session
@@ -1131,9 +1085,7 @@ class RuntimeRunLoopCoordinator:
             for segment in current_segments:
                 if segment.role != "system" or not isinstance(segment.content, str):
                     continue
-                segment_source = (
-                    segment.metadata.get("source") if isinstance(segment.metadata, dict) else None
-                )
+                segment_source = segment.metadata.get("source") if isinstance(segment.metadata, dict) else None
                 if segment_source in {
                     "hook_preset_guidance",
                     "runtime_file_rules",
@@ -1151,9 +1103,7 @@ class RuntimeRunLoopCoordinator:
                 session_metadata=session.metadata,
                 skill_prompt_context=skill_prompt_context,
                 preserved_system_segments=tuple(preserved_system_segments),
-                replayed_conversation_segments=_replayed_conversation_segments(
-                    current_graph_request
-                ),
+                replayed_conversation_segments=_replayed_conversation_segments(current_graph_request),
             )
             context_window_payload = {
                 **assembled_context.metadata,
@@ -1181,9 +1131,7 @@ class RuntimeRunLoopCoordinator:
             if unseen_context_transform_payloads:
                 session = _session_with_context_transform_applied_state(
                     session=session,
-                    fingerprints=tuple(
-                        fingerprint for fingerprint, _payload in unseen_context_transform_payloads
-                    ),
+                    fingerprints=tuple(fingerprint for fingerprint, _payload in unseen_context_transform_payloads),
                 )
                 for _fingerprint, payload in unseen_context_transform_payloads:
                     sequence += 1
@@ -1207,9 +1155,7 @@ class RuntimeRunLoopCoordinator:
                 metadata=current_metadata,
                 abort_signal=current_abort_signal,
             )
-            effective_runtime_config = runtime._effective_runtime_config_from_metadata(
-                session.metadata
-            )
+            effective_runtime_config = runtime._effective_runtime_config_from_metadata(session.metadata)
             provider_context_policy_decision: RuntimeProviderContextPolicyDecision | None = (
                 runtime._provider_context_policy_decision_for_graph_request(
                     graph_request=active_graph_request,
@@ -1231,15 +1177,9 @@ class RuntimeRunLoopCoordinator:
                                 "mode": provider_context_policy_decision.mode,
                                 "action": provider_context_policy_decision.action,
                                 "blocked": provider_context_policy_decision.blocked,
-                                "diagnostic_count": (
-                                    provider_context_policy_decision.diagnostic_count
-                                ),
-                                "diagnostic_codes": list(
-                                    provider_context_policy_decision.diagnostic_codes
-                                ),
-                                "blocking_diagnostic_codes": list(
-                                    provider_context_policy_decision.blocking_diagnostic_codes
-                                ),
+                                "diagnostic_count": (provider_context_policy_decision.diagnostic_count),
+                                "diagnostic_codes": list(provider_context_policy_decision.diagnostic_codes),
+                                "blocking_diagnostic_codes": list(provider_context_policy_decision.blocking_diagnostic_codes),
                                 "message": provider_context_policy_decision.message,
                             },
                         ),
@@ -1257,86 +1197,11 @@ class RuntimeRunLoopCoordinator:
                                 "mode": provider_context_policy_decision.mode,
                                 "action": provider_context_policy_decision.action,
                                 "blocked": provider_context_policy_decision.blocked,
-                                "diagnostic_count": (
-                                    provider_context_policy_decision.diagnostic_count
-                                ),
-                                "diagnostic_codes": list(
-                                    provider_context_policy_decision.diagnostic_codes
-                                ),
-                                "blocking_diagnostic_codes": list(
-                                    provider_context_policy_decision.blocking_diagnostic_codes
-                                ),
+                                "diagnostic_count": (provider_context_policy_decision.diagnostic_count),
+                                "diagnostic_codes": list(provider_context_policy_decision.diagnostic_codes),
+                                "blocking_diagnostic_codes": list(provider_context_policy_decision.blocking_diagnostic_codes),
                             },
                         },
-                    )
-                    return
-            context_window_config = effective_runtime_config.context_window
-            pressure_threshold = (
-                context_window_config.context_pressure_threshold
-                if context_window_config is not None
-                else 0.7
-            )
-            pressure_cooldown_steps = (
-                context_window_config.context_pressure_cooldown_steps
-                if context_window_config is not None
-                else 3
-            )
-            pressure_payload = self._build_context_pressure_payload(
-                session=session,
-                context_window=context_window,
-                threshold=pressure_threshold,
-                include_provider_usage=False,
-            )
-            if pressure_payload is not None and self._should_emit_context_pressure(
-                session=session,
-                pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
-                threshold=pressure_threshold,
-                cooldown_steps=pressure_cooldown_steps,
-                tool_result_count=context_window.original_tool_result_count,
-            ):
-                session = self._session_with_context_pressure_state(
-                    session=session,
-                    pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
-                    threshold=pressure_threshold,
-                    tool_result_count=context_window.original_tool_result_count,
-                )
-                sequence += 1
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_CONTEXT_PRESSURE,
-                        source="runtime",
-                        payload=pressure_payload,
-                    ),
-                )
-                hook_outcome = runtime._run_lifecycle_hooks(
-                    session=session,
-                    sequence=sequence,
-                    surface="context_pressure",
-                    payload=pressure_payload,
-                )
-                yield from hook_outcome.chunks
-                sequence = hook_outcome.last_sequence
-                if hook_outcome.failed_error is not None:
-                    failed_chunk = _hook_failure_chunk(
-                        runtime=runtime,
-                        session=session,
-                        sequence=sequence,
-                        surface="context_pressure",
-                        error=hook_outcome.failed_error,
-                    )
-                    if failed_chunk is not None:
-                        yield failed_chunk
-                        return
-                if hook_outcome.action == "cancel":
-                    yield runtime._failed_chunk(
-                        session=session,
-                        sequence=sequence + 1,
-                        error="run cancelled by context-pressure hook",
-                        payload={"kind": "hook_cancelled", "surface": "context_pressure"},
                     )
                     return
             if (
@@ -1369,9 +1234,7 @@ class RuntimeRunLoopCoordinator:
                             payload=memory_payload,
                         ),
                     )
-            tool_exception_recovery_enabled = (
-                effective_runtime_config.execution_engine == "provider"
-            )
+            tool_exception_recovery_enabled = effective_runtime_config.execution_engine == "provider"
             try:
                 if _is_abort_requested(active_graph_request):
                     yield runtime._failed_chunk(
@@ -1391,9 +1254,7 @@ class RuntimeRunLoopCoordinator:
                 )
                 provider_retry_attempt = 0
             except Exception as exc:
-                current_provider_attempt = runtime._provider_attempt_from_metadata(
-                    {"provider_attempt": provider_attempt}
-                )
+                current_provider_attempt = runtime._provider_attempt_from_metadata({"provider_attempt": provider_attempt})
                 provider_error = exc if isinstance(exc, ProviderExecutionError) else None
                 if provider_error is not None:
                     fallback_selection = runtime._fallback_graph_selection(
@@ -1405,31 +1266,17 @@ class RuntimeRunLoopCoordinator:
                         provider_name=provider_error.provider_name,
                         session_metadata=session.metadata,
                     )
-                    fallback_target = (
-                        fallback_selection.provider_target
-                        if fallback_selection is not None
-                        else None
-                    )
+                    fallback_target = fallback_selection.provider_target if fallback_selection is not None else None
                     provider_decision = decide_provider_error_policy(
                         error=provider_error,
                         current_provider_attempt=current_provider_attempt,
                         provider_retry_attempt=int(provider_retry_attempt),
                         transient_retry_config=transient_retry_config,
-                        fallback_target_provider=(
-                            fallback_target.selection.provider
-                            if fallback_target is not None
-                            else None
-                        ),
-                        fallback_target_model=(
-                            fallback_target.selection.model if fallback_target is not None else None
-                        ),
-                        background_rate_limit_retry=(
-                            active_graph_request.metadata.get("background_rate_limit_retry") is True
-                        ),
+                        fallback_target_provider=(fallback_target.selection.provider if fallback_target is not None else None),
+                        fallback_target_model=(fallback_target.selection.model if fallback_target is not None else None),
+                        background_rate_limit_retry=(active_graph_request.metadata.get("background_rate_limit_retry") is True),
                     )
-                    if isinstance(provider_decision, ProviderTerminalDecision) and (
-                        provider_decision.kind == "cancelled"
-                    ):
+                    if isinstance(provider_decision, ProviderTerminalDecision) and (provider_decision.kind == "cancelled"):
                         yield runtime._failed_chunk(
                             session=session,
                             sequence=sequence + 1,
@@ -1437,9 +1284,7 @@ class RuntimeRunLoopCoordinator:
                             payload=provider_decision.payload,
                         )
                         return
-                    if isinstance(provider_decision, ProviderTerminalDecision) and (
-                        provider_decision.kind == "background_rate_limit_retry"
-                    ):
+                    if isinstance(provider_decision, ProviderTerminalDecision) and (provider_decision.kind == "background_rate_limit_retry"):
                         yield runtime._failed_chunk(
                             session=session,
                             sequence=sequence + 1,
@@ -1450,10 +1295,7 @@ class RuntimeRunLoopCoordinator:
                     if isinstance(provider_decision, ProviderTransientRetryDecision):
                         delay_ms = provider_decision.delay_ms
                         logger.info(
-                            (
-                                "provider transient retry for session %s: %s/%s "
-                                "(reason=%s, retry_attempt=%s, max_retries=%s, delay_ms=%s)"
-                            ),
+                            ("provider transient retry for session %s: %s/%s (reason=%s, retry_attempt=%s, max_retries=%s, delay_ms=%s)"),
                             session.session.id,
                             provider_error.provider_name,
                             provider_error.model_name,
@@ -1506,10 +1348,7 @@ class RuntimeRunLoopCoordinator:
                         assert fallback_selection is not None
                         next_target = fallback_selection.provider_target
                         logger.info(
-                            (
-                                "provider fallback for session %s: %s/%s -> %s/%s "
-                                "(reason=%s, attempt=%s)"
-                            ),
+                            ("provider fallback for session %s: %s/%s -> %s/%s (reason=%s, attempt=%s)"),
                             session.session.id,
                             provider_error.provider_name,
                             provider_error.model_name,
@@ -1533,13 +1372,9 @@ class RuntimeRunLoopCoordinator:
                         provider_attempt = fallback_selection.provider_attempt
                         provider_retry_attempt = 0
                         fallback_prompt: str = current_prompt
-                        fallback_available_tools: tuple[ToolDefinition, ...] = (
-                            current_available_tools
-                        )
+                        fallback_available_tools: tuple[ToolDefinition, ...] = current_available_tools
                         fallback_context_window = context_window
-                        fallback_assembled_context: ProviderAssembledContext = (
-                            active_graph_request.assembled_context
-                        )
+                        fallback_assembled_context: ProviderAssembledContext = active_graph_request.assembled_context
                         fallback_metadata: dict[str, object] = {
                             **current_metadata,
                             "provider_attempt": provider_attempt,
@@ -1567,9 +1402,7 @@ class RuntimeRunLoopCoordinator:
                             abort_signal=fallback_abort_signal,
                         )
                         continue
-                    if isinstance(provider_decision, ProviderTerminalDecision) and (
-                        provider_decision.kind == "fallback_exhausted"
-                    ):
+                    if isinstance(provider_decision, ProviderTerminalDecision) and (provider_decision.kind == "fallback_exhausted"):
                         yield runtime._failed_chunk(
                             session=session,
                             sequence=sequence + 1,
@@ -1603,20 +1436,13 @@ class RuntimeRunLoopCoordinator:
                     session=session,
                     sequence=sequence + 1,
                     error=str(exc),
-                    payload=(
-                        {"kind": "provider_context_limit"}
-                        if isinstance(classified_error, SingleAgentContextLimitError)
-                        else None
-                    ),
+                    payload=({"kind": "provider_context_limit"} if isinstance(classified_error, SingleAgentContextLimitError) else None),
                 )
                 if isinstance(classified_error, SingleAgentContextLimitError):
                     return
                 raise
 
-            is_final_step = (
-                getattr(graph_step, "is_finished", False)
-                or getattr(graph_step, "output", None) is not None
-            )
+            is_final_step = getattr(graph_step, "is_finished", False) or getattr(graph_step, "output", None) is not None
             if _is_abort_requested(active_graph_request):
                 yield runtime._failed_chunk(
                     session=session,
@@ -1639,66 +1465,6 @@ class RuntimeRunLoopCoordinator:
                     turn=session.turn,
                     metadata={**session.metadata, "provider_retry_attempt": 0},
                 )
-            pressure_payload = None
-            if getattr(graph_step, "provider_usage", None) is not None:
-                pressure_payload = self._build_context_pressure_payload(
-                    session=session,
-                    context_window=context_window,
-                    threshold=pressure_threshold,
-                    include_provider_usage=True,
-                )
-            if pressure_payload is not None and self._should_emit_context_pressure(
-                session=session,
-                pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
-                threshold=pressure_threshold,
-                cooldown_steps=pressure_cooldown_steps,
-                tool_result_count=context_window.original_tool_result_count,
-            ):
-                session = self._session_with_context_pressure_state(
-                    session=session,
-                    pressure_ratio=cast(float, pressure_payload["pressure_ratio"]),
-                    threshold=pressure_threshold,
-                    tool_result_count=context_window.original_tool_result_count,
-                )
-                sequence += 1
-                yield RuntimeStreamChunk(
-                    kind="event",
-                    session=session,
-                    event=EventEnvelope(
-                        session_id=session.session.id,
-                        sequence=sequence,
-                        event_type=RUNTIME_CONTEXT_PRESSURE,
-                        source="runtime",
-                        payload=pressure_payload,
-                    ),
-                )
-                hook_outcome = runtime._run_lifecycle_hooks(
-                    session=session,
-                    sequence=sequence,
-                    surface="context_pressure",
-                    payload=pressure_payload,
-                )
-                yield from hook_outcome.chunks
-                sequence = hook_outcome.last_sequence
-                if hook_outcome.failed_error is not None:
-                    failed_chunk = _hook_failure_chunk(
-                        runtime=runtime,
-                        session=session,
-                        sequence=sequence,
-                        surface="context_pressure",
-                        error=hook_outcome.failed_error,
-                    )
-                    if failed_chunk is not None:
-                        yield failed_chunk
-                        return
-                if hook_outcome.action == "cancel":
-                    yield runtime._failed_chunk(
-                        session=session,
-                        sequence=sequence + 1,
-                        error="run cancelled by context-pressure hook",
-                        payload={"kind": "hook_cancelled", "surface": "context_pressure"},
-                    )
-                    return
             if is_final_step and provider_attempt != 0:
                 provider_attempt = 0
                 session = _session_without_provider_attempt(session)
@@ -1764,19 +1530,9 @@ class RuntimeRunLoopCoordinator:
             tool_request_payload: dict[str, object] = {
                 "tool": plan_tool_call.tool_name,
                 "arguments": dict(plan_tool_call.arguments),
-                **(
-                    {"path": path}
-                    if isinstance((path := plan_tool_call.arguments.get("path")), str)
-                    else {}
-                ),
+                **({"path": path} if isinstance((path := plan_tool_call.arguments.get("path")), str) else {}),
             }
-            if (
-                explicit_tool_call_id is not None
-                or runtime._effective_runtime_config_from_metadata(
-                    session.metadata
-                ).execution_engine
-                == "provider"
-            ):
+            if explicit_tool_call_id is not None or runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine == "provider":
                 tool_request_payload["tool_call_id"] = tool_call_id
             yield RuntimeStreamChunk(
                 kind="event",
@@ -1846,10 +1602,7 @@ class RuntimeRunLoopCoordinator:
             sequence += 1
             if approval_resolution is not None:
                 pending, decision = approval_resolution
-                if (
-                    plan_tool_call.tool_name == pending.tool_name
-                    and dict(plan_tool_call.arguments) == pending.arguments
-                ):
+                if plan_tool_call.tool_name == pending.tool_name and dict(plan_tool_call.arguments) == pending.arguments:
                     sequence += 1
                     permission_chunks = runtime._approval_resolution_outcome(
                         session=session,
@@ -1898,8 +1651,7 @@ class RuntimeRunLoopCoordinator:
             if permission_chunks.denied:
                 denied_pending = permission_chunks.denied_approval
                 denied_replayed_tool_changed = denied_pending is not None and (
-                    plan_tool_call.tool_name != denied_pending.tool_name
-                    or dict(plan_tool_call.arguments) != denied_pending.arguments
+                    plan_tool_call.tool_name != denied_pending.tool_name or dict(plan_tool_call.arguments) != denied_pending.arguments
                 )
                 denied_tool_call = (
                     ToolCall(
@@ -1919,10 +1671,7 @@ class RuntimeRunLoopCoordinator:
                     tool_call_id=tool_call_id,
                 )
                 sequence = permission_chunks.last_sequence + 1
-                if (
-                    denied_replayed_tool_changed
-                    or effective_runtime_config.execution_engine != "provider"
-                ):
+                if denied_replayed_tool_changed or effective_runtime_config.execution_engine != "provider":
                     return
                 continue
 
@@ -1956,9 +1705,7 @@ class RuntimeRunLoopCoordinator:
                 )
                 return
 
-            tool_timeout = runtime._effective_runtime_config_from_metadata(
-                session.metadata
-            ).tool_timeout_seconds
+            tool_timeout = runtime._effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
             sequence += 1
             start_args = dict(plan_tool_call.arguments)
             started_display = build_tool_display(plan_tool_call.tool_name, start_args)
@@ -2009,9 +1756,7 @@ class RuntimeRunLoopCoordinator:
                     abort_signal=active_graph_request.abort_signal,
                     parent_session_id=session.session.parent_id,
                     delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
-                    remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(
-                        session.metadata
-                    ),
+                    remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(session.metadata),
                 )
                 if isinstance(tool_outcome, Exception):
                     raise tool_outcome
@@ -2056,9 +1801,7 @@ class RuntimeRunLoopCoordinator:
                         ),
                     )
                     timeout_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
-                    failed_display = build_tool_display(
-                        plan_tool_call.tool_name, timeout_sanitized_args
-                    )
+                    failed_display = build_tool_display(plan_tool_call.tool_name, timeout_sanitized_args)
                     failed_status = build_tool_status(
                         plan_tool_call.tool_name,
                         tool_call_id,
@@ -2096,15 +1839,11 @@ class RuntimeRunLoopCoordinator:
                             },
                         ),
                     )
-                    yield runtime._failed_chunk(
-                        session=session, sequence=sequence + 1, error=str(exc)
-                    )
+                    yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                     return
                 if not tool_exception_recovery_enabled and not _is_tool_timeout_like_exception(exc):
                     error_sanitized_args = sanitize_tool_arguments(dict(plan_tool_call.arguments))
-                    failed_display = build_tool_display(
-                        plan_tool_call.tool_name, error_sanitized_args
-                    )
+                    failed_display = build_tool_display(plan_tool_call.tool_name, error_sanitized_args)
                     failed_status = build_tool_status(
                         plan_tool_call.tool_name,
                         tool_call_id,
@@ -2136,9 +1875,7 @@ class RuntimeRunLoopCoordinator:
                             },
                         ),
                     )
-                    yield runtime._failed_chunk(
-                        session=session, sequence=sequence + 1, error=str(exc)
-                    )
+                    yield runtime._failed_chunk(session=session, sequence=sequence + 1, error=str(exc))
                     raise
                 error_summary = _tool_error_summary(str(exc))
                 error_details = _tool_error_details(
@@ -2207,10 +1944,7 @@ class RuntimeRunLoopCoordinator:
             )
             yield from drained_chunks
 
-            if (
-                plan_tool_call.tool_name == QuestionTool.definition.name
-                and tool_result.status == "ok"
-            ):
+            if plan_tool_call.tool_name == QuestionTool.definition.name and tool_result.status == "ok":
                 pending_question = PendingQuestion(
                     request_id=f"question-{uuid4().hex}",
                     tool_name=plan_tool_call.tool_name,
@@ -2324,11 +2058,7 @@ class RuntimeRunLoopCoordinator:
                             payload={
                                 "name": skill_name if isinstance(skill_name, str) else None,
                                 "source": "tool",
-                                "source_path": (
-                                    skill_source_path
-                                    if isinstance(skill_source_path, str)
-                                    else None
-                                ),
+                                "source_path": (skill_source_path if isinstance(skill_source_path, str) else None),
                             },
                         ),
                     )
@@ -2526,125 +2256,6 @@ class RuntimeRunLoopCoordinator:
         return session
 
     @staticmethod
-    def _build_context_pressure_payload(
-        *,
-        session: SessionState,
-        context_window: RuntimeContextWindow,
-        threshold: float,
-        include_provider_usage: bool = False,
-    ) -> dict[str, object] | None:
-        if include_provider_usage:
-            provider_payload = (
-                RuntimeRunLoopCoordinator._build_provider_usage_context_pressure_payload(
-                    session=session,
-                    context_window=context_window,
-                    threshold=threshold,
-                )
-            )
-            if provider_payload is not None:
-                return provider_payload
-
-        budget = context_window.token_budget
-        estimated_tokens = context_window.original_tool_result_tokens
-        if budget is None or estimated_tokens is None or budget <= 0 or estimated_tokens <= 0:
-            return None
-        pressure_ratio = estimated_tokens / budget
-        payload: dict[str, object] = {
-            "kind": "pressure_signal",
-            "session_id": session.session.id,
-            "estimated_tokens": estimated_tokens,
-            "budget_max_tokens": budget,
-            "pressure_ratio": pressure_ratio,
-            "threshold": threshold,
-            "reason": "token_budget_ratio_exceeded",
-            "compacted": context_window.compacted,
-            "token_estimate_source": context_window.token_estimate_source,
-            "original_tool_result_count": context_window.original_tool_result_count,
-            "retained_tool_result_count": context_window.retained_tool_result_count,
-        }
-        if context_window.summary_anchor is not None:
-            payload["summary_anchor"] = context_window.summary_anchor
-        if context_window.summary_source is not None:
-            payload["summary_source"] = context_window.summary_source
-        if context_window.continuity_state is not None:
-            payload["continuity_state"] = context_window.continuity_state.metadata_payload()
-        return payload
-
-    @staticmethod
-    def _build_provider_usage_context_pressure_payload(
-        *,
-        session: SessionState,
-        context_window: RuntimeContextWindow,
-        threshold: float,
-    ) -> dict[str, object] | None:
-        budget = RuntimeRunLoopCoordinator._provider_usage_budget(context_window)
-        provider_total_tokens = RuntimeRunLoopCoordinator._latest_current_provider_total_tokens(
-            session
-        )
-        if budget is None or provider_total_tokens is None:
-            return None
-        if budget <= 0 or provider_total_tokens <= 0:
-            return None
-        pressure_ratio = provider_total_tokens / budget
-        if pressure_ratio < threshold:
-            return None
-        payload: dict[str, object] = {
-            "kind": "pressure_signal",
-            "session_id": session.session.id,
-            "estimated_tokens": provider_total_tokens,
-            "provider_total_tokens": provider_total_tokens,
-            "budget_max_tokens": budget,
-            "pressure_ratio": pressure_ratio,
-            "threshold": threshold,
-            "reason": "provider_usage_ratio_exceeded",
-            "compacted": context_window.compacted,
-            "token_estimate_source": "provider_usage",
-            "original_tool_result_count": context_window.original_tool_result_count,
-            "retained_tool_result_count": context_window.retained_tool_result_count,
-        }
-        if context_window.summary_anchor is not None:
-            payload["summary_anchor"] = context_window.summary_anchor
-        if context_window.summary_source is not None:
-            payload["summary_source"] = context_window.summary_source
-        if context_window.continuity_state is not None:
-            payload["continuity_state"] = context_window.continuity_state.metadata_payload()
-        return payload
-
-    @staticmethod
-    def _provider_usage_budget(context_window: RuntimeContextWindow) -> int | None:
-        model_window = context_window.model_context_window_tokens
-        if model_window is None:
-            return None
-        reserved_output_tokens = context_window.reserved_output_tokens or 0
-        return max(1, model_window - reserved_output_tokens)
-
-    @staticmethod
-    def _latest_current_provider_total_tokens(session: SessionState) -> int | None:
-        raw_provider_usage = session.metadata.get("provider_usage")
-        if not isinstance(raw_provider_usage, dict):
-            return None
-        provider_usage = cast(dict[str, object], raw_provider_usage)
-        current_run_id = RuntimeRunLoopCoordinator._current_run_id(session)
-        latest_run_id = provider_usage.get("latest_run_id")
-        if not isinstance(current_run_id, str) or latest_run_id != current_run_id:
-            return None
-        current_provider_attempt = RuntimeRunLoopCoordinator._current_provider_attempt(session)
-        latest_provider_attempt = provider_usage.get("latest_provider_attempt")
-        if latest_provider_attempt != current_provider_attempt:
-            return None
-        raw_latest = provider_usage.get("latest")
-        if not isinstance(raw_latest, dict):
-            return None
-        latest = cast(dict[str, object], raw_latest)
-        total_tokens = 0
-        for key in ("input_tokens", "output_tokens"):
-            raw_value = latest.get(key, 0)
-            if not isinstance(raw_value, int) or isinstance(raw_value, bool):
-                return None
-            total_tokens += raw_value
-        return total_tokens
-
-    @staticmethod
     def _current_run_id(session: SessionState) -> str | None:
         raw_runtime_state = session.metadata.get("runtime_state")
         if not isinstance(raw_runtime_state, dict):
@@ -2683,11 +2294,7 @@ class RuntimeRunLoopCoordinator:
             "compacted": True,
             "summary_anchor": context_window.summary_anchor,
             "summary_source": context_window.summary_source,
-            "continuity_state": (
-                context_window.continuity_state.metadata_payload()
-                if context_window.continuity_state is not None
-                else None
-            ),
+            "continuity_state": (context_window.continuity_state.metadata_payload() if context_window.continuity_state is not None else None),
         }
 
     @staticmethod
@@ -2699,17 +2306,11 @@ class RuntimeRunLoopCoordinator:
         retained_tool_result_count: int,
     ) -> bool:
         raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = (
-            cast(dict[str, object], raw_runtime_state)
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
+        runtime_state = cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
         current_run_id_raw = runtime_state.get("run_id")
         current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
         raw_memory_state = runtime_state.get("memory_refreshed")
-        memory_state = (
-            cast(dict[str, object], raw_memory_state) if isinstance(raw_memory_state, dict) else {}
-        )
+        memory_state = cast(dict[str, object], raw_memory_state) if isinstance(raw_memory_state, dict) else {}
         last_run_id_raw = memory_state.get("last_emitted_run_id")
         last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
         if current_run_id is not None and last_run_id is not None and current_run_id != last_run_id:
@@ -2730,90 +2331,12 @@ class RuntimeRunLoopCoordinator:
         retained_tool_result_count: int,
     ) -> SessionState:
         raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = (
-            dict(cast(dict[str, object], raw_runtime_state))
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
+        runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
         runtime_state["memory_refreshed"] = {
             "last_summary_anchor": summary_anchor,
             "last_original_tool_result_count": original_tool_result_count,
             "last_retained_tool_result_count": retained_tool_result_count,
-            "last_emitted_run_id": (
-                runtime_state.get("run_id")
-                if isinstance(runtime_state.get("run_id"), str)
-                else None
-            ),
-        }
-        return SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={**session.metadata, "runtime_state": runtime_state},
-        )
-
-    @staticmethod
-    def _should_emit_context_pressure(
-        *,
-        session: SessionState,
-        pressure_ratio: float,
-        threshold: float,
-        cooldown_steps: int,
-        tool_result_count: int,
-    ) -> bool:
-        if pressure_ratio < threshold:
-            return False
-        raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = (
-            cast(dict[str, object], raw_runtime_state)
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
-        current_run_id_raw = runtime_state.get("run_id")
-        current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
-        raw_pressure_state = runtime_state.get("context_pressure")
-        pressure_state = (
-            cast(dict[str, object], raw_pressure_state)
-            if isinstance(raw_pressure_state, dict)
-            else {}
-        )
-        last_count_raw = pressure_state.get("last_emitted_tool_result_count")
-        last_count = (
-            last_count_raw
-            if isinstance(last_count_raw, int) and not isinstance(last_count_raw, bool)
-            else None
-        )
-        if last_count is None:
-            return True
-        last_run_id_raw = pressure_state.get("last_emitted_run_id")
-        last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
-        if current_run_id is not None and last_run_id is not None and current_run_id != last_run_id:
-            return True
-        return (tool_result_count - last_count) >= cooldown_steps
-
-    @staticmethod
-    def _session_with_context_pressure_state(
-        *,
-        session: SessionState,
-        pressure_ratio: float,
-        threshold: float,
-        tool_result_count: int,
-    ) -> SessionState:
-        raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = (
-            dict(cast(dict[str, object], raw_runtime_state))
-            if isinstance(raw_runtime_state, dict)
-            else {}
-        )
-        runtime_state["context_pressure"] = {
-            "last_emitted_tool_result_count": tool_result_count,
-            "last_pressure_ratio": pressure_ratio,
-            "threshold": threshold,
-            "last_emitted_run_id": (
-                runtime_state.get("run_id")
-                if isinstance(runtime_state.get("run_id"), str)
-                else None
-            ),
+            "last_emitted_run_id": (runtime_state.get("run_id") if isinstance(runtime_state.get("run_id"), str) else None),
         }
         return SessionState(
             session=session.session,
@@ -2847,25 +2370,19 @@ class RuntimeRunLoopCoordinator:
         ):
             sequence = acp_event.sequence
             current_session = runtime._session_with_current_acp_metadata(current_session)
-            emitted.append(
-                RuntimeStreamChunk(kind="event", session=current_session, event=acp_event)
-            )
+            emitted.append(RuntimeStreamChunk(kind="event", session=current_session, event=acp_event))
         for mcp_event in runtime._envelopes_for_mcp_events(
             session_id=session.session.id,
             start_sequence=sequence + 1,
             mcp_events=runtime._mcp_manager.drain_events(),
         ):
             sequence = mcp_event.sequence
-            emitted.append(
-                RuntimeStreamChunk(kind="event", session=current_session, event=mcp_event)
-            )
+            emitted.append(RuntimeStreamChunk(kind="event", session=current_session, event=mcp_event))
         for lsp_event in runtime._envelopes_for_lsp_events(
             session_id=session.session.id,
             start_sequence=sequence + 1,
             lsp_events=runtime._lsp_manager.drain_events(),
         ):
             sequence = lsp_event.sequence
-            emitted.append(
-                RuntimeStreamChunk(kind="event", session=current_session, event=lsp_event)
-            )
+            emitted.append(RuntimeStreamChunk(kind="event", session=current_session, event=lsp_event))
         return tuple(emitted), current_session, sequence

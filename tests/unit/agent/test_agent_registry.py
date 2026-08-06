@@ -81,14 +81,9 @@ def test_manifest_from_markdown_file_parses_prompt_append_literal_block(
 
     assert manifest.prompt_materialization is not None
     assert manifest.prompt_materialization.body == "You are a security-focused review agent."
-    assert manifest.prompt_materialization.prompt_append == (
-        "Always include severity.\nInclude exact file paths."
-    )
+    assert manifest.prompt_materialization.prompt_append == ("Always include severity.\nInclude exact file paths.")
     rendered = render_agent_prompt({"prompt_materialization": manifest.prompt_materialization})
-    assert rendered == (
-        "You are a security-focused review agent.\n\n"
-        "Always include severity.\nInclude exact file paths."
-    )
+    assert rendered == ("You are a security-focused review agent.\n\nAlways include severity.\nInclude exact file paths.")
 
 
 def test_manifest_from_markdown_file_parses_nested_block_mapping_lists(
@@ -126,16 +121,12 @@ def test_manifest_from_markdown_file_rejects_missing_required_fields(tmp_path: P
         _ = manifest_from_markdown_file(path, scope="project")
 
 
-def test_user_agent_manifest_dir_uses_windows_appdata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_user_agent_manifest_dir_uses_windows_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from voidcode.agent import user_agent_manifest_dir
 
     monkeypatch.setattr(sys, "platform", "win32")
 
-    assert user_agent_manifest_dir(env={"APPDATA": str(tmp_path / "Roaming")}) == (
-        tmp_path / "Roaming" / "voidcode" / "agents"
-    )
+    assert user_agent_manifest_dir(env={"APPDATA": str(tmp_path / "Roaming")}) == (tmp_path / "Roaming" / "voidcode" / "agents")
 
 
 def test_registry_project_scope_overrides_user_scope(tmp_path: Path) -> None:

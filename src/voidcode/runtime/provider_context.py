@@ -66,10 +66,7 @@ def inspect_provider_context(
     oversized_tool_feedback_chars: int = _OVERSIZED_TOOL_FEEDBACK_CHARS,
     diagnostic_policy_mode: RuntimeProviderContextDiagnosticPolicyMode | None = None,
 ) -> RuntimeProviderContextSnapshot:
-    segments = tuple(
-        _segment_snapshot(index, segment)
-        for index, segment in enumerate(assembled_context.segments)
-    )
+    segments = tuple(_segment_snapshot(index, segment) for index, segment in enumerate(assembled_context.segments))
     provider_messages = tuple(
         _provider_message_snapshots(
             segments=assembled_context.segments,
@@ -88,16 +85,9 @@ def inspect_provider_context(
     )
     transform_diagnostics = _transform_diagnostics(dict(assembled_context.metadata))
     diagnostics = (*diagnostics, *transform_diagnostics)
-    policy_decision = (
-        evaluate_provider_context_policy(diagnostics, mode=diagnostic_policy_mode)
-        if diagnostic_policy_mode is not None
-        else None
-    )
+    policy_decision = evaluate_provider_context_policy(diagnostics, mode=diagnostic_policy_mode) if diagnostic_policy_mode is not None else None
     if policy_decision is not None:
-        diagnostics = tuple(
-            _diagnostic_with_policy_metadata(diagnostic, policy_decision)
-            for diagnostic in diagnostics
-        )
+        diagnostics = tuple(_diagnostic_with_policy_metadata(diagnostic, policy_decision) for diagnostic in diagnostics)
     return RuntimeProviderContextSnapshot(
         provider=provider,
         model=model,
@@ -120,18 +110,11 @@ def evaluate_provider_context_policy(
     transform_failures = tuple(
         diagnostic
         for diagnostic in diagnostics
-        if diagnostic.code == "context_transform_trace"
-        and diagnostic.details.get("failure_policy") == "block"
-        and diagnostic.severity == "error"
+        if diagnostic.code == "context_transform_trace" and diagnostic.details.get("failure_policy") == "block" and diagnostic.severity == "error"
     )
-    actionable = tuple(
-        diagnostic for diagnostic in diagnostics if diagnostic.severity in {"warning", "error"}
-    )
+    actionable = tuple(diagnostic for diagnostic in diagnostics if diagnostic.severity in {"warning", "error"})
     blocking = tuple(
-        diagnostic
-        for diagnostic in diagnostics
-        if diagnostic.severity == "error"
-        or diagnostic.code in _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES
+        diagnostic for diagnostic in diagnostics if diagnostic.severity == "error" or diagnostic.code in _PROVIDER_CONTEXT_POLICY_BLOCKING_CODES
     )
     diagnostic_codes = tuple(diagnostic.code for diagnostic in actionable)
     blocking_codes_base = tuple(diagnostic.code for diagnostic in blocking)
@@ -267,9 +250,7 @@ def _transform_diagnostics(
             RuntimeProviderContextDiagnostic(
                 severity=severity,
                 code="context_transform_trace",
-                message=(
-                    f"Context transform provider '{provider_id}' executed with status '{status}'."
-                ),
+                message=(f"Context transform provider '{provider_id}' executed with status '{status}'."),
                 source=provider_id,
                 details=details,
             )
@@ -310,11 +291,7 @@ def _safe_payload(value: object) -> object:
         clipped, truncated = _clip_content(value)
         return {"text": clipped, "truncated": True} if truncated else clipped
     if isinstance(value, dict):
-        return {
-            str(key): _safe_payload(item)
-            for key, item in cast(dict[object, object], value).items()
-            if str(key).lower() not in _SECRET_KEYS
-        }
+        return {str(key): _safe_payload(item) for key, item in cast(dict[object, object], value).items() if str(key).lower() not in _SECRET_KEYS}
     if isinstance(value, list | tuple):
         return [_safe_payload(item) for item in cast(list[object] | tuple[object, ...], value)]
     if isinstance(value, bool | int | float) or value is None:
@@ -423,10 +400,7 @@ def _synthetic_tool_feedback_message_snapshots(
 ) -> list[RuntimeProviderMessageSnapshot]:
     messages: list[RuntimeProviderMessageSnapshot] = []
     tool_feedback_lines: list[str] = []
-    has_runtime_todos = any(
-        segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state"
-        for segment in segments
-    )
+    has_runtime_todos = any(segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state" for segment in segments)
     for segment in segments:
         if segment.role != "assistant":
             content, content_truncated = _clip_content(segment.content)
@@ -448,8 +422,7 @@ def _synthetic_tool_feedback_message_snapshots(
             "\n".join(
                 (
                     "Completed tool calls for current request:",
-                    "Use these results as latest state. Do not repeat completed calls "
-                    "unless retry is required.",
+                    "Use these results as latest state. Do not repeat completed calls unless retry is required.",
                     *tool_feedback_lines,
                 )
             )
@@ -469,11 +442,7 @@ def _synthetic_tool_feedback_message_snapshots(
 def _tool_payload_json(segment: RuntimeContextSegment) -> str:
     metadata = segment.metadata or {}
     raw_data = metadata.get("data")
-    sanitized_data = (
-        _sanitize_debug_data(cast(dict[str, object], raw_data))
-        if isinstance(raw_data, dict)
-        else {}
-    )
+    sanitized_data = _sanitize_debug_data(cast(dict[str, object], raw_data)) if isinstance(raw_data, dict) else {}
     raw_arguments = sanitized_data.get("arguments")
     sanitized_arguments = (
         _provider_visible_debug_arguments(
@@ -489,11 +458,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
         "status": metadata.get("status"),
         "content": _redact_debug_text(segment.content or ""),
         "error": _safe_payload(metadata.get("error")),
-        "data": {
-            key: value
-            for key, value in sanitized_data.items()
-            if key not in {"tool_call_id", "arguments"}
-        },
+        "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
         "truncated": metadata.get("truncated"),
         "partial": metadata.get("partial"),
         "reference": metadata.get("reference"),
@@ -518,11 +483,7 @@ def _tool_result_payload_json(result: ToolResult) -> str:
         "status": result.status,
         "content": _redact_debug_text(result.content or ""),
         "error": _safe_payload(result.error),
-        "data": {
-            key: value
-            for key, value in sanitized_data.items()
-            if key not in {"tool_call_id", "arguments"}
-        },
+        "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
         "truncated": result.truncated,
         "partial": result.partial,
         "reference": result.reference,
@@ -577,9 +538,7 @@ def _diagnostics(
     )
     diagnostics.extend(_context_window_diagnostics(context_metadata))
     diagnostics.extend(_todo_projection_diagnostics(segments))
-    if tool_feedback_mode == "synthetic_user_message" and context_metadata.get(
-        "retained_tool_result_count", 0
-    ):
+    if tool_feedback_mode == "synthetic_user_message" and context_metadata.get("retained_tool_result_count", 0):
         diagnostics.append(
             RuntimeProviderContextDiagnostic(
                 severity="info",
@@ -589,9 +548,7 @@ def _diagnostics(
                     "feedback block instead of provider-native tool-role messages."
                 ),
                 source="provider_synthetic_tool_feedback",
-                suggested_fix=(
-                    "Inspect provider_messages to verify each tool result appears exactly once."
-                ),
+                suggested_fix=("Inspect provider_messages to verify each tool result appears exactly once."),
             )
         )
     return diagnostics
@@ -639,14 +596,12 @@ def _compact_projection_role_diagnostics(
                 severity="error",
                 code="compact_projection_wrong_role",
                 message=(
-                    "Runtime compact projection segments must be system context, not "
-                    "provider tool-role messages or synthetic assistant tool calls."
+                    "Runtime compact projection segments must be system context, not provider tool-role messages or synthetic assistant tool calls."
                 ),
                 source=source,
                 segment_indices=(index,),
                 suggested_fix=(
-                    "Insert continuity summaries and artifact references as runtime-owned "
-                    "system segments without tool_call_id or tool_name."
+                    "Insert continuity summaries and artifact references as runtime-owned system segments without tool_call_id or tool_name."
                 ),
                 details={"role": segment.role},
             )
@@ -673,14 +628,10 @@ def _tool_pair_diagnostics(
                     RuntimeProviderContextDiagnostic(
                         severity="warning",
                         code="oversized_tool_feedback",
-                        message=(
-                            "A retained tool result is large enough to pressure provider context."
-                        ),
+                        message=("A retained tool result is large enough to pressure provider context."),
                         source=_source_from_metadata(segment),
                         segment_indices=(index,),
-                        suggested_fix=(
-                            "Prefer runtime-owned summaries or artifacts for large tool outputs."
-                        ),
+                        suggested_fix=("Prefer runtime-owned summaries or artifacts for large tool outputs."),
                         details={
                             "content_chars": len(segment.content or ""),
                             "threshold_chars": oversized_tool_feedback_chars,
@@ -696,9 +647,7 @@ def _tool_pair_diagnostics(
                     message="Assistant tool call has no matching tool result segment.",
                     source="assembled_context",
                     segment_indices=tuple(indices),
-                    suggested_fix=(
-                        "Ensure every assistant tool call is followed by exactly one tool result."
-                    ),
+                    suggested_fix=("Ensure every assistant tool call is followed by exactly one tool result."),
                     details={"tool_call_id": tool_call_id},
                 )
             )
@@ -711,19 +660,12 @@ def _tool_pair_diagnostics(
                     message="Tool result segment has no matching assistant tool call segment.",
                     source="assembled_context",
                     segment_indices=tuple(indices),
-                    suggested_fix=(
-                        "Rebuild provider context from paired runtime.tool_completed records."
-                    ),
+                    suggested_fix=("Rebuild provider context from paired runtime.tool_completed records."),
                     details={"tool_call_id": tool_call_id},
                 )
             )
     duplicate_ids = sorted(
-        {
-            tool_call_id
-            for ids_by_role in (assistant_ids, tool_ids)
-            for tool_call_id, indices in ids_by_role.items()
-            if len(indices) > 1
-        }
+        {tool_call_id for ids_by_role in (assistant_ids, tool_ids) for tool_call_id, indices in ids_by_role.items() if len(indices) > 1}
     )
     if duplicate_ids:
         diagnostics.append(
@@ -741,14 +683,9 @@ def _tool_pair_diagnostics(
             RuntimeProviderContextDiagnostic(
                 severity="warning",
                 code="provider_requires_tools_schema",
-                message=(
-                    "Provider history contains tool calls but the current request has no "
-                    "active tool schema."
-                ),
+                message=("Provider history contains tool calls but the current request has no active tool schema."),
                 source="tool_registry",
-                suggested_fix=(
-                    "Provide the active tool schema required by persisted provider history."
-                ),
+                suggested_fix=("Provide the active tool schema required by persisted provider history."),
             )
         )
     return diagnostics
@@ -764,33 +701,14 @@ def _context_window_diagnostics(
             RuntimeProviderContextDiagnostic(
                 severity="info",
                 code="tool_feedback_not_retained",
-                message=(
-                    "Some historical tool results were dropped before provider context assembly."
-                ),
+                message=("Some historical tool results were dropped before provider context assembly."),
                 source="context_window",
-                suggested_fix=(
-                    "Inspect continuity_state and retained tool segments for critical state "
-                    "coverage."
-                ),
+                suggested_fix=("Inspect continuity_state and retained tool segments for critical state coverage."),
                 details={"dropped_tool_result_count": dropped},
             )
         )
     continuity = context_metadata.get("continuity_state")
-    continuity_payload = (
-        cast(dict[str, object], continuity) if isinstance(continuity, dict) else None
-    )
-    if continuity_payload is not None:
-        source = continuity_payload.get("distillation_source")
-        if isinstance(source, str) and source:
-            diagnostics.append(
-                RuntimeProviderContextDiagnostic(
-                    severity="info",
-                    code="continuity_distillation_source",
-                    message=("Continuity summary source recorded for provider context debugging."),
-                    source="context_window",
-                    details={"distillation_source": source},
-                )
-            )
+    continuity_payload = cast(dict[str, object], continuity) if isinstance(continuity, dict) else None
     if continuity_payload is not None and not continuity_payload.get("summary_text") and dropped:
         diagnostics.append(
             RuntimeProviderContextDiagnostic(
@@ -798,9 +716,7 @@ def _context_window_diagnostics(
                 code="compaction_boundary_missing_checkpoint",
                 message="Tool results were dropped without a continuity summary checkpoint.",
                 source="context_window",
-                suggested_fix=(
-                    "Enable continuity summarization before dropping older tool feedback."
-                ),
+                suggested_fix=("Enable continuity summarization before dropping older tool feedback."),
             )
         )
     return diagnostics
@@ -809,28 +725,17 @@ def _context_window_diagnostics(
 def _todo_projection_diagnostics(
     segments: tuple[RuntimeContextSegment, ...],
 ) -> list[RuntimeProviderContextDiagnostic]:
-    has_runtime_todos = any(
-        segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state"
-        for segment in segments
-    )
-    todo_tool_indices = [
-        index
-        for index, segment in enumerate(segments)
-        if segment.role == "tool" and segment.tool_name == "todo_write"
-    ]
+    has_runtime_todos = any(segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state" for segment in segments)
+    todo_tool_indices = [index for index, segment in enumerate(segments) if segment.role == "tool" and segment.tool_name == "todo_write"]
     if todo_tool_indices and not has_runtime_todos:
         return [
             RuntimeProviderContextDiagnostic(
                 severity="warning",
                 code="todo_state_only_in_droppable_feedback",
-                message=(
-                    "TODO/progress state is visible only through retained todo_write tool feedback."
-                ),
+                message=("TODO/progress state is visible only through retained todo_write tool feedback."),
                 source="runtime_todo_state",
                 segment_indices=tuple(todo_tool_indices),
-                suggested_fix=(
-                    "Persist TODO/progress as runtime-owned state before context-window pruning."
-                ),
+                suggested_fix=("Persist TODO/progress as runtime-owned state before context-window pruning."),
             )
         ]
     return []

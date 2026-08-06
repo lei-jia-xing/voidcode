@@ -10,7 +10,7 @@ _WORKSPACE_DISCOVERY_TOOLS = (
     "read_file",
     "glob",
     "grep",
-    "ast_grep_search",
+    "ast_grep",
     "lsp",
 )
 
@@ -21,26 +21,16 @@ _LEADER_TOOL_ALLOWLIST = (
     "edit",
     "multi_edit",
     "apply_patch",
-    "background_process_start",
-    "background_process_logs",
-    "background_process_stop",
     "shell_exec",
     "format_file",
     "task",
     "todo_write",
     "background_cancel",
-    "background_retry",
     "background_output",
     "question",
     "skill",
-    "ast_grep_preview",
-    "ast_grep_replace",
     "web_search",
     "web_fetch",
-    "memory_add",
-    "memory_delete",
-    "memory_list",
-    "memory_search",
     "mcp/*",
 )
 
@@ -63,10 +53,7 @@ LEADER_AGENT_MANIFEST = AgentManifest(
     id="leader",
     name="Leader",
     mode="primary",
-    description=(
-        "Primary user-facing agent preset with runtime-owned delegation guidance "
-        "for task, background_output, and child preset selection."
-    ),
+    description=("Primary user-facing agent preset with runtime-owned delegation guidance for task, background_output, and child preset selection."),
     prompt_profile="leader",
     execution_engine="provider",
     tool_allowlist=_LEADER_TOOL_ALLOWLIST,
@@ -85,10 +72,7 @@ WORKER_AGENT_MANIFEST = AgentManifest(
     id="worker",
     name="Worker",
     mode="subagent",
-    description=(
-        "Focused delegated executor preset for narrow implementation tasks, "
-        "bounded by the active runtime tool allowlist."
-    ),
+    description=("Focused delegated executor preset for narrow implementation tasks, bounded by the active runtime tool allowlist."),
     prompt_profile="worker",
     execution_engine="provider",
     tool_allowlist=(
@@ -120,9 +104,7 @@ ADVISOR_AGENT_MANIFEST = AgentManifest(
     id="advisor",
     name="Advisor",
     mode="subagent",
-    description=(
-        "Read-only advisory preset for architecture, debugging, risk, and review guidance."
-    ),
+    description=("Read-only advisory preset for architecture, debugging, risk, and review guidance."),
     prompt_profile="advisor",
     execution_engine="provider",
     tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
@@ -141,10 +123,7 @@ EXPLORE_AGENT_MANIFEST = AgentManifest(
     id="explore",
     name="Explore",
     mode="subagent",
-    description=(
-        "Read-only workspace-bound exploration preset for local code structure, "
-        "paths, and pattern discovery."
-    ),
+    description=("Read-only workspace-bound exploration preset for local code structure, paths, and pattern discovery."),
     prompt_profile="explore",
     execution_engine="provider",
     tool_allowlist=_WORKSPACE_DISCOVERY_TOOLS,
@@ -163,9 +142,7 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
     id="researcher",
     name="Researcher",
     mode="subagent",
-    description=(
-        "External research preset for public docs, repositories, and implementation examples."
-    ),
+    description=("External research preset for public docs, repositories, and implementation examples."),
     prompt_profile="researcher",
     execution_engine="provider",
     tool_allowlist=("web_search", "web_fetch"),
@@ -193,10 +170,7 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
     id="product",
     name="Product",
     mode="primary",
-    description=(
-        "Planning agent preset for requirement discussion, scope shaping, "
-        "acceptance criteria, and issue drafting."
-    ),
+    description=("Planning agent preset for requirement discussion, scope shaping, acceptance criteria, and issue drafting."),
     prompt_profile="product",
     execution_engine="provider",
     tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,
@@ -225,40 +199,22 @@ def validate_builtin_agent_manifests(
             raise ValueError(f"duplicate builtin agent manifest id: {manifest.id}")
         manifest_ids.add(manifest.id)
         if not manifest.name.strip():
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must declare a non-empty name"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must declare a non-empty name")
         if not manifest.description.strip():
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must declare a non-empty description"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must declare a non-empty description")
         if manifest.prompt_profile is None or not manifest.prompt_profile.strip():
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must declare a builtin prompt_profile"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must declare a builtin prompt_profile")
         if render_builtin_prompt_profile(manifest.prompt_profile) is None:
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' references unknown prompt profile "
-                f"'{manifest.prompt_profile}'"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' references unknown prompt profile '{manifest.prompt_profile}'")
         if manifest.execution_engine is None:
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must declare an execution_engine"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must declare an execution_engine")
         if len(manifest.tool_allowlist) != len(set(manifest.tool_allowlist)):
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate tool patterns")
         if len(manifest.preset_hook_refs) != len(set(manifest.preset_hook_refs)):
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must not contain "
-                "duplicate preset hook refs"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must not contain duplicate preset hook refs")
         for hook_ref in manifest.preset_hook_refs:
             if not hook_ref.strip():
-                raise ValueError(
-                    f"builtin agent manifest '{manifest.id}' preset hook refs must be non-empty"
-                )
+                raise ValueError(f"builtin agent manifest '{manifest.id}' preset hook refs must be non-empty")
         validate_hook_preset_refs(
             manifest.preset_hook_refs,
             field_path=f"builtin agent manifest '{manifest.id}' preset_hook_refs",
@@ -266,40 +222,25 @@ def validate_builtin_agent_manifests(
         if manifest.mcp_binding is not None:
             binding_profile = manifest.mcp_binding.profile
             if binding_profile is not None and not binding_profile.strip():
-                raise ValueError(
-                    f"builtin agent manifest '{manifest.id}' mcp_binding.profile must be "
-                    "a non-empty string"
-                )
+                raise ValueError(f"builtin agent manifest '{manifest.id}' mcp_binding.profile must be a non-empty string")
             if len(manifest.mcp_binding.servers) != len(set(manifest.mcp_binding.servers)):
-                raise ValueError(
-                    f"builtin agent manifest '{manifest.id}' mcp_binding.servers must not "
-                    "contain duplicate server refs"
-                )
+                raise ValueError(f"builtin agent manifest '{manifest.id}' mcp_binding.servers must not contain duplicate server refs")
             for server_ref in manifest.mcp_binding.servers:
                 if not server_ref.strip():
-                    raise ValueError(
-                        f"builtin agent manifest '{manifest.id}' mcp_binding.servers refs "
-                        "must be non-empty"
-                    )
+                    raise ValueError(f"builtin agent manifest '{manifest.id}' mcp_binding.servers refs must be non-empty")
         if manifest.mode == "primary" and not manifest.top_level_selectable:
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' has mode='primary' but is not "
-                "marked top_level_selectable"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' has mode='primary' but is not marked top_level_selectable")
         if manifest.mode == "subagent" and manifest.top_level_selectable:
             raise ValueError(
                 f"builtin agent manifest '{manifest.id}' has mode='subagent' but is marked "
                 "top_level_selectable; subagent presets must not be top-level selectable"
             )
         if manifest.prompt_materialization is None:
-            raise ValueError(
-                f"builtin agent manifest '{manifest.id}' must declare prompt_materialization"
-            )
+            raise ValueError(f"builtin agent manifest '{manifest.id}' must declare prompt_materialization")
         materialization = manifest.prompt_materialization
         if render_builtin_prompt_profile(materialization.profile) is None:
             raise ValueError(
-                f"builtin agent manifest '{manifest.id}' prompt_materialization.profile "
-                f"references unknown prompt profile '{materialization.profile}'"
+                f"builtin agent manifest '{manifest.id}' prompt_materialization.profile references unknown prompt profile '{materialization.profile}'"
             )
         if materialization.profile != manifest.prompt_profile:
             raise ValueError(
@@ -328,9 +269,7 @@ _VALIDATED_BUILTIN_AGENT_MANIFESTS = validate_builtin_agent_manifests(
     )
 )
 
-_BUILTIN_AGENT_MANIFESTS: dict[str, AgentManifest] = {
-    manifest.id: manifest for manifest in _VALIDATED_BUILTIN_AGENT_MANIFESTS
-}
+_BUILTIN_AGENT_MANIFESTS: dict[str, AgentManifest] = {manifest.id: manifest for manifest in _VALIDATED_BUILTIN_AGENT_MANIFESTS}
 
 
 def get_builtin_agent_manifest(agent_id: str) -> AgentManifest | None:
@@ -368,6 +307,4 @@ def is_agent_top_level_selectable(agent_id: str) -> bool:
 
 
 def list_top_level_selectable_agent_manifests() -> tuple[AgentManifest, ...]:
-    return tuple(
-        manifest for manifest in _BUILTIN_AGENT_MANIFESTS.values() if manifest.top_level_selectable
-    )
+    return tuple(manifest for manifest in _BUILTIN_AGENT_MANIFESTS.values() if manifest.top_level_selectable)

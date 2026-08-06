@@ -127,9 +127,7 @@ def _search_fallback(
         )
 
 
-def _extract_duckduckgo_results(
-    soup: BeautifulSoup, num_results: int
-) -> list[tuple[str, str, str]]:
+def _extract_duckduckgo_results(soup: BeautifulSoup, num_results: int) -> list[tuple[str, str, str]]:
     results: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -298,12 +296,7 @@ def _resolve_duckduckgo_result_url(raw_url: str) -> str | None:
             values = query.get(key)
             if values:
                 return unquote(values[0])
-        if (
-            parsed.scheme
-            and parsed.netloc
-            and parsed.netloc.endswith("duckduckgo.com")
-            and parsed.path.startswith("/l/")
-        ):
+        if parsed.scheme and parsed.netloc and parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
             return raw_url
         if raw_url.startswith("/l/"):
             return raw_url
@@ -314,10 +307,7 @@ def _resolve_duckduckgo_result_url(raw_url: str) -> str | None:
 class WebSearchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="web_search",
-        description=(
-            "Search the web for information. Returns search results "
-            "with titles, URLs, and snippets."
-        ),
+        description=("Search the web for information. Returns search results with titles, URLs, and snippets."),
         input_schema={
             "query": {"type": "string", "description": "The search query"},
             "numResults": {
@@ -331,9 +321,7 @@ class WebSearchTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
 
-    def invoke_with_runtime_timeout(
-        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
-    ) -> ToolResult:
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
 
     def _invoke(

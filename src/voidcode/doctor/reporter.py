@@ -68,9 +68,7 @@ class CapabilityReport:
                 }
                 for r in self.results
             ],
-            "first_task_readiness": (
-                self.first_task_readiness.to_dict() if self.first_task_readiness else None
-            ),
+            "first_task_readiness": (self.first_task_readiness.to_dict() if self.first_task_readiness else None),
             "has_errors": self.has_errors,
             "is_healthy": self.is_healthy,
         }
@@ -95,9 +93,7 @@ def create_report(
         "ready": sum(1 for r in results if r.status == CapabilityCheckStatus.READY),
         "missing": sum(1 for r in results if r.status == CapabilityCheckStatus.NOT_FOUND),
         "errors": sum(1 for r in results if r.status == CapabilityCheckStatus.ERROR),
-        "not_configured": sum(
-            1 for r in results if r.status == CapabilityCheckStatus.NOT_CONFIGURED
-        ),
+        "not_configured": sum(1 for r in results if r.status == CapabilityCheckStatus.NOT_CONFIGURED),
     }
     return CapabilityReport(
         workspace=workspace,
@@ -108,9 +104,7 @@ def create_report(
     )
 
 
-def _create_first_task_readiness(
-    results: list[CapabilityCheckResult], workspace: Path | None
-) -> FirstTaskReadiness:
+def _create_first_task_readiness(results: list[CapabilityCheckResult], workspace: Path | None) -> FirstTaskReadiness:
     provider_result = next((r for r in results if r.name == "provider.readiness"), None)
     config_result = next((r for r in results if r.name == "runtime.config"), None)
     workspace_arg = f" --workspace {workspace}" if workspace else ""
@@ -136,8 +130,7 @@ def _create_first_task_readiness(
             status="not_ready",
             summary="No provider-backed readiness check ran for the first coding task.",
             next_step=(
-                "Run `voidcode config init --model provider/model"
-                f"{workspace_arg}` with a real provider/model, then run `{doctor_command}` again."
+                f"Run `voidcode config init --model provider/model{workspace_arg}` with a real provider/model, then run `{doctor_command}` again."
             ),
             blockers=["provider.readiness check is missing"],
             details={
@@ -161,16 +154,12 @@ def _create_first_task_readiness(
     warnings = [
         f"{result.name}: {result.error_message or result.status.value}"
         for result in results
-        if result.status != CapabilityCheckStatus.READY
-        and result.name != "provider.readiness"
-        and result.name != "runtime.config"
+        if result.status != CapabilityCheckStatus.READY and result.name != "provider.readiness" and result.name != "runtime.config"
     ]
     if warnings:
         return FirstTaskReadiness(
             status="degraded",
-            summary=(
-                "Provider/model/auth are ready, but local tooling may reduce first-task quality."
-            ),
+            summary=("Provider/model/auth are ready, but local tooling may reduce first-task quality."),
             next_step=f"You can try `{run_command}` now, then address the warnings below.",
             warnings=warnings,
             details=_first_task_details(provider_result, results),
@@ -184,9 +173,7 @@ def _create_first_task_readiness(
     )
 
 
-def _first_task_details(
-    result: CapabilityCheckResult, results: list[CapabilityCheckResult]
-) -> dict[str, Any]:
+def _first_task_details(result: CapabilityCheckResult, results: list[CapabilityCheckResult]) -> dict[str, Any]:
     details = dict(result.details)
     return {
         "workspace_config_valid": True,
@@ -214,20 +201,11 @@ def _local_tool_availability(results: list[CapabilityCheckResult]) -> list[dict[
 
 def _next_step_for_provider_status(provider_status: str, workspace_arg: str) -> str:
     if provider_status == "missing_model":
-        return (
-            "Run `voidcode config init --model provider/model"
-            f"{workspace_arg}` with a real provider/model, then rerun doctor."
-        )
+        return f"Run `voidcode config init --model provider/model{workspace_arg}` with a real provider/model, then rerun doctor."
     if provider_status in {"missing_auth", "unconfigured"}:
-        return (
-            "Set the provider API key in your environment or user config, then run "
-            f"`voidcode doctor{workspace_arg}` again."
-        )
+        return f"Set the provider API key in your environment or user config, then run `voidcode doctor{workspace_arg}` again."
     if provider_status == "invalid_model":
-        return (
-            "Choose a supported provider/model with `voidcode provider models <provider>`, "
-            f"then run `voidcode doctor{workspace_arg}` again."
-        )
+        return f"Choose a supported provider/model with `voidcode provider models <provider>`, then run `voidcode doctor{workspace_arg}` again."
     return f"Follow the provider guidance above, then run `voidcode doctor{workspace_arg}` again."
 
 

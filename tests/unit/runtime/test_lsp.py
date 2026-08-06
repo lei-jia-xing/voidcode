@@ -89,9 +89,7 @@ def test_lsp_config_state_wraps_runtime_lsp_config_servers() -> None:
 
 def test_lsp_config_state_enables_explicit_servers_when_enabled_omitted() -> None:
     state = LspConfigState.from_runtime_config(
-        RuntimeLspConfig(
-            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))}
-        )
+        RuntimeLspConfig(servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))})
     )
 
     assert state.configured_enabled is True
@@ -191,11 +189,7 @@ def test_build_lsp_manager_returns_managed_manager_when_enabled_and_configured()
 
 
 def test_build_lsp_manager_enables_when_servers_configured_without_explicit_flag() -> None:
-    manager = build_lsp_manager(
-        RuntimeLspConfig(
-            servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))}
-        )
-    )
+    manager = build_lsp_manager(RuntimeLspConfig(servers={"pyright": RuntimeLspServerConfig(command=("pyright-langserver", "--stdio"))}))
 
     state = manager.current_state()
 
@@ -251,9 +245,7 @@ def test_managed_lsp_manager_marks_failed_startup_when_command_is_missing(tmp_pa
     manager = ManagedLspManager(
         RuntimeLspConfig(
             enabled=True,
-            servers={
-                "broken": RuntimeLspServerConfig(command=("definitely-not-a-real-lsp-binary",))
-            },
+            servers={"broken": RuntimeLspServerConfig(command=("definitely-not-a-real-lsp-binary",))},
         )
     )
 
@@ -393,9 +385,7 @@ def test_send_request_matches_generated_request_id(monkeypatch: pytest.MonkeyPat
     assert second["result"] == {"value": "second"}
 
 
-def test_managed_lsp_manager_terminates_process_when_initialize_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_managed_lsp_manager_terminates_process_when_initialize_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = ManagedLspManager(
         RuntimeLspConfig(
             enabled=True,
@@ -432,9 +422,7 @@ def test_managed_lsp_manager_terminates_process_when_initialize_fails(
 
     fake_process = _FakeProcess()
 
-    def _fake_popen(
-        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
-    ) -> _FakeProcess:
+    def _fake_popen(command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object) -> _FakeProcess:
         _ = command, cwd, stdin, stdout, stderr
         return fake_process
 
@@ -512,9 +500,7 @@ def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) ->
     )
     lease_key = lease_key_cls(server_name="pyright", workspace_root=tmp_path)
     manager._leased_servers["pyright"] = lease_cls(key=lease_key, generation=1)
-    registry._entries[lease_key] = module._SharedLspServerEntry(
-        server=manager._running_servers["pyright"], generation=1, ref_count=1
-    )
+    registry._entries[lease_key] = module._SharedLspServerEntry(server=manager._running_servers["pyright"], generation=1, ref_count=1)
 
     def _raise_timeout(*_args: object, **_kwargs: object) -> object:
         raise TimeoutError("shutdown timed out")
@@ -535,9 +521,7 @@ def test_stop_running_server_cleans_up_after_shutdown_timeout(tmp_path: Path) ->
     registry._next_generation = 1
 
 
-def test_managed_lsp_manager_reuses_workspace_scoped_server_across_runtime_instances(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_managed_lsp_manager_reuses_workspace_scoped_server_across_runtime_instances(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
     module = import_module("voidcode.runtime.lsp")
@@ -568,9 +552,7 @@ def test_managed_lsp_manager_reuses_workspace_scoped_server_across_runtime_insta
 
     popen_calls: list[tuple[list[str], Path]] = []
 
-    def _fake_popen(
-        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
-    ) -> _FakeProcess:
+    def _fake_popen(command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object) -> _FakeProcess:
         _ = stdin, stdout, stderr
         popen_calls.append((command, cwd))
         return _FakeProcess()
@@ -621,12 +603,8 @@ def test_managed_lsp_manager_reuses_workspace_scoped_server_across_runtime_insta
     assert first_response.response["result"] == {"ok": True}
     assert second_response.response["result"] == {"ok": True}
     assert popen_calls == [(["pyright-langserver", "--stdio"], tmp_path)]
-    assert [event.event_type for event in manager_one.drain_events()] == [
-        "runtime.lsp_server_started"
-    ]
-    assert [event.event_type for event in manager_two.drain_events()] == [
-        "runtime.lsp_server_reused"
-    ]
+    assert [event.event_type for event in manager_one.drain_events()] == ["runtime.lsp_server_started"]
+    assert [event.event_type for event in manager_two.drain_events()] == ["runtime.lsp_server_reused"]
 
     assert manager_one.shutdown() == ()
     shutdown_events = manager_two.shutdown()
@@ -636,9 +614,7 @@ def test_managed_lsp_manager_reuses_workspace_scoped_server_across_runtime_insta
     registry._next_generation = 1
 
 
-def test_managed_lsp_manager_rejects_reuse_when_shared_workspace_config_differs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_managed_lsp_manager_rejects_reuse_when_shared_workspace_config_differs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
     module = import_module("voidcode.runtime.lsp")
@@ -667,9 +643,7 @@ def test_managed_lsp_manager_rejects_reuse_when_shared_workspace_config_differs(
             self.terminated = True
             return 0
 
-    def _fake_popen(
-        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
-    ) -> _FakeProcess:
+    def _fake_popen(command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object) -> _FakeProcess:
         _ = command, cwd, stdin, stdout, stderr
         return _FakeProcess()
 
@@ -718,9 +692,7 @@ def test_managed_lsp_manager_rejects_reuse_when_shared_workspace_config_differs(
         _ = manager_two.request(request)
 
     rejected_events = manager_two.drain_events()
-    assert [event.event_type for event in rejected_events] == [
-        "runtime.lsp_server_startup_rejected"
-    ]
+    assert [event.event_type for event in rejected_events] == ["runtime.lsp_server_startup_rejected"]
     assert rejected_events[0].payload["state"] == "rejected"
     assert manager_two.current_state().servers["pyright"].status == "failed"
 
@@ -729,9 +701,7 @@ def test_managed_lsp_manager_rejects_reuse_when_shared_workspace_config_differs(
     registry._next_generation = 1
 
 
-def test_stale_shared_server_release_does_not_stop_replacement_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_stale_shared_server_release_does_not_stop_replacement_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
     module = import_module("voidcode.runtime.lsp")
@@ -762,9 +732,7 @@ def test_stale_shared_server_release_does_not_stop_replacement_process(
 
     popen_processes: list[_FakeProcess] = []
 
-    def _fake_popen(
-        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
-    ) -> _FakeProcess:
+    def _fake_popen(command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object) -> _FakeProcess:
         _ = command, cwd, stdin, stdout, stderr
         process = _FakeProcess()
         popen_processes.append(process)
@@ -812,12 +780,8 @@ def test_stale_shared_server_release_does_not_stop_replacement_process(
     _ = manager_one.request(request)
     _ = manager_two.request(request)
     assert len(popen_processes) == 1
-    assert [event.event_type for event in manager_one.drain_events()] == [
-        "runtime.lsp_server_started"
-    ]
-    assert [event.event_type for event in manager_two.drain_events()] == [
-        "runtime.lsp_server_reused"
-    ]
+    assert [event.event_type for event in manager_one.drain_events()] == ["runtime.lsp_server_started"]
+    assert [event.event_type for event in manager_two.drain_events()] == ["runtime.lsp_server_reused"]
 
     first_lease = manager_one._leased_servers["pyright"]
     first_entry = registry._entries[first_lease.key]
@@ -839,9 +803,7 @@ def test_stale_shared_server_release_does_not_stop_replacement_process(
     assert replacement_lease.generation == 2
     assert replacement_entry.generation == 2
     assert replacement_entry.server.process.poll() is None
-    assert [event.event_type for event in manager_three.drain_events()] == [
-        "runtime.lsp_server_started"
-    ]
+    assert [event.event_type for event in manager_three.drain_events()] == ["runtime.lsp_server_started"]
 
     assert manager_one.shutdown() == ()
     assert replacement_entry.server.process.poll() is None
@@ -854,9 +816,7 @@ def test_stale_shared_server_release_does_not_stop_replacement_process(
     registry._next_generation = 1
 
 
-def test_managed_lsp_manager_shared_server_uses_single_request_id_sequence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_managed_lsp_manager_shared_server_uses_single_request_id_sequence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
     module = import_module("voidcode.runtime.lsp")
@@ -894,9 +854,7 @@ def test_managed_lsp_manager_shared_server_uses_single_request_id_sequence(
         {"jsonrpc": "2.0", "id": 4, "result": None},
     ]
 
-    def _fake_popen(
-        command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object
-    ) -> _FakeProcess:
+    def _fake_popen(command: list[str], *, cwd: Path, stdin: object, stdout: object, stderr: object) -> _FakeProcess:
         _ = stdin, stdout, stderr
         popen_calls.append((command, cwd))
         return _FakeProcess()
@@ -948,12 +906,8 @@ def test_managed_lsp_manager_shared_server_uses_single_request_id_sequence(
     assert popen_calls == [(["pyright-langserver", "--stdio"], tmp_path)]
     assert sent_ids == [1, 2, 3]
 
-    assert [event.event_type for event in manager_one.drain_events()] == [
-        "runtime.lsp_server_started"
-    ]
-    assert [event.event_type for event in manager_two.drain_events()] == [
-        "runtime.lsp_server_reused"
-    ]
+    assert [event.event_type for event in manager_one.drain_events()] == ["runtime.lsp_server_started"]
+    assert [event.event_type for event in manager_two.drain_events()] == ["runtime.lsp_server_reused"]
 
     assert manager_one.shutdown() == ()
     shutdown_events = manager_two.shutdown()
@@ -987,9 +941,7 @@ def test_initialize_params_from_lsprotocol_keep_existing_wire_shape(tmp_path: Pa
         client_info=lsp_types.ClientInfo(name="voidcode", version="0.1.0"),
         locale="zh-CN",
         root_uri=workspace_root.as_uri(),
-        workspace_folders=[
-            lsp_types.WorkspaceFolder(uri=workspace_root.as_uri(), name=workspace_root.name)
-        ],
+        workspace_folders=[lsp_types.WorkspaceFolder(uri=workspace_root.as_uri(), name=workspace_root.name)],
         capabilities=lsp_types.ClientCapabilities(),
     )
 
@@ -999,9 +951,7 @@ def test_initialize_params_from_lsprotocol_keep_existing_wire_shape(tmp_path: Pa
     assert payload["clientInfo"] == {"name": "voidcode", "version": "0.1.0"}
     assert payload["locale"] == "zh-CN"
     assert payload["rootUri"] == workspace_root.as_uri()
-    assert payload["workspaceFolders"] == [
-        {"uri": workspace_root.as_uri(), "name": workspace_root.name}
-    ]
+    assert payload["workspaceFolders"] == [{"uri": workspace_root.as_uri(), "name": workspace_root.name}]
     assert payload["capabilities"] == {}
 
 

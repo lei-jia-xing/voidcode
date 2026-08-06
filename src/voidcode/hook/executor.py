@@ -18,7 +18,6 @@ from ..runtime.events import (
     RUNTIME_BACKGROUND_TASK_REGISTERED,
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
     RUNTIME_BACKGROUND_TASK_STARTED,
-    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
@@ -218,7 +217,6 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         "surface": request.surface,
         "session_id": request.session_id,
         **dict(request.payload),
-        **({"kind": "hook_result"} if request.surface == "context_pressure" else {}),
     }
     for command in commands:
         last_sequence += 1
@@ -333,7 +331,6 @@ def _event_type_for_surface(surface: RuntimeHookSurface) -> str:
         "background_task_notification_enqueued": RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
         "background_task_result_read": RUNTIME_BACKGROUND_TASK_RESULT_READ,
         "delegated_result_available": RUNTIME_DELEGATED_RESULT_AVAILABLE,
-        "context_pressure": RUNTIME_CONTEXT_PRESSURE,
         "turn_progress": RUNTIME_TURN_PROGRESS,
         "stuck_detected": RUNTIME_STUCK_DETECTED,
     }[surface]

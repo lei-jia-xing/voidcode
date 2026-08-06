@@ -122,10 +122,7 @@ class FormatterExecutor:
                 attempted_commands=tuple(attempted_commands),
                 stdout=last_proc.stdout,
                 stderr=last_proc.stderr,
-                error=(
-                    f"Format failed for {file_path.name} using preset '{lang}' from {cwd}: "
-                    f"{stderr or 'formatter exited with a non-zero status'}"
-                ),
+                error=(f"Format failed for {file_path.name} using preset '{lang}' from {cwd}: {stderr or 'formatter exited with a non-zero status'}"),
             )
 
         attempted_tool_names = ", ".join(dict.fromkeys(missing_tools))
@@ -142,18 +139,14 @@ class FormatterExecutor:
             ),
         )
 
-    def _resolve_formatter_cwd(
-        self, *, file_path: Path, preset: RuntimeFormatterPresetConfig
-    ) -> Path:
+    def _resolve_formatter_cwd(self, *, file_path: Path, preset: RuntimeFormatterPresetConfig) -> Path:
         if preset.cwd_policy == "workspace":
             return self._workspace
         if preset.cwd_policy == "file_directory":
             return file_path.parent
         return self._find_nearest_root(file_path=file_path, preset=preset) or self._workspace
 
-    def _find_nearest_root(
-        self, *, file_path: Path, preset: RuntimeFormatterPresetConfig
-    ) -> Path | None:
+    def _find_nearest_root(self, *, file_path: Path, preset: RuntimeFormatterPresetConfig) -> Path | None:
         if not preset.root_markers:
             return None
 

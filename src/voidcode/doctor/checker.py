@@ -160,10 +160,7 @@ class FormatterPresetChecker:
                     "primary_command": list(self._preset.command) if self._preset.command else [],
                     "fallback_commands": [list(cmd) for cmd in self._preset.fallback_commands],
                 },
-                error_message=(
-                    f"Formatter preset '{self._preset_name}' has no available executable. "
-                    f"Tried: {', '.join(missing)}"
-                ),
+                error_message=(f"Formatter preset '{self._preset_name}' has no available executable. Tried: {', '.join(missing)}"),
             )
 
         # Some commands are available
@@ -276,8 +273,7 @@ class LspServerChecker:
                 "extensions": list(self._preset.extensions) if self._preset.extensions else [],
             },
             error_message=(
-                f"LSP server '{self._server_name}' command '{executable}' not found in PATH. "
-                f"Full command: {format_redacted_mcp_command(command)}"
+                f"LSP server '{self._server_name}' command '{executable}' not found in PATH. Full command: {format_redacted_mcp_command(command)}"
             ),
         )
 
@@ -354,7 +350,6 @@ class McpServerChecker:
                 "transport": self._config.transport,
             },
             error_message=(
-                f"MCP server '{self._server_name}' command '{executable}' not found in PATH. "
-                f"Full command: {format_redacted_mcp_command(command)}"
+                f"MCP server '{self._server_name}' command '{executable}' not found in PATH. Full command: {format_redacted_mcp_command(command)}"
             ),
         )

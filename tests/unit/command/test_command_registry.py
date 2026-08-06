@@ -23,11 +23,7 @@ def test_project_markdown_command_overrides_builtin_and_renders_arguments(
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
     (commands_dir / "review.md").write_text(
-        "---\n"
-        "description: Project review command\n"
-        "agent: reviewer\n"
-        "---\n"
-        "Review $1 with context: $ARGUMENTS\n",
+        "---\ndescription: Project review command\nagent: reviewer\n---\nReview $1 with context: $ARGUMENTS\n",
         encoding="utf-8",
     )
 
@@ -40,9 +36,7 @@ def test_project_markdown_command_overrides_builtin_and_renders_arguments(
     resolution = resolve_prompt_command('/review "src/app.py" carefully', registry)
     assert resolution is not None
     assert resolution.invocation.arguments == ("src/app.py", "carefully")
-    assert resolution.invocation.rendered_prompt == (
-        'Review src/app.py with context: "src/app.py" carefully'
-    )
+    assert resolution.invocation.rendered_prompt == ('Review src/app.py with context: "src/app.py" carefully')
 
 
 def test_load_markdown_commands_rejects_invalid_frontmatter(tmp_path: Path) -> None:
@@ -72,18 +66,16 @@ def test_tool_instruction_resolver_is_shared_for_read_grep_run_and_write() -> No
         ToolDefinition("write_file", "Write", read_only=False),
     )
 
-    assert resolve_tool_instruction(
-        "read sample.txt", tools, unavailable_message_suffix="test"
-    ).tool_call.arguments == {"filePath": "sample.txt"}
-    assert resolve_tool_instruction(
-        "grep hello src", tools, unavailable_message_suffix="test"
-    ).tool_call.arguments == {"pattern": "hello", "path": "src"}
-    assert resolve_tool_instruction(
-        "run pytest", tools, unavailable_message_suffix="test"
-    ).tool_call.arguments == {"command": "pytest"}
-    assert resolve_tool_instruction(
-        "write output.txt hello", tools, unavailable_message_suffix="test"
-    ).tool_call.arguments == {"path": "output.txt", "content": "hello"}
+    assert resolve_tool_instruction("read sample.txt", tools, unavailable_message_suffix="test").tool_call.arguments == {"filePath": "sample.txt"}
+    assert resolve_tool_instruction("grep hello src", tools, unavailable_message_suffix="test").tool_call.arguments == {
+        "pattern": "hello",
+        "path": "src",
+    }
+    assert resolve_tool_instruction("run pytest", tools, unavailable_message_suffix="test").tool_call.arguments == {"command": "pytest"}
+    assert resolve_tool_instruction("write output.txt hello", tools, unavailable_message_suffix="test").tool_call.arguments == {
+        "path": "output.txt",
+        "content": "hello",
+    }
 
 
 def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_literals() -> None:
@@ -95,10 +87,7 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
         arguments=("target",),
     )
 
-    assert rendered == (
-        "Cost $100; first=target; second=; missing=; "
-        "args=price=$2 literal; literal=$ARGUMENTS_suffix"
-    )
+    assert rendered == ("Cost $100; first=target; second=; missing=; args=price=$2 literal; literal=$ARGUMENTS_suffix")
 
 
 class TestBuiltinCommandDiscovery:
@@ -197,11 +186,7 @@ class TestMarkdownCommandWorkflowMode:
         commands_dir = tmp_path / "commands"
         commands_dir.mkdir()
         (commands_dir / "review.md").write_text(
-            "---\n"
-            "description: Review this target\n"
-            "workflow_mode: review\n"
-            "---\n"
-            "Review $ARGUMENTS carefully\n",
+            "---\ndescription: Review this target\nworkflow_mode: review\n---\nReview $ARGUMENTS carefully\n",
             encoding="utf-8",
         )
 
@@ -366,11 +351,7 @@ class TestBuiltinCommandProjectOverride:
         commands_dir = tmp_path / "commands"
         commands_dir.mkdir()
         (commands_dir / "fix.md").write_text(
-            "---\n"
-            "description: Custom project fix command\n"
-            "agent: worker\n"
-            "---\n"
-            "Apply a targeted fix for $1 and verify with tests\n",
+            "---\ndescription: Custom project fix command\nagent: worker\n---\nApply a targeted fix for $1 and verify with tests\n",
             encoding="utf-8",
         )
 
@@ -408,9 +389,7 @@ class TestBuiltinCommandProjectOverride:
         ):
             cmd = registry.get(name)
             assert cmd is not None, f"{name} should still be registered"
-            assert cmd.source == "builtin", (
-                f"/{name} source should still be builtin, got {cmd.source}"
-            )
+            assert cmd.source == "builtin", f"/{name} source should still be builtin, got {cmd.source}"
 
     def test_project_disabled_command_not_listed(self, tmp_path: Path) -> None:
         commands_dir = tmp_path / "commands"

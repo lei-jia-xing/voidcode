@@ -26,7 +26,6 @@ _ALLOWED_HOOK_SCOPES = (
     "background_task_notification_enqueued",
     "background_task_result_read",
     "delegated_result_available",
-    "context_pressure",
     "turn_progress",
     "stuck_detected",
 )
@@ -82,18 +81,10 @@ class RuntimePolicyConfig:
     schema_version: int = POLICY_SCHEMA_VERSION
     version: str = POLICY_VERSION
     enabled: bool = True
-    tool_policy: RuntimePolicyToolPolicyConfig = field(
-        default_factory=RuntimePolicyToolPolicyConfig
-    )
-    delegation_policy: RuntimePolicyDelegationPolicyConfig = field(
-        default_factory=RuntimePolicyDelegationPolicyConfig
-    )
-    hook_policy: RuntimePolicyHookPolicyConfig = field(
-        default_factory=RuntimePolicyHookPolicyConfig
-    )
-    prompt_activation: RuntimePolicyPromptActivationConfig = field(
-        default_factory=RuntimePolicyPromptActivationConfig
-    )
+    tool_policy: RuntimePolicyToolPolicyConfig = field(default_factory=RuntimePolicyToolPolicyConfig)
+    delegation_policy: RuntimePolicyDelegationPolicyConfig = field(default_factory=RuntimePolicyDelegationPolicyConfig)
+    hook_policy: RuntimePolicyHookPolicyConfig = field(default_factory=RuntimePolicyHookPolicyConfig)
+    prompt_activation: RuntimePolicyPromptActivationConfig = field(default_factory=RuntimePolicyPromptActivationConfig)
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"enabled": self.enabled, "version": self.version}
@@ -242,9 +233,7 @@ def validate_runtime_policy_config_payload(
             actions=cast(tuple[str, ...], raw_hook_policy.get("actions", ())),
         )
     if "prompt_activation" in payload:
-        raw_prompt_activation = _validate_prompt_activation_config(
-            payload["prompt_activation"], source=f"{source}.prompt_activation"
-        )
+        raw_prompt_activation = _validate_prompt_activation_config(payload["prompt_activation"], source=f"{source}.prompt_activation")
         prompt_activation = RuntimePolicyPromptActivationConfig(
             enabled=raw_prompt_activation.get("enabled", True) is not False,
             profile_refs=cast(tuple[str, ...], raw_prompt_activation.get("profile_refs", ())),
@@ -324,16 +313,11 @@ def _validate_hook_policy_config(value: object, *, source: str) -> dict[str, obj
         )
         unknown = [scope for scope in scopes if scope not in _ALLOWED_HOOK_SCOPES]
         if unknown:
-            raise ValueError(
-                f"{_clean_source(source)}.allowed_event_scopes contains "
-                f"unsupported scope: {unknown[0]}"
-            )
+            raise ValueError(f"{_clean_source(source)}.allowed_event_scopes contains unsupported scope: {unknown[0]}")
         normalized["allowed_event_scopes"] = scopes
     if "actions" in payload:
         actions = _string_tuple(payload["actions"], source=f"{source}.actions")
-        normalized["actions"] = tuple(
-            action for action in actions if action in _ALLOWED_HOOK_ACTIONS
-        )
+        normalized["actions"] = tuple(action for action in actions if action in _ALLOWED_HOOK_ACTIONS)
     return normalized
 
 
@@ -378,9 +362,7 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     runtime_config = _mapping(inputs.get("runtime_config"))
     policy_config = _mapping(runtime_config.get("policy"))
     request_metadata = _mapping(inputs.get("request_metadata"))
-    agent_preset = (
-        _string(inputs.get("agent_preset")) or _agent_preset_from_config(runtime_config) or "leader"
-    )
+    agent_preset = _string(inputs.get("agent_preset")) or _agent_preset_from_config(runtime_config) or "leader"
     agent_manifest_id = _string(inputs.get("agent_manifest_id")) or agent_preset
     mode = runtime_mode_from_metadata(request_metadata)
     read_only = runtime_read_only_from_metadata(request_metadata)
@@ -460,15 +442,9 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
     schema_version = payload.get("schema_version")
     policy_version = payload.get("policy_version")
     if schema_version != POLICY_SCHEMA_VERSION:
-        raise RuntimePolicySnapshotVersionError(
-            "unsupported runtime_policy schema_version: "
-            f"{schema_version!r}; expected {POLICY_SCHEMA_VERSION!r}"
-        )
+        raise RuntimePolicySnapshotVersionError(f"unsupported runtime_policy schema_version: {schema_version!r}; expected {POLICY_SCHEMA_VERSION!r}")
     if policy_version != POLICY_VERSION:
-        raise RuntimePolicySnapshotVersionError(
-            "unsupported runtime_policy policy_version: "
-            f"{policy_version!r}; expected {POLICY_VERSION!r}"
-        )
+        raise RuntimePolicySnapshotVersionError(f"unsupported runtime_policy policy_version: {policy_version!r}; expected {POLICY_VERSION!r}")
     required_fields = {
         "agent_preset",
         "agent_manifest_id",
@@ -485,9 +461,7 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
     }
     missing_fields = sorted(required_fields - payload.keys())
     if missing_fields:
-        raise RuntimePolicySnapshotVersionError(
-            "runtime_policy snapshot is missing required fields: " + ", ".join(missing_fields)
-        )
+        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot is missing required fields: " + ", ".join(missing_fields))
     for field_name in (
         "agent_preset",
         "agent_manifest_id",
@@ -495,9 +469,7 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
     ):
         value = payload[field_name]
         if not isinstance(value, str) or not value:
-            raise RuntimePolicySnapshotVersionError(
-                f"runtime_policy snapshot {field_name} must be a non-empty string"
-            )
+            raise RuntimePolicySnapshotVersionError(f"runtime_policy snapshot {field_name} must be a non-empty string")
     if payload["mode"] not in {"normal", "analyze", "plan"}:
         raise RuntimePolicySnapshotVersionError("runtime_policy snapshot mode is invalid")
     for field_name in (
@@ -509,25 +481,15 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
         "diagnostics",
     ):
         if not isinstance(payload[field_name], dict):
-            raise RuntimePolicySnapshotVersionError(
-                f"runtime_policy snapshot {field_name} must be an object"
-            )
+            raise RuntimePolicySnapshotVersionError(f"runtime_policy snapshot {field_name} must be an object")
     precedence_trace = payload["precedence_trace"]
-    if not isinstance(precedence_trace, list) or not all(
-        isinstance(entry, dict) for entry in precedence_trace
-    ):
-        raise RuntimePolicySnapshotVersionError(
-            "runtime_policy snapshot precedence_trace must be a list of objects"
-        )
+    if not isinstance(precedence_trace, list) or not all(isinstance(entry, dict) for entry in precedence_trace):
+        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot precedence_trace must be a list of objects")
     created_at = payload["created_at"]
     if not isinstance(created_at, int) or isinstance(created_at, bool):
-        raise RuntimePolicySnapshotVersionError(
-            "runtime_policy snapshot created_at must be an integer"
-        )
+        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot created_at must be an integer")
     if not isinstance(payload["read_only"], bool):
-        raise RuntimePolicySnapshotVersionError(
-            "runtime_policy snapshot read_only must be a boolean"
-        )
+        raise RuntimePolicySnapshotVersionError("runtime_policy snapshot read_only must be a boolean")
     return payload
 
 
@@ -601,21 +563,16 @@ def _child_snapshot_from_parent(
         },
         delegation_policy={
             **child_delegation_policy,
-            "allowed_presets": [
-                preset for preset in child_delegation if preset in parent_allowed_delegation
-            ],
+            "allowed_presets": [preset for preset in child_delegation if preset in parent_allowed_delegation],
         },
         hook_policy={
             **child_hook_policy,
-            "allowed_event_scopes": [
-                scope for scope in child_scopes if scope in parent_allowed_scopes
-            ],
+            "allowed_event_scopes": [scope for scope in child_scopes if scope in parent_allowed_scopes],
             "actions": [action for action in child_actions if action in parent_allowed_actions],
         },
         prompt_activation={
             **child_prompt_activation,
-            "enabled": parent_prompt_activation.get("enabled", True) is not False
-            and child_prompt_activation.get("enabled", True) is not False,
+            "enabled": parent_prompt_activation.get("enabled", True) is not False and child_prompt_activation.get("enabled", True) is not False,
         },
         precedence_trace=trace,
         diagnostics=snapshot.diagnostics,
@@ -776,9 +733,7 @@ def _diagnostics(value: object) -> dict[str, object]:
 
 def _json_safe(value: object) -> object:
     if isinstance(value, dict):
-        return {
-            str(key): _json_safe(item) for key, item in cast(dict[object, object], value).items()
-        }
+        return {str(key): _json_safe(item) for key, item in cast(dict[object, object], value).items()}
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     if isinstance(value, tuple):

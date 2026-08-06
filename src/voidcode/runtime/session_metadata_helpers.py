@@ -57,22 +57,13 @@ def session_with_context_window_payload_metadata(
         raise ValueError("persisted runtime_state must be an object")
     runtime_state = dict(cast(dict[str, object], raw_runtime_state or {}))
     continuity_payload_raw = context_window_payload.get("continuity_state")
-    continuity_payload = (
-        cast(dict[str, object], continuity_payload_raw)
-        if isinstance(continuity_payload_raw, dict)
-        else None
-    )
+    continuity_payload = cast(dict[str, object], continuity_payload_raw) if isinstance(continuity_payload_raw, dict) else None
     summary_anchor = context_window_payload.get("summary_anchor")
     summary_source = context_window_payload.get("summary_source")
     continuity_summary_payload = (
         {
             "anchor": summary_anchor,
             "source": summary_source,
-            "distillation_source": (
-                continuity_payload.get("distillation_source", "deterministic")
-                if continuity_payload is not None
-                else "deterministic"
-            ),
         }
         if isinstance(summary_anchor, str)
         else None
@@ -82,11 +73,7 @@ def session_with_context_window_payload_metadata(
     if isinstance(raw_prompt_activation, dict):
         prompt_activation = dict(cast(dict[str, object], raw_prompt_activation))
         raw_runtime_policy = metadata.get("runtime_policy")
-        runtime_policy = (
-            dict(cast(dict[str, object], raw_runtime_policy))
-            if isinstance(raw_runtime_policy, dict)
-            else {}
-        )
+        runtime_policy = dict(cast(dict[str, object], raw_runtime_policy)) if isinstance(raw_runtime_policy, dict) else {}
         runtime_policy["prompt_activation"] = prompt_activation
         metadata["runtime_policy"] = runtime_policy
     return SessionState(
@@ -99,11 +86,7 @@ def session_with_context_window_payload_metadata(
             "runtime_state": {
                 **runtime_state,
                 **({"continuity": continuity_payload} if continuity_payload is not None else {}),
-                **(
-                    {"continuity_summary": continuity_summary_payload}
-                    if continuity_summary_payload is not None
-                    else {}
-                ),
+                **({"continuity_summary": continuity_summary_payload} if continuity_summary_payload is not None else {}),
             },
         },
     )
@@ -116,11 +99,7 @@ def session_with_todo_state(
     revision: int,
 ) -> tuple[SessionState, dict[str, object]]:
     raw_runtime_state = session.metadata.get("runtime_state")
-    runtime_state = (
-        dict(cast(dict[str, object], raw_runtime_state))
-        if isinstance(raw_runtime_state, dict)
-        else {}
-    )
+    runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
     todos = runtime_todos_from_tool_payload(raw_todos, updated_at=revision)
     state_payload = todo_state_payload(todos, revision=revision)
     runtime_state["todos"] = state_payload

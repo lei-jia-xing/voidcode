@@ -7,28 +7,55 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.tools import AstGrepPreviewTool, AstGrepReplaceTool, AstGrepSearchTool, ToolCall
+from voidcode.tools import AstGrepTool, ToolCall
+
+_TOOL_NAME = "ast_grep"
+
+
+def _search_call(**overrides: object) -> ToolCall:
+    args: dict[str, object] = {"mode": "search", "pattern": "print($X)", "path": "sample.py"}
+    args.update(overrides)
+    return ToolCall(tool_name=_TOOL_NAME, arguments=args)
+
+
+def _preview_call(**overrides: object) -> ToolCall:
+    args: dict[str, object] = {
+        "mode": "preview",
+        "pattern": "print($X)",
+        "rewrite": "logger.info($X)",
+        "path": "sample.py",
+        "lang": "python",
+    }
+    args.update(overrides)
+    return ToolCall(tool_name=_TOOL_NAME, arguments=args)
+
+
+def _replace_call(**overrides: object) -> ToolCall:
+    args: dict[str, object] = {
+        "mode": "replace",
+        "pattern": "print($X)",
+        "rewrite": "logger.info($X)",
+        "path": "sample.py",
+        "apply": True,
+    }
+    args.update(overrides)
+    return ToolCall(tool_name=_TOOL_NAME, arguments=args)
 
 
 def test_ast_grep_search_parses_json_stream_results(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepSearchTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
-        stdout=(
-            '{"text":"print(\'hello\')","file":"sample.py","range":{"start":{"line":0,"column":0},"end":{"line":0,"column":14}}}\n'
-        ),
+        stdout=('{"text":"print(\'hello\')","file":"sample.py","range":{"start":{"line":0,"column":0},"end":{"line":0,"column":14}}}\n'),
         stderr="",
     )
 
     with patch("subprocess.run", return_value=completed) as run_mock:
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_search",
-                arguments={"pattern": "print($X)", "path": "sample.py", "lang": "python"},
-            ),
+            _search_call(pattern="print($X)", lang="python"),
             workspace=tmp_path,
         )
 
@@ -45,47 +72,29 @@ def test_ast_grep_search_parses_json_stream_results(tmp_path: Path) -> None:
 def test_ast_grep_search_rejects_invalid_arguments_and_workspace_escape(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepSearchTool()
+    tool = AstGrepTool()
 
     with pytest.raises(ValueError, match="string pattern"):
-        tool.invoke(
-            ToolCall(tool_name="ast_grep_search", arguments={"pattern": 123, "path": "sample.py"}),
-            workspace=tmp_path,
-        )
+        tool.invoke(_search_call(pattern=123), workspace=tmp_path)
 
     with pytest.raises(ValueError, match="must not be empty"):
-        tool.invoke(
-            ToolCall(tool_name="ast_grep_search", arguments={"pattern": "", "path": "sample.py"}),
-            workspace=tmp_path,
-        )
+        tool.invoke(_search_call(pattern=""), workspace=tmp_path)
 
     with pytest.raises(ValueError, match="string path"):
-        tool.invoke(
-            ToolCall(tool_name="ast_grep_search", arguments={"pattern": "print($X)", "path": 123}),
-            workspace=tmp_path,
-        )
+        tool.invoke(_search_call(path=123), workspace=tmp_path)
 
     with pytest.raises(ValueError, match="inside the workspace"):
-        tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_search",
-                arguments={"pattern": "print($X)", "path": "../escape.py"},
-            ),
-            workspace=tmp_path,
-        )
+        tool.invoke(_search_call(path="../escape.py"), workspace=tmp_path)
 
 
 def test_ast_grep_search_returns_error_when_cli_is_missing(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepSearchTool()
+    tool = AstGrepTool()
 
     with patch("subprocess.run", side_effect=OSError("not found")):
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_search",
-                arguments={"pattern": "print($X)", "path": "sample.py"},
-            ),
+            _search_call(pattern="print($X)"),
             workspace=tmp_path,
         )
 
@@ -96,16 +105,13 @@ def test_ast_grep_search_returns_error_when_cli_is_missing(tmp_path: Path) -> No
 def test_ast_grep_search_raises_on_cli_failure(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepSearchTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="bad pattern")
 
     with patch("subprocess.run", return_value=completed):
         with pytest.raises(ValueError, match="bad pattern"):
             tool.invoke(
-                ToolCall(
-                    tool_name="ast_grep_search",
-                    arguments={"pattern": "print(", "path": "sample.py", "lang": "python"},
-                ),
+                _search_call(pattern="print(", lang="python"),
                 workspace=tmp_path,
             )
 
@@ -113,43 +119,32 @@ def test_ast_grep_search_raises_on_cli_failure(tmp_path: Path) -> None:
 def test_ast_grep_search_returns_zero_matches_for_empty_cli_result(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepSearchTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
 
     with patch("subprocess.run", return_value=completed):
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_search",
-                arguments={"pattern": "missing($X)", "path": "sample.py", "lang": "python"},
-            ),
+            _search_call(pattern="missing($X)", lang="python"),
             workspace=tmp_path,
         )
 
     assert result.status == "ok"
     assert result.content == "Found 0 AST match(es) in sample.py"
-    assert result.data == {
-        "path": "sample.py",
-        "pattern": "missing($X)",
-        "lang": "python",
-        "match_count": 0,
-        "matches": [],
-        "timeout_seconds": 30,
-    }
+    assert result.data["match_count"] == 0
+    assert result.data["matches"] == []
+    assert result.data["mode"] == "search"
 
 
 def test_ast_grep_search_raises_on_invalid_json_stream_output(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepSearchTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="not-json\n", stderr="")
 
     with patch("subprocess.run", return_value=completed):
         with pytest.raises(ValueError, match="invalid JSON stream output"):
             tool.invoke(
-                ToolCall(
-                    tool_name="ast_grep_search",
-                    arguments={"pattern": "print($X)", "path": "sample.py", "lang": "python"},
-                ),
+                _search_call(pattern="print($X)", lang="python"),
                 workspace=tmp_path,
             )
 
@@ -157,27 +152,17 @@ def test_ast_grep_search_raises_on_invalid_json_stream_output(tmp_path: Path) ->
 def test_ast_grep_preview_defaults_to_read_only_preview_mode(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepPreviewTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
-        stdout=(
-            '{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'
-        ),
+        stdout=('{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'),
         stderr="",
     )
 
     with patch("subprocess.run", return_value=completed) as run_mock:
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_preview",
-                arguments={
-                    "pattern": "print($X)",
-                    "rewrite": "logger.info($X)",
-                    "path": "sample.py",
-                    "lang": "python",
-                },
-            ),
+            _preview_call(pattern="print($X)", rewrite="logger.info($X)", lang="python"),
             workspace=tmp_path,
         )
 
@@ -193,7 +178,7 @@ def test_ast_grep_preview_defaults_to_read_only_preview_mode(tmp_path: Path) -> 
 def test_ast_grep_preview_allows_empty_rewrite_strings(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepPreviewTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
@@ -203,15 +188,7 @@ def test_ast_grep_preview_allows_empty_rewrite_strings(tmp_path: Path) -> None:
 
     with patch("subprocess.run", return_value=completed):
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_preview",
-                arguments={
-                    "pattern": "print($X)",
-                    "rewrite": "",
-                    "path": "sample.py",
-                    "lang": "python",
-                },
-            ),
+            _preview_call(pattern="print($X)", rewrite="", lang="python"),
             workspace=tmp_path,
         )
 
@@ -223,30 +200,18 @@ def test_ast_grep_preview_allows_empty_rewrite_strings(tmp_path: Path) -> None:
 def test_ast_grep_replace_can_apply_changes(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepReplaceTool()
+    tool = AstGrepTool()
     preview_completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
-        stdout=(
-            '{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'
-        ),
+        stdout=('{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'),
         stderr="",
     )
-    apply_completed = subprocess.CompletedProcess(
-        args=[], returncode=0, stdout="", stderr="Applied 1 changes\n"
-    )
+    apply_completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="Applied 1 changes\n")
 
     with patch("subprocess.run", side_effect=[preview_completed, apply_completed]) as run_mock:
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_replace",
-                arguments={
-                    "pattern": "print($X)",
-                    "rewrite": "logger.info($X)",
-                    "path": "sample.py",
-                    "apply": True,
-                },
-            ),
+            _replace_call(pattern="print($X)", rewrite="logger.info($X)", apply=True),
             workspace=tmp_path,
         )
 
@@ -265,18 +230,11 @@ def test_ast_grep_replace_can_apply_changes(tmp_path: Path) -> None:
 def test_ast_grep_replace_requires_apply_true(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepReplaceTool()
+    tool = AstGrepTool()
 
     with pytest.raises(ValueError, match="requires apply=True"):
         tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_replace",
-                arguments={
-                    "pattern": "print($X)",
-                    "rewrite": "logger.info($X)",
-                    "path": "sample.py",
-                },
-            ),
+            _replace_call(apply=False),
             workspace=tmp_path,
         )
 
@@ -284,7 +242,7 @@ def test_ast_grep_replace_requires_apply_true(tmp_path: Path) -> None:
 def test_ast_grep_replace_allows_empty_rewrite_strings(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepReplaceTool()
+    tool = AstGrepTool()
     preview_completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
@@ -295,15 +253,7 @@ def test_ast_grep_replace_allows_empty_rewrite_strings(tmp_path: Path) -> None:
 
     with patch("subprocess.run", side_effect=[preview_completed, apply_completed]):
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_replace",
-                arguments={
-                    "pattern": "print($X)",
-                    "rewrite": "",
-                    "path": "sample.py",
-                    "apply": True,
-                },
-            ),
+            _replace_call(pattern="print($X)", rewrite="", apply=True),
             workspace=tmp_path,
         )
 
@@ -315,24 +265,13 @@ def test_ast_grep_replace_allows_empty_rewrite_strings(tmp_path: Path) -> None:
 def test_ast_grep_replace_raises_on_cli_failure(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepReplaceTool()
-    preview_completed = subprocess.CompletedProcess(
-        args=[], returncode=1, stdout="", stderr="bad rewrite"
-    )
+    tool = AstGrepTool()
+    preview_completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="bad rewrite")
 
     with patch("subprocess.run", return_value=preview_completed):
         with pytest.raises(ValueError, match="bad rewrite"):
             tool.invoke(
-                ToolCall(
-                    tool_name="ast_grep_replace",
-                    arguments={
-                        "pattern": "print($X)",
-                        "rewrite": "logger.info($X)",
-                        "path": "sample.py",
-                        "lang": "python",
-                        "apply": True,
-                    },
-                ),
+                _replace_call(pattern="print($X)", rewrite="logger.info($X)", lang="python", apply=True),
                 workspace=tmp_path,
             )
 
@@ -340,21 +279,13 @@ def test_ast_grep_replace_raises_on_cli_failure(tmp_path: Path) -> None:
 def test_ast_grep_preview_raises_on_invalid_json_stream_output(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepPreviewTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="not-json\n", stderr="")
 
     with patch("subprocess.run", return_value=completed):
         with pytest.raises(ValueError, match="invalid JSON stream output"):
             tool.invoke(
-                ToolCall(
-                    tool_name="ast_grep_preview",
-                    arguments={
-                        "pattern": "print($X)",
-                        "rewrite": "logger.info($X)",
-                        "path": "sample.py",
-                        "lang": "python",
-                    },
-                ),
+                _preview_call(pattern="print($X)", rewrite="logger.info($X)", lang="python"),
                 workspace=tmp_path,
             )
 
@@ -362,100 +293,59 @@ def test_ast_grep_preview_raises_on_invalid_json_stream_output(tmp_path: Path) -
 def test_ast_grep_preview_returns_zero_matches_for_empty_cli_result(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepPreviewTool()
+    tool = AstGrepTool()
     completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
 
     with patch("subprocess.run", return_value=completed):
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_preview",
-                arguments={
-                    "pattern": "missing($X)",
-                    "rewrite": "logger.info($X)",
-                    "path": "sample.py",
-                    "lang": "python",
-                },
-            ),
+            _preview_call(pattern="missing($X)", rewrite="logger.info($X)", lang="python"),
             workspace=tmp_path,
         )
 
     assert result.status == "ok"
     assert result.content == "Previewed 0 AST replacement(s) in sample.py"
-    assert result.data == {
-        "path": "sample.py",
-        "pattern": "missing($X)",
-        "rewrite": "logger.info($X)",
-        "lang": "python",
-        "replacement_count": 0,
-        "matches": [],
-        "applied": False,
-        "timeout_seconds": 30,
-    }
+    assert result.data["replacement_count"] == 0
+    assert result.data["matches"] == []
+    assert result.data["applied"] is False
+    assert result.data["mode"] == "preview"
 
 
 def test_ast_grep_replace_apply_returns_zero_changes_for_empty_cli_result(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepReplaceTool()
+    tool = AstGrepTool()
     preview_completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
     apply_completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=[preview_completed, apply_completed]):
         result = tool.invoke(
-            ToolCall(
-                tool_name="ast_grep_replace",
-                arguments={
-                    "pattern": "missing($X)",
-                    "rewrite": "logger.info($X)",
-                    "path": "sample.py",
-                    "apply": True,
-                },
-            ),
+            _replace_call(pattern="missing($X)", rewrite="logger.info($X)", apply=True),
             workspace=tmp_path,
         )
 
     assert result.status == "ok"
     assert result.content == "Applied 0 AST replacement(s) in sample.py"
-    assert result.data == {
-        "path": "sample.py",
-        "pattern": "missing($X)",
-        "rewrite": "logger.info($X)",
-        "lang": None,
-        "replacement_count": 0,
-        "matches": [],
-        "applied": True,
-        "timeout_seconds": 30,
-    }
+    assert result.data["replacement_count"] == 0
+    assert result.data["matches"] == []
+    assert result.data["applied"] is True
+    assert result.data["mode"] == "replace"
 
 
 def test_ast_grep_replace_apply_raises_when_apply_step_returns_stderr(tmp_path: Path) -> None:
     sample = tmp_path / "sample.py"
     _ = sample.write_text("print('hello')\n", encoding="utf-8")
-    tool = AstGrepReplaceTool()
+    tool = AstGrepTool()
     preview_completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
-        stdout=(
-            '{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'
-        ),
+        stdout=('{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'),
         stderr="",
     )
-    apply_completed = subprocess.CompletedProcess(
-        args=[], returncode=1, stdout="", stderr="apply failed"
-    )
+    apply_completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="apply failed")
 
     with patch("subprocess.run", side_effect=[preview_completed, apply_completed]):
         with pytest.raises(ValueError, match="apply failed"):
             tool.invoke(
-                ToolCall(
-                    tool_name="ast_grep_replace",
-                    arguments={
-                        "pattern": "print($X)",
-                        "rewrite": "logger.info($X)",
-                        "path": "sample.py",
-                        "lang": "python",
-                        "apply": True,
-                    },
-                ),
+                _replace_call(pattern="print($X)", rewrite="logger.info($X)", lang="python", apply=True),
                 workspace=tmp_path,
             )

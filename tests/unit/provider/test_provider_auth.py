@@ -71,9 +71,7 @@ def test_provider_auth_methods_discovery_uses_configured_defaults() -> None:
 
 
 def test_provider_auth_authorize_openai_from_provider_config_materializes_bearer_header() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(openai=OpenAIProviderConfig(api_key="openai-secret"))
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(openai=OpenAIProviderConfig(api_key="openai-secret")))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="openai"))
 
@@ -83,11 +81,7 @@ def test_provider_auth_authorize_openai_from_provider_config_materializes_bearer
 
 
 def test_provider_auth_authorize_google_oauth_needs_callback_when_access_token_missing() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="google"))
 
@@ -118,11 +112,7 @@ def test_provider_auth_authorize_google_service_account_returns_provider_ready_m
 
 def test_provider_auth_authorize_copilot_token_reads_configured_env_var() -> None:
     resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            copilot=CopilotProviderConfig(
-                auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN")
-            )
-        ),
+        providers=ProviderConfigs(copilot=CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token_env_var="COPILOT_TOKEN"))),
         env={"COPILOT_TOKEN": "copilot-secret"},
     )
 
@@ -134,11 +124,7 @@ def test_provider_auth_authorize_copilot_token_reads_configured_env_var() -> Non
 
 
 def test_provider_auth_authorize_rejects_config_method_mismatch_deterministically() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="service_account"))
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="service_account"))))
 
     with pytest.raises(
         ProviderAuthResolutionError,
@@ -164,11 +150,7 @@ def test_provider_auth_authorize_missing_credentials_raises_deterministic_error(
 
 
 def test_provider_auth_callback_google_oauth_builds_auth_material() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="oauth"))))
 
     authorize_result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="google"))
     assert authorize_result.status == "needs_callback"
@@ -222,9 +204,7 @@ def test_provider_auth_callback_not_supported_for_non_callback_method() -> None:
 
 
 def test_provider_auth_authorize_litellm_with_api_key_returns_bearer_material() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret"))
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret")))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm", method="api_key"))
 
@@ -258,9 +238,7 @@ def test_provider_auth_authorize_rejects_unconfigured_custom_provider_name() -> 
 
 
 def test_provider_auth_callback_rejects_custom_provider_before_state_validation() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="secret")})
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="secret")}))
 
     with pytest.raises(
         ProviderAuthResolutionError,
@@ -290,11 +268,7 @@ def test_provider_auth_authorize_litellm_without_api_key_allows_none_mode() -> N
 
 
 def test_provider_auth_authorize_custom_provider_with_api_key_returns_bearer_material() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
 
@@ -305,9 +279,7 @@ def test_provider_auth_authorize_custom_provider_with_api_key_returns_bearer_mat
 
 
 def test_provider_auth_authorize_custom_provider_none_mode_returns_empty_headers() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(auth_scheme="none")})
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(auth_scheme="none")}))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local"))
 
@@ -318,11 +290,7 @@ def test_provider_auth_authorize_custom_provider_none_mode_returns_empty_headers
 
 
 def test_provider_auth_authorize_custom_provider_respects_explicit_method_override() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(api_key="custom-secret")}))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="llama-local", method="none"))
 
@@ -341,9 +309,7 @@ def test_provider_auth_custom_provider_matches_litellm_behavior_for_methods_and_
 
     litellm_methods = resolver.methods("litellm")
     custom_methods = resolver.methods("llama-local")
-    assert [method.id for method in custom_methods.methods] == [
-        method.id for method in litellm_methods.methods
-    ]
+    assert [method.id for method in custom_methods.methods] == [method.id for method in litellm_methods.methods]
     assert custom_methods.default_method == litellm_methods.default_method
 
     litellm_auth = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
@@ -355,11 +321,7 @@ def test_provider_auth_custom_provider_matches_litellm_behavior_for_methods_and_
 
 
 def test_provider_auth_methods_litellm_prefers_none_when_auth_scheme_is_none() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")))
 
     methods = resolver.methods("litellm")
 
@@ -367,11 +329,7 @@ def test_provider_auth_methods_litellm_prefers_none_when_auth_scheme_is_none() -
 
 
 def test_provider_auth_authorize_litellm_defaults_to_none_when_auth_scheme_is_none() -> None:
-    resolver = ProviderAuthResolver(
-        providers=ProviderConfigs(
-            litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")
-        )
-    )
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-secret", auth_scheme="none")))
 
     result = resolver.authorize(ProviderAuthAuthorizeRequest(provider="litellm"))
 

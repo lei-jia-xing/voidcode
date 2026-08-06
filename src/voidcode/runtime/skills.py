@@ -95,13 +95,9 @@ def build_skill_prompt_context(contexts: Iterable[SkillRuntimeContext]) -> str:
 
 
 def runtime_context_from_payload(payload: dict[str, str]) -> SkillRuntimeContext:
-    missing_fields = [
-        field_name for field_name in _REQUIRED_SKILL_PAYLOAD_FIELDS if field_name not in payload
-    ]
+    missing_fields = [field_name for field_name in _REQUIRED_SKILL_PAYLOAD_FIELDS if field_name not in payload]
     if missing_fields:
-        raise ValueError(
-            "persisted skill payload missing required fields: " + ", ".join(missing_fields)
-        )
+        raise ValueError("persisted skill payload missing required fields: " + ", ".join(missing_fields))
     name = payload["name"].strip()
     description = payload["description"].strip()
     content = payload["content"].strip()
@@ -160,11 +156,7 @@ def build_skill_execution_snapshot(
         }
         for context in context_values
     )
-    selected_names = (
-        tuple(selected_skill_names)
-        if selected_skill_names is not None
-        else tuple(context.name for context in context_values)
-    )
+    selected_names = tuple(selected_skill_names) if selected_skill_names is not None else tuple(context.name for context in context_values)
     materialized_binding = dict(binding_snapshot or {})
     snapshot_without_hash: dict[str, object] = {
         "snapshot_version": 1,

@@ -151,23 +151,15 @@ def test_runtime_managed_lsp_tool_starts_server_and_returns_response(tmp_path: P
         config=RuntimeConfig(
             lsp=RuntimeLspConfig(
                 enabled=True,
-                servers={
-                    "pyright": RuntimeLspServerConfig(
-                        command=(sys.executable, "-u", str(server_script))
-                    )
-                },
+                servers={"pyright": RuntimeLspServerConfig(command=(sys.executable, "-u", str(server_script)))},
             )
         ),
     )
 
     result = runtime.run(RuntimeRequest(prompt="lsp please"))
 
-    tool_completed = next(
-        event for event in result.events if event.event_type == "runtime.tool_completed"
-    )
-    started_event = next(
-        event for event in result.events if event.event_type == "runtime.lsp_server_started"
-    )
+    tool_completed = next(event for event in result.events if event.event_type == "runtime.tool_completed")
+    started_event = next(event for event in result.events if event.event_type == "runtime.lsp_server_started")
     response = cast(dict[str, object], tool_completed.payload["lsp_response"])
     assert response["result"] == {"ok": True, "method": "textDocument/documentSymbol"}
     assert started_event.payload["workspace_root"] == str(tmp_path)
@@ -197,9 +189,7 @@ def test_runtime_managed_lsp_tool_rejects_disabled_manager(tmp_path: Path) -> No
         )
 
 
-def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     sample_file = tmp_path / "sample.py"
     sample_file.write_text("x = 1\n", encoding="utf-8")
     runtime = _build_runtime_with_lsp(
@@ -268,20 +258,14 @@ def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_select
         config=RuntimeConfig(
             lsp=RuntimeLspConfig(
                 enabled=True,
-                servers={
-                    "pyright": RuntimeLspServerConfig(
-                        command=(sys.executable, "-u", str(server_script))
-                    )
-                },
+                servers={"pyright": RuntimeLspServerConfig(command=(sys.executable, "-u", str(server_script)))},
             )
         ),
     )
 
     result = runtime.run(RuntimeRequest(prompt="lsp please"))
 
-    started_event = next(
-        event for event in result.events if event.event_type == "runtime.lsp_server_started"
-    )
+    started_event = next(event for event in result.events if event.event_type == "runtime.lsp_server_started")
 
     assert started_event.payload["workspace_root"] == str(project_root)
 

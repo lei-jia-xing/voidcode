@@ -153,8 +153,7 @@ class MultiEditTool:
                     message=message,
                     error_kind="tool_input_mismatch",
                     retry_guidance=(
-                        "Re-read the file after the successfully applied edits, then retry "
-                        "multi_edit with only the remaining corrected edits."
+                        "Re-read the file after the successfully applied edits, then retry multi_edit with only the remaining corrected edits."
                     ),
                     error_details={
                         "reason": "edit_failed",

@@ -86,9 +86,7 @@ class _HangingTool:
 
 
 class _SlowButFinishingTool:
-    definition = ToolDefinition(
-        name="slow_but_finishing_tool", description="Finishes after a short sleep."
-    )
+    definition = ToolDefinition(name="slow_but_finishing_tool", description="Finishes after a short sleep.")
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         time.sleep(0.05)
@@ -275,11 +273,7 @@ def test_hanging_tool_does_not_emit_runtime_tool_timeout(tmp_path: Path) -> None
     for _ in range(3):
         first_chunks.append(next(iterator))
     elapsed = time.monotonic() - start
-    event_types = [
-        chunk.event.event_type
-        for chunk in first_chunks
-        if chunk.kind == "event" and chunk.event is not None
-    ]
+    event_types = [chunk.event.event_type for chunk in first_chunks if chunk.kind == "event" and chunk.event is not None]
 
     assert elapsed < 5
     assert "runtime.tool_timeout" not in event_types
@@ -291,11 +285,7 @@ def test_hanging_tool_does_not_emit_tool_completed(tmp_path: Path) -> None:
 
     iterator = runtime.run_stream(RuntimeRequest(prompt="go"))
     first_chunks = [next(iterator) for _ in range(3)]
-    event_types = [
-        chunk.event.event_type
-        for chunk in first_chunks
-        if chunk.kind == "event" and chunk.event is not None
-    ]
+    event_types = [chunk.event.event_type for chunk in first_chunks if chunk.kind == "event" and chunk.event is not None]
 
     assert "runtime.tool_completed" not in event_types
 
@@ -320,13 +310,7 @@ def test_timeout_event_payload_contains_tool_name_and_seconds(tmp_path: Path) ->
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    timeout_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_timeout"
-    ]
+    timeout_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_timeout"]
 
     assert len(timeout_events) == 1
     payload = timeout_events[0].payload
@@ -360,11 +344,7 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
     first_progress = None
     for chunk in iterator:
         chunks.append(chunk)
-        if (
-            chunk.kind == "event"
-            and chunk.event is not None
-            and chunk.event.event_type == RUNTIME_TOOL_PROGRESS
-        ):
+        if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == RUNTIME_TOOL_PROGRESS:
             first_progress = chunk.event
             break
 
@@ -378,13 +358,7 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
     event_types = [c.event.event_type for c in chunks if c.kind == "event" and c.event is not None]
     assert event_types.index("runtime.tool_started") < event_types.index(RUNTIME_TOOL_PROGRESS)
     assert event_types.index(RUNTIME_TOOL_PROGRESS) < event_types.index("runtime.tool_completed")
-    completed = next(
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_completed"
-    )
+    completed = next(c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_completed")
     assert completed.payload["stdout"] == "alpha\nomega\n"
 
 
@@ -396,11 +370,7 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
         tool_registry=ToolRegistry.from_tools([ShellExecTool()]),
         graph=_ShellExecGraph(
             {
-                "command": (
-                    f'"{sys.executable}" -c "import sys, time; '
-                    "sys.stdout.write('partial\\n'); sys.stdout.flush(); time.sleep(2)"
-                    '"'
-                ),
+                "command": (f'"{sys.executable}" -c "import sys, time; sys.stdout.write(\'partial\\n\'); sys.stdout.flush(); time.sleep(2)"'),
                 "timeout": 10,
             }
         ),
@@ -413,18 +383,8 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    progress_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event" and c.event is not None and c.event.event_type == RUNTIME_TOOL_PROGRESS
-    ]
-    completed = next(
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_completed"
-    )
+    progress_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == RUNTIME_TOOL_PROGRESS]
+    completed = next(c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_completed")
 
     assert [event.payload["chunk"] for event in progress_events] == ["partial\n"]
     assert completed.payload["status"] == "error"
@@ -471,11 +431,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     completed_events = [
-        chunk.event
-        for chunk in chunks
-        if chunk.kind == "event"
-        and chunk.event is not None
-        and chunk.event.event_type == "runtime.tool_completed"
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
     ]
 
     assert len(completed_events) == 1
@@ -487,8 +443,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert artifact_root in output_path.parents
     assert payload["artifact_missing"] is False
     assert payload["retry_guidance"] == (
-        "Use background_output with full_session=true, or artifact retrieval by "
-        "artifact_id/tool_call_id, to inspect the full output before retrying."
+        "Use background_output with full_session=true, or artifact retrieval by artifact_id/tool_call_id, to inspect the full output before retrying."
     )
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
@@ -514,9 +469,7 @@ def test_runtime_resolves_tool_output_artifacts_and_reports_missing_debug_state(
 
     _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
     replay = runtime.resume(session_id)
-    completed_event = next(
-        event for event in replay.events if event.event_type == "runtime.tool_completed"
-    )
+    completed_event = next(event for event in replay.events if event.event_type == "runtime.tool_completed")
     artifact_id = completed_event.payload["artifact_id"]
     tool_call_id = completed_event.payload["tool_call_id"]
     assert isinstance(artifact_id, str)
@@ -584,9 +537,7 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
     source_runtime = _make_runtime(tmp_path, _LargeOutputTool(), tool_timeout_seconds=None)
     _ = list(source_runtime.run_stream(RuntimeRequest(prompt="go", session_id="source-session")))
     source_replay = source_runtime.resume("source-session")
-    completed_event = next(
-        event for event in source_replay.events if event.event_type == "runtime.tool_completed"
-    )
+    completed_event = next(event for event in source_replay.events if event.event_type == "runtime.tool_completed")
     valid_artifact = completed_event.payload["artifact"]
     assert isinstance(valid_artifact, dict)
     tool_call_id = completed_event.payload["tool_call_id"]
@@ -683,11 +634,7 @@ def test_runtime_sanitizes_tool_arguments_and_data_before_events_and_feedback(
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     completed_events = [
-        chunk.event
-        for chunk in chunks
-        if chunk.kind == "event"
-        and chunk.event is not None
-        and chunk.event.event_type == "runtime.tool_completed"
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
     ]
 
     assert len(completed_events) == 1
@@ -778,11 +725,7 @@ def test_shell_exec_uses_existing_tool_timeout_when_runtime_timeout_is_unset(
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     completed_events = [
-        chunk.event
-        for chunk in chunks
-        if chunk.kind == "event"
-        and chunk.event is not None
-        and chunk.event.event_type == "runtime.tool_completed"
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
     ]
 
     assert len(completed_events) == 1
@@ -813,9 +756,7 @@ def test_shell_exec_timeout_wins_when_shorter_than_runtime_timeout(tmp_path: Pat
 
     replay = runtime.resume(session_id)
     event_types = [event.event_type for event in replay.events]
-    completed_events = [
-        event for event in replay.events if event.event_type == "runtime.tool_completed"
-    ]
+    completed_events = [event for event in replay.events if event.event_type == "runtime.tool_completed"]
 
     assert "runtime.tool_timeout" not in event_types
     assert len(completed_events) == 1
@@ -837,17 +778,9 @@ def test_runtime_timeout_wins_when_shorter_than_shell_exec_timeout(tmp_path: Pat
         ),
     )
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    event_types = [
-        chunk.event.event_type
-        for chunk in chunks
-        if chunk.kind == "event" and chunk.event is not None
-    ]
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.kind == "event" and chunk.event is not None]
     timeout_events = [
-        chunk.event
-        for chunk in chunks
-        if chunk.kind == "event"
-        and chunk.event is not None
-        and chunk.event.event_type == "runtime.tool_timeout"
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_timeout"
     ]
 
     assert "runtime.failed" in event_types
@@ -894,9 +827,7 @@ def test_tool_native_timeout_error_does_not_emit_runtime_tool_timeout_without_ru
 
     replay = runtime.resume("tool-native-timeout")
     event_types = [event.event_type for event in replay.events]
-    completed_events = [
-        event for event in replay.events if event.event_type == "runtime.tool_completed"
-    ]
+    completed_events = [event for event in replay.events if event.event_type == "runtime.tool_completed"]
 
     assert "runtime.tool_timeout" not in event_types
     assert len(completed_events) == 1
@@ -909,15 +840,11 @@ def test_tool_native_timeout_error_before_runtime_cap_does_not_emit_runtime_tool
 ) -> None:
     runtime = _make_runtime(tmp_path, _ToolNativeTimeoutErrorTool(), tool_timeout_seconds=10)
 
-    _ = list(
-        runtime.run_stream(RuntimeRequest(prompt="go", session_id="tool-native-timeout-with-cap"))
-    )
+    _ = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id="tool-native-timeout-with-cap")))
 
     replay = runtime.resume("tool-native-timeout-with-cap")
     event_types = [event.event_type for event in replay.events]
-    completed_events = [
-        event for event in replay.events if event.event_type == "runtime.tool_completed"
-    ]
+    completed_events = [event for event in replay.events if event.event_type == "runtime.tool_completed"]
 
     assert "runtime.tool_timeout" not in event_types
     assert len(completed_events) == 1
@@ -932,11 +859,7 @@ def test_tool_started_event_includes_display_and_tool_status_metadata(
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     started_events = [
-        chunk.event
-        for chunk in chunks
-        if chunk.kind == "event"
-        and chunk.event is not None
-        and chunk.event.event_type == "runtime.tool_started"
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_started"
     ]
 
     assert len(started_events) >= 1, "expected at least one runtime.tool_started event"
@@ -954,11 +877,7 @@ def test_tool_completed_event_includes_tool_status_metadata(
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
     completed_events = [
-        chunk.event
-        for chunk in chunks
-        if chunk.kind == "event"
-        and chunk.event is not None
-        and chunk.event.event_type == "runtime.tool_completed"
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
     ]
 
     assert len(completed_events) >= 1, "expected at least one runtime.tool_completed event"
@@ -1003,13 +922,7 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
     )
 
     chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
-    completed_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_completed"
-    ]
+    completed_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_completed"]
 
     assert len(completed_events) == 1, "expected one runtime.tool_completed on timeout exit"
     payload = completed_events[0].payload
@@ -1046,19 +959,11 @@ def test_timeout_exit_emits_terminal_tool_status_with_error(
     assert started_idx < completed_idx, "runtime.tool_completed must follow runtime.tool_started"
 
     # Verify tool_call_id matches the started event (frontend row identity)
-    started_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_started"
-    ]
+    started_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_started"]
     assert len(started_events) >= 1
     started_call_id = started_events[0].payload["tool_call_id"]
     assert isinstance(started_call_id, str)
-    assert payload["tool_call_id"] == started_call_id, (
-        "terminal tool_completed must use same tool_call_id as tool_started"
-    )
+    assert payload["tool_call_id"] == started_call_id, "terminal tool_completed must use same tool_call_id as tool_started"
 
 
 def test_unrecovered_exception_emits_terminal_tool_status_before_failure(
@@ -1075,22 +980,10 @@ def test_unrecovered_exception_emits_terminal_tool_status_before_failure(
     except ValueError:
         pass
 
-    completed_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_completed"
-    ]
-    failed_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.failed"
-    ]
+    completed_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_completed"]
+    failed_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.failed"]
 
-    assert len(completed_events) == 1, (
-        "expected one runtime.tool_completed before runtime.failed on unrecovered exception"
-    )
+    assert len(completed_events) == 1, "expected one runtime.tool_completed before runtime.failed on unrecovered exception"
     payload = completed_events[0].payload
 
     assert payload["status"] == "error", "terminal tool status must be error"
@@ -1116,24 +1009,14 @@ def test_unrecovered_exception_emits_terminal_tool_status_before_failure(
     started_idx = event_types.index("runtime.tool_started")
     completed_idx = event_types.index("runtime.tool_completed")
     failed_idx = event_types.index("runtime.failed")
-    assert started_idx < completed_idx < failed_idx, (
-        "events must be ordered: started → completed → failed"
-    )
+    assert started_idx < completed_idx < failed_idx, "events must be ordered: started → completed → failed"
 
     # Verify tool_call_id matches the started event (frontend row identity)
-    started_events = [
-        c.event
-        for c in chunks
-        if c.kind == "event"
-        and c.event is not None
-        and c.event.event_type == "runtime.tool_started"
-    ]
+    started_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_started"]
     assert len(started_events) >= 1
     started_call_id = started_events[0].payload["tool_call_id"]
     assert isinstance(started_call_id, str)
-    assert payload["tool_call_id"] == started_call_id, (
-        "terminal tool_completed must use same tool_call_id as tool_started"
-    )
+    assert payload["tool_call_id"] == started_call_id, "terminal tool_completed must use same tool_call_id as tool_started"
 
 
 def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
@@ -1176,9 +1059,7 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     assert isinstance(started_call_id, str)
     completed_call_id = completed_payload["tool_call_id"]
     assert isinstance(completed_call_id, str)
-    assert started_call_id == completed_call_id, (
-        "replay must preserve same tool_call_id between tool_started and terminal tool_completed"
-    )
+    assert started_call_id == completed_call_id, "replay must preserve same tool_call_id between tool_started and terminal tool_completed"
 
     replay_event_types = [e.event_type for e in replay_events]
     assert "runtime.tool_timeout" in replay_event_types

@@ -56,10 +56,7 @@ class RuntimeToolMaterializer:
     def base(self) -> RuntimeToolMaterialization:
         return RuntimeToolMaterialization(
             registry=ToolRegistry(tools=dict(self.base_registry.tools)),
-            provenance=tuple(
-                _provenance(tool, source_kind="base")
-                for _, tool in sorted(self.base_registry.tools.items())
-            ),
+            provenance=tuple(_provenance(tool, source_kind="base") for _, tool in sorted(self.base_registry.tools.items())),
         )
 
     def materialize_mcp_tools(self, tools: Iterable[Tool]) -> RuntimeToolMaterialization:
@@ -85,9 +82,7 @@ class RuntimeToolMaterializer:
             return materialization
         registry = ToolRegistry.from_tools((*materialization.registry.tools.values(), *local_tools))
         provenance = {item.tool_name: item for item in materialization.provenance}
-        provenance.update(
-            (tool.definition.name, _provenance(tool, source_kind="local")) for tool in local_tools
-        )
+        provenance.update((tool.definition.name, _provenance(tool, source_kind="local")) for tool in local_tools)
         return RuntimeToolMaterialization(
             registry=registry,
             provenance=tuple(provenance[name] for name in sorted(provenance)),

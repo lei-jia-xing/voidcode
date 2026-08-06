@@ -108,9 +108,7 @@ def test_parse_resolved_provider_snapshot_rejects_active_target_outside_target_c
 def test_parse_resolved_provider_snapshot_rejects_non_object_snapshot() -> None:
     with pytest.raises(
         ValueError,
-        match=(
-            "invalid provider config: persisted runtime_config.resolved_provider must be an object"
-        ),
+        match=("invalid provider config: persisted runtime_config.resolved_provider must be an object"),
     ):
         _ = parse_resolved_provider_snapshot(
             "not-an-object",
@@ -122,10 +120,7 @@ def test_parse_resolved_provider_snapshot_rejects_non_object_snapshot() -> None:
 def test_parse_resolved_provider_snapshot_rejects_non_object_active_target() -> None:
     with pytest.raises(
         ValueError,
-        match=(
-            "invalid provider config: "
-            "persisted runtime_config.resolved_provider.active_target must be an object"
-        ),
+        match=("invalid provider config: persisted runtime_config.resolved_provider.active_target must be an object"),
     ):
         _ = parse_resolved_provider_snapshot(
             {
@@ -146,10 +141,7 @@ def test_parse_resolved_provider_snapshot_rejects_non_object_active_target() -> 
 def test_parse_resolved_provider_snapshot_rejects_empty_targets() -> None:
     with pytest.raises(
         ValueError,
-        match=(
-            "invalid provider config: "
-            "persisted runtime_config.resolved_provider.targets must not be empty"
-        ),
+        match=("invalid provider config: persisted runtime_config.resolved_provider.targets must not be empty"),
     ):
         _ = parse_resolved_provider_snapshot(
             {
@@ -168,11 +160,7 @@ def test_parse_resolved_provider_snapshot_rejects_empty_targets() -> None:
 def test_parse_resolved_provider_snapshot_rejects_duplicate_targets() -> None:
     with pytest.raises(
         ValueError,
-        match=(
-            "invalid provider config: "
-            "persisted runtime_config.resolved_provider.targets "
-            "must not contain duplicate provider targets"
-        ),
+        match=("invalid provider config: persisted runtime_config.resolved_provider.targets must not contain duplicate provider targets"),
     ):
         _ = parse_resolved_provider_snapshot(
             {

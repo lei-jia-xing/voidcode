@@ -22,9 +22,7 @@ def test_skill_tool_returns_skill_body_and_metadata(tmp_path: Path) -> None:
     )
     tool = SkillTool(list_skills=lambda: (skill,), resolve_skill=lambda name: skill)
 
-    result = tool.invoke(
-        ToolCall(tool_name="skill", arguments={"name": "demo"}), workspace=tmp_path
-    )
+    result = tool.invoke(ToolCall(tool_name="skill", arguments={"name": "demo"}), workspace=tmp_path)
 
     assert result.status == "ok"
     assert result.content is not None
@@ -57,9 +55,7 @@ def test_skill_tool_definition_includes_nested_skill_locations(tmp_path: Path) -
 
 
 def test_skill_tool_rejects_missing_name(tmp_path: Path) -> None:
-    tool = SkillTool(
-        list_skills=lambda: (), resolve_skill=lambda name: (_ for _ in ()).throw(ValueError(name))
-    )
+    tool = SkillTool(list_skills=lambda: (), resolve_skill=lambda name: (_ for _ in ()).throw(ValueError(name)))
 
     with pytest.raises(
         ValueError,

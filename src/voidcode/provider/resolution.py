@@ -17,11 +17,7 @@ def _provider_fallback_with_preferred_model(
 ) -> ProviderFallbackConfig:
     return ProviderFallbackConfig(
         preferred_model=preferred_model,
-        fallback_models=tuple(
-            fallback_model
-            for fallback_model in provider_fallback.fallback_models
-            if fallback_model != preferred_model
-        ),
+        fallback_models=tuple(fallback_model for fallback_model in provider_fallback.fallback_models if fallback_model != preferred_model),
     )
 
 
@@ -58,14 +54,9 @@ def resolve_provider_chain(
     if provider_fallback is None:
         return ResolvedProviderChain()
 
-    _validate_unique_model_references(
-        (provider_fallback.preferred_model, *provider_fallback.fallback_models)
-    )
+    _validate_unique_model_references((provider_fallback.preferred_model, *provider_fallback.fallback_models))
     preferred = resolve_provider_model(provider_fallback.preferred_model, registry=registry)
-    fallbacks = tuple(
-        resolve_provider_model(raw_model, registry=registry)
-        for raw_model in provider_fallback.fallback_models
-    )
+    fallbacks = tuple(resolve_provider_model(raw_model, registry=registry) for raw_model in provider_fallback.fallback_models)
     return ResolvedProviderChain(
         preferred=preferred,
         fallbacks=fallbacks,

@@ -25,9 +25,7 @@ _content_chars = st.characters(
     blacklist_characters=["\x00", "\n", "\r", "\t", "\x0b", "\x0c"],
     blacklist_categories=["Cs"],
 )
-_content_text = st.text(alphabet=_content_chars, min_size=1, max_size=30).filter(
-    lambda text: text.strip() != ""
-)
+_content_text = st.text(alphabet=_content_chars, min_size=1, max_size=30).filter(lambda text: text.strip() != "")
 _status = st.sampled_from(("pending", "in_progress", "completed", "cancelled"))
 _todo_item = st.fixed_dictionaries(
     {
@@ -79,9 +77,7 @@ def test_todo_write_summary_matches_normalized_status_counts(todos: list[dict[st
         assert not (workspace / ".voidcode" / "todos.json").exists()
         assert summary["total"] == len(stored)
         assert summary["pending"] == sum(1 for item in stored if item["status"] == "pending")
-        assert summary["in_progress"] == sum(
-            1 for item in stored if item["status"] == "in_progress"
-        )
+        assert summary["in_progress"] == sum(1 for item in stored if item["status"] == "in_progress")
         assert summary["completed"] == sum(1 for item in stored if item["status"] == "completed")
         assert summary["cancelled"] == sum(1 for item in stored if item["status"] == "cancelled")
         assert all(item["content"] == item["content"].strip() for item in stored)

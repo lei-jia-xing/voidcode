@@ -98,9 +98,7 @@ def test_managed_acp_adapter_connects_and_disconnects() -> None:
 
 
 def test_managed_acp_adapter_handshake_failure_marks_failed_state() -> None:
-    adapter = ManagedAcpAdapter(
-        RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail")
-    )
+    adapter = ManagedAcpAdapter(RuntimeAcpConfig(enabled=True, handshake_request_type="handshake_fail"))
 
     with pytest.raises(RuntimeError, match="handshake rejected"):
         _ = adapter.connect()

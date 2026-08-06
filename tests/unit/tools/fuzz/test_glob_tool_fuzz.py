@@ -30,9 +30,7 @@ def test_glob_tool_txt_matches_equal_reported_count(file_names: list[str]) -> No
                 expected_matches.append(path.relative_to(workspace).as_posix())
 
         tool = GlobTool()
-        result = tool.invoke(
-            ToolCall(tool_name="glob", arguments={"pattern": "*.txt"}), workspace=workspace
-        )
+        result = tool.invoke(ToolCall(tool_name="glob", arguments={"pattern": "*.txt"}), workspace=workspace)
 
         matches = cast(list[str], result.data["matches"])
 
@@ -78,9 +76,7 @@ def test_glob_tool_reports_truncation_at_limit(tmp_path: Path) -> None:
         (tmp_path / f"file_{index}.txt").write_text(str(index), encoding="utf-8")
 
     tool = GlobTool()
-    result = tool.invoke(
-        ToolCall(tool_name="glob", arguments={"pattern": "*.txt"}), workspace=tmp_path
-    )
+    result = tool.invoke(ToolCall(tool_name="glob", arguments={"pattern": "*.txt"}), workspace=tmp_path)
 
     matches = cast(list[str], result.data["matches"])
 

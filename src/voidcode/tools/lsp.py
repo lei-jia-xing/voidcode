@@ -66,29 +66,19 @@ class LspTool:
             },
             "filePath": {
                 "type": "string",
-                "description": (
-                    "Workspace-relative file path used for target selection and server resolution."
-                ),
+                "description": ("Workspace-relative file path used for target selection and server resolution."),
             },
             "line": {
                 "type": "integer",
-                "description": (
-                    "1-based line number as shown in editors. Required for "
-                    "position-based operations."
-                ),
+                "description": ("1-based line number as shown in editors. Required for position-based operations."),
             },
             "character": {
                 "type": "integer",
-                "description": (
-                    "1-based character number as shown in editors. Required "
-                    "for position-based operations."
-                ),
+                "description": ("1-based character number as shown in editors. Required for position-based operations."),
             },
             "query": {
                 "type": "string",
-                "description": (
-                    "Optional workspaceSymbol search query. Empty string requests all symbols."
-                ),
+                "description": ("Optional workspaceSymbol search query. Empty string requests all symbols."),
             },
             "server": {"type": "string"},
         },
@@ -179,9 +169,7 @@ class LspTool:
             raise ValueError(f"lsp target does not exist: {file_path}")
 
         position = (
-            lsp_types.Position(line=line_value - 1, character=character_value - 1)
-            if line_value is not None and character_value is not None
-            else None
+            lsp_types.Position(line=line_value - 1, character=character_value - 1) if line_value is not None and character_value is not None else None
         )
         text_document = lsp_types.TextDocumentIdentifier(uri=candidate.as_uri())
         params: dict[str, object]
@@ -205,9 +193,7 @@ class LspTool:
             params = cast(
                 dict[str, object],
                 self._converter.unstructure(
-                    lsp_types.TextDocumentPositionParams(
-                        text_document=text_document, position=position
-                    ),
+                    lsp_types.TextDocumentPositionParams(text_document=text_document, position=position),
                     unstructure_as=lsp_types.TextDocumentPositionParams,
                 ),
             )

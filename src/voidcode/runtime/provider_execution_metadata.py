@@ -19,9 +19,7 @@ def provider_retry_attempt_from_metadata(metadata: dict[str, object]) -> int:
     if "provider_retry_attempt" not in metadata:
         return 0
     raw_provider_retry_attempt = metadata["provider_retry_attempt"]
-    if not isinstance(raw_provider_retry_attempt, int) or isinstance(
-        raw_provider_retry_attempt, bool
-    ):
+    if not isinstance(raw_provider_retry_attempt, int) or isinstance(raw_provider_retry_attempt, bool):
         raise ValueError("persisted provider_retry_attempt must be an integer")
     return raw_provider_retry_attempt
 

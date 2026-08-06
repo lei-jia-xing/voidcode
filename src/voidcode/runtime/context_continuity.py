@@ -13,9 +13,7 @@ def verified_checkpoint_session_metadata(
 ) -> dict[str, object] | None:
     if checkpoint_metadata == stored_metadata:
         return checkpoint_metadata
-    if _without_recoverable_context(checkpoint_metadata) != _without_recoverable_context(
-        stored_metadata
-    ):
+    if _without_recoverable_context(checkpoint_metadata) != _without_recoverable_context(stored_metadata):
         return None
     if not _checkpoint_has_recoverable_context(checkpoint_metadata):
         return None
@@ -33,17 +31,11 @@ def _checkpoint_has_recoverable_context(metadata: dict[str, object]) -> bool:
 
 
 def _without_recoverable_context(metadata: dict[str, object]) -> dict[str, object]:
-    stripped = {
-        key: value
-        for key, value in metadata.items()
-        if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS
-    }
+    stripped = {key: value for key, value in metadata.items() if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS}
     runtime_state = stripped.get("runtime_state")
     if isinstance(runtime_state, dict):
         runtime_payload = {
-            key: value
-            for key, value in cast(dict[str, object], runtime_state).items()
-            if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS
+            key: value for key, value in cast(dict[str, object], runtime_state).items() if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS
         }
         if runtime_payload:
             stripped["runtime_state"] = runtime_payload

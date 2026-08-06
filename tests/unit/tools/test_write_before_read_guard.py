@@ -35,13 +35,9 @@ def test_write_file_tool_rejects_overwrite_without_prior_read(tmp_path: Path) ->
     tool = WriteFileTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             tool.invoke(
-                ToolCall(
-                    tool_name="write_file", arguments={"path": "sample.txt", "content": "new"}
-                ),
+                ToolCall(tool_name="write_file", arguments={"path": "sample.txt", "content": "new"}),
                 workspace=tmp_path,
             )
 
@@ -52,9 +48,7 @@ def test_write_file_tool_allows_overwrite_after_prior_read(tmp_path: Path) -> No
     tool = WriteFileTool()
     read_paths = frozenset({target.resolve().as_posix()})
 
-    with bind_runtime_tool_context(
-        RuntimeToolInvocationContext(session_id="test", read_paths=read_paths)
-    ):
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test", read_paths=read_paths)):
         result = tool.invoke(
             ToolCall(tool_name="write_file", arguments={"path": "sample.txt", "content": "new"}),
             workspace=tmp_path,
@@ -88,9 +82,7 @@ def test_edit_tool_rejects_modify_without_prior_read(tmp_path: Path) -> None:
     tool = EditTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             tool.invoke(
                 ToolCall(
                     tool_name="edit",
@@ -106,9 +98,7 @@ def test_multi_edit_rejects_modify_without_prior_read(tmp_path: Path) -> None:
     tool = MultiEditTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             tool.invoke(
                 ToolCall(
                     tool_name="multi_edit",
@@ -137,9 +127,5 @@ def test_apply_patch_rejects_modify_without_prior_read(tmp_path: Path) -> None:
     )
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
-            tool.invoke(
-                ToolCall(tool_name="apply_patch", arguments={"patch": patch}), workspace=tmp_path
-            )
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
+            tool.invoke(ToolCall(tool_name="apply_patch", arguments={"patch": patch}), workspace=tmp_path)

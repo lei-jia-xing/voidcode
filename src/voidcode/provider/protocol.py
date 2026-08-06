@@ -72,11 +72,7 @@ class ProviderTurnRequest:
             return self.bounded_context_window
         payload = self.assembled_context.metadata
         retained_raw = payload.get("retained_tool_result_count")
-        retained_count = (
-            retained_raw
-            if isinstance(retained_raw, int)
-            else len(self.assembled_context.tool_results)
-        )
+        retained_count = retained_raw if isinstance(retained_raw, int) else len(self.assembled_context.tool_results)
         return _DerivedContextWindow(
             prompt=self.assembled_context.prompt,
             tool_results=self.assembled_context.tool_results,
@@ -85,12 +81,8 @@ class ProviderTurnRequest:
             retained_tool_result_count=retained_count,
             token_budget=cast(int | None, payload.get("token_budget")),
             token_estimate_source=cast(str | None, payload.get("token_estimate_source")),
-            original_tool_result_tokens=cast(
-                int | None, payload.get("original_tool_result_tokens")
-            ),
-            retained_tool_result_tokens=cast(
-                int | None, payload.get("retained_tool_result_tokens")
-            ),
+            original_tool_result_tokens=cast(int | None, payload.get("original_tool_result_tokens")),
+            retained_tool_result_tokens=cast(int | None, payload.get("retained_tool_result_tokens")),
             dropped_tool_result_tokens=cast(int | None, payload.get("dropped_tool_result_tokens")),
             original_tool_result_count=cast(int | None, payload.get("original_tool_result_count")),
             compaction_reason=cast(str | None, payload.get("compaction_reason")),

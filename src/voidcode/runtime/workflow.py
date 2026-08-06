@@ -20,19 +20,13 @@ class WorkflowMode:
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not _WORKFLOW_ID_PATTERN.fullmatch(self.id):
-            raise ValueError(
-                f"WorkflowMode.id value {self.id!r} must match {_WORKFLOW_ID_PATTERN.pattern!r}"
-            )
+            raise ValueError(f"WorkflowMode.id value {self.id!r} must match {_WORKFLOW_ID_PATTERN.pattern!r}")
         if not self.description.strip():
             raise ValueError(f"workflow mode '{self.id}' must declare a description")
         if len(self.hook_preset_refs) != len(set(self.hook_preset_refs)):
-            raise ValueError(
-                f"workflow mode '{self.id}' hook_preset_refs must not contain duplicates"
-            )
+            raise ValueError(f"workflow mode '{self.id}' hook_preset_refs must not contain duplicates")
         if any(not ref.strip() for ref in self.hook_preset_refs):
-            raise ValueError(
-                f"workflow mode '{self.id}' hook_preset_refs entries must be non-empty strings"
-            )
+            raise ValueError(f"workflow mode '{self.id}' hook_preset_refs entries must be non-empty strings")
         validate_hook_preset_refs(
             self.hook_preset_refs,
             field_path=f"workflow mode '{self.id}' hook_preset_refs",

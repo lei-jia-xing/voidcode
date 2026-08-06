@@ -50,11 +50,7 @@ def operation_class_or_none(value: object) -> OperationClass | None:
 
 def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval:
     approval_event = next(
-        (
-            event
-            for event in reversed(response.events)
-            if event.event_type == RUNTIME_APPROVAL_REQUESTED
-        ),
+        (event for event in reversed(response.events) if event.event_type == RUNTIME_APPROVAL_REQUESTED),
         None,
     )
     if approval_event is None:
@@ -93,32 +89,14 @@ def pending_approval_from_response(response: RuntimeResponse) -> PendingApproval
         reason=reason,
         policy_mode=policy_mode,
         request_event_sequence=approval_event.sequence,
-        owner_session_id=(
-            str(payload["owner_session_id"])
-            if payload.get("owner_session_id") is not None
-            else None
-        ),
-        owner_parent_session_id=(
-            str(payload["owner_parent_session_id"])
-            if payload.get("owner_parent_session_id") is not None
-            else None
-        ),
-        delegated_task_id=(
-            str(payload["delegated_task_id"])
-            if payload.get("delegated_task_id") is not None
-            else None
-        ),
+        owner_session_id=(str(payload["owner_session_id"]) if payload.get("owner_session_id") is not None else None),
+        owner_parent_session_id=(str(payload["owner_parent_session_id"]) if payload.get("owner_parent_session_id") is not None else None),
+        delegated_task_id=(str(payload["delegated_task_id"]) if payload.get("delegated_task_id") is not None else None),
         path_scope=path_scope_or_none(path_scope),
         operation_class=operation_class_or_none(operation_class),
-        canonical_path=(
-            str(payload["canonical_path"]) if payload.get("canonical_path") is not None else None
-        ),
-        matched_rule=(
-            str(payload["matched_rule"]) if payload.get("matched_rule") is not None else None
-        ),
-        policy_surface=(
-            str(payload["policy_surface"]) if payload.get("policy_surface") is not None else None
-        ),
+        canonical_path=(str(payload["canonical_path"]) if payload.get("canonical_path") is not None else None),
+        matched_rule=(str(payload["matched_rule"]) if payload.get("matched_rule") is not None else None),
+        policy_surface=(str(payload["policy_surface"]) if payload.get("policy_surface") is not None else None),
     )
 
 
@@ -128,12 +106,8 @@ def request_event_and_resolution_state(
     request_kind: Literal["approval", "question"],
     request_id: str,
 ) -> tuple[EventEnvelope | None, bool]:
-    request_event_type = (
-        RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
-    )
-    resolution_event_type = (
-        "runtime.approval_resolved" if request_kind == "approval" else RUNTIME_QUESTION_ANSWERED
-    )
+    request_event_type = RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
+    resolution_event_type = "runtime.approval_resolved" if request_kind == "approval" else RUNTIME_QUESTION_ANSWERED
     request_event: EventEnvelope | None = None
     resolved = False
     for event in events:
@@ -196,9 +170,7 @@ def waiting_request_id_from_response(
 ) -> str | None:
     if response.session.status != "waiting":
         return None
-    target_event_type = (
-        RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
-    )
+    target_event_type = RUNTIME_APPROVAL_REQUESTED if request_kind == "approval" else RUNTIME_QUESTION_REQUESTED
     for event in reversed(response.events):
         if event.event_type == target_event_type:
             request_id = event.payload.get("request_id")

@@ -13,9 +13,7 @@ def _noop_uvicorn_run(app: object, *, host: str, port: int, lifespan: str) -> No
     _ = (app, host, port, lifespan)
 
 
-def _noop_uvicorn_run_with_fd(
-    app: object, *, host: str, port: int, lifespan: str, fd: int | None = None
-) -> None:
+def _noop_uvicorn_run_with_fd(app: object, *, host: str, port: int, lifespan: str, fd: int | None = None) -> None:
     _ = (app, host, port, lifespan, fd)
 
 
@@ -53,9 +51,7 @@ def test_serve_forwards_runtime_config_to_http_app_factory() -> None:
     workspace = Path("/tmp/server-workspace")
     config = cast(Any, SimpleNamespace(approval_mode="allow"))
 
-    with patch.object(
-        server, "create_runtime_app", autospec=True, return_value=object()
-    ) as app_mock:
+    with patch.object(server, "create_runtime_app", autospec=True, return_value=object()) as app_mock:
         with patch("importlib.import_module", autospec=True) as import_module_mock:
             uvicorn = SimpleNamespace(run=_noop_uvicorn_run)
             import_module_mock.return_value = uvicorn
@@ -118,9 +114,7 @@ def test_web_selects_ephemeral_port_when_unspecified(tmp_path: Path) -> None:
     try:
         expected_port = cast(int, listener_socket.getsockname()[1])
         with patch.object(server, "_run_runtime_server", autospec=True) as run_mock:
-            with patch.object(
-                server, "_frontend_dist_context", autospec=True
-            ) as frontend_context_mock:
+            with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
                 frontend_context_mock.return_value = _frontend_dist_override(frontend_dist)
                 with patch.object(
                     server,
@@ -183,9 +177,7 @@ def test_reserve_listener_socket_uses_ipv6_socket_family(monkeypatch: Any) -> No
     listener_socket = server._reserve_listener_socket("::1")
 
     assert listener_socket.getsockname() == ("::1", 41234, 0, 0)
-    assert socket_calls == [
-        (socket_module.AF_INET6, socket_module.SOCK_STREAM, socket_module.IPPROTO_TCP)
-    ]
+    assert socket_calls == [(socket_module.AF_INET6, socket_module.SOCK_STREAM, socket_module.IPPROTO_TCP)]
     assert bind_calls == [("::1", 0, 0, 0)]
 
 
@@ -197,9 +189,7 @@ def test_run_runtime_server_passes_reserved_socket_fd() -> None:
     listener_socket.bind(("127.0.0.1", 0))
 
     try:
-        with patch.object(
-            server, "create_runtime_app", autospec=True, return_value=object()
-        ) as app_mock:
+        with patch.object(server, "create_runtime_app", autospec=True, return_value=object()) as app_mock:
             with patch("importlib.import_module", autospec=True) as import_module_mock:
                 uvicorn = SimpleNamespace(run=_noop_uvicorn_run_with_fd)
                 import_module_mock.return_value = uvicorn
@@ -241,9 +231,7 @@ def test_run_runtime_server_skips_fd_mode_on_windows(monkeypatch: Any) -> None:
 
     try:
         monkeypatch.setattr(server.os, "name", "nt")
-        with patch.object(
-            server, "create_runtime_app", autospec=True, return_value=object()
-        ) as app_mock:
+        with patch.object(server, "create_runtime_app", autospec=True, return_value=object()) as app_mock:
             with patch("importlib.import_module", autospec=True, return_value=_UvicornStub):
                 server._run_runtime_server(
                     workspace=workspace,
@@ -274,12 +262,8 @@ def test_web_closes_reserved_listener_when_frontend_setup_fails() -> None:
             autospec=True,
             return_value=listener_socket,
         ):
-            with patch.object(
-                server, "_frontend_dist_context", autospec=True
-            ) as frontend_context_mock:
-                frontend_context_mock.side_effect = SystemExit(
-                    "error: frontend web bundle not found"
-                )
+            with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
+                frontend_context_mock.side_effect = SystemExit("error: frontend web bundle not found")
                 try:
                     server.web(workspace=Path("/tmp/server-workspace"), host="127.0.0.1", port=None)
                 except SystemExit as exc:

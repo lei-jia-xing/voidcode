@@ -338,11 +338,7 @@ def test_prompt_runtime_failed_event_uses_error_summary_for_message_chunk() -> N
         "sessionUpdate": "agent_thought_chunk",
         "content": {
             "type": "text",
-            "text": (
-                '{"sessionId":"runtime-1","sequence":1,'
-                '"type":"runtime.request_received","source":"runtime",'
-                '"payload":{"prompt":"hello"}}'
-            ),
+            "text": ('{"sessionId":"runtime-1","sequence":1,"type":"runtime.request_received","source":"runtime","payload":{"prompt":"hello"}}'),
         },
     }
     assert messages[2]["method"] == "session/update"
@@ -498,10 +494,7 @@ def test_cancel_request_during_prompt_returns_cancelled_stop_reason() -> None:
 
     results = [message["result"] for message in messages if isinstance(message.get("result"), dict)]
     assert {result["stopReason"] for result in results if "stopReason" in result} == {"cancelled"}
-    assert not any(
-        message.get("params", {}).get("update", {}).get("content", {}).get("text") == "late output"
-        for message in messages
-    )
+    assert not any(message.get("params", {}).get("update", {}).get("content", {}).get("text") == "late output" for message in messages)
 
 
 def test_rejects_concurrent_prompt_across_sessions() -> None:
@@ -574,9 +567,7 @@ def test_tool_call_update_reuses_created_tool_call_id() -> None:
 
     updates = [message["params"]["update"] for message in messages if "params" in message]
     tool_call = next(update for update in updates if update["sessionUpdate"] == "tool_call")
-    tool_update = next(
-        update for update in updates if update["sessionUpdate"] == "tool_call_update"
-    )
+    tool_update = next(update for update in updates if update["sessionUpdate"] == "tool_call_update")
     assert tool_update["toolCallId"] == tool_call["toolCallId"]
 
 
@@ -614,12 +605,8 @@ def test_cli_acp_loads_config_constructs_runtime_and_keeps_stdout_protocol_clean
     config = SimpleNamespace(approval_mode="deny")
     runtime = _StubRuntime()
 
-    with patch.object(
-        cli, "load_runtime_config", autospec=True, return_value=config
-    ) as config_mock:
-        with patch.object(
-            cli, "VoidCodeRuntime", autospec=True, return_value=runtime
-        ) as runtime_mock:
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
+        with patch.object(cli, "VoidCodeRuntime", autospec=True, return_value=runtime) as runtime_mock:
             with (
                 patch.object(cli.sys, "stdin", stdin),
                 patch.object(cli.sys, "stdout", stdout),

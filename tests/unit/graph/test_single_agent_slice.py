@@ -47,9 +47,7 @@ def _session_with_run(session_id: str = "s1", run_id: str = "run-one") -> Sessio
 
 
 def _assembled_from_context_window(context_window: RuntimeContextWindow) -> RuntimeAssembledContext:
-    segments: list[RuntimeContextSegment] = [
-        RuntimeContextSegment(role="user", content=context_window.prompt)
-    ]
+    segments: list[RuntimeContextSegment] = [RuntimeContextSegment(role="user", content=context_window.prompt)]
     for index, result in enumerate(context_window.tool_results, start=1):
         tool_call_id = f"test_tool_{index}"
         segments.append(
@@ -95,9 +93,7 @@ class _CapturingTurnProvider:
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         self.requests.append(request)
-        self.abort_cancelled_values.append(
-            request.abort_signal.cancelled if request.abort_signal is not None else None
-        )
+        self.abort_cancelled_values.append(request.abort_signal.cancelled if request.abort_signal is not None else None)
         return ProviderTurnResult(output="done")
 
 
@@ -773,9 +769,7 @@ def test_provider_provider_graph_rejects_nonstream_missing_terminal_outcome() ->
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             ),
             tool_results=(),
             session=_session(),
@@ -830,9 +824,7 @@ def test_provider_provider_graph_preserves_stream_error_details() -> None:
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -899,9 +891,7 @@ def test_provider_provider_graph_prefers_parsed_stream_error_kind_over_generic_t
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -955,9 +945,7 @@ def test_provider_provider_graph_preserves_explicit_stream_error_kind(
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -986,9 +974,7 @@ def test_provider_provider_graph_passes_applied_skill_context_to_provider() -> N
                 tool_results=(),
                 continuity_state=None,
                 segments=(
-                    RuntimeContextSegment(
-                        role="system", content="Runtime-managed skills are active."
-                    ),
+                    RuntimeContextSegment(role="system", content="Runtime-managed skills are active."),
                     RuntimeContextSegment(role="user", content="read sample.txt"),
                 ),
                 metadata={},
@@ -1000,9 +986,7 @@ def test_provider_provider_graph_passes_applied_skill_context_to_provider() -> N
                         "description": "Summarize selected files.",
                         "content": "# Summarize\nUse concise bullet points.",
                         "prompt_context": (
-                            "Skill: summarize\n"
-                            "Description: Summarize selected files.\n"
-                            "Instructions:\n# Summarize\nUse concise bullet points."
+                            "Skill: summarize\nDescription: Summarize selected files.\nInstructions:\n# Summarize\nUse concise bullet points."
                         ),
                     }
                 ],
@@ -1016,9 +1000,7 @@ def test_provider_provider_graph_passes_applied_skill_context_to_provider() -> N
     assert provider.requests[0].assembled_context is not None
     assert provider.requests[0].assembled_context.prompt == "read sample.txt"
     assert provider.requests[0].assembled_context.segments[0].role == "system"
-    assert provider.requests[0].assembled_context.segments[0].content == (
-        "Runtime-managed skills are active."
-    )
+    assert provider.requests[0].assembled_context.segments[0].content == ("Runtime-managed skills are active.")
 
 
 def test_provider_provider_graph_forwards_agent_preset_to_provider() -> None:
@@ -1035,9 +1017,7 @@ def test_provider_provider_graph_forwards_agent_preset_to_provider() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={
                 "agent_preset": {
                     "preset": "leader",
@@ -1213,9 +1193,7 @@ def test_provider_provider_graph_enforces_configured_max_steps() -> None:
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             ),
             tool_results=(
                 ToolResult(
@@ -1245,9 +1223,7 @@ def test_provider_provider_graph_streams_ordered_events_and_deterministic_output
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1287,9 +1263,7 @@ def test_provider_graph_preserves_reasoning_stream_metadata() -> None:
     )
 
     stream_events = [event for event in step.events if event.event_type == "graph.provider_stream"]
-    reasoning_event = next(
-        event for event in stream_events if event.payload.get("channel") == "reasoning"
-    )
+    reasoning_event = next(event for event in stream_events if event.payload.get("channel") == "reasoning")
     assert reasoning_event.payload["text"] == "private chain"
     assert reasoning_event.payload["metadata"] == {"source": "fixture"}
     assert step.output == "answer"
@@ -1309,9 +1283,7 @@ def test_provider_provider_graph_stream_done_without_text_does_not_fallback_prop
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1340,9 +1312,7 @@ def test_provider_provider_graph_returns_streamed_tool_call() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1372,9 +1342,7 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1402,9 +1370,7 @@ def test_provider_provider_graph_reconstructs_chunked_streamed_tool_call() -> No
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1434,9 +1400,7 @@ def test_provider_provider_graph_uses_latest_complete_tool_snapshot() -> None:
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1499,9 +1463,7 @@ def test_provider_provider_graph_rejects_malformed_streamed_tool_payload() -> No
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -1528,9 +1490,7 @@ def test_provider_provider_graph_requires_done_event_for_stream_completion() -> 
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),
@@ -1556,9 +1516,7 @@ def test_provider_provider_graph_prefers_mixed_stream_tool_terminal_output() -> 
             prompt="read sample.txt",
             available_tools=_tool_definitions(),
             context_window=RuntimeContextWindow(prompt="read sample.txt"),
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             metadata={"provider_stream": True},
         ),
         tool_results=(),
@@ -1587,9 +1545,7 @@ def test_provider_provider_graph_stream_error_maps_to_provider_execution_error()
                 prompt="read sample.txt",
                 available_tools=_tool_definitions(),
                 context_window=RuntimeContextWindow(prompt="read sample.txt"),
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="read sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
                 metadata={"provider_stream": True},
             ),
             tool_results=(),

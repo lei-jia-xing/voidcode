@@ -331,9 +331,7 @@ def test_task_category_mapping_contract_is_exact() -> None:
         "visual-engineering",
     }
     assert {
-        category: resolve_subagent_route(
-            SubagentRoutingIdentity(mode="background", category=category)
-        ).selected_preset
+        category: resolve_subagent_route(SubagentRoutingIdentity(mode="background", category=category)).selected_preset
         for category in supported_subagent_categories()
     } == {
         "quick": "worker",

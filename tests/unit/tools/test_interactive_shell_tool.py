@@ -54,18 +54,14 @@ def test_interactive_shell_creates_and_captures_tmux_session(tmp_path: Path) -> 
         assert "hello" in capture_result.content
         assert capture_result.data["subcommand"] == "capture-pane"
     finally:
-        subprocess.run(
-            ["tmux", "kill-session", "-t", session_name], check=False, capture_output=True
-        )
+        subprocess.run(["tmux", "kill-session", "-t", session_name], check=False, capture_output=True)
 
 
 def test_interactive_shell_blocks_risky_tmux_subcommands(tmp_path: Path) -> None:
     tool = InteractiveShellTool()
     with pytest.raises(ValueError, match="blocks risky tmux subcommand 'kill-session'"):
         tool.invoke(
-            ToolCall(
-                tool_name="interactive_shell", arguments={"tmux_command": "kill-session -t demo"}
-            ),
+            ToolCall(tool_name="interactive_shell", arguments={"tmux_command": "kill-session -t demo"}),
             workspace=tmp_path,
         )
 

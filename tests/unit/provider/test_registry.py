@@ -50,9 +50,7 @@ def test_registry_unknown_provider_reuses_default_litellm_config() -> None:
         api_key="token",
         base_url="http://localhost:4000",
     )
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(litellm=litellm_config)
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=litellm_config))
 
     resolved = registry.resolve("custom")
 
@@ -187,9 +185,7 @@ def test_registry_refresh_available_models_prefers_model_map_aliases() -> None:
             "coder": "ollama/qwen2.5-coder:latest",
         },
     )
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(litellm=litellm_config)
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=litellm_config))
 
     models = registry.refresh_available_models("litellm")
 
@@ -203,9 +199,7 @@ def test_registry_refresh_available_models_stores_model_metadata() -> None:
         discovery_base_url="",
         model_map={"gpt-4o": "openrouter/openai/gpt-4o"},
     )
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(litellm=litellm_config)
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=litellm_config))
 
     models = registry.refresh_available_models("litellm")
     catalog = registry.provider_catalog("litellm")
@@ -240,9 +234,7 @@ def test_registry_refresh_custom_provider_uses_custom_config() -> None:
         auth_scheme="none",
         model_map={"coder": "ollama/qwen2.5-coder:latest"},
     )
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(custom={"llama-local": custom_config})
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(custom={"llama-local": custom_config}))
 
     models = registry.refresh_available_models("llama-local")
 
@@ -257,11 +249,7 @@ def test_registry_refresh_custom_provider_uses_custom_config() -> None:
 
 def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_auth() -> None:
     registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(
-            google=GoogleProviderConfig(
-                auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")
-            )
-        )
+        provider_configs=ProviderConfigs(google=GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key="AIza-test")))
     )
 
     config = registry.provider_config("google")
@@ -284,9 +272,7 @@ def test_registry_google_provider_config_uses_google_api_key_header_for_api_key_
 
 
 def test_registry_openai_provider_config_sets_default_discovery_base_url() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(openai=OpenAIProviderConfig(api_key="sk-openai"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(openai=OpenAIProviderConfig(api_key="sk-openai")))
 
     config = registry.provider_config("openai")
 
@@ -315,9 +301,7 @@ def test_registry_openai_provider_config_with_custom_base_url_disables_default_d
 
 
 def test_registry_anthropic_provider_config_sets_default_discovery_base_url() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(anthropic=AnthropicProviderConfig(api_key="sk-anthropic"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(anthropic=AnthropicProviderConfig(api_key="sk-anthropic")))
 
     config = registry.provider_config("anthropic")
 
@@ -328,9 +312,7 @@ def test_registry_anthropic_provider_config_sets_default_discovery_base_url() ->
 
 
 def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="litellm-key")))
 
     config = registry.provider_config("litellm")
 
@@ -340,9 +322,7 @@ def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> N
 
 
 def test_registry_registers_glm_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(glm=SimplifiedProviderConfig(api_key="glm-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(glm=SimplifiedProviderConfig(api_key="glm-key")))
 
     resolved = registry.resolve("glm")
 
@@ -357,9 +337,7 @@ def test_registry_registers_glm_provider() -> None:
 
 
 def test_registry_registers_deepseek_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(deepseek=SimplifiedProviderConfig(api_key="deepseek-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(deepseek=SimplifiedProviderConfig(api_key="deepseek-key")))
 
     resolved = registry.resolve("deepseek")
 
@@ -391,9 +369,7 @@ def test_registry_deepseek_custom_base_url_uses_configured_base_url_discovery() 
 
 
 def test_registry_registers_grok_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(grok=SimplifiedProviderConfig(api_key="grok-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(grok=SimplifiedProviderConfig(api_key="grok-key")))
 
     resolved = registry.resolve("grok")
 
@@ -408,9 +384,7 @@ def test_registry_registers_grok_provider() -> None:
 
 
 def test_registry_registers_minimax_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(minimax=SimplifiedProviderConfig(api_key="minimax-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(minimax=SimplifiedProviderConfig(api_key="minimax-key")))
 
     resolved = registry.resolve("minimax")
 
@@ -425,9 +399,7 @@ def test_registry_registers_minimax_provider() -> None:
 
 
 def test_registry_registers_kimi_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(kimi=SimplifiedProviderConfig(api_key="kimi-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(kimi=SimplifiedProviderConfig(api_key="kimi-key")))
 
     resolved = registry.resolve("kimi")
 
@@ -442,11 +414,7 @@ def test_registry_registers_kimi_provider() -> None:
 
 
 def test_registry_registers_opencode_go_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(
-            opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key")
-        )
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="opencode-go-key")))
 
     resolved = registry.resolve("opencode-go")
 
@@ -486,9 +454,7 @@ def test_registry_opencode_go_custom_base_url_keeps_discovery_disabled() -> None
 
 
 def test_registry_registers_qwen_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(qwen=SimplifiedProviderConfig(api_key="qwen-key"))
-    )
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(qwen=SimplifiedProviderConfig(api_key="qwen-key")))
 
     resolved = registry.resolve("qwen")
 

@@ -46,18 +46,12 @@ class PersistedResumeCheckpointEnvelope:
     payload: dict[str, object]
 
 
-def _metadata_with_resume_run_id(
-    metadata: dict[str, object], *, run_id: str | None
-) -> dict[str, object]:
+def _metadata_with_resume_run_id(metadata: dict[str, object], *, run_id: str | None) -> dict[str, object]:
     metadata = session_metadata_for_persistence(metadata)
     if run_id is None:
         return metadata
     raw_runtime_state = metadata.get("runtime_state")
-    runtime_state = (
-        dict(cast(dict[str, object], raw_runtime_state))
-        if isinstance(raw_runtime_state, dict)
-        else {}
-    )
+    runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
     runtime_state["run_id"] = run_id
     return {**metadata, "runtime_state": runtime_state}
 
@@ -104,9 +98,7 @@ class RuntimeResumeCoordinator:
                 output=output,
                 final_session=final_session,
             )
-            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
-                session_response=response
-            )
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
 
     def resume_pending_approval_response(
         self,
@@ -151,12 +143,10 @@ class RuntimeResumeCoordinator:
         abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
-        stored_response, pending, checkpoint, normalized_responses = (
-            self._load_pending_question_context(
-                session_id=session_id,
-                question_request_id=question_request_id,
-                responses=responses,
-            )
+        stored_response, pending, checkpoint, normalized_responses = self._load_pending_question_context(
+            session_id=session_id,
+            question_request_id=question_request_id,
+            responses=responses,
         )
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
@@ -182,9 +172,7 @@ class RuntimeResumeCoordinator:
                 output=output,
                 final_session=final_session,
             )
-            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
-                session_response=response
-            )
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
 
     def answer_pending_question_response(
         self,
@@ -193,12 +181,10 @@ class RuntimeResumeCoordinator:
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
-        stored_response, pending, checkpoint, normalized_responses = (
-            self._load_pending_question_context(
-                session_id=session_id,
-                question_request_id=question_request_id,
-                responses=responses,
-            )
+        stored_response, pending, checkpoint, normalized_responses = self._load_pending_question_context(
+            session_id=session_id,
+            question_request_id=question_request_id,
+            responses=responses,
         )
         streamed_events: list[EventEnvelope] = []
         output: str | None = None
@@ -272,10 +258,7 @@ class RuntimeResumeCoordinator:
             source="runtime",
             payload={
                 "request_id": pending.request_id,
-                "responses": [
-                    {"header": response.header, "answers": list(response.answers)}
-                    for response in responses
-                ],
+                "responses": [{"header": response.header, "answers": list(response.answers)} for response in responses],
             },
         )
         yield RuntimeStreamChunk(kind="event", session=session, event=answered_event)
@@ -337,14 +320,11 @@ class RuntimeResumeCoordinator:
                 "resume_kind": "approval",
                 "approval_request_id": pending.request_id,
                 "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0)
-                    if isinstance(session.metadata.get("provider_attempt", 0), int)
-                    else 0
+                    session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
                 ),
                 **(
                     {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None
-                    and "reasoning_effort" not in session.metadata
+                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
                     else {}
                 ),
             },
@@ -363,9 +343,7 @@ class RuntimeResumeCoordinator:
                 graph_request=graph_request,
                 tool_results=tool_results,
                 permission_policy=runtime._permission_policy_for_session(session.metadata),
-                preserved_continuity_state=runtime._continuity_state_from_session_metadata(
-                    session.metadata
-                ),
+                preserved_continuity_state=runtime._continuity_state_from_session_metadata(session.metadata),
             ):
                 final_session = chunk.session
                 if chunk.event is not None:
@@ -428,13 +406,9 @@ class RuntimeResumeCoordinator:
             for chunk in final_chunks:
                 if chunk.event is not None:
                     last_sequence += 1
-                    resequenced_event = runtime._resequence_event(
-                        chunk.event, sequence=last_sequence
-                    )
+                    resequenced_event = runtime._resequence_event(chunk.event, sequence=last_sequence)
                     loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
+                    yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
             end_hook_sequence = max(last_sequence, final_sequence)
             end_hook_outcome = runtime._run_lifecycle_hooks(
                 session=final_session,
@@ -491,9 +465,7 @@ class RuntimeResumeCoordinator:
         if final_session is None:
             raise ValueError("runtime stream emitted no chunks")
         if final_session.status == "waiting":
-            final_session = self._runtime._reload_persisted_session(
-                session_id=final_session.session.id
-            )
+            final_session = self._runtime._reload_persisted_session(session_id=final_session.session.id)
         resolved_session = cast(SessionState, final_session)
         response = RuntimeResponse(
             session=resolved_session,
@@ -534,11 +506,7 @@ class RuntimeResumeCoordinator:
             if stored_response is None:
                 return response
             stored_prompt = getattr(stored_response, "prompt", None)
-            prompt = (
-                stored_prompt
-                if isinstance(stored_prompt, str)
-                else self._runtime._prompt_from_events(stored_response.events)
-            )
+            prompt = stored_prompt if isinstance(stored_prompt, str) else self._runtime._prompt_from_events(stored_response.events)
             _ = self._resumed_runtime_request(
                 stored_response=stored_response,
                 prompt=prompt,
@@ -591,11 +559,7 @@ class RuntimeResumeCoordinator:
         binding_mismatch_payload: dict[str, object] | None = None
         checkpoint_payload = cast(dict[str, object], checkpoint)
         checkpoint_binding = checkpoint_payload.get("skill_binding_snapshot")
-        checkpoint_binding_payload = (
-            cast(dict[str, object], checkpoint_binding)
-            if isinstance(checkpoint_binding, dict)
-            else None
-        )
+        checkpoint_binding_payload = cast(dict[str, object], checkpoint_binding) if isinstance(checkpoint_binding, dict) else None
         if checkpoint_binding_payload is not None:
             stored_snapshot_payload = cast(
                 dict[str, object] | None,
@@ -603,8 +567,7 @@ class RuntimeResumeCoordinator:
             )
             stored_binding_payload = (
                 cast(dict[str, object], stored_snapshot_payload.get("binding_snapshot"))
-                if isinstance(stored_snapshot_payload, dict)
-                and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
+                if isinstance(stored_snapshot_payload, dict) and isinstance(stored_snapshot_payload.get("binding_snapshot"), dict)
                 else None
             )
             mismatch_payload = runtime._skill_binding_mismatch_payload(
@@ -632,19 +595,14 @@ class RuntimeResumeCoordinator:
         session = runtime._session_with_current_acp_metadata(session)
         effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
         mcp_state = runtime._mcp_manager.current_state()
-        if (
-            mcp_state.configuration.configured_enabled is True
-            and not runtime._should_skip_mcp_startup_for_request(
-                request_metadata=session.metadata,
-                effective_config=effective_config,
-            )
+        if mcp_state.configuration.configured_enabled is True and not runtime._should_skip_mcp_startup_for_request(
+            request_metadata=session.metadata,
+            effective_config=effective_config,
         ):
-            mcp_startup_chunks, session, _, mcp_failed_chunk = (
-                runtime._refresh_mcp_tools_for_session(
-                    session=session,
-                    sequence=max_stored_sequence,
-                    failure_kind="mcp_startup_failed",
-                )
+            mcp_startup_chunks, session, _, mcp_failed_chunk = runtime._refresh_mcp_tools_for_session(
+                session=session,
+                sequence=max_stored_sequence,
+                failure_kind="mcp_startup_failed",
             )
             effective_config = runtime._effective_runtime_config_from_metadata(session.metadata)
         else:
@@ -689,14 +647,11 @@ class RuntimeResumeCoordinator:
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
                 "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0)
-                    if isinstance(session.metadata.get("provider_attempt", 0), int)
-                    else 0
+                    session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
                 ),
                 **(
                     {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None
-                    and "reasoning_effort" not in session.metadata
+                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
                     else {}
                 ),
             },
@@ -728,16 +683,12 @@ class RuntimeResumeCoordinator:
             yield RuntimeStreamChunk(kind="event", session=session, event=mismatch_event)
         for chunk in mcp_startup_chunks:
             emitted_sequence += 1
-            resequenced_event = runtime._resequence_event(
-                cast(EventEnvelope, chunk.event), sequence=emitted_sequence
-            )
+            resequenced_event = runtime._resequence_event(cast(EventEnvelope, chunk.event), sequence=emitted_sequence)
             loop_events.append(resequenced_event)
             yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
         if mcp_failed_chunk is not None:
             emitted_sequence += 1
-            resequenced_failed = runtime._resequence_event(
-                cast(EventEnvelope, mcp_failed_chunk.event), sequence=emitted_sequence
-            )
+            resequenced_failed = runtime._resequence_event(cast(EventEnvelope, mcp_failed_chunk.event), sequence=emitted_sequence)
             response = RuntimeResponse(
                 session=mcp_failed_chunk.session,
                 events=stored.events + tuple(loop_events) + (resequenced_failed,),
@@ -779,9 +730,7 @@ class RuntimeResumeCoordinator:
             startup_failed_chunk = None
         for chunk in startup_chunks:
             emitted_sequence += 1
-            resequenced_event = runtime._resequence_event(
-                cast(EventEnvelope, chunk.event), sequence=emitted_sequence
-            )
+            resequenced_event = runtime._resequence_event(cast(EventEnvelope, chunk.event), sequence=emitted_sequence)
             loop_events.append(resequenced_event)
             yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
         if startup_failed_chunk is not None:
@@ -829,12 +778,7 @@ class RuntimeResumeCoordinator:
             ):
                 session = chunk.session
                 if deferred_startup_acp_events and (
-                    (
-                        chunk.event is not None
-                        and chunk.event.event_type
-                        in {"runtime.approval_resolved", "runtime.failed"}
-                    )
-                    or chunk.kind == "output"
+                    (chunk.event is not None and chunk.event.event_type in {"runtime.approval_resolved", "runtime.failed"}) or chunk.kind == "output"
                 ):
                     startup_chunks, updated_session, _ = runtime._emit_acp_events(
                         session=chunk.session,
@@ -862,24 +806,16 @@ class RuntimeResumeCoordinator:
                     session = chunk.session
                 if chunk.event is not None:
                     emitted_sequence += 1
-                    resequenced_event = runtime._resequence_event(
-                        chunk.event, sequence=emitted_sequence
-                    )
+                    resequenced_event = runtime._resequence_event(chunk.event, sequence=emitted_sequence)
                     loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
+                    yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
                 if chunk.kind == "output":
                     output = chunk.output
                     yield chunk
 
             graph_loop_chunks: Iterator[RuntimeStreamChunk]
-            resumed_engine = runtime._effective_runtime_config_from_metadata(
-                session.metadata
-            ).execution_engine
-            if session.status == "failed" or (
-                approval_decision == "deny" and resumed_engine != "provider"
-            ):
+            resumed_engine = runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine
+            if session.status == "failed" or (approval_decision == "deny" and resumed_engine != "provider"):
                 graph_loop_chunks = iter(())
             else:
                 graph_loop_chunks = runtime._execute_graph_loop(
@@ -896,12 +832,7 @@ class RuntimeResumeCoordinator:
             for chunk in graph_loop_chunks:
                 session = chunk.session
                 if deferred_startup_acp_events and (
-                    (
-                        chunk.event is not None
-                        and chunk.event.event_type
-                        in {"runtime.approval_resolved", "runtime.failed"}
-                    )
-                    or chunk.kind == "output"
+                    (chunk.event is not None and chunk.event.event_type in {"runtime.approval_resolved", "runtime.failed"}) or chunk.kind == "output"
                 ):
                     startup_chunks, updated_session, _ = runtime._emit_acp_events(
                         session=chunk.session,
@@ -929,13 +860,9 @@ class RuntimeResumeCoordinator:
                     session = chunk.session
                 if chunk.event is not None:
                     emitted_sequence += 1
-                    resequenced_event = runtime._resequence_event(
-                        chunk.event, sequence=emitted_sequence
-                    )
+                    resequenced_event = runtime._resequence_event(chunk.event, sequence=emitted_sequence)
                     loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
+                    yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
                 if chunk.kind == "output":
                     output = chunk.output
                     yield chunk
@@ -1002,13 +929,9 @@ class RuntimeResumeCoordinator:
             for chunk in final_chunks:
                 if chunk.event is not None:
                     emitted_sequence += 1
-                    resequenced_event = runtime._resequence_event(
-                        chunk.event, sequence=emitted_sequence
-                    )
+                    resequenced_event = runtime._resequence_event(chunk.event, sequence=emitted_sequence)
                     loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
+                    yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
             end_hook_outcome = runtime._run_lifecycle_hooks(
                 session=session,
                 sequence=emitted_sequence,
@@ -1066,44 +989,28 @@ class RuntimeResumeCoordinator:
         )
         checkpoint_payload = checkpoint_envelope.payload
         if checkpoint_payload.get("pending_approval_request_id") != pending.request_id:
-            raise ValueError(
-                "persisted approval resume checkpoint request id does not match pending approval"
-            )
+            raise ValueError("persisted approval resume checkpoint request id does not match pending approval")
         checkpoint_snapshot_hash = checkpoint_payload.get("skill_snapshot_hash")
         stored_snapshot_payload = cast(
             dict[str, object] | None,
             stored_metadata.get("skill_snapshot"),
         )
-        stored_snapshot_hash = (
-            stored_snapshot_payload.get("snapshot_hash")
-            if isinstance(stored_snapshot_payload, dict)
-            else None
-        )
-        if (
-            checkpoint_snapshot_hash is not None
-            and stored_snapshot_hash is not None
-            and checkpoint_snapshot_hash != stored_snapshot_hash
-        ):
-            raise ValueError(
-                "persisted approval resume checkpoint skill snapshot hash does not match session"
-            )
+        stored_snapshot_hash = stored_snapshot_payload.get("snapshot_hash") if isinstance(stored_snapshot_payload, dict) else None
+        if checkpoint_snapshot_hash is not None and stored_snapshot_hash is not None and checkpoint_snapshot_hash != stored_snapshot_hash:
+            raise ValueError("persisted approval resume checkpoint skill snapshot hash does not match session")
         prompt = checkpoint_payload.get("prompt")
         session_metadata = checkpoint_payload.get("session_metadata")
         raw_tool_results = checkpoint_payload.get("tool_results")
         if not isinstance(prompt, str):
             raise ValueError("persisted approval resume checkpoint prompt must be a string")
         if not isinstance(session_metadata, dict):
-            raise ValueError(
-                "persisted approval resume checkpoint session_metadata must be an object"
-            )
+            raise ValueError("persisted approval resume checkpoint session_metadata must be an object")
         recovered_metadata = verified_checkpoint_session_metadata(
             checkpoint_metadata=cast(dict[str, object], session_metadata),
             stored_metadata=stored_metadata,
         )
         if recovered_metadata is None:
-            raise ValueError(
-                "persisted approval resume checkpoint session_metadata does not match session"
-            )
+            raise ValueError("persisted approval resume checkpoint session_metadata does not match session")
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted approval resume checkpoint tool_results must be a list")
         return ApprovalResumeCheckpointState(
@@ -1125,26 +1032,20 @@ class RuntimeResumeCoordinator:
         )
         checkpoint_payload = checkpoint_envelope.payload
         if checkpoint_payload.get("pending_question_request_id") != pending.request_id:
-            raise ValueError(
-                "persisted question resume checkpoint request id does not match pending question"
-            )
+            raise ValueError("persisted question resume checkpoint request id does not match pending question")
         prompt = checkpoint_payload.get("prompt")
         session_metadata = checkpoint_payload.get("session_metadata")
         raw_tool_results = checkpoint_payload.get("tool_results")
         if not isinstance(prompt, str):
             raise ValueError("persisted question resume checkpoint prompt must be a string")
         if not isinstance(session_metadata, dict):
-            raise ValueError(
-                "persisted question resume checkpoint session_metadata must be an object"
-            )
+            raise ValueError("persisted question resume checkpoint session_metadata must be an object")
         recovered_metadata = verified_checkpoint_session_metadata(
             checkpoint_metadata=cast(dict[str, object], session_metadata),
             stored_metadata=stored_metadata,
         )
         if recovered_metadata is None:
-            raise ValueError(
-                "persisted question resume checkpoint session_metadata does not match session"
-            )
+            raise ValueError("persisted question resume checkpoint session_metadata does not match session")
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted question resume checkpoint tool_results must be a list")
         return ApprovalResumeCheckpointState(
@@ -1154,24 +1055,17 @@ class RuntimeResumeCoordinator:
         )
 
     @staticmethod
-    def validated_resume_checkpoint_envelope(
-        *, checkpoint: dict[str, object] | None, expected_kind: str
-    ) -> PersistedResumeCheckpointEnvelope:
+    def validated_resume_checkpoint_envelope(*, checkpoint: dict[str, object] | None, expected_kind: str) -> PersistedResumeCheckpointEnvelope:
         if checkpoint is None:
             raise ValueError("persisted resume checkpoint is required")
         kind = checkpoint.get("kind")
         if not isinstance(kind, str):
             raise ValueError("persisted resume checkpoint kind must be a string")
         if kind != expected_kind:
-            raise ValueError(
-                f"persisted resume checkpoint kind mismatch: "
-                f"expected {expected_kind!r}, got {kind!r}"
-            )
+            raise ValueError(f"persisted resume checkpoint kind mismatch: expected {expected_kind!r}, got {kind!r}")
         version = checkpoint.get("version")
         if version != 1:
-            raise ValueError(
-                f"persisted resume checkpoint version mismatch: expected 1, got {version!r}"
-            )
+            raise ValueError(f"persisted resume checkpoint version mismatch: expected 1, got {version!r}")
         return PersistedResumeCheckpointEnvelope(kind=kind, version=1, payload=checkpoint)
 
     def load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
@@ -1206,9 +1100,7 @@ class RuntimeResumeCoordinator:
             output=output if output is not None else stored.output,
         )
         if finalize_background_task:
-            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(
-                session_response=response
-            )
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
         return response
 
     def resume_provider_failure_stream(
@@ -1239,9 +1131,7 @@ class RuntimeResumeCoordinator:
         if not isinstance(prompt, str):
             raise ValueError("persisted provider failure checkpoint prompt must be a string")
         if not isinstance(session_metadata, dict):
-            raise ValueError(
-                "persisted provider failure checkpoint session_metadata must be an object"
-            )
+            raise ValueError("persisted provider failure checkpoint session_metadata must be an object")
         if not isinstance(raw_tool_results, list):
             raise ValueError("persisted provider failure checkpoint tool_results must be a list")
         tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
@@ -1293,16 +1183,13 @@ class RuntimeResumeCoordinator:
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
                 "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0)
-                    if isinstance(session.metadata.get("provider_attempt", 0), int)
-                    else 0
+                    session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
                 ),
                 "provider_stream": True,
                 "provider_failure_resume": True,
                 **(
                     {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None
-                    and "reasoning_effort" not in session.metadata
+                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
                     else {}
                 ),
             },
@@ -1329,9 +1216,7 @@ class RuntimeResumeCoordinator:
                 graph_request=graph_request,
                 tool_results=tool_results,
                 permission_policy=runtime._permission_policy_for_session(session.metadata),
-                preserved_continuity_state=runtime._continuity_state_from_session_metadata(
-                    session.metadata
-                ),
+                preserved_continuity_state=runtime._continuity_state_from_session_metadata(session.metadata),
             ):
                 final_session = chunk.session
                 if chunk.event is not None:
@@ -1353,9 +1238,7 @@ class RuntimeResumeCoordinator:
                     response=response,
                 )
                 if finalize_background_task:
-                    runtime._background_task_supervisor.finalize_background_task_from_session_response(
-                        session_response=response
-                    )
+                    runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
                 return
             raise
 
@@ -1399,9 +1282,7 @@ class RuntimeResumeCoordinator:
                         sequence=last_sequence,
                     )
                     loop_events.append(resequenced_event)
-                    yield RuntimeStreamChunk(
-                        kind="event", session=chunk.session, event=resequenced_event
-                    )
+                    yield RuntimeStreamChunk(kind="event", session=chunk.session, event=resequenced_event)
             end_hook_outcome = runtime._run_lifecycle_hooks(
                 session=final_session,
                 sequence=max(last_sequence, final_sequence),
@@ -1443,9 +1324,7 @@ class RuntimeResumeCoordinator:
             response=response,
         )
         if finalize_background_task:
-            runtime._background_task_supervisor.finalize_background_task_from_session_response(
-                session_response=response
-            )
+            runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
 
     @staticmethod
     def tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
@@ -1472,31 +1351,17 @@ class RuntimeResumeCoordinator:
             if not isinstance(tool_name, str) or status is None or not isinstance(data, dict):
                 raise ValueError("persisted resume checkpoint tool_results are malformed")
             if content is not None and not isinstance(content, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result content must be a string or null"
-                )
+                raise ValueError("persisted resume checkpoint tool result content must be a string or null")
             if error is not None and not isinstance(error, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result error must be a string or null"
-                )
+                raise ValueError("persisted resume checkpoint tool result error must be a string or null")
             if error_kind is not None and not isinstance(error_kind, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result error_kind must be a string or null"
-                )
+                raise ValueError("persisted resume checkpoint tool result error_kind must be a string or null")
             if error_summary is not None and not isinstance(error_summary, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result error_summary must be a string or null"
-                )
+                raise ValueError("persisted resume checkpoint tool result error_summary must be a string or null")
             if error_details is not None and not isinstance(error_details, dict):
-                raise ValueError(
-                    "persisted resume checkpoint tool result error_details "
-                    "must be an object or null"
-                )
+                raise ValueError("persisted resume checkpoint tool result error_details must be an object or null")
             if retry_guidance is not None and not isinstance(retry_guidance, str):
-                raise ValueError(
-                    "persisted resume checkpoint tool result retry_guidance "
-                    "must be a string or null"
-                )
+                raise ValueError("persisted resume checkpoint tool result retry_guidance must be a string or null")
             parsed.append(
                 ToolResult(
                     tool_name=tool_name,
@@ -1506,11 +1371,7 @@ class RuntimeResumeCoordinator:
                     error=error,
                     error_kind=error_kind,
                     error_summary=error_summary,
-                    error_details=(
-                        cast(dict[str, object], error_details)
-                        if isinstance(error_details, dict)
-                        else None
-                    ),
+                    error_details=(cast(dict[str, object], error_details) if isinstance(error_details, dict) else None),
                     retry_guidance=retry_guidance,
                 )
             )
@@ -1582,10 +1443,7 @@ class RuntimeResumeCoordinator:
     ) -> str | None:
         approval_index: int | None = None
         for index, event in enumerate(stored_events):
-            if (
-                event.event_type == "runtime.approval_requested"
-                and event.payload.get("request_id") == pending.request_id
-            ):
+            if event.event_type == "runtime.approval_requested" and event.payload.get("request_id") == pending.request_id:
                 approval_index = index
                 break
         if approval_index is None:

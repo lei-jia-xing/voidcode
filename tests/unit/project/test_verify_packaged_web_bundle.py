@@ -7,11 +7,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "scripts"
-    / "verify_packaged_web_bundle.py"
-)
+_SCRIPT_PATH = Path(__file__).resolve().parent.parent.parent.parent / "scripts" / "verify_packaged_web_bundle.py"
 _SPEC = importlib.util.spec_from_file_location("verify_packaged_web_bundle", _SCRIPT_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 verify_packaged_web_bundle = importlib.util.module_from_spec(_SPEC)

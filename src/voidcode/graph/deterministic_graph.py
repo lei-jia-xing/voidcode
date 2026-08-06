@@ -183,9 +183,7 @@ class DeterministicGraph:
             }
 
         try:
-            tool_call = self._select_tool_call(
-                state["prompt"], state["available_tools"], state["tool_results"]
-            )
+            tool_call = self._select_tool_call(state["prompt"], state["available_tools"], state["tool_results"])
         except ValueError as exc:
             return {
                 "events": planning_events,

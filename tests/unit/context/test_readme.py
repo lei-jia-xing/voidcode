@@ -41,9 +41,7 @@ def test_directory_readme_contexts_ignore_external_paths(tmp_path: Path) -> None
                 content="content",
                 data={
                     "path": str((tmp_path.parent / "outside" / "secret.txt").resolve()),
-                    "arguments": {
-                        "filePath": str((tmp_path.parent / "outside" / "secret.txt").resolve())
-                    },
+                    "arguments": {"filePath": str((tmp_path.parent / "outside" / "secret.txt").resolve())},
                 },
             ),
         ),

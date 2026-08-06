@@ -37,9 +37,7 @@ def test_review_snapshot_keeps_out_of_root_symlinked_file_paths_relative(tmp_pat
     symlink_path = tmp_path / "external-file.txt"
     symlink_path.symlink_to(outside_file)
 
-    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="not_git_repo")
-    )
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="not_git_repo"))
 
     assert snapshot.root == str(tmp_path.resolve())
     assert snapshot.tree == (
@@ -62,9 +60,7 @@ def test_review_snapshot_does_not_descend_into_out_of_root_symlinked_directory(
     symlink_path = tmp_path / "external-dir"
     symlink_path.symlink_to(outside_dir, target_is_directory=True)
 
-    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="not_git_repo")
-    )
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="not_git_repo"))
 
     assert len(snapshot.tree) == 1
     node = snapshot.tree[0]
@@ -85,17 +81,13 @@ def test_review_snapshot_excludes_generated_and_internal_directories(tmp_path: P
     (tmp_path / ".sisyphus" / "plans").mkdir(parents=True)
     (tmp_path / ".sisyphus" / "plans" / "plan.md").write_text("plan\n", encoding="utf-8")
     (tmp_path / ".opencode" / "node_modules" / "pkg").mkdir(parents=True)
-    (tmp_path / ".opencode" / "node_modules" / "pkg" / "index.js").write_text(
-        "export {};\n", encoding="utf-8"
-    )
+    (tmp_path / ".opencode" / "node_modules" / "pkg" / "index.js").write_text("export {};\n", encoding="utf-8")
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "ci.yml").write_text("name: ci\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
 
-    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="not_git_repo")
-    )
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="not_git_repo"))
 
     assert snapshot.tree == (
         ReviewTreeNode(
@@ -210,9 +202,7 @@ def test_review_snapshot_uses_gitignore_rules_for_non_git_workspace(tmp_path: Pa
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
 
-    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="not_git_repo")
-    )
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="not_git_repo"))
 
     assert snapshot.tree == (
         ReviewTreeNode(
@@ -309,9 +299,7 @@ def test_review_snapshot_uses_git_check_ignore_for_git_workspace(tmp_path: Path)
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
 
-    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
-    )
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)))
 
     assert snapshot.tree == (
         ReviewTreeNode(
@@ -335,10 +323,7 @@ def test_review_snapshot_uses_git_check_ignore_for_git_workspace(tmp_path: Path)
             changed=True,
         ),
     )
-    assert (
-        ReviewChangedFile(path="generated/out.txt", change_type="untracked")
-        not in snapshot.changed_files
-    )
+    assert ReviewChangedFile(path="generated/out.txt", change_type="untracked") not in snapshot.changed_files
 
 
 def test_review_snapshot_keeps_tracked_gitignored_files_in_git_workspace(
@@ -355,9 +340,7 @@ def test_review_snapshot_keeps_tracked_gitignored_files_in_git_workspace(
         capture_output=True,
     )
 
-    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
-    )
+    snapshot = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)))
 
     assert snapshot.tree == (
         ReviewTreeNode(
@@ -418,13 +401,9 @@ def test_review_changed_files_decodes_quoted_untracked_path(tmp_path: Path) -> N
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "a b.txt").write_text("hello\n", encoding="utf-8")
 
-    result = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
-    )
+    result = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)))
 
-    assert result.changed_files == (
-        ReviewChangedFile(path="a b.txt", change_type="untracked", old_path=None),
-    )
+    assert result.changed_files == (ReviewChangedFile(path="a b.txt", change_type="untracked", old_path=None),)
 
 
 def test_review_changed_files_decodes_quoted_rename_paths(tmp_path: Path) -> None:
@@ -450,9 +429,7 @@ def test_review_changed_files_decodes_quoted_rename_paths(tmp_path: Path) -> Non
     old_path.rename(tmp_path / "new name.txt")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
 
-    result = WorkspaceReviewService(workspace=tmp_path).snapshot(
-        git=GitStatusSnapshot(state="git_ready", root=str(tmp_path))
-    )
+    result = WorkspaceReviewService(workspace=tmp_path).snapshot(git=GitStatusSnapshot(state="git_ready", root=str(tmp_path)))
 
     assert result.changed_files == (
         ReviewChangedFile(

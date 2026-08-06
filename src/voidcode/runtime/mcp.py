@@ -130,9 +130,7 @@ def _validate_call_arguments_against_schema(
             raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a string")
         if expected_type == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
             raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be an integer")
-        if expected_type == "number" and (
-            isinstance(value, bool) or not isinstance(value, (int, float))
-        ):
+        if expected_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
             raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a number")
         if expected_type == "boolean" and not isinstance(value, bool):
             raise ValueError(f"MCP[{tool_name}]: argument '{raw_key}' must be a boolean")
@@ -285,9 +283,7 @@ class ManagedMcpManager:
             )
             for name, server in self._configuration.servers.items()
         }
-        self._request_timeout_seconds = (
-            config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
-        )
+        self._request_timeout_seconds = config.request_timeout_seconds or DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS
         self._portal_context: AbstractContextManager[BlockingPortal] | None = None
         self._portal: BlockingPortal | None = None
         self._tool_descriptors_by_server: dict[_McpServerKey, dict[str, McpToolDescriptor]] = {}
@@ -357,10 +353,7 @@ class ManagedMcpManager:
             descriptor = self._tool_descriptors_by_server.get(key, {}).get(tool_name)
 
         if descriptor is not None and not descriptor.enabled:
-            raise ValueError(
-                f"MCP[{server_name}/{tool_name}] is disabled: "
-                f"{descriptor.disabled_reason or 'invalid schema'}"
-            )
+            raise ValueError(f"MCP[{server_name}/{tool_name}] is disabled: {descriptor.disabled_reason or 'invalid schema'}")
 
         if descriptor is not None:
             try:
@@ -394,9 +387,7 @@ class ManagedMcpManager:
         )
         call_result = cast(CallToolResult, result)
         return McpToolCallResult(
-            content=[
-                item.model_dump(by_alias=True, exclude_none=True) for item in call_result.content
-            ],
+            content=[item.model_dump(by_alias=True, exclude_none=True) for item in call_result.content],
             is_error=bool(call_result.isError),
         )
 
@@ -442,9 +433,7 @@ class ManagedMcpManager:
             for key, running in tuple(self._running_servers.items()):
                 if key.scope != "session":
                     continue
-                abandoned = (
-                    active_session_ids is not None and key.owner_session_id not in active_ids
-                )
+                abandoned = active_session_ids is not None and key.owner_session_id not in active_ids
                 idle = now - running.last_used_at >= max_idle_seconds
                 if abandoned or idle:
                     self._record_server_idle_cleaned(
@@ -476,10 +465,7 @@ class ManagedMcpManager:
                 server_name=server_name,
             )
             self._record_diagnostic(diagnostic)
-            message = (
-                f"MCP[{server_name}]: server not found in configuration. "
-                f"Available servers: {list(self._configuration.servers.keys())}"
-            )
+            message = f"MCP[{server_name}]: server not found in configuration. Available servers: {list(self._configuration.servers.keys())}"
             self._record_failure_event(
                 key=_McpServerKey(server_name=server_name, scope="runtime"),
                 workspace_root=workspace.resolve(),
@@ -512,10 +498,7 @@ class ManagedMcpManager:
                 server_name=server_name,
             )
             self._record_diagnostic(diagnostic)
-            message = (
-                f"MCP[{server_name}]: command is empty. "
-                "Please configure mcp.servers.{server_name}.command in .voidcode.json"
-            )
+            message = f"MCP[{server_name}]: command is empty. Please configure mcp.servers.{{server_name}}.command in .voidcode.json"
             self._record_failure_event(
                 key=key,
                 workspace_root=workspace.resolve(),
@@ -533,10 +516,7 @@ class ManagedMcpManager:
                 server_name=server_name,
             )
             self._record_diagnostic(diagnostic)
-            message = (
-                f"MCP[{server_name}]: url is empty. "
-                "Please configure mcp.servers.{server_name}.url in .voidcode.json"
-            )
+            message = f"MCP[{server_name}]: url is empty. Please configure mcp.servers.{{server_name}}.url in .voidcode.json"
             self._record_failure_event(
                 key=key,
                 workspace_root=workspace.resolve(),
@@ -563,12 +543,8 @@ class ManagedMcpManager:
                 portal = self._ensure_portal()
                 if transport == "remote-http":
                     url = server_config.url
-                    pending_transport_context = portal.wrap_async_context_manager(
-                        cast(Any, streamable_http_client(url))
-                    )
-                    read_stream, write_stream = _read_write_streams(
-                        pending_transport_context.__enter__()
-                    )
+                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, streamable_http_client(url)))
+                    read_stream, write_stream = _read_write_streams(pending_transport_context.__enter__())
                     transport_context = pending_transport_context
                 else:
                     stderr_log = open(
@@ -582,12 +558,8 @@ class ManagedMcpManager:
                         env={**os.environ, **server_config.env},
                         cwd=workspace_root,
                     )
-                    pending_transport_context = portal.wrap_async_context_manager(
-                        cast(Any, stdio_client(params, errlog=stderr_log))
-                    )
-                    read_stream, write_stream = _read_write_streams(
-                        pending_transport_context.__enter__()
-                    )
+                    pending_transport_context = portal.wrap_async_context_manager(cast(Any, stdio_client(params, errlog=stderr_log)))
+                    read_stream, write_stream = _read_write_streams(pending_transport_context.__enter__())
                     transport_context = pending_transport_context
                 pending_session_context = portal.wrap_async_context_manager(
                     ClientSession(
@@ -641,11 +613,7 @@ class ManagedMcpManager:
                 )
                 self._record_diagnostic(diagnostic)
                 if transport == "stdio":
-                    message = (
-                        f"MCP[{server_name}]: failed to start server - cmd not found "
-                        f"(command not found): "
-                        f"{server_config.command[0]}"
-                    )
+                    message = f"MCP[{server_name}]: failed to start server - cmd not found (command not found): {server_config.command[0]}"
                 else:
                     message = f"MCP[{server_name}]: failed to connect to remote server"
                 self._record_failure_event(
@@ -747,9 +715,7 @@ class ManagedMcpManager:
                 key=_McpServerKey(
                     server_name=running.server_name,
                     scope=running.scope,
-                    owner_session_id=(
-                        running.owner_session_id if running.scope == "session" else None
-                    ),
+                    owner_session_id=(running.owner_session_id if running.scope == "session" else None),
                 ),
                 workspace_root=running.workspace_root,
                 stage=stage,
@@ -875,9 +841,7 @@ class ManagedMcpManager:
         parsed_scope: Literal["runtime", "session"] = "session" if scope == "session" else "runtime"
         owner = owner_session_id if parsed_scope == "session" else None
         if parsed_scope == "session" and not owner:
-            raise ValueError(
-                f"MCP[{server_name}]: session-scoped server requires an owning session id"
-            )
+            raise ValueError(f"MCP[{server_name}]: session-scoped server requires an owning session id")
         return _McpServerKey(
             server_name=server_name,
             scope=parsed_scope,
@@ -953,18 +917,11 @@ class ManagedMcpManager:
                 workspace_root=str(workspace_root),
                 stage=stage,
                 error=error,
-                command=list(
-                    command
-                    or self._server_states.get(
-                        server_name, McpServerRuntimeState(server_name=server_name)
-                    ).command
-                ),
+                command=list(command or self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name)).command),
                 scope=key.scope,
                 retry_available=True,
             )
-            self._record_event(
-                McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload)
-            )
+            self._record_event(McpRuntimeEvent(event_type=RUNTIME_MCP_SERVER_FAILED, payload=payload))
 
     def _record_server_started(
         self,
@@ -976,9 +933,7 @@ class ManagedMcpManager:
     ) -> None:
         server_name = key.server_name
         with self._state_lock:
-            existing = self._server_states.get(
-                server_name, McpServerRuntimeState(server_name=server_name)
-            )
+            existing = self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name))
             self._server_states[server_name] = McpServerRuntimeState(
                 server_name=server_name,
                 status="running",
@@ -994,11 +949,7 @@ class ManagedMcpManager:
                     payload={
                         "server": server_name,
                         "scope": key.scope,
-                        **(
-                            {"owner_session_id": key.owner_session_id}
-                            if key.owner_session_id
-                            else {}
-                        ),
+                        **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
                         "workspace_root": str(workspace_root),
                         "state": "starting",
                         "client_foundation": "python-mcp-sdk",
@@ -1016,9 +967,7 @@ class ManagedMcpManager:
     ) -> None:
         server_name = key.server_name
         with self._state_lock:
-            existing_state = self._server_states.get(
-                server_name, McpServerRuntimeState(server_name=server_name)
-            )
+            existing_state = self._server_states.get(server_name, McpServerRuntimeState(server_name=server_name))
             remaining_session_owner = self._remaining_session_owner_for_server(key)
             if remaining_session_owner is not None:
                 self._server_states[server_name] = McpServerRuntimeState(
@@ -1029,11 +978,7 @@ class ManagedMcpManager:
                     scope=remaining_session_owner.scope,
                     retry_available=False,
                 )
-            elif not (
-                preserve_failed_state
-                and existing_state.status == "failed"
-                and existing_state.workspace_root == str(workspace_root)
-            ):
+            elif not (preserve_failed_state and existing_state.status == "failed" and existing_state.workspace_root == str(workspace_root)):
                 self._server_states[server_name] = McpServerRuntimeState(
                     server_name=server_name,
                     status="stopped",
@@ -1048,11 +993,7 @@ class ManagedMcpManager:
                     payload={
                         "server": server_name,
                         "scope": key.scope,
-                        **(
-                            {"owner_session_id": key.owner_session_id}
-                            if key.owner_session_id
-                            else {}
-                        ),
+                        **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
                         "workspace_root": str(workspace_root),
                     },
                 )
@@ -1107,11 +1048,7 @@ class ManagedMcpManager:
                     "server": key.server_name,
                     "scope": key.scope,
                     **({"owner_session_id": key.owner_session_id} if key.owner_session_id else {}),
-                    **(
-                        {"workspace_root": str(workspace_root)}
-                        if workspace_root is not None
-                        else {}
-                    ),
+                    **({"workspace_root": str(workspace_root)} if workspace_root is not None else {}),
                     "reason": reason,
                 },
             )
@@ -1184,10 +1121,7 @@ class ManagedMcpManager:
 
     def _message_for_exception(self, exc: Exception, *, fallback: str) -> str:
         if self._is_timeout_error(exc):
-            return (
-                f"MCP server timed out after {self._request_timeout_seconds:.1f}s. "
-                "The server may be unresponsive."
-            )
+            return f"MCP server timed out after {self._request_timeout_seconds:.1f}s. The server may be unresponsive."
         if isinstance(exc, McpError):
             return f"MCP server error: {exc}"
         return f"{fallback}: {exc}"

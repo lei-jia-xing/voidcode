@@ -225,9 +225,7 @@ def _runtime_event(
     source: str = "runtime",
     **payload: object,
 ) -> _StubEvent:
-    return _StubEvent(
-        sequence=sequence, event_type=event_type, source=source, payload=dict(payload)
-    )
+    return _StubEvent(sequence=sequence, event_type=event_type, source=source, payload=dict(payload))
 
 
 def _make_chunk(
@@ -254,9 +252,7 @@ def _configure_resume_stream(runtime: Any, *streams: Iterable[_StubChunk]) -> No
     runtime.resume_stream = MagicMock(side_effect=[iter(stream) for stream in streams])
 
 
-def _run_module_cli(
-    *args: str, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
+def _run_module_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     effective_env = with_src_pythonpath(env)
     effective_env.setdefault("VOIDCODE_EXECUTION_ENGINE", "deterministic")
     return subprocess.run(
@@ -403,9 +399,7 @@ def test_web_command_forwards_runtime_config_and_server_entry() -> None:
     workspace = Path("/tmp/web-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
-    with patch.object(
-        cli, "load_runtime_config", autospec=True, return_value=config
-    ) as config_mock:
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "web", autospec=True) as web_mock:
             result = cli.main(
                 [
@@ -435,9 +429,7 @@ def test_web_command_defaults_to_auto_assigned_port() -> None:
     workspace = Path("/tmp/web-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
-    with patch.object(
-        cli, "load_runtime_config", autospec=True, return_value=config
-    ) as config_mock:
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "web", autospec=True) as web_mock:
             result = cli.main(["web", "--workspace", str(workspace), "--host", "127.0.0.1"])
 
@@ -457,9 +449,7 @@ def test_web_command_forwards_no_open_flag() -> None:
     workspace = Path("/tmp/web-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
-    with patch.object(
-        cli, "load_runtime_config", autospec=True, return_value=config
-    ) as config_mock:
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "web", autospec=True) as web_mock:
             result = cli.main(
                 [
@@ -490,9 +480,7 @@ def test_serve_command_forwards_runtime_config_and_server_entry() -> None:
     workspace = Path("/tmp/serve-workspace")
     config = SimpleNamespace(approval_mode="allow")
 
-    with patch.object(
-        cli, "load_runtime_config", autospec=True, return_value=config
-    ) as config_mock:
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as config_mock:
         with patch.object(cli, "serve", autospec=True) as serve_mock:
             result = cli.main(
                 [
@@ -856,7 +844,7 @@ def test_sessions_debug_missing_session_returns_clean_error() -> None:
             env=env,
         )
 
-    assert result.returncode == 16
+    assert result.returncode == 12
     assert result.stdout == ""
     assert "error: unknown session: missing-session" in result.stderr
     assert "Traceback" not in result.stderr
@@ -1009,9 +997,7 @@ def test_run_command_accepts_agent_skills_model_max_steps_and_provider_stream_fl
         _make_chunk(session_id="demo-session", status="completed", output="done\n"),
     )
 
-    with patch.object(
-        cli, "load_runtime_config", autospec=True, return_value=config
-    ) as load_config:
+    with patch.object(cli, "load_runtime_config", autospec=True, return_value=config) as load_config:
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
             result = cli.main(
@@ -1059,9 +1045,7 @@ def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement()
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(
-                ["run", "inspect repo", "--workspace", str(workspace), "--mode", "analyze"]
-            )
+            result = cli.main(["run", "inspect repo", "--workspace", str(workspace), "--mode", "analyze"])
 
     assert result == 0
     request = runtime_class.return_value.run_stream.call_args.args[0]
@@ -1314,9 +1298,7 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(
-                ["run", "write sample", "--workspace", str(workspace), "--trace", "--show-thinking"]
-            )
+            result = cli.main(["run", "write sample", "--workspace", str(workspace), "--trace", "--show-thinking"])
 
     captured = capsys.readouterr()
     request = runtime_class.return_value.run_stream.call_args.args[0]
@@ -1462,9 +1444,7 @@ def test_run_trace_shows_reasoning_with_show_thinking(capsys: Any) -> None:
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(
-                ["run", "think", "--workspace", str(workspace), "--trace", "--show-thinking"]
-            )
+            result = cli.main(["run", "think", "--workspace", str(workspace), "--trace", "--show-thinking"])
 
     captured = capsys.readouterr()
 
@@ -1882,9 +1862,7 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(
-                        ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
-                    )
+                    result = cli.main(["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     captured = capsys.readouterr()
 
@@ -1895,10 +1873,7 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
         approval_decision="allow",
     )
     assert captured.out.count("EVENT runtime.approval_requested") == 1
-    assert (
-        "EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1"
-        in captured.out
-    )
+    assert "EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1" in captured.out
     assert captured.out.rstrip().endswith("done")
     assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
     assert captured.err == ""
@@ -1914,15 +1889,9 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
 
     def _stream() -> Any:
         yield _make_chunk(session_id="demo-session", status="running", event=request_received)
-        assert (
-            stdout.getvalue()
-            == "EVENT runtime.request_received source=runtime prompt=write sample.txt hi\n"
-        )
+        assert stdout.getvalue() == "EVENT runtime.request_received source=runtime prompt=write sample.txt hi\n"
         yield _make_chunk(session_id="demo-session", status="waiting", event=approval_requested)
-        assert (
-            "EVENT runtime.approval_requested source=runtime "
-            "request_id=req-1 target_summary=sample.txt tool=write_file\n" in stdout.getvalue()
-        )
+        assert "EVENT runtime.approval_requested source=runtime request_id=req-1 target_summary=sample.txt tool=write_file\n" in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1962,15 +1931,11 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
                     with patch.object(cli.sys, "stdout", stdout):
-                        result = cli.main(
-                            ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
-                        )
+                        result = cli.main(["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     assert result == 0
     assert stdout.getvalue().endswith("RESULT\ndone\n")
-    assert stdout.getvalue().index("EVENT runtime.approval_requested") < stdout.getvalue().index(
-        "RESULT\n"
-    )
+    assert stdout.getvalue().index("EVENT runtime.approval_requested") < stdout.getvalue().index("RESULT\n")
     assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
 
 
@@ -2006,12 +1971,7 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
 
     def _resumed_stream() -> Any:
         yield _make_chunk(session_id="demo-session", status="running", event=approval_resolved)
-        assert (
-            stdout.getvalue().count(
-                "EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1\n"
-            )
-            == 1
-        )
+        assert stdout.getvalue().count("EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1\n") == 1
         assert "EVENT runtime.tool_completed source=tool tool=write_file\n" not in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
         yield _make_chunk(session_id="demo-session", status="running", event=tool_progress)
@@ -2027,12 +1987,8 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
             runtime = runtime_class.return_value
             runtime.run_stream.return_value = iter(
                 (
-                    _make_chunk(
-                        session_id="demo-session", status="running", event=request_received
-                    ),
-                    _make_chunk(
-                        session_id="demo-session", status="waiting", event=approval_requested
-                    ),
+                    _make_chunk(session_id="demo-session", status="running", event=request_received),
+                    _make_chunk(session_id="demo-session", status="waiting", event=approval_requested),
                 )
             )
             _configure_resume_stream(
@@ -2042,21 +1998,13 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
                     with patch.object(cli.sys, "stdout", stdout):
-                        result = cli.main(
-                            ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
-                        )
+                        result = cli.main(["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     assert result == 0
     assert stdout.getvalue().count("EVENT runtime.approval_requested") == 1
-    assert stdout.getvalue().index("EVENT runtime.approval_resolved") < stdout.getvalue().index(
-        "EVENT runtime.tool_progress"
-    )
-    assert stdout.getvalue().index("EVENT runtime.tool_progress") < stdout.getvalue().index(
-        "EVENT runtime.tool_completed"
-    )
-    assert stdout.getvalue().index("EVENT runtime.tool_completed") < stdout.getvalue().index(
-        "RESULT\n"
-    )
+    assert stdout.getvalue().index("EVENT runtime.approval_resolved") < stdout.getvalue().index("EVENT runtime.tool_progress")
+    assert stdout.getvalue().index("EVENT runtime.tool_progress") < stdout.getvalue().index("EVENT runtime.tool_completed")
+    assert stdout.getvalue().index("EVENT runtime.tool_completed") < stdout.getvalue().index("RESULT\n")
     assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
     runtime.resume_stream.assert_called_once_with(
         session_id="demo-session",
@@ -2116,9 +2064,7 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(
-                        ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
-                    )
+                    result = cli.main(["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     captured = capsys.readouterr()
 
@@ -2128,14 +2074,8 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
         approval_request_id="req-1",
         approval_decision="deny",
     )
-    assert (
-        "EVENT runtime.approval_resolved source=runtime decision=deny request_id=req-1"
-        in captured.out
-    )
-    assert (
-        "EVENT runtime.tool_completed source=tool error=permission denied for tool: write_file"
-        in captured.out
-    )
+    assert "EVENT runtime.approval_resolved source=runtime decision=deny request_id=req-1" in captured.out
+    assert "EVENT runtime.tool_completed source=tool error=permission denied for tool: write_file" in captured.out
     assert captured.out.rstrip().endswith("RESULT")
     assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
     assert captured.err == ""
@@ -2227,9 +2167,7 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("no\n", "yes\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(
-                        ["run", "write then shell", "--workspace", "/tmp/demo-workspace"]
-                    )
+                    result = cli.main(["run", "write then shell", "--workspace", "/tmp/demo-workspace"])
 
     captured = capsys.readouterr()
 
@@ -2239,12 +2177,8 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
         "Approve write_file for sample.txt? [y/N]: ",
         "Approve shell_exec for build.sh? [y/N]: ",
     ]
-    assert (
-        captured.out.count("EVENT runtime.tool_completed source=tool error=permission denied") == 1
-    )
-    assert (
-        captured.out.count("EVENT runtime.approval_requested source=runtime request_id=req-2") == 1
-    )
+    assert captured.out.count("EVENT runtime.tool_completed source=tool error=permission denied") == 1
+    assert captured.out.count("EVENT runtime.approval_requested source=runtime request_id=req-2") == 1
     assert captured.out.rstrip().endswith("done")
     assert captured.err == ""
 
@@ -2334,9 +2268,7 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
             )
             with patch.object(cli.sys, "stdin", _StubTtyInput("yes\n", "y\n")):
                 with patch.object(cli.sys, "stderr", stderr):
-                    result = cli.main(
-                        ["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"]
-                    )
+                    result = cli.main(["run", "write sample.txt hi", "--workspace", "/tmp/demo-workspace"])
 
     captured = capsys.readouterr()
 
@@ -2406,8 +2338,7 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
     runtime.resume_stream.assert_not_called()
     assert captured.out == ""
     assert stderr.writes == [
-        "error: approval required for write_file for sample.txt; "
-        "resume session demo-session with approval request req-1",
+        "error: approval required for write_file for sample.txt; resume session demo-session with approval request req-1",
         "\n",
     ]
     assert captured.err == ""
@@ -2510,8 +2441,7 @@ def test_run_command_non_interactive_question_block_returns_failure(capsys: Any)
     runtime.resume_stream.assert_not_called()
     assert captured.out == ""
     assert stderr.writes == [
-        "error: question response required for question; "
-        "resume session question-session with question request question-1",
+        "error: question response required for question; resume session question-session with question request question-1",
         "\n",
     ]
     assert captured.err == ""
@@ -2679,7 +2609,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
     assert "Traceback" not in result.stderr
 
 
-def test_config_show_accepts_json_flag() -> None:
+def test_config_show_outputs_json_by_default() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         env = with_src_pythonpath(os.environ.copy())
@@ -2689,7 +2619,6 @@ def test_config_show_accepts_json_flag() -> None:
             "show",
             "--workspace",
             str(workspace),
-            "--json",
             env=env,
         )
 
@@ -2951,9 +2880,7 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
                 fallback_chain=("runtime/model",),
             )
             runtime_class.return_value.provider_readiness.return_value = readiness
-            runtime_class.return_value.current_status.return_value = SimpleNamespace(
-                mcp=SimpleNamespace(**_expected_default_mcp_status())
-            )
+            runtime_class.return_value.current_status.return_value = SimpleNamespace(mcp=SimpleNamespace(**_expected_default_mcp_status()))
             result = cli.main(
                 [
                     "config",
@@ -2969,15 +2896,9 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
 
     assert result == 0
     runtime_class.assert_called_once_with(workspace=workspace)
-    runtime_class.return_value.effective_runtime_config.assert_called_once_with(
-        session_id="config-session"
-    )
-    runtime_class.return_value.effective_agent_model_config.assert_called_once_with(
-        session_id="config-session"
-    )
-    runtime_class.return_value.effective_category_model_config.assert_called_once_with(
-        session_id="config-session"
-    )
+    runtime_class.return_value.effective_runtime_config.assert_called_once_with(session_id="config-session")
+    runtime_class.return_value.effective_agent_model_config.assert_called_once_with(session_id="config-session")
+    runtime_class.return_value.effective_category_model_config.assert_called_once_with(session_id="config-session")
     runtime_class.return_value.current_status.assert_called_once_with()
     assert json.loads(captured.out) == {
         "workspace": str(workspace),
@@ -3229,10 +3150,7 @@ def test_config_schema_outputs_json_schema() -> None:
 
     payload = json.loads(result.stdout)
     assert result.returncode == 0
-    assert (
-        payload["$id"]
-        == "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
-    )
+    assert payload["$id"] == "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json"
     assert payload["properties"]["approval_mode"]["enum"] == ["allow", "deny", "ask"]
 
 
@@ -3290,9 +3208,7 @@ def test_config_init_writes_starter_config_and_refuses_overwrite() -> None:
     first_payload = json.loads(first.stdout)
     assert first_payload["config_path"].endswith(".voidcode.json")
     assert first_payload["next_command"] == f"voidcode doctor --workspace {workspace}"
-    assert first_payload["first_task_command"] == (
-        f'voidcode run "read README.md" --workspace {workspace}'
-    )
+    assert first_payload["first_task_command"] == (f'voidcode run "read README.md" --workspace {workspace}')
     assert written_payload == {
         "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
         "approval_mode": "ask",
@@ -3459,11 +3375,7 @@ def test_commands_show_outputs_project_command_json() -> None:
         commands_dir = workspace / ".voidcode" / "commands"
         commands_dir.mkdir(parents=True)
         (commands_dir / "review.md").write_text(
-            "---\n"
-            "description: Project review override\n"
-            "agent: reviewer\n"
-            "---\n"
-            "Review locally: $ARGUMENTS\n",
+            "---\ndescription: Project review override\nagent: reviewer\n---\nReview locally: $ARGUMENTS\n",
             encoding="utf-8",
         )
 
@@ -3510,22 +3422,20 @@ def test_provider_models_command_outputs_refreshed_provider_model_list() -> None
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.refresh_provider_models.return_value = models
             contracts = importlib.import_module("voidcode.runtime.contracts")
-            runtime_class.return_value.provider_models_result.return_value = (
-                contracts.ProviderModelsResult(
-                    provider="litellm",
-                    configured=True,
-                    models=models,
-                    model_metadata={
-                        "provider/model": contracts.ProviderModelMetadata(
-                            context_window=128_000,
-                            max_input_tokens=111_616,
-                            max_output_tokens=16_384,
-                            supports_tools=True,
-                        )
-                    },
-                    source="remote",
-                    last_refresh_status="ok",
-                )
+            runtime_class.return_value.provider_models_result.return_value = contracts.ProviderModelsResult(
+                provider="litellm",
+                configured=True,
+                models=models,
+                model_metadata={
+                    "provider/model": contracts.ProviderModelMetadata(
+                        context_window=128_000,
+                        max_input_tokens=111_616,
+                        max_output_tokens=16_384,
+                        supports_tools=True,
+                    )
+                },
+                source="remote",
+                last_refresh_status="ok",
             )
             result = cli.main(
                 [
@@ -3551,9 +3461,7 @@ def test_provider_inspect_command_outputs_provider_capabilities() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         inspect_result = contracts.ProviderInspectResult(
-            summary=contracts.ProviderSummary(
-                name="openai", label="OpenAI", configured=True, current=True
-            ),
+            summary=contracts.ProviderSummary(name="openai", label="OpenAI", configured=True, current=True),
             models=contracts.ProviderModelsResult(
                 provider="openai",
                 configured=True,

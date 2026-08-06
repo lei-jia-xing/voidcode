@@ -31,25 +31,11 @@ _SECRET_TEXT_PATTERNS = (
     re.compile(r"(?i)(token\s*[=:]\s*)[^\s,;]+"),
 )
 
-_BASE_SAFETY_GUIDANCE = (
-    "Base safety: follow runtime-enforced permission, approval, memory, shell, and "
-    "tool policies. Prompt text describes policy intent; runtime controls remain the "
-    "source of enforcement truth."
-)
+_BASE_SAFETY_GUIDANCE = "Follow runtime safety policies. Runtime enforcement is authoritative over prompt text."
 
-_STRICT_MEMORY_USAGE_GUIDANCE = (
-    "Memory usage guidance: treat workspace memory as optional, bounded context. "
-    "Prefer current repository files and live runtime state over remembered facts, do "
-    "not store or repeat secrets, credentials, raw tokens, private keys, or sensitive "
-    "environment values, and use memory tools only when runtime policy explicitly "
-    "makes them available for this turn."
-)
+_STRICT_MEMORY_USAGE_GUIDANCE = "Memory: prefer current files over recalled facts. Never store or repeat secrets."
 
-_TOOL_POLICY_SUMMARY = (
-    "Tool policy summary: the visible tool list is advisory context for the model; "
-    "runtime allowlists, read-only policy, shell classification, approvals, hooks, and "
-    "tool lookup checks decide whether a call may execute."
-)
+_TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and policy control execution."
 _PROMPT_ACTIVATION_PREVIEW_CHARS = 160
 
 
@@ -67,11 +53,7 @@ def prompt_activation_decision(
     runtime_policy = _mapping_value(session_metadata.get("runtime_policy"))
     prompt_activation = _mapping_value(runtime_policy.get("prompt_activation"))
     enabled = prompt_activation.get("enabled", True) is not False
-    mode = (
-        _metadata_string(session_metadata, "mode")
-        or _metadata_string(runtime_policy, "mode")
-        or "normal"
-    )
+    mode = _metadata_string(session_metadata, "mode") or _metadata_string(runtime_policy, "mode") or "normal"
     intent = _mapping_value(runtime_policy.get("intent"))
     intent_slot = _metadata_string(intent, "label") or "unspecified"
     activation_id = _activation_id(prompt_profile_name)
@@ -94,9 +76,7 @@ def prompt_activation_decision(
         "activated": existing_records,
     }
     if not enabled or already_active:
-        base_metadata["activated_this_turn"] = (
-            session_metadata.get("_prompt_activation_this_run") is True
-        )
+        base_metadata["activated_this_turn"] = session_metadata.get("_prompt_activation_this_run") is True
         return PromptActivationDecision(section=None, metadata=base_metadata)
 
     guidance = prompt_activation_guidance_block(
@@ -106,8 +86,7 @@ def prompt_activation_decision(
         profile_refs=profile_refs,
     )
     preview_source = (
-        f"Activation {activation_id} for mode {mode} and intent slot {intent_slot}. "
-        "Guidance-only; runtime policy remains enforcement truth."
+        f"Activation {activation_id} for mode {mode} and intent slot {intent_slot}. Guidance-only; runtime policy remains enforcement truth."
     )
     preview, preview_truncated = _redacted_preview(preview_source)
     record: dict[str, object] = {
@@ -192,25 +171,21 @@ def build_env_card_sections(session_runtime_state: object) -> tuple[str, str]:
     )
     model_identity = _model_identity(session_runtime_state)
     stable_lines = [
-        "<environment_stable>",
         f"Platform: {platform.system()}",
         f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         f"Model: {model_identity}",
     ]
     if workspace_root is not None:
-        stable_lines.append(f"Workspace root: {workspace_root}")
-    stable_lines.append("</environment_stable>")
+        stable_lines.append(f"Workspace: {workspace_root}")
 
     dynamic_lines = [
-        "<environment_dynamic>",
         f"Date: {datetime.now(UTC).date().isoformat()}",
     ]
     git_state = _git_dynamic_state(workspace_root)
     if git_state[0] is not None:
-        dynamic_lines.append(f"Current branch: {git_state[0]}")
+        dynamic_lines.append(f"Branch: {git_state[0]}")
     if git_state[1] is not None:
-        dynamic_lines.append(f"Git status: {git_state[1]}")
-    dynamic_lines.append("</environment_dynamic>")
+        dynamic_lines.append(f"Git: {git_state[1]}")
     return "\n".join(stable_lines), "\n".join(dynamic_lines)
 
 
@@ -246,9 +221,7 @@ def _git_dynamic_state(workspace_root: str | None) -> tuple[str | None, str | No
     return branch, status_summary
 
 
-def _run_git(
-    workspace_root: Path, args: tuple[str, ...], *, allow_empty: bool = False
-) -> str | None:
+def _run_git(workspace_root: Path, args: tuple[str, ...], *, allow_empty: bool = False) -> str | None:
     try:
         result = subprocess.run(
             ("git", "-C", str(workspace_root), *args),
@@ -452,9 +425,7 @@ def build_prompt_assembly_plan(
             return
         sections.append(block.to_section())
 
-    profile_overlay = (
-        get_profile_overlay(prompt_profile_name) if prompt_profile_name is not None else None
-    )
+    profile_overlay = get_profile_overlay(prompt_profile_name) if prompt_profile_name is not None else None
     stable_env_card = ""
     dynamic_env_card = ""
     if session_runtime_state is not None:

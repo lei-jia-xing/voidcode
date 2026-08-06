@@ -468,9 +468,7 @@ def test_discover_available_models_for_google_with_api_key_header_does_not_appen
     def _fake_urlopen(request: Request, timeout: float) -> _Response:
         captured["url"] = request.full_url
         captured["timeout"] = timeout
-        captured["headers"] = {
-            str(key).lower(): str(value) for key, value in dict(request.header_items()).items()
-        }
+        captured["headers"] = {str(key).lower(): str(value) for key, value in dict(request.header_items()).items()}
         return _Response()
 
     monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
@@ -621,9 +619,7 @@ def test_discover_available_models_custom_provider_builds_url_from_plain_base_ur
 
     def _fake_urlopen(request: Request, timeout: float) -> _Response:
         captured["url"] = request.full_url
-        captured["headers"] = {
-            str(key): str(value) for key, value in dict(request.header_items()).items()
-        }
+        captured["headers"] = {str(key): str(value) for key, value in dict(request.header_items()).items()}
         captured["timeout"] = timeout
         return _Response()
 
@@ -662,9 +658,7 @@ def test_discover_available_models_custom_provider_keeps_existing_v1_models_path
 
     def _fake_urlopen(request: Request, timeout: float) -> _Response:
         captured["url"] = request.full_url
-        captured["headers"] = {
-            str(key): str(value) for key, value in dict(request.header_items()).items()
-        }
+        captured["headers"] = {str(key): str(value) for key, value in dict(request.header_items()).items()}
         captured["timeout"] = timeout
         return _Response()
 
@@ -796,9 +790,7 @@ def test_discover_available_models_custom_provider_uses_token_auth_header_withou
 
     def _fake_urlopen(request: Request, timeout: float) -> _Response:
         captured["url"] = request.full_url
-        captured["headers"] = {
-            str(key): str(value) for key, value in dict(request.header_items()).items()
-        }
+        captured["headers"] = {str(key): str(value) for key, value in dict(request.header_items()).items()}
         captured["timeout"] = timeout
         return _Response()
 
@@ -816,8 +808,6 @@ def test_discover_available_models_custom_provider_uses_token_auth_header_withou
 
     assert result.models == ("provider/model-c",)
     assert captured["url"] == "https://gateway.example.com/v1/models"
-    headers = {
-        str(k).lower(): str(v) for k, v in dict(cast(dict[str, str], captured["headers"])).items()
-    }
+    headers = {str(k).lower(): str(v) for k, v in dict(cast(dict[str, str], captured["headers"])).items()}
     assert headers.get("x-api-key") == "token-raw"
     assert result.discovery_mode == "configured_base_url"

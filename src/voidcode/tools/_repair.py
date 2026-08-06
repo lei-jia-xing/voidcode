@@ -89,10 +89,7 @@ def looks_line_number_prefixed(text: str) -> bool:
 
 
 def line_prefix_retry_guidance(*, argument_name: str = "oldString") -> str:
-    return (
-        f"{argument_name} appears to include read output line prefixes like '42: '; "
-        "remove those prefixes and retry with only file text."
-    )
+    return f"{argument_name} appears to include read output line prefixes like '42: '; remove those prefixes and retry with only file text."
 
 
 def near_text_matches(

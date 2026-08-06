@@ -62,11 +62,7 @@ def _redact_secret_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_VALUE_PATTERNS:
         redacted = pattern.sub(
-            lambda match: (
-                f"{match.group(1)}=<redacted>"
-                if match.lastindex and match.lastindex >= 2
-                else "<redacted>"
-            ),
+            lambda match: f"{match.group(1)}=<redacted>" if match.lastindex and match.lastindex >= 2 else "<redacted>",
             redacted,
         )
     return redacted
@@ -129,17 +125,11 @@ def guidance_for_provider_error_kind(kind: ProviderErrorKind) -> str:
     if kind == "rate_limit":
         return "Retry later, reduce request volume, or configure a fallback model."
     if kind == "context_limit":
-        return (
-            "Reduce prompt/tool-result context or switch to a model with a larger context window."
-        )
+        return "Reduce prompt/tool-result context or switch to a model with a larger context window."
     if kind == "unsupported_feature":
-        return (
-            "Disable the unsupported provider feature or choose a model/provider that supports it."
-        )
+        return "Disable the unsupported provider feature or choose a model/provider that supports it."
     if kind == "stream_tool_feedback_shape":
-        return (
-            "Report this provider stream/tool-call shape; VoidCode could not normalize it safely."
-        )
+        return "Report this provider stream/tool-call shape; VoidCode could not normalize it safely."
     if kind == "cancelled":
         return "The request was cancelled; rerun when ready."
     return "Retry the request or configure a fallback provider/model."
@@ -200,9 +190,7 @@ def _classify_api_error_kind(
     if _is_context_overflow(message, status_code, code):
         return "context_limit"
 
-    if status_code == 429 or (
-        isinstance(code, str) and code.lower() in {"rate_limit", "rate_limit_exceeded"}
-    ):
+    if status_code == 429 or (isinstance(code, str) and code.lower() in {"rate_limit", "rate_limit_exceeded"}):
         return "rate_limit"
 
     if isinstance(code, str) and code.lower() in {
@@ -386,10 +374,7 @@ def format_invalid_provider_config_error(field_path: str, reason: str) -> str:
 
 
 def format_fallback_exhausted_error(*, provider_name: str, model_name: str, attempt: int) -> str:
-    return (
-        "provider fallback exhausted after "
-        f"{provider_name}/{model_name} failed at attempt {attempt}"
-    )
+    return f"provider fallback exhausted after {provider_name}/{model_name} failed at attempt {attempt}"
 
 
 def format_provider_retry_exhausted_error(

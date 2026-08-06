@@ -61,10 +61,7 @@ def test_builtin_hook_presets_carry_guidance_metadata() -> None:
     )
     assert delegated_retry.allowed_actions == ("observe", "report", "guidance")
     assert "continue other safe work first" in delegated_timing.guidance
-    assert (
-        "blocking result reads only when you intentionally want to wait"
-        in delegated_timing.guidance
-    )
+    assert "blocking result reads only when you intentionally want to wait" in delegated_timing.guidance
 
 
 def test_hook_preset_ref_helpers_reject_unknown_refs() -> None:

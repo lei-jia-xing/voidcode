@@ -55,21 +55,13 @@ class AgentManifestRegistry:
         return (*self.builtin.values(), *self.custom.values())
 
     def list_top_level_selectable(self) -> tuple[AgentManifest, ...]:
-        return tuple(
-            manifest for manifest in self.list_manifests() if manifest.top_level_selectable
-        )
+        return tuple(manifest for manifest in self.list_manifests() if manifest.top_level_selectable)
 
     def executable_primary_ids(self) -> frozenset[str]:
-        return frozenset(
-            manifest.id
-            for manifest in self.list_manifests()
-            if manifest.mode == "primary" and manifest.top_level_selectable
-        )
+        return frozenset(manifest.id for manifest in self.list_manifests() if manifest.mode == "primary" and manifest.top_level_selectable)
 
     def executable_subagent_ids(self) -> frozenset[str]:
-        return frozenset(
-            manifest.id for manifest in self.list_manifests() if manifest.mode == "subagent"
-        )
+        return frozenset(manifest.id for manifest in self.list_manifests() if manifest.mode == "subagent")
 
 
 def agent_manifest_id_from_name(name: str) -> str:
@@ -123,15 +115,11 @@ def load_agent_manifest_registry(
     for manifest in (*user_manifests, *project_manifests):
         if manifest.id in builtin:
             raise ValueError(
-                f"custom agent manifest {manifest.source_path} uses builtin id "
-                f"'{manifest.id}'; builtin agent manifests cannot be replaced"
+                f"custom agent manifest {manifest.source_path} uses builtin id '{manifest.id}'; builtin agent manifests cannot be replaced"
             )
         existing = custom.get(manifest.id)
         if existing is not None and existing.source_scope == manifest.source_scope:
-            raise ValueError(
-                "duplicate custom agent manifest id "
-                f"'{manifest.id}' in {existing.source_path} and {manifest.source_path}"
-            )
+            raise ValueError(f"duplicate custom agent manifest id '{manifest.id}' in {existing.source_path} and {manifest.source_path}")
         custom[manifest.id] = manifest
     return AgentManifestRegistry(builtin=builtin, custom=custom)
 
@@ -164,9 +152,7 @@ def _discover_custom_agent_manifests(
         manifest = manifest_from_markdown_file(path, scope=scope)
         existing_path = seen.get(manifest.id)
         if existing_path is not None:
-            raise ValueError(
-                f"duplicate custom agent manifest id '{manifest.id}' in {existing_path} and {path}"
-            )
+            raise ValueError(f"duplicate custom agent manifest id '{manifest.id}' in {existing_path} and {path}")
         seen[manifest.id] = path
         manifests.append(manifest)
     return tuple(manifests)
@@ -204,10 +190,7 @@ def _parse_frontmatter(frontmatter: str, *, path: Path) -> dict[str, object]:
         normalized_key = key.strip()
         if normalized_key not in _SUPPORTED_FRONTMATTER_FIELDS:
             supported = ", ".join(sorted(_SUPPORTED_FRONTMATTER_FIELDS))
-            raise ValueError(
-                f"unsupported frontmatter field '{normalized_key}'; supported fields are: "
-                f"{supported}"
-            )
+            raise ValueError(f"unsupported frontmatter field '{normalized_key}'; supported fields are: {supported}")
         if normalized_key in payload:
             raise ValueError(f"duplicate frontmatter field '{normalized_key}'")
         value_text = raw_value.strip()
@@ -266,12 +249,7 @@ def _parse_block_value(lines: list[str], *, field: str, path: Path) -> object:
         if not stripped or stripped.startswith("#"):
             continue
         indent = len(raw_line) - len(raw_line.lstrip(" \t"))
-        if (
-            active_mapping_key is not None
-            and active_mapping_indent is not None
-            and indent > active_mapping_indent
-            and stripped.startswith("-")
-        ):
+        if active_mapping_key is not None and active_mapping_indent is not None and indent > active_mapping_indent and stripped.startswith("-"):
             cast(list[str], mapping[active_mapping_key]).append(_strip_quotes(stripped[1:].strip()))
             continue
         if stripped.startswith("-"):
@@ -314,9 +292,7 @@ def _manifest_from_payload(
     name = _required_string(payload, "name")
     manifest_id = _optional_string(payload, "id") or agent_manifest_id_from_name(name)
     if not is_valid_agent_manifest_id(manifest_id):
-        raise ValueError(
-            f"frontmatter field 'id' value '{manifest_id}' must match {_AGENT_ID_PATTERN.pattern!r}"
-        )
+        raise ValueError(f"frontmatter field 'id' value '{manifest_id}' must match {_AGENT_ID_PATTERN.pattern!r}")
     mode = _parse_mode(_required_string(payload, "mode"))
     tool_allowlist = _string_list(payload.get("tool_allowlist"), field="tool_allowlist")
     skill_refs = _string_list(payload.get("skill_refs"), field="skill_refs")
@@ -401,9 +377,7 @@ def _parse_mcp_binding(value: object) -> AgentMcpBindingIntent | None:
     payload = cast(dict[str, object], value)
     unknown = sorted(key for key in payload if key not in {"profile", "servers"})
     if unknown:
-        raise ValueError(
-            f"frontmatter field 'mcp_binding' has unsupported key(s): {', '.join(unknown)}"
-        )
+        raise ValueError(f"frontmatter field 'mcp_binding' has unsupported key(s): {', '.join(unknown)}")
     profile = payload.get("profile")
     if profile is not None and (not isinstance(profile, str) or not profile.strip()):
         raise ValueError("frontmatter field 'mcp_binding.profile' must be a non-empty string")
@@ -416,10 +390,7 @@ def _parse_mcp_binding(value: object) -> AgentMcpBindingIntent | None:
 def assert_not_builtin_agent_id(agent_id: str, *, source_path: str | None = None) -> None:
     if get_builtin_agent_manifest(agent_id) is not None:
         source = f" in {source_path}" if source_path else ""
-        raise ValueError(
-            f"custom agent manifest{source} uses builtin id '{agent_id}'; "
-            "builtin agent manifests cannot be replaced"
-        )
+        raise ValueError(f"custom agent manifest{source} uses builtin id '{agent_id}'; builtin agent manifests cannot be replaced")
 
 
 __all__ = [

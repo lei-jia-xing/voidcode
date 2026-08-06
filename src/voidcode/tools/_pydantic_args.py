@@ -7,10 +7,7 @@ from pydantic import ValidationError
 
 def format_validation_error(tool_name: str, exc: ValidationError) -> str:
     details = "; ".join(_format_validation_error_item(error) for error in exc.errors())
-    return (
-        f"{tool_name} Validation error: {details}. "
-        "Please retry with corrected arguments that satisfy the tool schema."
-    )
+    return f"{tool_name} Validation error: {details}. Please retry with corrected arguments that satisfy the tool schema."
 
 
 def _format_validation_error_item(error: Mapping[str, object]) -> str:

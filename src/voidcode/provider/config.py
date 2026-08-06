@@ -97,15 +97,9 @@ def _parse_boundary_string_mapping(value: object) -> dict[str, str]:
 BoundaryOptionalString = Annotated[str | None, BeforeValidator(_parse_optional_boundary_string)]
 BoundaryRequiredString = Annotated[str, BeforeValidator(_parse_required_boundary_string)]
 BoundaryOptionalTimeout = Annotated[float | None, BeforeValidator(_parse_optional_boundary_timeout)]
-BoundaryOptionalPositiveInt = Annotated[
-    int | None, BeforeValidator(_parse_optional_boundary_positive_int)
-]
-BoundaryOptionalNonnegativeInt = Annotated[
-    int | None, BeforeValidator(_parse_optional_boundary_nonnegative_int)
-]
-BoundaryOptionalNonnegativeFloat = Annotated[
-    float | None, BeforeValidator(_parse_optional_boundary_nonnegative_float)
-]
+BoundaryOptionalPositiveInt = Annotated[int | None, BeforeValidator(_parse_optional_boundary_positive_int)]
+BoundaryOptionalNonnegativeInt = Annotated[int | None, BeforeValidator(_parse_optional_boundary_nonnegative_int)]
+BoundaryOptionalNonnegativeFloat = Annotated[float | None, BeforeValidator(_parse_optional_boundary_nonnegative_float)]
 BoundaryOptionalBool = Annotated[bool | None, BeforeValidator(_parse_optional_boundary_bool)]
 BoundaryStringList = Annotated[tuple[str, ...], BeforeValidator(_parse_boundary_string_list)]
 BoundaryStringMapping = Annotated[dict[str, str], BeforeValidator(_parse_boundary_string_mapping)]
@@ -417,10 +411,7 @@ def simplified_config_to_litellm(
         discovery_base_url = config.discovery_base_url
     elif config.base_url is not None and default_discovery_base_url == "":
         discovery_base_url = ""
-    elif (
-        config.base_url is not None
-        and provider_name in _SIMPLIFIED_PROVIDERS_USING_BASE_URL_DISCOVERY
-    ):
+    elif config.base_url is not None and provider_name in _SIMPLIFIED_PROVIDERS_USING_BASE_URL_DISCOVERY:
         discovery_base_url = None
     elif config.base_url is not None:
         discovery_base_url = default_discovery_base_url
@@ -647,36 +638,20 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
     provider resolution without requiring a .voidcode.json providers block.
     """
     providers = ProviderConfigs(
-        openai=(
-            OpenAIProviderConfig(api_key=openai_key)
-            if (openai_key := env.get(_OPENAI_API_KEY_ENV_VAR))
-            else None
-        ),
-        anthropic=(
-            AnthropicProviderConfig(api_key=anthropic_key)
-            if (anthropic_key := env.get(_ANTHROPIC_API_KEY_ENV_VAR))
-            else None
-        ),
+        openai=(OpenAIProviderConfig(api_key=openai_key) if (openai_key := env.get(_OPENAI_API_KEY_ENV_VAR)) else None),
+        anthropic=(AnthropicProviderConfig(api_key=anthropic_key) if (anthropic_key := env.get(_ANTHROPIC_API_KEY_ENV_VAR)) else None),
         google=(
-            GoogleProviderConfig(
-                auth=GoogleProviderAuthConfig(method="api_key", api_key=google_key)
-            )
+            GoogleProviderConfig(auth=GoogleProviderAuthConfig(method="api_key", api_key=google_key))
             if (google_key := env.get(_GOOGLE_API_KEY_ENV_VAR))
             else None
         ),
         copilot=(
-            CopilotProviderConfig(
-                auth=CopilotProviderAuthConfig(method="token", token=copilot_token)
-            )
+            CopilotProviderConfig(auth=CopilotProviderAuthConfig(method="token", token=copilot_token))
             if (copilot_token := env.get(_COPILOT_TOKEN_ENV_VAR))
             else None
         ),
         litellm=_litellm_provider_config_from_env(env),
-        opencode=(
-            LiteLLMProviderConfig(api_key=opencode_key)
-            if (opencode_key := env.get(_OPENCODE_API_KEY_ENV_VAR))
-            else None
-        ),
+        opencode=(LiteLLMProviderConfig(api_key=opencode_key) if (opencode_key := env.get(_OPENCODE_API_KEY_ENV_VAR)) else None),
         deepseek=_simplified_provider_config_from_env(env, _DEEPSEEK_API_KEY_ENV_VAR),
         glm=_simplified_provider_config_from_env(
             env,
@@ -759,9 +734,7 @@ def _merge_anthropic_provider_config(
         base_url=_prefer_primary(primary.base_url, fallback.base_url),
         discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         version=_prefer_primary(primary.version, fallback.version),
-        beta_headers=(
-            primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers
-        ),
+        beta_headers=(primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers),
         beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
@@ -956,9 +929,7 @@ def _validate_provider_payload_model[TModel: BaseModel](
         return model_type.model_validate(raw_value)
     except ValidationError as exc:
         error = cast(dict[str, object], exc.errors(include_url=False)[0])
-        raise ValueError(
-            _format_provider_payload_validation_error(field_path=field_path, error=error)
-        ) from exc
+        raise ValueError(_format_provider_payload_validation_error(field_path=field_path, error=error)) from exc
 
 
 def parse_provider_configs_payload(
@@ -1314,51 +1285,24 @@ def _parse_google_auth_config(
 
     if method == "api_key":
         if api_key is None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'api_key')} "
-                "must be provided when method is api_key"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'api_key')} must be provided when method is api_key")
         if access_token is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'access_token')} "
-                "must not be set when method is api_key"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'access_token')} must not be set when method is api_key")
         if service_account_json_path is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'service_account_json_path')} "
-                "must not be set when method is api_key"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'service_account_json_path')} must not be set when method is api_key")
     elif method == "oauth":
         if access_token is None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'access_token')} "
-                "must be provided when method is oauth"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'access_token')} must be provided when method is oauth")
         if api_key is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'api_key')} "
-                "must not be set when method is oauth"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'api_key')} must not be set when method is oauth")
         if service_account_json_path is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'service_account_json_path')} "
-                "must not be set when method is oauth"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'service_account_json_path')} must not be set when method is oauth")
     elif service_account_json_path is None:
-        raise ValueError(
-            f"{_nested_config_field(field_path, 'service_account_json_path')} "
-            "must be provided when method is service_account"
-        )
+        raise ValueError(f"{_nested_config_field(field_path, 'service_account_json_path')} must be provided when method is service_account")
     elif api_key is not None:
-        raise ValueError(
-            f"{_nested_config_field(field_path, 'api_key')} "
-            "must not be set when method is service_account"
-        )
+        raise ValueError(f"{_nested_config_field(field_path, 'api_key')} must not be set when method is service_account")
     elif access_token is not None:
-        raise ValueError(
-            f"{_nested_config_field(field_path, 'access_token')} "
-            "must not be set when method is service_account"
-        )
+        raise ValueError(f"{_nested_config_field(field_path, 'access_token')} must not be set when method is service_account")
 
     return GoogleProviderAuthConfig(
         method=method,
@@ -1440,20 +1384,12 @@ def _parse_copilot_auth_config(
             )
         if token is not None and token_env_var is not None:
             raise ValueError(
-                f"{_nested_config_field(field_path, 'token')} and "
-                f"{_nested_config_field(field_path, 'token_env_var')} "
-                "must not both be set"
+                f"{_nested_config_field(field_path, 'token')} and {_nested_config_field(field_path, 'token_env_var')} must not both be set"
             )
         if refresh_token is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'refresh_token')} "
-                "must not be set when method is token"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'refresh_token')} must not be set when method is token")
         if refresh_leeway_seconds is not None:
-            raise ValueError(
-                f"{_nested_config_field(field_path, 'refresh_leeway_seconds')} "
-                "must not be set when method is token"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, 'refresh_leeway_seconds')} must not be set when method is token")
     else:
         if token is None and token_env_var is None:
             raise ValueError(
@@ -1589,34 +1525,15 @@ def _parse_transient_retry_config(
             model_type=_ProviderTransientRetryConfigPayload,
         )
     )
-    base_delay_ms = (
-        DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.base_delay_ms
-        if payload.base_delay_ms is None
-        else payload.base_delay_ms
-    )
-    max_delay_ms = (
-        DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_delay_ms
-        if payload.max_delay_ms is None
-        else payload.max_delay_ms
-    )
+    base_delay_ms = DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.base_delay_ms if payload.base_delay_ms is None else payload.base_delay_ms
+    max_delay_ms = DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_delay_ms if payload.max_delay_ms is None else payload.max_delay_ms
     if max_delay_ms < base_delay_ms:
-        raise ValueError(
-            f"{_nested_config_field(field_path, 'max_delay_ms')} "
-            "must be greater than or equal to base_delay_ms"
-        )
+        raise ValueError(f"{_nested_config_field(field_path, 'max_delay_ms')} must be greater than or equal to base_delay_ms")
     return ProviderTransientRetryConfig(
-        max_retries=(
-            DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_retries
-            if payload.max_retries is None
-            else payload.max_retries
-        ),
+        max_retries=(DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.max_retries if payload.max_retries is None else payload.max_retries),
         base_delay_ms=base_delay_ms,
         max_delay_ms=max_delay_ms,
-        jitter=(
-            DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.jitter
-            if payload.jitter is None
-            else payload.jitter
-        ),
+        jitter=(DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG.jitter if payload.jitter is None else payload.jitter),
     )
 
 
@@ -1673,9 +1590,7 @@ def _serialize_google_provider_config(
 ) -> dict[str, object]:
     payload: dict[str, object] = {}
     if provider.auth is not None:
-        payload["auth"] = _serialize_google_auth_config(
-            provider.auth, include_secrets=include_secrets
-        )
+        payload["auth"] = _serialize_google_auth_config(provider.auth, include_secrets=include_secrets)
     if provider.base_url is not None:
         payload["base_url"] = provider.base_url
     if provider.discovery_base_url is not None:
@@ -1824,14 +1739,9 @@ def _parse_custom_litellm_provider_configs(
         if not isinstance(raw_provider_name, str) or not raw_provider_name:
             raise ValueError(f"{field_path} keys must be non-empty strings")
         if raw_provider_name != raw_provider_name.strip():
-            raise ValueError(
-                f"{_nested_config_field(field_path, raw_provider_name)} "
-                "must not have leading or trailing whitespace"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, raw_provider_name)} must not have leading or trailing whitespace")
         if "/" in raw_provider_name:
-            raise ValueError(
-                f"{_nested_config_field(field_path, raw_provider_name)} must not contain '/'"
-            )
+            raise ValueError(f"{_nested_config_field(field_path, raw_provider_name)} must not contain '/'")
         normalized_provider_name = raw_provider_name.strip().lower()
         if normalized_provider_name in _BUILTIN_PROVIDER_NAMES:
             raise ValueError(

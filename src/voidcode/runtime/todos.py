@@ -95,14 +95,8 @@ def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem
             continue
         if status is None:
             continue
-        position = (
-            raw_position
-            if isinstance(raw_position, int) and raw_position > 0
-            else fallback_position
-        )
-        updated_at = (
-            raw_updated_at if isinstance(raw_updated_at, int) and raw_updated_at >= 0 else 0
-        )
+        position = raw_position if isinstance(raw_position, int) and raw_position > 0 else fallback_position
+        updated_at = raw_updated_at if isinstance(raw_updated_at, int) and raw_updated_at >= 0 else 0
         todos.append(
             {
                 "content": content.strip(),
@@ -114,16 +108,12 @@ def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem
     return tuple(sorted(todos, key=lambda todo: todo["position"]))
 
 
-def runtime_todos_equal(
-    current: tuple[RuntimeTodoItem, ...], *, raw_todos: object, updated_at: int
-) -> bool:
+def runtime_todos_equal(current: tuple[RuntimeTodoItem, ...], *, raw_todos: object, updated_at: int) -> bool:
     candidate = runtime_todos_from_tool_payload(raw_todos, updated_at=updated_at)
     if len(candidate) != len(current):
         return False
     return all(
-        existing["content"] == proposed["content"]
-        and existing["status"] == proposed["status"]
-        and existing["position"] == proposed["position"]
+        existing["content"] == proposed["content"] and existing["status"] == proposed["status"] and existing["position"] == proposed["position"]
         for existing, proposed in zip(current, candidate, strict=True)
     )
 

@@ -172,9 +172,7 @@ class RuntimeRunner(Protocol):
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummaryLike, ...]: ...
 
-    def list_background_tasks_by_parent_session(
-        self, *, parent_session_id: str
-    ) -> tuple[StoredBackgroundTaskSummaryLike, ...]: ...
+    def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummaryLike, ...]: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskStateLike: ...
 
@@ -368,8 +366,9 @@ class _AstGrepPreviewGraph:
                     ToolCallFactory,
                     importlib.import_module("voidcode.tools.contracts").ToolCall,
                 )(
-                    tool_name="ast_grep_preview",
+                    tool_name="ast_grep",
                     arguments={
+                        "mode": "preview",
                         "pattern": "print($X)",
                         "rewrite": "logger.info($X)",
                         "path": "sample.py",
@@ -390,8 +389,9 @@ class _AstGrepReplaceGraph:
                     ToolCallFactory,
                     importlib.import_module("voidcode.tools.contracts").ToolCall,
                 )(
-                    tool_name="ast_grep_replace",
+                    tool_name="ast_grep",
                     arguments={
+                        "mode": "replace",
                         "pattern": "print($X)",
                         "rewrite": "logger.info($X)",
                         "path": "sample.py",
@@ -445,9 +445,7 @@ class _SequentialToolGraph:
         return _GraphStep(events=(), tool_call=None, output="done", is_finished=True)
 
 
-def _approval_runtime(
-    tmp_path: Path, *, mode: str = "ask"
-) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+def _approval_runtime(tmp_path: Path, *, mode: str = "ask") -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
@@ -556,9 +554,7 @@ class _ScriptedModelProvider:
             def propose_turn(self, request: object) -> object:
                 _ = request
                 if not outcomes:
-                    return importlib.import_module(
-                        "voidcode.runtime.provider_protocol"
-                    ).ProviderTurnResult(output="done")
+                    return importlib.import_module("voidcode.runtime.provider_protocol").ProviderTurnResult(output="done")
                 outcome = outcomes.pop(0)
                 if isinstance(outcome, Exception):
                     raise outcome
@@ -617,9 +613,7 @@ class _CapturingModelProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                return importlib.import_module(
-                    "voidcode.runtime.provider_protocol"
-                ).ProviderTurnResult(output="done")
+                return importlib.import_module("voidcode.runtime.provider_protocol").ProviderTurnResult(output="done")
 
         return _Provider()
 
@@ -639,9 +633,7 @@ class _ReadFileParityModelProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                provider_protocol_module = importlib.import_module(
-                    "voidcode.runtime.provider_protocol"
-                )
+                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 if not _assembled_context(request).tool_results:
                     return provider_protocol_module.ProviderTurnResult(
@@ -668,9 +660,7 @@ class _DelegationE2EModelProvider:
                 self.name = name
 
             def propose_turn(self, request: object) -> object:
-                provider_protocol_module = importlib.import_module(
-                    "voidcode.runtime.provider_protocol"
-                )
+                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
@@ -689,9 +679,7 @@ class _DelegationE2EModelProvider:
                             },
                         )
                     )
-                return provider_protocol_module.ProviderTurnResult(
-                    output="parent continued after child final"
-                )
+                return provider_protocol_module.ProviderTurnResult(output="parent continued after child final")
 
         return _Provider()
 
@@ -711,9 +699,7 @@ class _ParentToolResultGuardrailProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                provider_protocol_module = importlib.import_module(
-                    "voidcode.runtime.provider_protocol"
-                )
+                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
@@ -723,7 +709,7 @@ class _ParentToolResultGuardrailProvider:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
                             tool_name="read_file",
-                            arguments={"path": "parent-secret.txt"},
+                            arguments={"filePath": "parent-secret.txt"},
                         )
                     )
                 if len(tool_results) == 1:
@@ -759,16 +745,12 @@ class _BackgroundOutputGuardrailProvider:
 
             def propose_turn(self, request: object) -> object:
                 requests.append(request)
-                provider_protocol_module = importlib.import_module(
-                    "voidcode.runtime.provider_protocol"
-                )
+                provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
                 tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
                 assembled_context = _assembled_context(request)
                 tool_results = assembled_context.tool_results
                 if _is_delegated_child_request(request):
-                    return provider_protocol_module.ProviderTurnResult(
-                        output="child transcript sentinel"
-                    )
+                    return provider_protocol_module.ProviderTurnResult(output="child transcript sentinel")
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
@@ -796,9 +778,7 @@ class _BackgroundOutputGuardrailProvider:
                             },
                         )
                     )
-                return provider_protocol_module.ProviderTurnResult(
-                    output="parent collected transcript"
-                )
+                return provider_protocol_module.ProviderTurnResult(output="parent collected transcript")
 
         return _Provider()
 
@@ -839,8 +819,7 @@ def _wait_for_background_task_status(
             return task
         time.sleep(0.01)
     raise AssertionError(
-        f"background task {task_id} did not reach {sorted(statuses)}; "
-        f"last_status={last_task.status if last_task is not None else None!r}"
+        f"background task {task_id} did not reach {sorted(statuses)}; last_status={last_task.status if last_task is not None else None!r}"
     )
 
 
@@ -1038,20 +1017,12 @@ def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuat
                 model="opencode/gpt-5.4",
             ),
             permission_policy=permission_module.PermissionPolicy(mode="allow"),
-            model_provider_registry=model_provider_module.ModelProviderRegistry(
-                providers={"opencode": _DelegationE2EModelProvider(name="opencode")}
-            ),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _DelegationE2EModelProvider(name="opencode")}),
         ),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="delegate sync child", session_id="leader-session")
-    )
-    task_completed = next(
-        event
-        for event in response.events
-        if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task"
-    )
+    response = runtime.run(runtime_request(prompt="delegate sync child", session_id="leader-session"))
+    task_completed = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task")
     child_session_id = cast(str, task_completed.payload["session_id"])
     child_replay = runtime.resume(child_session_id)
 
@@ -1118,19 +1089,10 @@ def test_runtime_background_subagent_e2e_collects_background_output_result(
         cast(object, runtime_class(workspace=tmp_path, graph=_ParentBackgroundOutputGraph())),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="launch background child", session_id="leader-background")
-    )
-    task_completed = [
-        event
-        for event in response.events
-        if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task"
-    ][0]
+    response = runtime.run(runtime_request(prompt="launch background child", session_id="leader-background"))
+    task_completed = [event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task"][0]
     background_completed = [
-        event
-        for event in response.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload["tool"] == "background_output"
+        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "background_output"
     ][0]
     task_id = cast(str, task_completed.payload["task_id"])
     reloaded = runtime.load_background_task(task_id)
@@ -1149,16 +1111,12 @@ def test_runtime_background_subagent_e2e_collects_background_output_result(
     assert reloaded.status == "completed"
     assert background_completed.payload["status"] == "ok"
     assert cast(dict[str, object], background_completed.payload["message"])["status"] == "completed"
-    assert str(background_completed.payload["summary_output"]).startswith(
-        "Completed child session "
-    )
+    assert str(background_completed.payload["summary_output"]).startswith("Completed child session ")
     assert background_completed.payload["result_available"] is True
     session_payload = cast(dict[str, object], background_completed.payload["session"])
     assert session_payload["output_available"] is True
     assert session_payload["full_output_preserved"] is True
-    assert session_payload["full_session_reference"] == (
-        f"session:{session_payload['child_session_id']}"
-    )
+    assert session_payload["full_session_reference"] == (f"session:{session_payload['child_session_id']}")
     assert "output" not in session_payload
 
 
@@ -1200,9 +1158,7 @@ def test_runtime_background_subagent_queue_running_completed_states_respect_conc
                     workspace=tmp_path,
                     config=config_module.RuntimeConfig(
                         execution_engine="deterministic",
-                        background_task=config_module.RuntimeBackgroundTaskConfig(
-                            default_concurrency=1
-                        ),
+                        background_task=config_module.RuntimeBackgroundTaskConfig(default_concurrency=1),
                     ),
                 ),
             ),
@@ -1216,12 +1172,8 @@ def test_runtime_background_subagent_queue_running_completed_states_respect_conc
         assert first_running.status == "running"
         assert second_queued.status == "queued"
         release.set()
-        first_done = _wait_for_background_task_status(
-            runtime, first.task.id, {"completed", "failed", "cancelled", "interrupted"}
-        )
-        second_done = _wait_for_background_task_status(
-            runtime, second.task.id, {"completed", "failed", "cancelled", "interrupted"}
-        )
+        first_done = _wait_for_background_task_status(runtime, first.task.id, {"completed", "failed", "cancelled", "interrupted"})
+        second_done = _wait_for_background_task_status(runtime, second.task.id, {"completed", "failed", "cancelled", "interrupted"})
 
     assert first_done.status == "completed"
     assert second_done.status == "completed"
@@ -1247,9 +1199,7 @@ def test_runtime_background_subagent_failure_guides_session_id_retry_and_escalat
         )
     )
     failed = _wait_for_background_task_status(runtime, started.task.id, {"failed"})
-    background_output_tool = importlib.import_module(
-        "voidcode.tools.background_output"
-    ).BackgroundOutputTool(runtime=runtime)
+    background_output_tool = importlib.import_module("voidcode.tools.background_output").BackgroundOutputTool(runtime=runtime)
 
     result = background_output_tool.invoke(
         tool_contracts_module.ToolCall(
@@ -1263,10 +1213,8 @@ def test_runtime_background_subagent_failure_guides_session_id_retry_and_escalat
     assert result.status == "ok"
     assert result.data["status"] == "failed"
     assert result.data["child_session_id"] == "retry-child"
-    assert f"background_retry(task_id='{started.task.id}')" in cast(str, result.data["guidance"])
-    assert "After repeated failures, stop retrying and escalate" in cast(
-        str, result.data["guidance"]
-    )
+    assert "if the user requests a retry" in cast(str, result.data["guidance"])
+    assert "After repeated failures, stop retrying and escalate" in cast(str, result.data["guidance"])
 
 
 def test_runtime_delegated_skill_loaded_child_records_exact_skill_metadata(
@@ -1314,14 +1262,8 @@ def test_runtime_delegated_skill_loaded_child_records_exact_skill_metadata(
             },
         )
     )
-    skills_applied = next(
-        event for event in response.events if event.event_type == "runtime.skills_applied"
-    )
-    system_contents = [
-        segment.content
-        for segment in _assembled_context(requests[0]).segments
-        if segment.role == "system"
-    ]
+    skills_applied = next(event for event in response.events if event.event_type == "runtime.skills_applied")
+    system_contents = [segment.content for segment in _assembled_context(requests[0]).segments if segment.role == "system"]
 
     assert response.session.status == "completed"
     assert response.session.metadata["selected_skill_names"] == ["demo"]
@@ -1330,10 +1272,7 @@ def test_runtime_delegated_skill_loaded_child_records_exact_skill_metadata(
     assert skills_applied.payload["count"] == 1
     assert skills_applied.payload["prompt_context_built"] is True
     assert isinstance(skills_applied.payload["prompt_context_length"], int)
-    assert any(
-        isinstance(content, str) and "Use the delegated integration skill body." in content
-        for content in system_contents
-    )
+    assert any(isinstance(content, str) and "Use the delegated integration skill body." in content for content in system_contents)
 
 
 def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path) -> None:
@@ -1398,31 +1337,17 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
                 approval_mode="allow",
                 execution_engine="provider",
                 model="opencode/gpt-5.4",
-                context_window=config_module.RuntimeContextWindowConfig(max_tool_result_tokens=30),
+                context_window=config_module.RuntimeContextWindowConfig(model_context_window_tokens=30),
             ),
             permission_policy=permission_module.PermissionPolicy(mode="allow"),
-            model_provider_registry=model_provider_module.ModelProviderRegistry(
-                providers={"opencode": _TodoModelProvider()}
-            ),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _TodoModelProvider()}),
         ),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="track todo state", session_id="runtime-todo-session")
-    )
-    todo_events = tuple(
-        event for event in response.events if event.event_type == "runtime.todo_updated"
-    )
-    second_request_system_segments = [
-        segment.content
-        for segment in _assembled_context(requests[1]).segments
-        if segment.role == "system"
-    ]
-    final_request_system_segments = [
-        segment.content
-        for segment in _assembled_context(requests[-1]).segments
-        if segment.role == "system"
-    ]
+    response = runtime.run(runtime_request(prompt="track todo state", session_id="runtime-todo-session"))
+    todo_events = tuple(event for event in response.events if event.event_type == "runtime.todo_updated")
+    second_request_system_segments = [segment.content for segment in _assembled_context(requests[1]).segments if segment.role == "system"]
+    final_request_system_segments = [segment.content for segment in _assembled_context(requests[-1]).segments if segment.role == "system"]
 
     assert response.session.status == "completed"
     assert len(todo_events) == 2
@@ -1512,7 +1437,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
         model="opencode-go/minimax-m2.7",
         context_window=config_module.RuntimeContextWindowConfig(
             auto_compaction=False,
-            max_tool_result_tokens=100_000,
+            model_context_window_tokens=100_000,
         ),
     )
     runtime = service_module.VoidCodeRuntime(
@@ -1529,9 +1454,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
         ),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="provider-context-parity")
-    )
+    response = runtime.run(runtime_request(prompt="read sample.txt", session_id="provider-context-parity"))
     loaded = runtime.session_result(session_id="provider-context-parity")
     replay_runtime = service_module.VoidCodeRuntime(
         workspace=tmp_path,
@@ -1560,23 +1483,15 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     assert live_tool_result.data["tool_call_id"] == "read-1"
     assert live_tool_result.data["arguments"] == {"filePath": "sample.txt"}
     live_metadata = _assembled_context(requests[1]).metadata
-    assert (
-        live_metadata["original_tool_result_tokens"] == live_metadata["retained_tool_result_tokens"]
-    )
+    assert live_metadata["original_tool_result_tokens"] == live_metadata["retained_tool_result_tokens"]
     normalized = context_window_module.normalize_read_file_output(raw_content)
     assert normalized == "alpha\nbeta"
     normalized_tokens = context_window_module.count_text_tokens(normalized).tokens
     assert cast(int, live_metadata["original_tool_result_tokens"]) > normalized_tokens
 
-    live_event = next(
-        event for event in response.events if event.event_type == "runtime.tool_completed"
-    )
-    loaded_event = next(
-        event for event in loaded.transcript if event.event_type == "runtime.tool_completed"
-    )
-    replay_event = next(
-        event for event in replay.events if event.event_type == "runtime.tool_completed"
-    )
+    live_event = next(event for event in response.events if event.event_type == "runtime.tool_completed")
+    loaded_event = next(event for event in loaded.transcript if event.event_type == "runtime.tool_completed")
+    replay_event = next(event for event in replay.events if event.event_type == "runtime.tool_completed")
     assert live_event.payload["content"] == raw_content
     assert loaded_event.payload["content"] == raw_content
     assert replay_event.payload["content"] == raw_content
@@ -1637,9 +1552,7 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
             model="opencode/gpt-5.4",
         ),
         permission_policy=permission_module.PermissionPolicy(mode="allow"),
-        model_provider_registry=model_provider_module.ModelProviderRegistry(
-            providers={"opencode": _ContinuationModelProvider()}
-        ),
+        model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _ContinuationModelProvider()}),
     )
 
     first = runtime.run(runtime_request(prompt="read sample.txt", session_id="continue-session"))
@@ -1664,8 +1577,7 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     replayed_segments = [
         segment
         for segment in second_turn_context.segments
-        if isinstance(segment.content, str)
-        and (segment.content == "read sample.txt" or segment.content == "done")
+        if isinstance(segment.content, str) and (segment.content == "read sample.txt" or segment.content == "done")
     ]
     assert [(segment.role, segment.content) for segment in replayed_segments] == [
         ("user", "read sample.txt"),
@@ -1673,16 +1585,12 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     ]
 
     replay = runtime.resume("continue-session")
-    replay_request_events = [
-        event for event in replay.events if event.event_type == "runtime.request_received"
-    ]
+    replay_request_events = [event for event in replay.events if event.event_type == "runtime.request_received"]
     assert [event.payload["prompt"] for event in replay_request_events] == [
         "read sample.txt",
         "what did the file say?",
     ]
-    assert [event.sequence for event in replay.events] == sorted(
-        event.sequence for event in replay.events
-    )
+    assert [event.sequence for event in replay.events] == sorted(event.sequence for event in replay.events)
 
 
 def test_provider_replays_prior_conversation_for_existing_session_without_tool_results(
@@ -1722,30 +1630,21 @@ def test_provider_replays_prior_conversation_for_existing_session_without_tool_r
                     model="opencode/gpt-5.4",
                 ),
                 permission_policy=permission_module.PermissionPolicy(mode="allow"),
-                model_provider_registry=model_provider_module.ModelProviderRegistry(
-                    providers=cast(Any, {"opencode": _ConversationModelProvider()})
-                ),
+                model_provider_registry=model_provider_module.ModelProviderRegistry(providers=cast(Any, {"opencode": _ConversationModelProvider()})),
             ),
         ),
     )
 
-    first = runtime.run(
-        runtime_request(prompt="user first turn", session_id="conversation-session")
-    )
-    second = runtime.run(
-        runtime_request(prompt="user second turn", session_id="conversation-session")
-    )
+    first = runtime.run(runtime_request(prompt="user first turn", session_id="conversation-session"))
+    second = runtime.run(runtime_request(prompt="user second turn", session_id="conversation-session"))
     second_turn_segments = _assembled_context(requests[1]).segments
     replayed_segments = [
         segment
         for segment in second_turn_segments
-        if (segment.role, segment.content)
-        in {("user", "user first turn"), ("assistant", "assistant first answer")}
+        if (segment.role, segment.content) in {("user", "user first turn"), ("assistant", "assistant first answer")}
     ]
     conversational_segments = [
-        segment
-        for segment in second_turn_segments
-        if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
+        segment for segment in second_turn_segments if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
     ]
 
     assert first.session.status == "completed"
@@ -1780,11 +1679,7 @@ def test_provider_replayed_conversation_precedes_current_prompt_after_stale_assi
                 def propose_turn(self, request: object) -> object:
                     requests.append(request)
                     prompt = _assembled_context(request).prompt
-                    output = (
-                        "stale assistant reply"
-                        if prompt == "initial user prompt"
-                        else "fresh assistant reply"
-                    )
+                    output = "stale assistant reply" if prompt == "initial user prompt" else "fresh assistant reply"
                     return provider_protocol_module.ProviderTurnResult(output=output)
 
             return _Provider()
@@ -1801,24 +1696,16 @@ def test_provider_replayed_conversation_precedes_current_prompt_after_stale_assi
                     model="opencode/gpt-5.4",
                 ),
                 permission_policy=permission_module.PermissionPolicy(mode="allow"),
-                model_provider_registry=model_provider_module.ModelProviderRegistry(
-                    providers=cast(Any, {"opencode": _StaleTailModelProvider()})
-                ),
+                model_provider_registry=model_provider_module.ModelProviderRegistry(providers=cast(Any, {"opencode": _StaleTailModelProvider()})),
             ),
         ),
     )
 
-    first = runtime.run(
-        runtime_request(prompt="initial user prompt", session_id="conversation-session")
-    )
-    second = runtime.run(
-        runtime_request(prompt="current user prompt", session_id="conversation-session")
-    )
+    first = runtime.run(runtime_request(prompt="initial user prompt", session_id="conversation-session"))
+    second = runtime.run(runtime_request(prompt="current user prompt", session_id="conversation-session"))
     second_turn_segments = _assembled_context(requests[1]).segments
     conversational_segments = [
-        segment
-        for segment in second_turn_segments
-        if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
+        segment for segment in second_turn_segments if segment.role in {"user", "assistant"} and isinstance(segment.content, str)
     ]
 
     assert first.session.status == "completed"
@@ -1863,11 +1750,7 @@ def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_c
                 def propose_turn(self, request: object) -> object:
                     requests.append(request)
                     prompt = _assembled_context(request).prompt
-                    output = (
-                        "assistant parent-one sentinel"
-                        if prompt == "user parent-one sentinel"
-                        else "assistant parent-two response"
-                    )
+                    output = "assistant parent-one sentinel" if prompt == "user parent-one sentinel" else "assistant parent-two response"
                     return provider_protocol_module.ProviderTurnResult(output=output)
 
             return _Provider()
@@ -1960,21 +1843,19 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            context_window=config_module.RuntimeContextWindowConfig(max_tool_result_tokens=30),
+            context_window=config_module.RuntimeContextWindowConfig(model_context_window_tokens=30),
         ),
         permission_policy=permission_module.PermissionPolicy(mode="allow"),
-        model_provider_registry=model_provider_module.ModelProviderRegistry(
-            providers={"opencode": _CompactionModelProvider()}
-        ),
+        model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _CompactionModelProvider()}),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="compact old output", session_id="provider-context-compacted")
-    )
+    response = runtime.run(runtime_request(prompt="compact old output", session_id="provider-context-compacted"))
     snapshot = runtime.session_debug_snapshot(session_id="provider-context-compacted")
 
     assert response.session.status == "completed"
-    assert len(requests) == 4
+    # Two tool turns plus the terminal turn. Compaction is deterministic and
+    # no longer spends a separate provider turn on model-assisted distillation.
+    assert len(requests) == 3
     final_context = _assembled_context(requests[-1])
     assert [result.tool_name for result in final_context.tool_results] == ["read_file"]
 
@@ -1987,20 +1868,14 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     assert isinstance(continuity, dict)
     assert continuity["dropped_tool_result_count"] == 1
     assert "shell_exec" in cast(str, continuity["summary_text"])
-    retained_tool_segments = [
-        segment for segment in provider_context.segments if segment.role == "tool"
-    ]
+    retained_tool_segments = [segment for segment in provider_context.segments if segment.role == "tool"]
     assert [segment.tool_name for segment in retained_tool_segments] == ["read_file"]
     assert retained_tool_segments[0].content == final_context.tool_results[0].content
-    provider_message_text = "\n".join(
-        message.content or "" for message in provider_context.provider_messages
-    )
+    provider_message_text = "\n".join(message.content or "" for message in provider_context.provider_messages)
     assert '"tool_name": "read_file"' in provider_message_text
     assert '"tool_name": "shell_exec"' not in provider_message_text
     assert any(
-        segment.role == "system"
-        and segment.source == "continuity_summary"
-        and "shell_exec" in (segment.content or "")
+        segment.role == "system" and segment.source == "continuity_summary" and "shell_exec" in (segment.content or "")
         for segment in provider_context.segments
     )
 
@@ -2056,16 +1931,10 @@ def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(
         )
     )
     event_types = [event.event_type for event in response.events]
-    mcp_started = next(
-        event for event in response.events if event.event_type == "runtime.mcp_server_started"
-    )
-    mcp_released = next(
-        event for event in response.events if event.event_type == "runtime.mcp_server_released"
-    )
+    mcp_started = next(event for event in response.events if event.event_type == "runtime.mcp_server_started")
+    mcp_released = next(event for event in response.events if event.event_type == "runtime.mcp_server_released")
     mcp_tool_completed = next(
-        event
-        for event in response.events
-        if event.event_type == "runtime.tool_completed" and event.payload["server"] == "echo"
+        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["server"] == "echo"
     )
 
     assert response.session.status == "completed"
@@ -2096,13 +1965,9 @@ def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(
             ),
         ),
     )
-    hook_response = hook_runtime.run(
-        runtime_request(prompt="launch hooked background", session_id="leader-hooked-background")
-    )
+    hook_response = hook_runtime.run(runtime_request(prompt="launch hooked background", session_id="leader-hooked-background"))
     background_event = next(
-        event
-        for event in hook_runtime.resume("leader-hooked-background").events
-        if event.event_type == "runtime.background_task_completed"
+        event for event in hook_runtime.resume("leader-hooked-background").events if event.event_type == "runtime.background_task_completed"
     )
     delegation = cast(dict[str, object], background_event.payload["delegation"])
     message = cast(dict[str, object], background_event.payload["message"])
@@ -2196,13 +2061,9 @@ def test_provider_child_request_excludes_parent_tool_results_and_transcript_by_d
         ),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="parent reads then delegates", session_id="leader-context")
-    )
+    response = runtime.run(runtime_request(prompt="parent reads then delegates", session_id="leader-context"))
     child_request = next(request for request in requests if _is_delegated_child_request(request))
-    parent_followup_request = next(
-        request for request in requests if len(_assembled_context(request).tool_results) == 1
-    )
+    parent_followup_request = next(request for request in requests if len(_assembled_context(request).tool_results) == 1)
     child_context = _assembled_context(child_request)
 
     assert response.session.status == "completed"
@@ -2247,24 +2108,16 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
         ),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="launch and collect background", session_id="leader-bg")
-    )
+    response = runtime.run(runtime_request(prompt="launch and collect background", session_id="leader-bg"))
     parent_requests = [request for request in requests if not _is_delegated_child_request(request)]
-    after_task_request = next(
-        request for request in parent_requests if len(_assembled_context(request).tool_results) == 1
-    )
-    after_background_output_request = next(
-        request for request in parent_requests if len(_assembled_context(request).tool_results) == 2
-    )
+    after_task_request = next(request for request in parent_requests if len(_assembled_context(request).tool_results) == 1)
+    after_background_output_request = next(request for request in parent_requests if len(_assembled_context(request).tool_results) == 2)
     after_background_context = _assembled_context(after_background_output_request)
     background_output_result = after_background_context.tool_results[1]
     background_output_data = background_output_result.data
     background_output_session = cast(dict[str, object], background_output_data["session"])
     background_tool_segments = [
-        segment
-        for segment in after_background_context.segments
-        if segment.role == "tool" and segment.tool_name == "background_output"
+        segment for segment in after_background_context.segments if segment.role == "tool" and segment.tool_name == "background_output"
     ]
 
     assert response.session.status == "completed"
@@ -2280,10 +2133,7 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
     assert isinstance(background_tool_segments[0].content, str)
     assert "Background task result digest:" in background_tool_segments[0].content
     assert "child transcript sentinel" not in background_tool_segments[0].content
-    assert (
-        getattr(background_output_result, "reference", None)
-        == background_output_session["full_session_reference"]
-    )
+    assert getattr(background_output_result, "reference", None) == background_output_session["full_session_reference"]
     assert all(
         "child transcript sentinel" not in segment.content
         for segment in after_background_context.segments
@@ -2507,9 +2357,7 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
                     ),
                     "custom": _ScriptedModelProvider(
                         name="custom",
-                        outcomes=(
-                            provider_protocol_module.ProviderTurnResult(output="fallback ok"),
-                        ),
+                        outcomes=(provider_protocol_module.ProviderTurnResult(output="fallback ok"),),
                     ),
                 }
             ),
@@ -2534,12 +2382,8 @@ def test_provider_runtime_falls_back_to_next_provider_target(tmp_path: Path) -> 
             "graph.response_ready",
         ],
     )
-    hook_event = next(
-        event for event in response.events if event.event_type == "runtime.hook_presets_loaded"
-    )
-    fallback_event = next(
-        event for event in response.events if event.event_type == "runtime.provider_fallback"
-    )
+    hook_event = next(event for event in response.events if event.event_type == "runtime.hook_presets_loaded")
+    fallback_event = next(event for event in response.events if event.event_type == "runtime.provider_fallback")
     assert hook_event.payload == _LEADER_HOOK_PRESET_SNAPSHOT
     assert fallback_event.payload == {
         "reason": "rate_limit",
@@ -2617,12 +2461,8 @@ def test_provider_runtime_retries_transient_error_on_same_target(tmp_path: Path)
             "graph.response_ready",
         ],
     )
-    hook_event = next(
-        event for event in response.events if event.event_type == "runtime.hook_presets_loaded"
-    )
-    retry_event = next(
-        event for event in response.events if event.event_type == "runtime.provider_transient_retry"
-    )
+    hook_event = next(event for event in response.events if event.event_type == "runtime.hook_presets_loaded")
+    retry_event = next(event for event in response.events if event.event_type == "runtime.provider_transient_retry")
     assert hook_event.payload == _LEADER_HOOK_PRESET_SNAPSHOT
     assert retry_event.payload == {
         "reason": "transient_failure",
@@ -2690,18 +2530,14 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
                     ),
                     "custom": _ScriptedModelProvider(
                         name="custom",
-                        outcomes=(
-                            provider_protocol_module.ProviderTurnResult(output="fallback ok"),
-                        ),
+                        outcomes=(provider_protocol_module.ProviderTurnResult(output="fallback ok"),),
                     ),
                 }
             ),
         ),
     )
 
-    response = runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="retry-then-fallback-run")
-    )
+    response = runtime.run(runtime_request(prompt="read sample.txt", session_id="retry-then-fallback-run"))
 
     assert response.session.status == "completed"
     assert response.output == "fallback ok"
@@ -2720,15 +2556,9 @@ def test_provider_runtime_falls_back_after_same_target_retry_budget(
             "graph.response_ready",
         ],
     )
-    hook_event = next(
-        event for event in response.events if event.event_type == "runtime.hook_presets_loaded"
-    )
-    retry_event = next(
-        event for event in response.events if event.event_type == "runtime.provider_transient_retry"
-    )
-    fallback_event = next(
-        event for event in response.events if event.event_type == "runtime.provider_fallback"
-    )
+    hook_event = next(event for event in response.events if event.event_type == "runtime.hook_presets_loaded")
+    retry_event = next(event for event in response.events if event.event_type == "runtime.provider_transient_retry")
+    fallback_event = next(event for event in response.events if event.event_type == "runtime.provider_fallback")
     assert hook_event.payload == _LEADER_HOOK_PRESET_SNAPSHOT
     assert retry_event.payload == {
         "reason": "transient_failure",
@@ -2756,9 +2586,7 @@ def _cli_test_env() -> dict[str, str]:
     env = os.environ.copy()
     src_path = str(Path(__file__).resolve().parents[2] / "src")
     existing_pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = (
-        src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
-    )
+    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
     return env
 
 
@@ -2813,9 +2641,7 @@ def _run_cli_in_tty(
 def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="allow")
 
-    allowed = runtime.run(
-        runtime_request(prompt="write danger.txt approved write", session_id="allow-session")
-    )
+    allowed = runtime.run(runtime_request(prompt="write danger.txt approved write", session_id="allow-session"))
 
     assert allowed.session.status == "completed"
     assert [event.event_type for event in allowed.events] == [
@@ -2831,9 +2657,7 @@ def test_runtime_allows_non_read_only_tool_when_policy_is_allow(tmp_path: Path) 
         "graph.loop_step",
         "graph.response_ready",
     ]
-    approval_event = next(
-        event for event in allowed.events if event.event_type == "runtime.approval_resolved"
-    )
+    approval_event = next(event for event in allowed.events if event.event_type == "runtime.approval_resolved")
     assert approval_event.payload["decision"] == "allow"
     assert allowed.output == "Wrote file successfully: danger.txt"
     assert (tmp_path / "danger.txt").read_text(encoding="utf-8") == "approved write"
@@ -2883,9 +2707,7 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
         "graph.loop_step",
         "graph.response_ready",
     ]
-    approval_event = next(
-        event for event in allowed.events if event.event_type == "runtime.approval_resolved"
-    )
+    approval_event = next(event for event in allowed.events if event.event_type == "runtime.approval_resolved")
     assert approval_event.payload["decision"] == "allow"
     assert allowed.output == f"{tmp_path.resolve()}\n"
     assert allowed.events[8].payload["tool"] == "shell_exec"
@@ -2962,9 +2784,7 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
         "runtime.approval_resolved",
         "runtime.tool_completed",
     ]
-    approval_event = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
-    )
+    approval_event = next(event for event in denied.events if event.event_type == "runtime.approval_resolved")
     assert approval_event.payload["decision"] == "deny"
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
@@ -3023,12 +2843,8 @@ def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_p
             "graph.response_ready",
         ],
     )
-    pre_hook_event = next(
-        event for event in result.events if event.event_type == "runtime.tool_hook_pre"
-    )
-    post_hook_event = next(
-        event for event in result.events if event.event_type == "runtime.tool_hook_post"
-    )
+    pre_hook_event = next(event for event in result.events if event.event_type == "runtime.tool_hook_pre")
+    post_hook_event = next(event for event in result.events if event.event_type == "runtime.tool_hook_post")
     assert pre_hook_event.payload == {
         "phase": "pre",
         "tool_name": "shell_exec",
@@ -3142,9 +2958,7 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
     replay = replay_runtime.resume("hook-pre-fail-session")
 
     failed_event = next(event for event in replay.events if event.event_type == "runtime.failed")
-    pre_hook_event = next(
-        event for event in replay.events if event.event_type == "runtime.tool_hook_pre"
-    )
+    pre_hook_event = next(event for event in replay.events if event.event_type == "runtime.tool_hook_pre")
     assert pre_hook_event.payload["status"] == "error"
     assert failed_event.event_type == "runtime.failed"
     assert replay.session.status == "failed"
@@ -3262,9 +3076,7 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
         )
 
         with pytest.raises(RuntimeError, match="tool boom"):
-            runtime.run(
-                runtime_request(prompt="write danger.txt should fail", session_id="hook-tool-fail")
-            )
+            runtime.run(runtime_request(prompt="write danger.txt should fail", session_id="hook-tool-fail"))
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -3333,9 +3145,7 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     class FailingFinalizeGraph:
-        def step(
-            self, request: object, tool_results: tuple[object, ...], *, session: object
-        ) -> object:
+        def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
             if not tool_results:
                 return _GraphStep(
                     events=(),
@@ -3362,9 +3172,7 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
     )
 
     with pytest.raises(RuntimeError, match="finalize boom"):
-        _ = failing_runtime.run(
-            runtime_request(prompt="write danger.txt broken finalize", session_id="s1")
-        )
+        _ = failing_runtime.run(runtime_request(prompt="write danger.txt broken finalize", session_id="s1"))
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -3398,9 +3206,7 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     class FailingPlanGraph:
-        def step(
-            self, request: object, tool_results: tuple[object, ...], *, session: object
-        ) -> object:
+        def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
             if not tool_results:
                 raise RuntimeError("plan boom")
             raise AssertionError("finalize should not run")
@@ -3418,9 +3224,7 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
     )
 
     with pytest.raises(RuntimeError, match="plan boom"):
-        _ = failing_runtime.run(
-            runtime_request(prompt="write danger.txt anything", session_id="s1")
-        )
+        _ = failing_runtime.run(runtime_request(prompt="write danger.txt anything", session_id="s1"))
 
     replay_runtime = cast(
         RuntimeRunner,
@@ -3450,9 +3254,7 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
 def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="deny")
 
-    denied = runtime.run(
-        runtime_request(prompt="write danger.txt denied write", session_id="deny-session")
-    )
+    denied = runtime.run(runtime_request(prompt="write danger.txt denied write", session_id="deny-session"))
 
     assert denied.session.status == "running"
     assert [event.event_type for event in denied.events] == [
@@ -3465,9 +3267,7 @@ def test_runtime_denies_non_read_only_tool_when_policy_is_deny(tmp_path: Path) -
         "runtime.approval_resolved",
         "runtime.tool_completed",
     ]
-    approval_event = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
-    )
+    approval_event = next(event for event in denied.events if event.event_type == "runtime.approval_resolved")
     assert approval_event.payload["decision"] == "deny"
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
@@ -3496,9 +3296,7 @@ def test_runtime_allows_ast_grep_preview_when_policy_is_deny(tmp_path: Path) -> 
     completed = subprocess.CompletedProcess(
         args=[],
         returncode=0,
-        stdout=(
-            '{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'
-        ),
+        stdout=('{"text":"print(\'hello\')","file":"sample.py","replacement":"logger.info(\'hello\')"}\n'),
         stderr="",
     )
 
@@ -3537,8 +3335,9 @@ def test_runtime_requests_approval_for_ast_grep_replace_when_policy_is_ask(tmp_p
     event_types = [event.event_type for event in waiting.events]
     assert event_types[-1] == "runtime.approval_requested"
     assert "runtime.tool_lookup_succeeded" in event_types
-    assert waiting.events[-1].payload["tool"] == "ast_grep_replace"
+    assert waiting.events[-1].payload["tool"] == "ast_grep"
     assert waiting.events[-1].payload["arguments"] == {
+        "mode": "replace",
         "pattern": "print($X)",
         "rewrite": "logger.info($X)",
         "path": "sample.py",
@@ -3577,25 +3376,26 @@ def test_runtime_does_not_request_external_approval_for_ast_grep_external_path(
                     ),
                 ),
                 graph=_SingleToolGraph(
-                    "ast_grep_search",
-                    {"pattern": "print($X)", "path": str(outside_file), "lang": "python"},
+                    "ast_grep",
+                    {
+                        "mode": "search",
+                        "pattern": "print($X)",
+                        "path": str(outside_file),
+                        "lang": "python",
+                    },
                 ),
                 permission_policy=policy,
             ),
         ),
     )
 
-    result = runtime.run(
-        runtime_request(prompt="external ast grep", session_id="ast-grep-external")
-    )
+    result = runtime.run(runtime_request(prompt="external ast grep", session_id="ast-grep-external"))
     event_types = [event.event_type for event in result.events]
-    completed_event = next(
-        event for event in result.events if event.event_type == "runtime.tool_completed"
-    )
+    completed_event = next(event for event in result.events if event.event_type == "runtime.tool_completed")
 
     assert result.session.status == "completed"
     assert "runtime.approval_requested" not in event_types
-    assert completed_event.payload["tool"] == "ast_grep_search"
+    assert completed_event.payload["tool"] == "ast_grep"
     assert completed_event.payload["status"] == "error"
     assert "inside the workspace" in str(completed_event.payload["error"])
 
@@ -3678,16 +3478,10 @@ def test_runtime_allows_external_read_by_default_without_approval(tmp_path: Path
         ),
     )
 
-    completed = runtime.run(
-        runtime_request(prompt="external read default", session_id="external-read-default")
-    )
+    completed = runtime.run(runtime_request(prompt="external read default", session_id="external-read-default"))
     event_types = [event.event_type for event in completed.events]
-    resolution = next(
-        event for event in completed.events if event.event_type == "runtime.approval_resolved"
-    )
-    tool_completed = next(
-        event for event in completed.events if event.event_type == "runtime.tool_completed"
-    )
+    resolution = next(event for event in completed.events if event.event_type == "runtime.approval_resolved")
+    tool_completed = next(event for event in completed.events if event.event_type == "runtime.tool_completed")
 
     assert completed.session.status == "completed"
     assert "runtime.approval_requested" not in event_types
@@ -3728,16 +3522,10 @@ def test_runtime_allows_external_write_by_default_without_approval(tmp_path: Pat
         ),
     )
 
-    completed = runtime.run(
-        runtime_request(prompt="external write default", session_id="external-write-default")
-    )
+    completed = runtime.run(runtime_request(prompt="external write default", session_id="external-write-default"))
     event_types = [event.event_type for event in completed.events]
-    resolution = next(
-        event for event in completed.events if event.event_type == "runtime.approval_resolved"
-    )
-    tool_completed = next(
-        event for event in completed.events if event.event_type == "runtime.tool_completed"
-    )
+    resolution = next(event for event in completed.events if event.event_type == "runtime.approval_resolved")
+    tool_completed = next(event for event in completed.events if event.event_type == "runtime.tool_completed")
 
     assert completed.session.status == "completed"
     assert "runtime.approval_requested" not in event_types
@@ -3779,9 +3567,7 @@ def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(
                 config=runtime_config(
                     approval_mode="allow",
                     permission=permission_config(
-                        read=policy_config(
-                            rules=(("~voidcode_unknown_user_for_test/**", "allow"), ("*", "ask"))
-                        ),
+                        read=policy_config(rules=(("~voidcode_unknown_user_for_test/**", "allow"), ("*", "ask"))),
                     ),
                 ),
                 graph=_SingleToolGraph("read_file", {"filePath": str(outside_file)}),
@@ -3790,9 +3576,7 @@ def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(
         ),
     )
 
-    waiting = runtime.run(
-        runtime_request(prompt="external read", session_id="external-tilde-fallback")
-    )
+    waiting = runtime.run(runtime_request(prompt="external read", session_id="external-tilde-fallback"))
     approval_event = waiting.events[-1]
 
     assert waiting.session.status == "waiting"
@@ -3843,9 +3627,7 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
 
     denied = runtime.run(runtime_request(prompt="external write", session_id="external-write-deny"))
     assert denied.session.status == "completed"
-    denial = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
-    )
+    denial = next(event for event in denied.events if event.event_type == "runtime.approval_resolved")
     assert denial.payload["decision"] == "deny"
     assert denial.payload["path_scope"] == "external"
     assert denial.payload["operation_class"] == "write"
@@ -3853,10 +3635,7 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
     assert denial.payload["policy_surface"] == "external_directory_write"
     assert denial.payload["canonical_path"] == str(outside_file.resolve())
     feedback = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload.get("permission_denied") is True
+        event for event in denied.events if event.event_type == "runtime.tool_completed" and event.payload.get("permission_denied") is True
     )
     assert feedback.payload["status"] == "error"
     assert outside_file.exists() is False
@@ -3901,23 +3680,14 @@ def test_runtime_denies_shell_exec_when_command_rule_denies(tmp_path: Path) -> N
         ),
     )
 
-    denied = runtime.run(
-        runtime_request(prompt="deny shell command", session_id="shell-command-rule-deny")
-    )
+    denied = runtime.run(runtime_request(prompt="deny shell command", session_id="shell-command-rule-deny"))
     assert denied.session.status == "completed"
-    denial = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
-    )
+    denial = next(event for event in denied.events if event.event_type == "runtime.approval_resolved")
     assert denial.payload["decision"] == "deny"
-    assert denial.payload["matched_rule"] == (
-        "permission.rules[0] tool='shell_exec' command='printf blocked*' decision='deny'"
-    )
+    assert denial.payload["matched_rule"] == ("permission.rules[0] tool='shell_exec' command='printf blocked*' decision='deny'")
     assert denial.payload["policy_surface"] == "permission.rules"
     feedback = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload.get("permission_denied") is True
+        event for event in denied.events if event.event_type == "runtime.tool_completed" and event.payload.get("permission_denied") is True
     )
     assert feedback.payload["status"] == "error"
 
@@ -3943,20 +3713,16 @@ def test_runtime_shell_exec_write_command_requests_approval_without_path_inferen
                 ),
                 graph=_SingleToolGraph(
                     "shell_exec",
-                    {"command": "printf blocked > ./../dot-parent-shell-write.txt"},
+                    {"command": "touch /tmp/dot-parent-shell-write.txt"},
                 ),
                 permission_policy=policy,
             ),
         ),
     )
 
-    waiting = runtime.run(
-        runtime_request(prompt="ask shell command", session_id="shell-command-ask")
-    )
+    waiting = runtime.run(runtime_request(prompt="ask shell command", session_id="shell-command-ask"))
     assert waiting.session.status == "waiting"
-    approval = next(
-        event for event in waiting.events if event.event_type == "runtime.approval_requested"
-    )
+    approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
     assert approval.payload["tool"] == "shell_exec"
     assert approval.payload["path_scope"] == "workspace"
     assert approval.payload["operation_class"] == "execute"
@@ -4002,9 +3768,7 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
                 config=runtime_config(
                     approval_mode="ask",
                     permission=permission_config(
-                        write=policy_config(
-                            rules=((f"{allowed_root.as_posix()}/**", "ask"), ("*", "deny"))
-                        ),
+                        write=policy_config(rules=((f"{allowed_root.as_posix()}/**", "ask"), ("*", "deny"))),
                     ),
                 ),
                 graph=graph,
@@ -4031,9 +3795,7 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
                     ),
                 ),
                 graph=graph,
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="allow"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow"),
             ),
         ),
     )
@@ -4048,10 +3810,7 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
     assert first_file.read_text(encoding="utf-8") == "first"
     assert second_file.exists() is False
     first_resolution = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.approval_resolved"
-        and event.payload.get("request_id") == approval_request_id
+        event for event in denied.events if event.event_type == "runtime.approval_resolved" and event.payload.get("request_id") == approval_request_id
     )
     assert first_resolution.payload["decision"] == "allow"
     assert first_resolution.payload["path_scope"] == "external"
@@ -4060,19 +3819,13 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
     assert first_resolution.payload["policy_surface"] == "external_directory_write"
     assert first_resolution.payload["canonical_path"] == str(first_file.resolve())
     second_resolution = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.approval_resolved"
-        and event.payload.get("decision") == "deny"
+        event for event in denied.events if event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "deny"
     )
     assert second_resolution.payload["matched_rule"] == "*"
     assert second_resolution.payload["policy_surface"] == "external_directory_write"
     assert second_resolution.payload["canonical_path"] == str(second_file.resolve())
     feedback = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload.get("permission_denied") is True
+        event for event in denied.events if event.event_type == "runtime.tool_completed" and event.payload.get("permission_denied") is True
     )
     assert feedback.payload["status"] == "error"
 
@@ -4118,9 +3871,7 @@ def test_runtime_denies_when_any_external_path_in_patch_is_denied(tmp_path: Path
                     approval_mode="allow",
                     permission=permission_config(
                         read=policy_config(rules=(("*", "ask"),)),
-                        write=policy_config(
-                            rules=((f"{allowed_root.as_posix()}/**", "allow"), ("*", "deny"))
-                        ),
+                        write=policy_config(rules=((f"{allowed_root.as_posix()}/**", "allow"), ("*", "deny"))),
                     ),
                 ),
                 graph=_SingleToolGraph("apply_patch", {"patch": patch_text}),
@@ -4131,17 +3882,12 @@ def test_runtime_denies_when_any_external_path_in_patch_is_denied(tmp_path: Path
 
     denied = runtime.run(runtime_request(prompt="mixed patch", session_id="external-patch-mixed"))
     assert denied.session.status == "completed"
-    denial = next(
-        event for event in denied.events if event.event_type == "runtime.approval_resolved"
-    )
+    denial = next(event for event in denied.events if event.event_type == "runtime.approval_resolved")
     assert denial.payload["decision"] == "deny"
     assert denial.payload["policy_surface"] == "external_directory_write"
     assert denial.payload["matched_rule"] == "*"
     feedback = next(
-        event
-        for event in denied.events
-        if event.event_type == "runtime.tool_completed"
-        and event.payload.get("permission_denied") is True
+        event for event in denied.events if event.event_type == "runtime.tool_completed" and event.payload.get("permission_denied") is True
     )
     assert feedback.payload["status"] == "error"
     assert denied_file.exists() is False
@@ -4215,9 +3961,7 @@ def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -
             "graph.response_ready",
         ],
     )
-    skills_event = next(
-        event for event in result.events if event.event_type == "runtime.skills_loaded"
-    )
+    skills_event = next(event for event in result.events if event.event_type == "runtime.skills_loaded")
     assert skills_event.payload["skills"] == []
     assert skills_event.payload["selected_skills"] == []
     assert skills_event.payload["catalog_context_length"] == 0
@@ -4246,6 +3990,9 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "agent_capability_snapshot",
         "runtime_state",
         "context_window",
+        "selected_skill_names",
+        "applied_skills",
+        "skill_snapshot",
     }
     runtime_config_payload = cast(dict[str, object], result.session.metadata["runtime_config"])
     agent_payload = runtime_config_payload.pop("agent")
@@ -4284,9 +4031,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
     }
     runtime_state = cast(dict[str, object], result.session.metadata["runtime_state"])
     assert set(runtime_state) == {"acp", "run_id"}
-    persisted_hook_presets = cast(
-        dict[str, object], result.session.metadata["resolved_hook_presets"]
-    )
+    persisted_hook_presets = cast(dict[str, object], result.session.metadata["resolved_hook_presets"])
     assert persisted_hook_presets["refs"] == _LEADER_HOOK_PRESET_SNAPSHOT["refs"]
     assert persisted_hook_presets["source"] == "builtin"
     assert persisted_hook_presets["version"] == 1
@@ -4321,14 +4066,10 @@ def test_provider_runtime_converts_tool_exceptions_to_tool_error_results(
         raise ValueError("provider tool boom")
 
     with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
-        result = runtime.run(
-            runtime_request(prompt="read sample.txt", session_id="provider-tool-error")
-        )
+        result = runtime.run(runtime_request(prompt="read sample.txt", session_id="provider-tool-error"))
 
     assert result.session.status == "completed"
-    tool_completed = next(
-        event for event in result.events if event.event_type == "runtime.tool_completed"
-    )
+    tool_completed = next(event for event in result.events if event.event_type == "runtime.tool_completed")
     assert tool_completed.payload["status"] == "error"
     assert tool_completed.payload["error"] == "provider tool boom"
 
@@ -4336,11 +4077,7 @@ def test_provider_runtime_converts_tool_exceptions_to_tool_error_results(
 def test_provider_runtime_requests_and_resumes_write_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _provider_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(
-            prompt="write danger.txt approved later", session_id="single-agent-approval"
-        )
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="single-agent-approval"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     resumed = runtime.resume(
@@ -4379,9 +4116,7 @@ def test_provider_resume_preserves_default_mcp_tools_after_approval(
                     model="opencode/gpt-5.4",
                 ),
                 mcp_manager=_DefaultConfiguredMcpManager(),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="ask"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask"),
             ),
         ),
     )
@@ -4417,16 +4152,10 @@ def test_runtime_uses_repo_local_config_to_allow_write_requests_without_explicit
     )
 
     runtime = runtime_class(workspace=tmp_path)
-    result = runtime.run(
-        runtime_request(
-            prompt="write configured.txt config file approved", session_id="config-file"
-        )
-    )
+    result = runtime.run(runtime_request(prompt="write configured.txt config file approved", session_id="config-file"))
 
     assert result.session.status == "completed"
-    approval_event = next(
-        event for event in result.events if event.event_type == "runtime.approval_resolved"
-    )
+    approval_event = next(event for event in result.events if event.event_type == "runtime.approval_resolved")
     assert approval_event.payload["decision"] == "allow"
     assert (tmp_path / "configured.txt").read_text(encoding="utf-8") == "config file approved"
 
@@ -4439,14 +4168,10 @@ def test_runtime_uses_environment_config_to_allow_write_requests_without_code_ch
     monkeypatch.setenv("VOIDCODE_APPROVAL_MODE", "allow")
 
     runtime = runtime_class(workspace=tmp_path)
-    result = runtime.run(
-        runtime_request(prompt="write env.txt env approved", session_id="env-file")
-    )
+    result = runtime.run(runtime_request(prompt="write env.txt env approved", session_id="env-file"))
 
     assert result.session.status == "completed"
-    approval_event = next(
-        event for event in result.events if event.event_type == "runtime.approval_resolved"
-    )
+    approval_event = next(event for event in result.events if event.event_type == "runtime.approval_resolved")
     assert approval_event.payload["decision"] == "allow"
     assert (tmp_path / "env.txt").read_text(encoding="utf-8") == "env approved"
 
@@ -4490,9 +4215,7 @@ def test_runtime_lists_background_tasks_by_parent_session_from_fresh_runtime(
 
     first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
     _ = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    leader_task = first_runtime.start_background_task(
-        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
-    )
+    leader_task = first_runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     _ = first_runtime.start_background_task(runtime_request(prompt="read sample.txt"))
 
     deadline = time.time() + 2
@@ -4503,9 +4226,7 @@ def test_runtime_lists_background_tasks_by_parent_session_from_fresh_runtime(
         time.sleep(0.01)
 
     second_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))
-    listed = second_runtime.list_background_tasks_by_parent_session(
-        parent_session_id="leader-session"
-    )
+    listed = second_runtime.list_background_tasks_by_parent_session(parent_session_id="leader-session")
 
     assert len(listed) == 1
     assert listed[0].task.id == leader_task.task.id
@@ -4564,12 +4285,8 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
             "graph.response_ready",
         ],
     )
-    tool_request_event = next(
-        event for event in result.events if event.event_type == "graph.tool_request_created"
-    )
-    tool_completed_event = next(
-        event for event in result.events if event.event_type == "runtime.tool_completed"
-    )
+    tool_request_event = next(event for event in result.events if event.event_type == "graph.tool_request_created")
+    tool_completed_event = next(event for event in result.events if event.event_type == "runtime.tool_completed")
     assert tool_request_event.payload == {
         "tool": "grep",
         "arguments": {"pattern": "alpha", "path": "sample.txt"},
@@ -4580,11 +4297,7 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
         "tool_call_id": ANY,
         "arguments": {"pattern": "alpha", "path": "sample.txt"},
         "status": "ok",
-        "content": (
-            "Found 2 match(es) for 'alpha' in sample.txt\n"
-            "sample.txt:1: alpha\n"
-            "sample.txt:2: beta alpha"
-        ),
+        "content": ("Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha\nsample.txt:2: beta alpha"),
         "error": None,
         "path": "sample.txt",
         "pattern": "alpha",
@@ -4632,17 +4345,13 @@ def test_runtime_executes_grep_deterministic_graph_and_emits_events(tmp_path: Pa
         },
     }
     assert result.session.status == "completed"
-    assert result.output == (
-        "Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha\nsample.txt:2: beta alpha"
-    )
+    assert result.output == ("Found 2 match(es) for 'alpha' in sample.txt\nsample.txt:1: alpha\nsample.txt:2: beta alpha")
 
 
 def test_runtime_allows_non_read_only_tool_after_explicit_resume_approval(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt approved later", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt approved later", session_id="approval-session"))
 
     assert waiting.session.status == "waiting"
     assert [event.event_type for event in waiting.events] == [
@@ -4686,9 +4395,7 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
 ) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write drift.txt unavailable later", session_id="drift-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write drift.txt unavailable later", session_id="drift-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     _, runtime_class = _load_runtime_types()
@@ -4751,9 +4458,7 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
 def test_runtime_resumed_approval_renumbers_fixed_finalize_sequences(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt renumbered", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt renumbered", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     resumed = runtime.resume(
@@ -4772,11 +4477,7 @@ def test_runtime_persists_pending_approval_until_single_resume_resolution(tmp_pa
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(
-            prompt="write danger.txt persisted approval", session_id="persisted-approval"
-        )
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt persisted approval", session_id="persisted-approval"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     _, replay_runtime_class = _load_runtime_types()
@@ -4815,9 +4516,7 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
 ) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt stale replay", session_id="stale-replay-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt stale replay", session_id="stale-replay-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
     resolved = runtime.resume(
         "stale-replay-session",
@@ -4828,14 +4527,9 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
     database_path = sessions_db_path()
     connection = sqlite3.connect(database_path)
     try:
-        approval_event = next(
-            event for event in resolved.events if event.event_type == "runtime.approval_requested"
-        )
+        approval_event = next(event for event in resolved.events if event.event_type == "runtime.approval_requested")
         _ = connection.execute(
-            (
-                "UPDATE sessions SET pending_approval_json = ?, resume_checkpoint_json = ? "
-                "WHERE session_id = ?"
-            ),
+            ("UPDATE sessions SET pending_approval_json = ?, resume_checkpoint_json = ? WHERE session_id = ?"),
             (
                 json.dumps(
                     {
@@ -4849,6 +4543,11 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
                         "owner_session_id": "stale-replay-session",
                         "owner_parent_session_id": None,
                         "delegated_task_id": None,
+                        "path_scope": approval_event.payload["path_scope"],
+                        "operation_class": approval_event.payload["operation_class"],
+                        "canonical_path": approval_event.payload["canonical_path"],
+                        "matched_rule": approval_event.payload["matched_rule"],
+                        "policy_surface": approval_event.payload["policy_surface"],
                     },
                     sort_keys=True,
                 ),
@@ -4938,9 +4637,7 @@ def test_runtime_approval_resume_executes_original_pending_tool_when_graph_would
         ),
     )
 
-    waiting = runtime.run(
-        runtime_request(prompt="write divergent.txt", session_id="divergent-approval")
-    )
+    waiting = runtime.run(runtime_request(prompt="write divergent.txt", session_id="divergent-approval"))
     assert waiting.session.status == "waiting"
     assert waiting.events[-1].event_type == "runtime.approval_requested"
     original_request_id = cast(str, waiting.events[-1].payload["request_id"])
@@ -5032,9 +4729,7 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
         "graph.response_ready",
     ]
     assert [event.sequence for event in resumed.events] == list(range(1, 27))
-    assert resumed.output == (
-        "Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker"
-    )
+    assert resumed.output == ("Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker")
     assert replay.output == resumed.output
     assert [event.sequence for event in replay.events] == list(range(1, 27))
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
@@ -5099,9 +4794,7 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
     _ = (tmp_path / "source.txt").write_text("alpha\nbeta alpha\n", encoding="utf-8")
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt=_multi_step_prompt(), session_id="deny-loop-session")
-    )
+    waiting = runtime.run(runtime_request(prompt=_multi_step_prompt(), session_id="deny-loop-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     denied = runtime.resume(
@@ -5163,11 +4856,10 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
         (event.sequence, event.event_type, event.payload) for event in denied.events
     ]
     assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
-    assert [
-        cast(str, event.payload.get("tool"))
-        for event in denied.events
-        if event.event_type == "graph.tool_request_created"
-    ] == ["read_file", "write_file"]
+    assert [cast(str, event.payload.get("tool")) for event in denied.events if event.event_type == "graph.tool_request_created"] == [
+        "read_file",
+        "write_file",
+    ]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
     assert sessions[0].status == "running"
     assert sessions[0].updated_at == 2
@@ -5219,17 +4911,13 @@ def test_runtime_rejects_stale_session_schema_for_pending_approval(
         connection.close()
 
     with pytest.raises(RuntimeError, match="sqlite runtime schema mismatch"):
-        _ = runtime.run(
-            runtime_request(prompt="write danger.txt stale approval", session_id="stale-session")
-        )
+        _ = runtime.run(runtime_request(prompt="write danger.txt stale approval", session_id="stale-session"))
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt replay checkpoint", session_id="checkpoint-replay")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt replay checkpoint", session_id="checkpoint-replay"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     resumed = runtime.resume(
@@ -5267,17 +4955,13 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
             runtime_class(
                 workspace=tmp_path,
                 config=load_runtime_config(tmp_path, approval_mode="allow", model="session/model"),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="allow"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow"),
             ),
         ),
     )
     _ = (tmp_path / "sample.txt").write_text("resume config\n", encoding="utf-8")
 
-    _ = initial_runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="resume-config-session")
-    )
+    _ = initial_runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-config-session"))
 
     resumed_runtime = cast(
         RuntimeRunner,
@@ -5286,9 +4970,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
             runtime_class(
                 workspace=tmp_path,
                 config=runtime_config(approval_mode="deny", model="fresh/model"),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="deny"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="deny"),
             ),
         ),
     )
@@ -5301,6 +4983,9 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "agent_capability_snapshot",
         "runtime_state",
         "context_window",
+        "selected_skill_names",
+        "applied_skills",
+        "skill_snapshot",
     }
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
@@ -5366,17 +5051,13 @@ def test_runtime_persists_reasoning_effort_in_runtime_config_and_preserves_on_re
             runtime_class(
                 workspace=tmp_path,
                 config=load_runtime_config(tmp_path, reasoning_effort="high"),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="allow"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow"),
             ),
         ),
     )
     _ = (tmp_path / "sample.txt").write_text("reasoning effort\n", encoding="utf-8")
 
-    initial = initial_runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="reasoning-effort-session")
-    )
+    initial = initial_runtime.run(runtime_request(prompt="read sample.txt", session_id="reasoning-effort-session"))
 
     initial_runtime_config = cast(dict[str, object], initial.session.metadata["runtime_config"])
     assert initial_runtime_config["reasoning_effort"] == "high"
@@ -5388,9 +5069,7 @@ def test_runtime_persists_reasoning_effort_in_runtime_config_and_preserves_on_re
             runtime_class(
                 workspace=tmp_path,
                 config=load_runtime_config(tmp_path, reasoning_effort="medium"),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="allow"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow"),
             ),
         ),
     )
@@ -5418,9 +5097,7 @@ def test_runtime_request_metadata_reasoning_effort_overrides_config(tmp_path: Pa
             runtime_class(
                 workspace=tmp_path,
                 config=load_runtime_config(tmp_path),
-                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(
-                    mode="allow"
-                ),
+                permission_policy=cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow"),
             ),
         ),
     )
@@ -5441,9 +5118,7 @@ def test_runtime_request_metadata_reasoning_effort_overrides_config(tmp_path: Pa
 def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt denied on resume", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt denied on resume", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     denied = runtime.resume(
@@ -5470,9 +5145,7 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt resume failure", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt resume failure", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     write_file_module = importlib.import_module("voidcode.tools.write_file")
@@ -5523,15 +5196,11 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt finalize failure", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     class FailingFinalizeGraph:
-        def step(
-            self, request: object, tool_results: tuple[object, ...], *, session: object
-        ) -> object:
+        def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
             if not tool_results:
                 return _GraphStep(
                     events=(),
@@ -5589,9 +5258,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write danger.txt save failure", session_id="approval-session")
-    )
+    waiting = runtime.run(runtime_request(prompt="write danger.txt save failure", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     storage_module = importlib.import_module("voidcode.runtime.storage")
@@ -5640,6 +5307,9 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
 
         def load_pending_approval(self, *, workspace: Path, session_id: str) -> object:
             return base_store.load_pending_approval(workspace=workspace, session_id=session_id)
+
+        def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> object:
+            return base_store.load_resume_checkpoint(workspace=workspace, session_id=session_id)
 
         def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
             base_store.clear_pending_approval(workspace=workspace, session_id=session_id)
@@ -5842,9 +5512,7 @@ def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -
     runtime_request, runtime_class = _load_runtime_types()
 
     first_runtime = runtime_class(workspace=tmp_path)
-    first_result = first_runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="demo-session")
-    )
+    first_result = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="demo-session"))
 
     second_runtime = runtime_class(workspace=tmp_path)
     sessions = second_runtime.list_sessions()
@@ -5930,9 +5598,7 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
 
         first_four_chunks = [next(stream) for _ in range(8)]
 
-        assert [
-            chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None
-        ] == [
+        assert [chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None] == [
             "runtime.request_received",
             "runtime.skills_loaded",
             "graph.loop_step",
@@ -5966,12 +5632,8 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
         assert elapsed < 1
         assert "runtime.tool_completed" in _event_types(fifth_chunk)
         assert all(chunk.session.status == "running" for chunk in fifth_chunk)
-        _assert_ordered_event_types(
-            _event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"]
-        )
-        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
-            "delayed stream"
-        ]
+        _assert_ordered_event_types(_event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"])
+        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == ["delayed stream"]
         assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
 
 
@@ -5996,14 +5658,10 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
             remaining_failure_chunks.extend(stream)
 
     tool_completed_chunk = next(
-        chunk
-        for chunk in remaining_failure_chunks
-        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+        chunk for chunk in remaining_failure_chunks if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
     )
     failed_chunk = next(
-        chunk
-        for chunk in reversed(remaining_failure_chunks)
-        if chunk.event is not None and chunk.event.event_type == "runtime.failed"
+        chunk for chunk in reversed(remaining_failure_chunks) if chunk.event is not None and chunk.event.event_type == "runtime.failed"
     )
 
     assert [chunk.event.event_type for chunk in first_four_chunks if chunk.event is not None] == [
@@ -6041,9 +5699,7 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
 ) -> None:
     runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
 
-    waiting = runtime.run(
-        runtime_request(prompt="write delayed.txt resumed later", session_id="resume-stream")
-    )
+    waiting = runtime.run(runtime_request(prompt="write delayed.txt resumed later", session_id="resume-stream"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     write_file_module = importlib.import_module("voidcode.tools.write_file")
@@ -6110,12 +5766,8 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
         assert elapsed < 1
         assert "runtime.tool_completed" in _event_types(blocked_chunk)
         assert all(chunk.session.status == "running" for chunk in blocked_chunk)
-        _assert_ordered_event_types(
-            _event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"]
-        )
-        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == [
-            "Wrote file successfully: delayed.txt"
-        ]
+        _assert_ordered_event_types(_event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"])
+        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == ["Wrote file successfully: delayed.txt"]
         assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
 
 
@@ -6125,9 +5777,7 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     runtime_request, runtime_class = _load_runtime_types()
 
     completed_runtime = runtime_class(workspace=tmp_path)
-    _ = completed_runtime.run(
-        runtime_request(prompt="read sample.txt", session_id="completed-stream")
-    )
+    _ = completed_runtime.run(runtime_request(prompt="read sample.txt", session_id="completed-stream"))
     completed_chunks = list(completed_runtime.resume_stream("completed-stream"))
 
     _assert_ordered_event_types(
@@ -6149,11 +5799,7 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
     assert completed_chunks[-1].session.status == "completed"
 
     approval_runtime_request, approval_runtime = _approval_runtime(tmp_path, mode="ask")
-    waiting = approval_runtime.run(
-        approval_runtime_request(
-            prompt="write waiting.txt pending replay", session_id="waiting-stream"
-        )
-    )
+    waiting = approval_runtime.run(approval_runtime_request(prompt="write waiting.txt pending replay", session_id="waiting-stream"))
     waiting_chunks = list(approval_runtime.resume_stream("waiting-stream"))
 
     _assert_ordered_event_types(
@@ -6187,9 +5833,7 @@ def test_runtime_resume_stream_reconstructs_replayed_chunk_statuses(tmp_path: Pa
             "runtime.tool_completed",
         ],
     )
-    terminal_event_types = [
-        chunk.event.event_type for chunk in failed_chunks if chunk.event is not None
-    ]
+    terminal_event_types = [chunk.event.event_type for chunk in failed_chunks if chunk.event is not None]
     assert "runtime.failed" not in terminal_event_types
 
 

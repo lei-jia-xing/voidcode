@@ -41,9 +41,7 @@ def _parse_todo_item(item: object, *, idx: int) -> dict[str, str]:
         if field_name == "content":
             raise ValueError(f"todo_write item #{idx} content must be non-empty string") from exc
         if field_name == "status":
-            raise ValueError(
-                f"todo_write item #{idx} invalid status: {item_payload.get('status')}"
-            ) from exc
+            raise ValueError(f"todo_write item #{idx} invalid status: {item_payload.get('status')}") from exc
         raise ValueError(f"todo_write item #{idx} must be an object") from exc
 
     return {
@@ -95,10 +93,7 @@ class TodoWriteTool:
         input_schema={
             "todos": {
                 "type": "array",
-                "description": (
-                    "Full replacement list of {content, status} items. "
-                    "At most one item may have status='in_progress'."
-                ),
+                "description": ("Full replacement list of {content, status} items. At most one item may have status='in_progress'."),
             },
         },
         read_only=True,

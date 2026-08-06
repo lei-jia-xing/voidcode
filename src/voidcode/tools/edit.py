@@ -72,9 +72,7 @@ def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[
             notes.append("indentation-only mismatch")
         if len(old_lines) >= 3:
             first_close = BlockAnchorReplacer._similar(lines[start].strip(), old_lines[0].strip())
-            last_close = BlockAnchorReplacer._similar(
-                lines[start + window_size - 1].strip(), old_lines[-1].strip()
-            )
+            last_close = BlockAnchorReplacer._similar(lines[start + window_size - 1].strip(), old_lines[-1].strip())
             if first_close and last_close:
                 notes.append("block anchors are close")
             elif first_close:
@@ -116,8 +114,7 @@ def _edit_mismatch_message(
             [
                 "Near-match hints:",
                 *hints,
-                "Tip: re-read the shown lines and retry with exact current text, "
-                "including indentation.",
+                "Tip: re-read the shown lines and retry with exact current text, including indentation.",
             ]
         )
     else:
@@ -134,9 +131,7 @@ def _trim_diff(diff: str) -> str:
     content_lines = [
         line
         for line in lines
-        if (line.startswith("+") or line.startswith("-") or line.startswith(" "))
-        and not line.startswith("---")
-        and not line.startswith("+++")
+        if (line.startswith("+") or line.startswith("-") or line.startswith(" ")) and not line.startswith("---") and not line.startswith("+++")
     ]
 
     if not content_lines:
@@ -155,16 +150,10 @@ def _trim_diff(diff: str) -> str:
 
     trimmed_lines: list[str] = []
     for line in lines:
-        if (
-            (line.startswith("+") or line.startswith("-") or line.startswith(" "))
-            and not line.startswith("---")
-            and not line.startswith("+++")
-        ):
+        if (line.startswith("+") or line.startswith("-") or line.startswith(" ")) and not line.startswith("---") and not line.startswith("+++"):
             prefix = line[0]
             content = line[1:]
-            trimmed_lines.append(
-                prefix + content[min_indent:] if len(content) > min_indent else line
-            )
+            trimmed_lines.append(prefix + content[min_indent:] if len(content) > min_indent else line)
         else:
             trimmed_lines.append(line)
 
@@ -194,12 +183,8 @@ def summarize_diff(*, path: Path, before: str, after: str) -> tuple[str, int, in
         )
     )
 
-    additions = sum(
-        1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")
-    )
-    deletions = sum(
-        1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")
-    )
+    additions = sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    deletions = sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---"))
     return diff, additions, deletions
 
 
@@ -442,14 +427,11 @@ def _replace(
 
     # If we reach here, no replacer found any match
     raise_tool_diagnostic(
-        message=_edit_mismatch_message(
-            content=current, old_string=old_string, attempted_replacers=attempted_replacers
-        ),
+        message=_edit_mismatch_message(content=current, old_string=old_string, attempted_replacers=attempted_replacers),
         error_kind="tool_input_mismatch",
         reason="old_string_not_found",
         retry_guidance=(
-            "Use read_file on the target path, copy exact current file text without line-number "
-            "prefixes, then retry edit with that exact oldString."
+            "Use read_file on the target path, copy exact current file text without line-number prefixes, then retry edit with that exact oldString."
         ),
         details={
             "attempted_replacers": attempted_replacers,
@@ -597,11 +579,7 @@ class EditTool:
         if not candidate.is_file():
             raise ValueError(f"edit target is not a file: {path_value}")
 
-        display_path = (
-            str(candidate.resolve())
-            if resolution.is_external
-            else candidate.relative_to(workspace_root).as_posix()
-        )
+        display_path = str(candidate.resolve()) if resolution.is_external else candidate.relative_to(workspace_root).as_posix()
         enforce_read_before_write(
             tool_name=self.definition.name,
             workspace=workspace_root,

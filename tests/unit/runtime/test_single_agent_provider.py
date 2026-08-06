@@ -37,15 +37,9 @@ def _assembled_from_context_window(context_window: RuntimeContextWindow) -> Runt
     ]
     for index, result in enumerate(context_window.tool_results, start=1):
         raw_tool_call_id = result.data.get("tool_call_id")
-        tool_call_id = (
-            raw_tool_call_id
-            if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip()
-            else f"voidcode_tool_{index}"
-        )
+        tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_tool_{index}"
         tool_arguments = result.data.get("arguments")
-        arguments_payload = (
-            cast(dict[str, object], tool_arguments) if isinstance(tool_arguments, dict) else {}
-        )
+        arguments_payload = cast(dict[str, object], tool_arguments) if isinstance(tool_arguments, dict) else {}
         segments.append(
             RuntimeContextSegment(
                 role="assistant",
@@ -80,9 +74,7 @@ def test_stub_provider_protocol_proposes_tool_call_for_first_turn() -> None:
 
     result = StubTurnProvider(name="opencode").propose_turn(
         ProviderTurnRequest(
-            assembled_context=_assembled_from_context_window(
-                RuntimeContextWindow(prompt="read sample.txt")
-            ),
+            assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="read sample.txt")),
             available_tools=_tool_definitions(),
             raw_model=provider_model.selection.raw_model,
             provider_name=provider_model.selection.provider,
@@ -137,9 +129,7 @@ def test_stub_provider_protocol_rejects_unsupported_requests() -> None:
     with pytest.raises(ValueError, match="unsupported request"):
         _ = StubTurnProvider(name="opencode").propose_turn(
             ProviderTurnRequest(
-                assembled_context=_assembled_from_context_window(
-                    RuntimeContextWindow(prompt="summarize sample.txt")
-                ),
+                assembled_context=_assembled_from_context_window(RuntimeContextWindow(prompt="summarize sample.txt")),
                 available_tools=_tool_definitions(),
                 raw_model=provider_model.selection.raw_model,
                 provider_name=provider_model.selection.provider,
@@ -219,7 +209,7 @@ def test_stub_provider_protocol_compact_projection_keeps_provider_invariants() -
             ),
         ),
         session_metadata={},
-        policy=ContextWindowPolicy(max_tool_result_tokens=30),
+        policy=ContextWindowPolicy(model_context_window_tokens=43),
     )
 
     snapshot = inspect_provider_context(

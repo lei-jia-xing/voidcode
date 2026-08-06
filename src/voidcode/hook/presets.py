@@ -88,9 +88,7 @@ def validate_hook_preset_event_scopes(
             raise ValueError(f"{field_path} entries must be non-empty strings")
         if scope not in valid_scopes:
             allowed = ", ".join(_VALID_HOOK_PRESET_EVENT_SCOPES)
-            raise ValueError(
-                f"{field_path} contains invalid event scope: {scope}; valid scopes are: {allowed}"
-            )
+            raise ValueError(f"{field_path} contains invalid event scope: {scope}; valid scopes are: {allowed}")
         parsed.append(cast(HookPresetEventScope, scope))
     return tuple(parsed)
 
@@ -111,9 +109,7 @@ def validate_hook_preset_actions(
             raise ValueError(f"{field_path} contains forbidden authority action: {action}")
         if action not in valid_actions:
             allowed = ", ".join(_VALID_HOOK_PRESET_ACTIONS)
-            raise ValueError(
-                f"{field_path} contains invalid action: {action}; valid actions are: {allowed}"
-            )
+            raise ValueError(f"{field_path} contains invalid action: {action}; valid actions are: {allowed}")
         parsed.append(cast(HookPresetAction, action))
     return tuple(parsed)
 
@@ -195,8 +191,7 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             kind="guidance",
             description="Remind the active agent to follow its selected role boundary.",
             guidance=(
-                "Follow the active agent preset exactly: preserve its responsibility boundary, "
-                "tool scope, and output obligations for this run."
+                "Follow the active agent preset exactly: preserve its responsibility boundary, tool scope, and output obligations for this run."
             ),
             event_scopes=("runtime.request_received", "graph.model_turn"),
             allowed_actions=("guidance",),
@@ -257,9 +252,7 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
         "delegated_task_timing_guidance": HookPreset(
             ref="delegated_task_timing_guidance",
             kind="guidance",
-            description=(
-                "Keep delegated background work asynchronous unless waiting is intentional."
-            ),
+            description=("Keep delegated background work asynchronous unless waiting is intentional."),
             guidance=(
                 "After starting delegated background work, continue other safe work first. "
                 "Treat task ids as references, not immediate prompts to poll. "
@@ -339,10 +332,7 @@ def validate_hook_preset_refs(
         if not ref.strip():
             raise ValueError(f"{field_path} entries must be non-empty strings")
         if not is_builtin_hook_preset_ref(ref):
-            raise ValueError(
-                f"{field_path} references unknown hook preset: {ref}; "
-                f"valid presets are: {valid_refs}"
-            )
+            raise ValueError(f"{field_path} references unknown hook preset: {ref}; valid presets are: {valid_refs}")
     return refs
 
 
@@ -390,39 +380,21 @@ def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnap
         raw_allowed_actions = preset_payload.get("allowed_actions")
         guidance = preset_payload.get("guidance")
         if not isinstance(ref, str) or not ref.strip():
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].ref must be a string"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].ref must be a string")
         if not isinstance(kind, str) or not kind.strip():
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].kind must be a string"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].kind must be a string")
         if not isinstance(source, str) or not source.strip():
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].source must be a string"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].source must be a string")
         if not isinstance(guidance, str) or not guidance.strip():
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].guidance must be a string"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].guidance must be a string")
         if not isinstance(raw_event_scopes, list):
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].event_scopes must be an array"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].event_scopes must be an array")
         if not all(isinstance(item, str) for item in raw_event_scopes):
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].event_scopes entries "
-                "must be strings"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].event_scopes entries must be strings")
         if not isinstance(raw_allowed_actions, list):
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].allowed_actions must be an array"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].allowed_actions must be an array")
         if not all(isinstance(item, str) for item in raw_allowed_actions):
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].allowed_actions entries "
-                "must be strings"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].allowed_actions entries must be strings")
         event_scopes = validate_hook_preset_event_scopes(
             tuple(cast(list[str], raw_event_scopes)),
             field_path=f"persisted hook preset snapshot presets[{index}].event_scopes",
@@ -433,34 +405,17 @@ def hook_preset_snapshot_from_payload(payload: object) -> ResolvedHookPresetSnap
         )
         builtin = get_builtin_hook_preset(ref)
         if builtin is None:
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].ref references unknown "
-                f"hook preset: {ref}"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].ref references unknown hook preset: {ref}")
         if source != "builtin":
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].source must be builtin"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].source must be builtin")
         if kind != builtin.kind:
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].kind does not match "
-                f"builtin hook preset: {ref}"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].kind does not match builtin hook preset: {ref}")
         if guidance != builtin.guidance:
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].guidance does not match "
-                f"builtin hook preset: {ref}"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].guidance does not match builtin hook preset: {ref}")
         if event_scopes != builtin.event_scopes:
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].event_scopes do not match "
-                f"builtin hook preset: {ref}"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].event_scopes do not match builtin hook preset: {ref}")
         if allowed_actions != builtin.allowed_actions:
-            raise ValueError(
-                f"persisted hook preset snapshot presets[{index}].allowed_actions do not match "
-                f"builtin hook preset: {ref}"
-            )
+            raise ValueError(f"persisted hook preset snapshot presets[{index}].allowed_actions do not match builtin hook preset: {ref}")
         refs.append(ref)
         presets.append(
             {

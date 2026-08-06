@@ -48,9 +48,7 @@ class PatternPermissionRule:
 @dataclass(frozen=True, slots=True)
 class ExternalDirectoryPermissionConfig:
     read: ExternalDirectoryPolicy = field(default_factory=ExternalDirectoryPolicy)
-    write: ExternalDirectoryPolicy = field(
-        default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "allow"),))
-    )
+    write: ExternalDirectoryPolicy = field(default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "allow"),)))
     rules: tuple[PatternPermissionRule, ...] = ()
 
 
@@ -154,7 +152,7 @@ def resolve_permission(
             return PermissionOutcome(decision="ask", pending_approval=pending_approval)
         return PermissionOutcome(decision=rule_decision, pending_approval=pending_approval)
 
-    if path_scope == "workspace" and tool.read_only:
+    if path_scope == "workspace" and tool.read_only and operation_class in (None, "read"):
         return PermissionOutcome(decision="allow")
 
     if path_scope == "external" and external_decision is not None:
@@ -250,9 +248,7 @@ def evaluate_pattern_permission_rules(
     for index, rule in enumerate(rules):
         if not _tool_matches_rule(tool_name=tool_name, pattern=rule.tool):
             continue
-        if rule.command is not None and not _command_matches_rule(
-            command=command, pattern=rule.command
-        ):
+        if rule.command is not None and not _command_matches_rule(command=command, pattern=rule.command):
             continue
         if rule.path is not None and not _path_candidates_match_rule(
             path_candidates=path_candidates,
@@ -294,9 +290,7 @@ def _command_match_candidates(command: str) -> tuple[str, ...]:
 def _path_candidates_match_rule(*, path_candidates: tuple[str, ...], pattern: str) -> bool:
     if not path_candidates:
         return False
-    return any(
-        _path_matches_rule(normalized_path=path, pattern=pattern) for path in path_candidates
-    )
+    return any(_path_matches_rule(normalized_path=path, pattern=pattern) for path in path_candidates)
 
 
 def _format_pattern_permission_rule(*, index: int, rule: PatternPermissionRule) -> str:

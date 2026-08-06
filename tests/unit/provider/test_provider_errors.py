@@ -27,10 +27,7 @@ def test_format_invalid_provider_config_error_includes_field_and_reason() -> Non
     assert format_invalid_provider_config_error(
         "provider_fallback.preferred_model",
         "must match model when both are configured",
-    ) == (
-        "invalid provider config: provider_fallback.preferred_model "
-        "must match model when both are configured"
-    )
+    ) == ("invalid provider config: provider_fallback.preferred_model must match model when both are configured")
 
 
 def test_format_fallback_exhausted_error_includes_provider_model_and_attempt() -> None:
@@ -98,9 +95,7 @@ def test_parse_provider_api_error_maps_context_overflow_patterns() -> None:
 
 
 def test_parse_provider_api_error_maps_unsupported_feature() -> None:
-    parsed = parse_provider_api_error(
-        {"status_code": 400, "message": "Streaming is not supported for this model"}
-    )
+    parsed = parse_provider_api_error({"status_code": 400, "message": "Streaming is not supported for this model"})
 
     assert parsed.kind == "unsupported_feature"
     assert parsed.retryable is False
@@ -108,9 +103,7 @@ def test_parse_provider_api_error_maps_unsupported_feature() -> None:
 
 
 def test_parse_provider_api_error_checks_unsupported_feature_before_403_fallback() -> None:
-    parsed = parse_provider_api_error(
-        {"status_code": 403, "message": "Streaming is not supported for this model"}
-    )
+    parsed = parse_provider_api_error({"status_code": 403, "message": "Streaming is not supported for this model"})
 
     assert parsed.kind == "unsupported_feature"
     assert parsed.retryable is False
@@ -133,9 +126,7 @@ def test_parse_provider_api_error_keeps_explicit_auth_code_before_feature_marker
 
 
 def test_parse_provider_api_error_checks_tool_shape_before_403_fallback() -> None:
-    parsed = parse_provider_api_error(
-        {"status_code": 403, "message": "stream tool payload is malformed"}
-    )
+    parsed = parse_provider_api_error({"status_code": 403, "message": "stream tool payload is malformed"})
 
     assert parsed.kind == "stream_tool_feedback_shape"
     assert parsed.retryable is False

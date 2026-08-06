@@ -117,9 +117,7 @@ class BackgroundOutputTool:
             "handoff_summary": _background_task_handoff_summary(result=result),
             "block_timed_out": block_timed_out,
         }
-        content = (
-            safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
-        )
+        content = safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
         empty_child_output = False
 
         if args.full_session and result.child_session_id is not None:
@@ -170,9 +168,7 @@ class BackgroundOutputTool:
                     **result.delegated_message.as_payload(),
                     "summary_output": safe_summary,
                 }
-                provider_failure_details = _provider_failure_details_from_session_result(
-                    session_result
-                )
+                provider_failure_details = _provider_failure_details_from_session_result(session_result)
                 if provider_failure_details is not None:
                     payload["provider_failure"] = provider_failure_details
                 content = _background_session_digest(
@@ -232,8 +228,7 @@ def _background_output_guidance(
         return (
             "The delegated child failed. Inspect the returned error/session details, summarize the "
             "failure for the parent, and do not retry automatically unless the user "
-            f"explicitly asks. Use background_retry(task_id='{result.task_id}') for an explicit "
-            "runtime-owned retry instead of manually reconstructing the delegated request. "
+            "explicitly asks. Re-delegate a fresh task if the user requests a retry. "
             "After repeated failures, stop retrying and escalate the failure with the latest error."
         )
     if result.status == "cancelled":
@@ -242,8 +237,7 @@ def _background_output_guidance(
         return (
             "The delegated child was interrupted before completion. Treat this as a terminal "
             "runtime outcome, inspect the returned error/session details, and do not retry "
-            "automatically unless the user explicitly asks. Use background_retry for an explicit "
-            "runtime-owned retry."
+            "automatically unless the user explicitly asks."
         )
     if not result.result_available:
         return (
@@ -291,10 +285,7 @@ def _background_session_digest(
     ]
     if session_result.error:
         lines.append(f"- error: {session_result.error}")
-    lines.append(
-        "Use the child session reference to retrieve full output; raw child output is not injected "
-        "into active provider context."
-    )
+    lines.append("Use the child session reference to retrieve full output; raw child output is not injected into active provider context.")
     return "\n".join(lines)
 
 
@@ -309,22 +300,13 @@ def _background_result_safe_summary(result: BackgroundTaskResult) -> str | None:
     if result.child_session_id is None:
         return result.summary_output
     if result.status == "completed":
-        return (
-            f"Completed child session {result.child_session_id}; full output is preserved outside "
-            "active context."
-        )
+        return f"Completed child session {result.child_session_id}; full output is preserved outside active context."
     if result.status == "failed":
-        return (
-            f"Failed child session {result.child_session_id}; "
-            "inspect the child session for details."
-        )
+        return f"Failed child session {result.child_session_id}; inspect the child session for details."
     if result.approval_blocked:
         return result.summary_output
     if result.summary_output:
-        return (
-            f"{result.status.title()} child session {result.child_session_id}; "
-            "details preserved by reference."
-        )
+        return f"{result.status.title()} child session {result.child_session_id}; details preserved by reference."
     return None
 
 
@@ -335,19 +317,13 @@ def _background_session_safe_summary(
 ) -> str:
     child_session_id = session_result.session.session.id
     if session_result.status == "completed":
-        return (
-            f"Completed child session {child_session_id}; full output is preserved outside "
-            "active context."
-        )
+        return f"Completed child session {child_session_id}; full output is preserved outside active context."
     if session_result.status == "failed":
         return f"Failed child session {child_session_id}; inspect the child session for details."
     if result.approval_blocked and result.summary_output:
         return result.summary_output
     if result.summary_output:
-        return (
-            f"{result.status.title()} child session {child_session_id}; "
-            "details preserved by reference."
-        )
+        return f"{result.status.title()} child session {child_session_id}; details preserved by reference."
     return f"Background task {result.task_id}: {result.status}"
 
 
@@ -362,9 +338,7 @@ def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[st
     if result.status == "cancelled" and blocked_reason is None:
         blocked_reason = "cancelled by parent"
     return {
-        "objective": result.delegated_execution.routing.as_payload()
-        if result.delegated_execution.routing is not None
-        else None,
+        "objective": result.delegated_execution.routing.as_payload() if result.delegated_execution.routing is not None else None,
         "completed_work": result.summary_output if result.status == "completed" else None,
         "open_questions": result.approval_blocked,
         "files_touched": (),
@@ -386,9 +360,7 @@ def _provider_failure_details_from_session_result(
         payload = event.payload
         provider_error_kind = payload.get("provider_error_kind")
         provider_error_details = payload.get("provider_error_details")
-        if not isinstance(provider_error_kind, str) and not isinstance(
-            provider_error_details, dict
-        ):
+        if not isinstance(provider_error_kind, str) and not isinstance(provider_error_details, dict):
             continue
         details: dict[str, object] = {}
         if isinstance(provider_error_kind, str):

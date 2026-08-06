@@ -19,9 +19,7 @@ def test_request_and_task_metadata_share_delegation_identity_parser() -> None:
         }
     }
 
-    assert runtime_subagent_routing_from_metadata(
-        metadata
-    ) == subagent_routing_identity_from_metadata(metadata)
+    assert runtime_subagent_routing_from_metadata(metadata) == subagent_routing_identity_from_metadata(metadata)
 
 
 @pytest.mark.parametrize(

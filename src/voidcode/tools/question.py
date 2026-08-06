@@ -79,10 +79,7 @@ class QuestionTool:
             PendingQuestionPrompt(
                 question=item.question,
                 header=item.header,
-                options=tuple(
-                    PendingQuestionOption(label=option.label, description=option.description)
-                    for option in item.options
-                ),
+                options=tuple(PendingQuestionOption(label=option.label, description=option.description) for option in item.options),
                 multiple=item.multiple,
             )
             for item in parsed.questions
@@ -112,14 +109,9 @@ class QuestionTool:
             option_labels = {option.label for option in prompt.options}
             for answer in response.answers:
                 if answer not in option_labels:
-                    raise ValueError(
-                        "question "
-                        f"'{response.header}' answer must match one of the declared option labels"
-                    )
+                    raise ValueError(f"question '{response.header}' answer must match one of the declared option labels")
             response_by_header[response.header] = response
-        missing_headers = [
-            prompt.header for prompt in prompts if prompt.header not in response_by_header
-        ]
+        missing_headers = [prompt.header for prompt in prompts if prompt.header not in response_by_header]
         if missing_headers:
             raise ValueError("missing answers for question headers: " + ", ".join(missing_headers))
         return tuple(response_by_header[prompt.header] for prompt in prompts)
@@ -150,10 +142,7 @@ class QuestionTool:
                     {
                         "question": prompt.question,
                         "header": prompt.header,
-                        "options": [
-                            {"label": option.label, "description": option.description}
-                            for option in prompt.options
-                        ],
+                        "options": [{"label": option.label, "description": option.description} for option in prompt.options],
                         "multiple": prompt.multiple,
                     }
                     for prompt in prompts

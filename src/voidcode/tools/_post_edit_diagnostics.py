@@ -52,11 +52,7 @@ def post_edit_lsp_diagnostics(*, workspace: Path, paths: list[str]) -> list[dict
             start = diagnostic.get("range")
             start_dict = cast(dict[str, object], start) if isinstance(start, dict) else None
             start_position = start_dict.get("start") if start_dict is not None else None
-            start_position_dict = (
-                cast(dict[str, object], start_position)
-                if isinstance(start_position, dict)
-                else None
-            )
+            start_position_dict = cast(dict[str, object], start_position) if isinstance(start_position, dict) else None
             diagnostics.append(
                 {
                     "path": raw_path,
@@ -66,14 +62,12 @@ def post_edit_lsp_diagnostics(*, workspace: Path, paths: list[str]) -> list[dict
                     "code": diagnostic.get("code"),
                     "line": (
                         cast(int, start_position_dict.get("line")) + 1
-                        if start_position_dict is not None
-                        and isinstance(start_position_dict.get("line"), int)
+                        if start_position_dict is not None and isinstance(start_position_dict.get("line"), int)
                         else None
                     ),
                     "character": (
                         cast(int, start_position_dict.get("character")) + 1
-                        if start_position_dict is not None
-                        and isinstance(start_position_dict.get("character"), int)
+                        if start_position_dict is not None and isinstance(start_position_dict.get("character"), int)
                         else None
                     ),
                 }

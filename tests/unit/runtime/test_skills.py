@@ -24,9 +24,7 @@ from voidcode.skills import (
 
 
 def test_parse_skill_frontmatter_returns_required_metadata() -> None:
-    metadata = parse_skill_frontmatter(
-        "---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\n"
-    )
+    metadata = parse_skill_frontmatter("---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\n")
 
     assert metadata == SkillManifestFrontmatter(
         name="summarize",
@@ -85,14 +83,7 @@ def test_skill_registry_discovers_and_resolves_skills(tmp_path: Path) -> None:
 def test_skill_registry_builds_runtime_contexts_from_skill_bodies(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
-    skill_contents = (
-        "---\n"
-        "name: summarize\n"
-        "description: Summarize selected files.\n"
-        "---\n"
-        "# Summarize\n"
-        "Use concise bullet points.\n"
-    )
+    skill_contents = "---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\nUse concise bullet points.\n"
     (skill_dir / "SKILL.md").write_text(
         skill_contents,
         encoding="utf-8",
@@ -105,11 +96,7 @@ def test_skill_registry_builds_runtime_contexts_from_skill_bodies(tmp_path: Path
             name="summarize",
             description="Summarize selected files.",
             content="# Summarize\nUse concise bullet points.",
-            prompt_context=(
-                "Skill: summarize\n"
-                "Description: Summarize selected files.\n"
-                "Instructions:\n# Summarize\nUse concise bullet points."
-            ),
+            prompt_context=("Skill: summarize\nDescription: Summarize selected files.\nInstructions:\n# Summarize\nUse concise bullet points."),
             execution_notes="# Summarize\nUse concise bullet points.",
             source_path=str((skill_dir / "SKILL.md").resolve()),
         ),
@@ -120,12 +107,7 @@ def test_skill_runtime_context_builds_execution_prompt_context(tmp_path: Path) -
     skill_dir = tmp_path / ".voidcode" / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: summarize\n"
-        "description: Summarize selected files.\n"
-        "---\n"
-        "# Summarize\n"
-        "Use concise bullet points.\n",
+        "---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\nUse concise bullet points.\n",
         encoding="utf-8",
     )
     registry = SkillRegistry.discover(workspace=tmp_path)
@@ -133,9 +115,7 @@ def test_skill_runtime_context_builds_execution_prompt_context(tmp_path: Path) -
     contexts = build_runtime_contexts(registry, skill_names=("summarize",))
 
     assert contexts[0].prompt_context == (
-        "Skill: summarize\n"
-        "Description: Summarize selected files.\n"
-        "Instructions:\n# Summarize\nUse concise bullet points."
+        "Skill: summarize\nDescription: Summarize selected files.\nInstructions:\n# Summarize\nUse concise bullet points."
     )
     assert build_skill_prompt_context(contexts) == (
         "Runtime-managed skills are active for this turn. "

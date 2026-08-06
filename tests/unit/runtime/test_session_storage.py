@@ -37,13 +37,9 @@ def test_runtime_paths_honor_explicit_empty_env_mapping(
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(host_db_path))
     monkeypatch.setenv("XDG_STATE_HOME", str(host_state_home))
 
-    assert sessions_db_path({}) == (
-        Path.home() / ".local" / "state" / "voidcode" / "sessions.sqlite3"
-    )
+    assert sessions_db_path({}) == (Path.home() / ".local" / "state" / "voidcode" / "sessions.sqlite3")
     assert state_home({}) == Path.home() / ".local" / "state" / "voidcode"
-    assert sessions_db_path({"XDG_STATE_HOME": str(tmp_path / "mapped-state")}) == (
-        tmp_path / "mapped-state" / "voidcode" / "sessions.sqlite3"
-    )
+    assert sessions_db_path({"XDG_STATE_HOME": str(tmp_path / "mapped-state")}) == (tmp_path / "mapped-state" / "voidcode" / "sessions.sqlite3")
 
 
 def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: Path) -> None:
@@ -124,9 +120,7 @@ def test_session_storage_roundtrips_snapshot_first_workflow_metadata(tmp_path: P
 
     assert loaded_snapshot == workflow_snapshot_from_metadata(metadata)
     assert loaded_snapshot is not None
-    assert loaded_snapshot["effective"] == cast(
-        dict[str, object], cast(dict[str, object], metadata["workflow"])["effective"]
-    )
+    assert loaded_snapshot["effective"] == cast(dict[str, object], cast(dict[str, object], metadata["workflow"])["effective"])
 
 
 def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
@@ -328,10 +322,7 @@ def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) 
 
     assert restored is not None
     assert restored.sequence == 2
-    assert [
-        event.sequence
-        for event in store.load_session(workspace=tmp_path, session_id="undo-session").events
-    ] == [1, 2, 3]
+    assert [event.sequence for event in store.load_session(workspace=tmp_path, session_id="undo-session").events] == [1, 2, 3]
 
 
 def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
@@ -425,9 +416,7 @@ def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> N
     store = SqliteSessionStore()
     request = RuntimeRequest(prompt="second", session_id="multi-turn-session")
     response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="multi-turn-session"), status="completed", turn=2
-        ),
+        session=SessionState(session=SessionRef(id="multi-turn-session"), status="completed", turn=2),
         events=(
             EventEnvelope(
                 session_id="multi-turn-session",
@@ -463,10 +452,7 @@ def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> N
     marker = store.undo_session(workspace=tmp_path, session_id="multi-turn-session")
 
     assert marker.sequence == 3
-    assert [
-        event.sequence
-        for event in store.load_session(workspace=tmp_path, session_id="multi-turn-session").events
-    ] == [1, 2]
+    assert [event.sequence for event in store.load_session(workspace=tmp_path, session_id="multi-turn-session").events] == [1, 2]
 
 
 def test_session_storage_preserves_prior_events_when_same_session_continues(
@@ -475,9 +461,7 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
     store = SqliteSessionStore()
     first_request = RuntimeRequest(prompt="first", session_id="continued-session")
     first_response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="continued-session"), status="completed", turn=1
-        ),
+        session=SessionState(session=SessionRef(id="continued-session"), status="completed", turn=1),
         events=(
             EventEnvelope(
                 session_id="continued-session",
@@ -498,9 +482,7 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
     )
     second_request = RuntimeRequest(prompt="second", session_id="continued-session")
     second_response = RuntimeResponse(
-        session=SessionState(
-            session=SessionRef(id="continued-session"), status="completed", turn=1
-        ),
+        session=SessionState(session=SessionRef(id="continued-session"), status="completed", turn=1),
         events=(
             EventEnvelope(
                 session_id="continued-session",
@@ -527,11 +509,7 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
     result = store.load_session_result(workspace=tmp_path, session_id="continued-session")
 
     assert [event.sequence for event in replay.events] == [1, 2, 3, 4]
-    request_prompts = [
-        event.payload.get("prompt")
-        for event in replay.events
-        if event.event_type == "runtime.request_received"
-    ]
+    request_prompts = [event.payload.get("prompt") for event in replay.events if event.event_type == "runtime.request_received"]
     assert request_prompts == [
         "first",
         "second",
@@ -565,20 +543,11 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
     store.save_run(workspace=tmp_path, request=request, response=response)
 
     with closing(sqlite3.connect(database_path)) as connection:
-        session_columns = [
-            row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
-        ]
-        todo_columns = [
-            row[1] for row in connection.execute("PRAGMA table_info(session_todos)").fetchall()
-        ]
-        delivery_columns = [
-            row[1]
-            for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()
-        ]
+        session_columns = [row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()]
+        todo_columns = [row[1] for row in connection.execute("PRAGMA table_info(session_todos)").fetchall()]
+        delivery_columns = [row[1] for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()]
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        notification_indexes = connection.execute(
-            "PRAGMA index_list(session_notifications)"
-        ).fetchall()
+        notification_indexes = connection.execute("PRAGMA index_list(session_notifications)").fetchall()
 
     assert session_columns == [
         "session_id",
@@ -595,6 +564,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "created_at",
         "updated_at",
         "last_event_sequence",
+        "created_at_unix_ms",
     ]
     assert todo_columns == [
         "workspace_id",
@@ -605,7 +575,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 6
+    assert schema_version == 7
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -717,9 +687,7 @@ def test_session_storage_rejects_existing_unversioned_runtime_schema_without_mut
 ) -> None:
     database_path = tmp_path / "unversioned-runtime.sqlite3"
     with closing(sqlite3.connect(database_path)) as connection:
-        _ = connection.execute(
-            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL)"
-        )
+        _ = connection.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace TEXT NOT NULL)")
         connection.commit()
 
     store = SqliteSessionStore(database_path=database_path)
@@ -744,7 +712,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 6 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 7 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -839,9 +807,7 @@ def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
         store.list_sessions(workspace=tmp_path)
 
     with closing(sqlite3.connect(database_path)) as connection:
-        session_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
-        }
+        session_columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()}
 
     assert "parent_session_id" not in session_columns
     assert "pending_approval_json" not in session_columns
@@ -964,10 +930,7 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         store.list_notifications(workspace=tmp_path)
 
     with closing(sqlite3.connect(database_path)) as connection:
-        delivery_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()
-        }
+        delivery_columns = {row[1] for row in connection.execute("PRAGMA table_info(session_event_deliveries)").fetchall()}
 
     assert "dedupe_key" not in delivery_columns
 
@@ -1097,9 +1060,7 @@ def test_session_storage_load_resume_checkpoint_rejects_invalid_kind(tmp_path: P
         )
         connection.commit()
 
-    with pytest.raises(
-        ValueError, match=r"persisted resume checkpoint kind is invalid: 'not-real'"
-    ):
+    with pytest.raises(ValueError, match=r"persisted resume checkpoint kind is invalid: 'not-real'"):
         _ = store.load_resume_checkpoint(workspace=tmp_path, session_id="checkpoint-invalid-kind")
 
 
@@ -1670,3 +1631,154 @@ def test_session_storage_fail_incomplete_background_tasks_keeps_question_waiting
 
     assert failed == ()
     assert loaded.status == "running"
+
+
+def _completed_response(session_id: str, output: str = "done") -> RuntimeResponse:
+    return RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id=session_id),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id=session_id,
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output=output,
+    )
+
+
+def _create_completed_sessions(store: SqliteSessionStore, workspace: Path, count: int, prefix: str = "s") -> list[str]:
+    ids: list[str] = []
+    for i in range(count):
+        sid = f"{prefix}-{i}"
+        store.save_run(
+            workspace=workspace,
+            request=RuntimeRequest(prompt=sid, session_id=sid),
+            response=_completed_response(sid),
+        )
+        ids.append(sid)
+    return ids
+
+
+def test_list_sessions_auto_prunes_excess_terminal_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+
+    _create_completed_sessions(store, tmp_path, count=53, prefix="excess")
+
+    listed = store.list_sessions(workspace=tmp_path)
+
+    assert len(listed) == 50
+    for summary in listed:
+        assert summary.status == "completed"
+
+
+def test_list_sessions_auto_prunes_stale_terminal_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+
+    ids = _create_completed_sessions(store, tmp_path, count=3, prefix="stale")
+
+    with store._connect(tmp_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET created_at_unix_ms = 1 WHERE workspace_id = ? AND session_id IN (?, ?, ?)",
+            (str(tmp_path), ids[0], ids[1], ids[2]),
+        )
+        conn.commit()
+
+    listed = store.list_sessions(workspace=tmp_path)
+
+    listed_ids = {summary.session.id for summary in listed}
+    for sid in ids:
+        assert sid not in listed_ids, f"stale session {sid} was not pruned"
+
+
+def test_list_sessions_auto_prune_preserves_active_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+
+    for sid, status in (
+        ("completed-1", "completed"),
+        ("completed-2", "completed"),
+        ("running-1", "running"),
+        ("waiting-1", "waiting"),
+        ("failed-1", "failed"),
+    ):
+        store.save_run(
+            workspace=tmp_path,
+            request=RuntimeRequest(prompt=sid, session_id=sid),
+            response=RuntimeResponse(
+                session=SessionState(
+                    session=SessionRef(id=sid),
+                    status=cast(Any, status),
+                    turn=1,
+                    metadata={},
+                ),
+                events=(
+                    EventEnvelope(
+                        session_id=sid,
+                        sequence=1,
+                        event_type="graph.response_ready",
+                        source="graph",
+                    ),
+                ),
+                output="done" if status in ("completed", "failed") else None,
+            ),
+        )
+
+    with store._connect(tmp_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET created_at_unix_ms = 1 WHERE workspace_id = ?",
+            (str(tmp_path),),
+        )
+        conn.commit()
+
+    listed = store.list_sessions(workspace=tmp_path)
+
+    listed_ids = {summary.session.id for summary in listed}
+    assert "completed-1" not in listed_ids
+    assert "completed-2" not in listed_ids
+    assert "failed-1" not in listed_ids
+    assert "running-1" in listed_ids
+    assert "waiting-1" in listed_ids
+
+
+def test_list_sessions_auto_prune_cascades_to_child_tables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+
+    sid = "cascade-session"
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt=sid, session_id=sid),
+        response=_completed_response(sid),
+    )
+
+    with store._connect(tmp_path) as conn:
+        conn.execute(
+            "UPDATE sessions SET created_at_unix_ms = 1 WHERE workspace_id = ? AND session_id = ?",
+            (str(tmp_path), sid),
+        )
+        conn.commit()
+
+    _ = store.list_sessions(workspace=tmp_path)
+
+    with store._connect(tmp_path) as conn:
+        events_count = conn.execute(
+            "SELECT COUNT(*) FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(tmp_path), sid),
+        ).fetchone()[0]
+        assert events_count == 0, f"session_events not cleaned up: {events_count} rows remain"
+
+    with pytest.raises(ValueError, match=f"unknown session: {sid}"):
+        _ = store.load_session_result(workspace=tmp_path, session_id=sid)

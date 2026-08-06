@@ -72,9 +72,7 @@ def test_resolve_provider_model_creates_generic_provider_for_unknown_name() -> N
 
 def test_resolve_provider_model_marks_custom_configured_provider_resolution() -> None:
     registry = ModelProviderRegistry.with_defaults(
-        provider_configs=ProviderConfigs(
-            custom={"llama-local": LiteLLMProviderConfig(base_url="http://localhost:11434/v1")}
-        )
+        provider_configs=ProviderConfigs(custom={"llama-local": LiteLLMProviderConfig(base_url="http://localhost:11434/v1")})
     )
 
     resolved = resolve_provider_model("llama-local/coder", registry=registry)
@@ -120,9 +118,7 @@ def test_resolve_provider_config_builds_single_target_chain_from_model() -> None
         target_chain=resolved.target_chain,
     )
     assert resolved.active_target.selection.raw_model == "opencode/gpt-5.4"
-    assert [target.selection.raw_model for target in resolved.target_chain.all_targets] == [
-        "opencode/gpt-5.4"
-    ]
+    assert [target.selection.raw_model for target in resolved.target_chain.all_targets] == ["opencode/gpt-5.4"]
 
 
 def test_resolve_provider_config_normalizes_preferred_fallback_model_as_active_target() -> None:

@@ -13,20 +13,11 @@ def context_window_config_from_policy(
         return None
     return RuntimeContextWindowConfig(
         auto_compaction=policy.auto_compaction,
-        max_tool_result_tokens=policy.max_tool_result_tokens,
-        max_context_ratio=policy.max_context_ratio,
         model_context_window_tokens=policy.model_context_window_tokens,
         reserved_output_tokens=policy.reserved_output_tokens,
         default_tool_result_tokens=policy.default_tool_result_tokens,
         per_tool_result_tokens=dict(policy.per_tool_result_tokens),
         tokenizer_model=policy.tokenizer_model,
-        continuity_preview_items=policy.continuity_preview_items,
-        continuity_preview_chars=policy.continuity_preview_chars,
-        context_pressure_threshold=policy.context_pressure_threshold,
-        context_pressure_cooldown_steps=policy.context_pressure_cooldown_steps,
-        continuity_distillation_enabled=policy.continuity_distillation_enabled,
-        continuity_distillation_max_input_items=policy.continuity_distillation_max_input_items,
-        continuity_distillation_max_input_chars=policy.continuity_distillation_max_input_chars,
     )
 
 
@@ -51,20 +42,11 @@ def context_window_policy_from_config(
                 model_context_window_tokens = metadata.context_window
     return ContextWindowPolicy(
         auto_compaction=config.auto_compaction,
-        max_tool_result_tokens=config.max_tool_result_tokens,
-        max_context_ratio=config.max_context_ratio,
         model_context_window_tokens=model_context_window_tokens,
         reserved_output_tokens=config.reserved_output_tokens,
         default_tool_result_tokens=config.default_tool_result_tokens,
         per_tool_result_tokens=dict(config.per_tool_result_tokens),
         tokenizer_model=config.tokenizer_model,
-        continuity_preview_items=config.continuity_preview_items,
-        continuity_preview_chars=config.continuity_preview_chars,
-        context_pressure_threshold=config.context_pressure_threshold,
-        context_pressure_cooldown_steps=config.context_pressure_cooldown_steps,
-        continuity_distillation_enabled=config.continuity_distillation_enabled,
-        continuity_distillation_max_input_items=config.continuity_distillation_max_input_items,
-        continuity_distillation_max_input_chars=config.continuity_distillation_max_input_chars,
     )
 
 

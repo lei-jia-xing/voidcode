@@ -82,7 +82,6 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
-    memory_tools_allowed: bool
     workflow_mode: str
     workflow_plan: dict[str, object]
     workflow: dict[str, object]
@@ -125,15 +124,12 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "show_thinking",
         "skills",
         "force_load_skills",
-        "memory_tools_allowed",
         "workflow_mode",
         "workflow_plan",
         "workflow",
     }
 )
-_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
-    {"background_run", "background_rate_limit_retry", "background_task_id"}
-)
+_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_rate_limit_retry", "background_task_id"})
 
 
 def _empty_runtime_request_metadata() -> RuntimeRequestMetadata:
@@ -154,9 +150,7 @@ def parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
     try:
         return runtime_mode.parse_runtime_mode(value)
     except ValueError as exc:
-        raise RuntimeRequestError(
-            "request metadata 'mode' must be 'normal', 'analyze', or 'plan'"
-        ) from exc
+        raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'") from exc
 
 
 def runtime_mode_from_metadata(
@@ -165,9 +159,7 @@ def runtime_mode_from_metadata(
     try:
         return runtime_mode.runtime_mode_from_metadata(metadata)
     except ValueError as exc:
-        raise RuntimeRequestError(
-            "request metadata 'mode' must be 'normal', 'analyze', or 'plan'"
-        ) from exc
+        raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'") from exc
 
 
 def runtime_read_only_from_metadata(
@@ -178,9 +170,7 @@ def runtime_read_only_from_metadata(
     except ValueError as exc:
         message = str(exc)
         if "mode" in message:
-            raise RuntimeRequestError(
-                "request metadata 'mode' must be 'normal', 'analyze', or 'plan'"
-            ) from exc
+            raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'") from exc
         raise RuntimeRequestError("request metadata 'read_only' must be a boolean") from exc
 
 
@@ -199,9 +189,7 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
     non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
-        raise RuntimeRequestError(
-            f"request metadata 'command' keys must be strings; received invalid key(s): {joined}"
-        )
+        raise RuntimeRequestError(f"request metadata 'command' keys must be strings; received invalid key(s): {joined}")
     command_payload = cast(dict[str, object], payload)
     unknown_keys = sorted(key for key in command_payload if key not in allowed_keys)
     if unknown_keys:
@@ -211,9 +199,7 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
     missing_keys = sorted(required_keys - command_payload.keys())
     if missing_keys:
         joined = ", ".join(missing_keys)
-        raise RuntimeRequestError(
-            f"request metadata 'command' is missing required field(s): {joined}"
-        )
+        raise RuntimeRequestError(f"request metadata 'command' is missing required field(s): {joined}")
 
     name = _validate_optional_runtime_metadata_string(
         command_payload.get("name"),
@@ -236,9 +222,7 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
     arguments: list[str] = []
     for index, argument in enumerate(cast(list[object], raw_arguments_list)):
         if not isinstance(argument, str):
-            raise RuntimeRequestError(
-                f"request metadata 'command.arguments[{index}]' must be a string"
-            )
+            raise RuntimeRequestError(f"request metadata 'command.arguments[{index}]' must be a string")
         arguments.append(argument)
     normalized: RuntimeCommandMetadata = {
         "name": name,
@@ -266,17 +250,12 @@ def validate_runtime_continuation_loop_metadata(
     metadata: object,
 ) -> RuntimeContinuationLoopMetadata:
     if not isinstance(metadata, dict):
-        raise RuntimeRequestError(
-            "request metadata 'continuation_loop' must be an object when provided"
-        )
+        raise RuntimeRequestError("request metadata 'continuation_loop' must be an object when provided")
     payload = cast(dict[object, object], metadata)
     non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
-        raise RuntimeRequestError(
-            "request metadata 'continuation_loop' keys must be strings; "
-            f"received invalid key(s): {joined}"
-        )
+        raise RuntimeRequestError(f"request metadata 'continuation_loop' keys must be strings; received invalid key(s): {joined}")
     loop_payload = cast(dict[str, object], payload)
     allowed_keys = {
         "loop_id",
@@ -299,26 +278,16 @@ def validate_runtime_continuation_loop_metadata(
     unknown_keys = sorted(key for key in loop_payload if key not in allowed_keys)
     if unknown_keys:
         joined = ", ".join(unknown_keys)
-        raise RuntimeRequestError(
-            f"unsupported request metadata 'continuation_loop' field(s): {joined}"
-        )
+        raise RuntimeRequestError(f"unsupported request metadata 'continuation_loop' field(s): {joined}")
     normalized: RuntimeContinuationLoopMetadata = {
-        "loop_id": _validate_optional_runtime_metadata_string(
-            loop_payload.get("loop_id"), field_name="continuation_loop.loop_id"
-        ),
-        "status": _validate_optional_runtime_metadata_string(
-            loop_payload.get("status"), field_name="continuation_loop.status"
-        ),
-        "prompt": _validate_optional_runtime_metadata_string(
-            loop_payload.get("prompt"), field_name="continuation_loop.prompt"
-        ),
+        "loop_id": _validate_optional_runtime_metadata_string(loop_payload.get("loop_id"), field_name="continuation_loop.loop_id"),
+        "status": _validate_optional_runtime_metadata_string(loop_payload.get("status"), field_name="continuation_loop.status"),
+        "prompt": _validate_optional_runtime_metadata_string(loop_payload.get("prompt"), field_name="continuation_loop.prompt"),
         "completion_promise": _validate_optional_runtime_metadata_string(
             loop_payload.get("completion_promise"),
             field_name="continuation_loop.completion_promise",
         ),
-        "strategy": _validate_optional_runtime_metadata_string(
-            loop_payload.get("strategy"), field_name="continuation_loop.strategy"
-        ),
+        "strategy": _validate_optional_runtime_metadata_string(loop_payload.get("strategy"), field_name="continuation_loop.strategy"),
         "verification_status": _validate_optional_runtime_metadata_string(
             loop_payload.get("verification_status"),
             field_name="continuation_loop.verification_status",
@@ -344,9 +313,7 @@ def validate_runtime_continuation_loop_metadata(
     for field_name in required_integer_fields:
         value = loop_payload.get(field_name)
         if not isinstance(value, int):
-            raise RuntimeRequestError(
-                f"request metadata 'continuation_loop.{field_name}' must be an integer"
-            )
+            raise RuntimeRequestError(f"request metadata 'continuation_loop.{field_name}' must be an integer")
         normalized[field_name] = value
     nullable_integer_fields = ("finished_at", "cancel_requested_at")
     for field_name in nullable_integer_fields:
@@ -355,15 +322,11 @@ def validate_runtime_continuation_loop_metadata(
             normalized[field_name] = None
             continue
         if not isinstance(value, int):
-            raise RuntimeRequestError(
-                f"request metadata 'continuation_loop.{field_name}' must be an integer"
-            )
+            raise RuntimeRequestError(f"request metadata 'continuation_loop.{field_name}' must be an integer")
         normalized[field_name] = value
     intensive = loop_payload.get("intensive")
     if not isinstance(intensive, bool):
-        raise RuntimeRequestError(
-            "request metadata 'continuation_loop.intensive' must be a boolean"
-        )
+        raise RuntimeRequestError("request metadata 'continuation_loop.intensive' must be a boolean")
     normalized["intensive"] = intensive
     return normalized
 
@@ -378,9 +341,7 @@ def validate_runtime_subagent_routing_metadata(
     non_string_keys = sorted(repr(key) for key in metadata_items if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
-        raise RuntimeRequestError(
-            f"request metadata 'delegation' keys must be strings; received invalid key(s): {joined}"
-        )
+        raise RuntimeRequestError(f"request metadata 'delegation' keys must be strings; received invalid key(s): {joined}")
 
     routing_metadata = {cast(str, key): value for key, value in metadata_items.items()}
 
@@ -417,21 +378,12 @@ def validate_runtime_subagent_routing_metadata(
     if "depth" in routing_metadata:
         raw_depth = routing_metadata["depth"]
         if not isinstance(raw_depth, int) or isinstance(raw_depth, bool) or raw_depth < 1:
-            raise RuntimeRequestError(
-                "request metadata 'delegation.depth' must be a positive integer"
-            )
+            raise RuntimeRequestError("request metadata 'delegation.depth' must be a positive integer")
         normalized["depth"] = raw_depth
     if "remaining_spawn_budget" in routing_metadata:
         raw_remaining_budget = routing_metadata["remaining_spawn_budget"]
-        if (
-            not isinstance(raw_remaining_budget, int)
-            or isinstance(raw_remaining_budget, bool)
-            or raw_remaining_budget < 0
-        ):
-            raise RuntimeRequestError(
-                "request metadata 'delegation.remaining_spawn_budget' must be a "
-                "non-negative integer"
-            )
+        if not isinstance(raw_remaining_budget, int) or isinstance(raw_remaining_budget, bool) or raw_remaining_budget < 0:
+            raise RuntimeRequestError("request metadata 'delegation.remaining_spawn_budget' must be a non-negative integer")
         normalized["remaining_spawn_budget"] = raw_remaining_budget
     if "selected_preset" in routing_metadata:
         normalized["selected_preset"] = _validate_optional_runtime_metadata_string(
@@ -444,9 +396,7 @@ def validate_runtime_subagent_routing_metadata(
             field_name="delegation.selected_execution_engine",
         )
         if selected_execution_engine != "provider":
-            raise RuntimeRequestError(
-                "request metadata 'delegation.selected_execution_engine' must be 'provider'"
-            )
+            raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' must be 'provider'")
         normalized["selected_execution_engine"] = selected_execution_engine
     return normalized
 
@@ -497,27 +447,18 @@ def runtime_subagent_route_from_metadata(
     if persisted_selected_preset is None:
         return resolved
     if not isinstance(persisted_selected_preset, str):
-        raise RuntimeRequestError(
-            "request metadata 'delegation.selected_preset' must be a non-empty string"
-        )
+        raise RuntimeRequestError("request metadata 'delegation.selected_preset' must be a non-empty string")
     if persisted_selected_preset == "product":
         raise RuntimeRequestError(PRODUCT_DELEGATION_DENIAL_REASON)
     if persisted_selected_preset != resolved.selected_preset:
-        raise RuntimeRequestError(
-            "request metadata 'delegation.selected_preset' does not match the resolved child preset"
-        )
+        raise RuntimeRequestError("request metadata 'delegation.selected_preset' does not match the resolved child preset")
     persisted_execution_engine = routing_metadata.get("selected_execution_engine")
     if persisted_execution_engine is None:
         return resolved
     if not isinstance(persisted_execution_engine, str):
-        raise RuntimeRequestError(
-            "request metadata 'delegation.selected_execution_engine' must be 'provider'"
-        )
+        raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' must be 'provider'")
     if persisted_execution_engine != resolved.execution_engine:
-        raise RuntimeRequestError(
-            "request metadata 'delegation.selected_execution_engine' does not match the "
-            "resolved child execution engine"
-        )
+        raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' does not match the resolved child execution engine")
     return resolved
 
 
@@ -530,9 +471,7 @@ def validate_runtime_request_metadata(
     non_string_keys = sorted(repr(key) for key in metadata_items if not isinstance(key, str))
     if non_string_keys:
         joined = ", ".join(non_string_keys)
-        raise RuntimeRequestError(
-            f"request metadata keys must be strings; received invalid key(s): {joined}"
-        )
+        raise RuntimeRequestError(f"request metadata keys must be strings; received invalid key(s): {joined}")
 
     allowed_keys = set(_STABLE_RUNTIME_REQUEST_METADATA_KEYS)
     if allow_internal_fields:
@@ -560,14 +499,10 @@ def validate_runtime_request_metadata(
         normalized["command"] = validate_runtime_command_metadata(metadata["command"])
 
     if "continuation_loop" in metadata:
-        normalized["continuation_loop"] = validate_runtime_continuation_loop_metadata(
-            metadata["continuation_loop"]
-        )
+        normalized["continuation_loop"] = validate_runtime_continuation_loop_metadata(metadata["continuation_loop"])
 
     if "delegation" in metadata:
-        normalized["delegation"] = validate_runtime_subagent_routing_metadata(
-            metadata["delegation"]
-        )
+        normalized["delegation"] = validate_runtime_subagent_routing_metadata(metadata["delegation"])
 
     if "mode" in metadata:
         normalized["mode"] = parse_runtime_mode(metadata["mode"])
@@ -581,9 +516,7 @@ def validate_runtime_request_metadata(
     if "max_steps" in metadata:
         max_steps = metadata["max_steps"]
         if not isinstance(max_steps, int) or isinstance(max_steps, bool):
-            raise RuntimeRequestError(
-                "request metadata 'max_steps' must be an integer greater than or equal to 1"
-            )
+            raise RuntimeRequestError("request metadata 'max_steps' must be an integer greater than or equal to 1")
         if max_steps < 1:
             raise RuntimeRequestError("request metadata 'max_steps' must be at least 1")
         normalized["max_steps"] = max_steps
@@ -613,48 +546,31 @@ def validate_runtime_request_metadata(
         parsed_skills: list[str] = []
         for index, raw_name in enumerate(cast(list[object], raw_skills)):
             if not isinstance(raw_name, str) or not raw_name:
-                raise RuntimeRequestError(
-                    f"request metadata 'skills[{index}]' must be a non-empty string"
-                )
+                raise RuntimeRequestError(f"request metadata 'skills[{index}]' must be a non-empty string")
             parsed_skills.append(raw_name)
         normalized["skills"] = parsed_skills
 
     if "context_transform_refs" in metadata:
         raw_transform_refs = metadata["context_transform_refs"]
         if not isinstance(raw_transform_refs, list):
-            raise RuntimeRequestError(
-                "request metadata 'context_transform_refs' must be a list of "
-                "transform provider names"
-            )
+            raise RuntimeRequestError("request metadata 'context_transform_refs' must be a list of transform provider names")
         parsed_transform_refs: list[str] = []
         for index, raw_name in enumerate(cast(list[object], raw_transform_refs)):
             if not isinstance(raw_name, str) or not raw_name:
-                raise RuntimeRequestError(
-                    f"request metadata 'context_transform_refs[{index}]' must be a non-empty string"
-                )
+                raise RuntimeRequestError(f"request metadata 'context_transform_refs[{index}]' must be a non-empty string")
             parsed_transform_refs.append(raw_name)
         normalized["context_transform_refs"] = parsed_transform_refs
 
     if "force_load_skills" in metadata:
         raw_force_load = metadata["force_load_skills"]
         if not isinstance(raw_force_load, list):
-            raise RuntimeRequestError(
-                "request metadata 'force_load_skills' must be a list of skill names"
-            )
+            raise RuntimeRequestError("request metadata 'force_load_skills' must be a list of skill names")
         parsed_force_load: list[str] = []
         for index, raw_name in enumerate(cast(list[object], raw_force_load)):
             if not isinstance(raw_name, str) or not raw_name:
-                raise RuntimeRequestError(
-                    f"request metadata 'force_load_skills[{index}]' must be a non-empty string"
-                )
+                raise RuntimeRequestError(f"request metadata 'force_load_skills[{index}]' must be a non-empty string")
             parsed_force_load.append(raw_name)
         normalized["force_load_skills"] = parsed_force_load
-
-    if "memory_tools_allowed" in metadata:
-        memory_tools_allowed = metadata["memory_tools_allowed"]
-        if not isinstance(memory_tools_allowed, bool):
-            raise RuntimeRequestError("request metadata 'memory_tools_allowed' must be a boolean")
-        normalized["memory_tools_allowed"] = memory_tools_allowed
 
     if "workflow_mode" in metadata:
         normalized["workflow_mode"] = _validate_optional_runtime_metadata_string(
@@ -674,21 +590,15 @@ def validate_runtime_request_metadata(
 
     if "workflow_plan" in metadata:
         if not allow_internal_fields:
-            raise RuntimeRequestError(
-                "request metadata 'workflow_plan' is internal runtime state and cannot be supplied"
-            )
+            raise RuntimeRequestError("request metadata 'workflow_plan' is internal runtime state and cannot be supplied")
         workflow_plan = metadata["workflow_plan"]
         if not isinstance(workflow_plan, dict):
-            raise RuntimeRequestError(
-                "request metadata 'workflow_plan' must be an object when provided"
-            )
+            raise RuntimeRequestError("request metadata 'workflow_plan' must be an object when provided")
         normalized["workflow_plan"] = dict(cast(dict[str, object], workflow_plan))
 
     if "workflow" in metadata:
         if not allow_internal_fields:
-            raise RuntimeRequestError(
-                "request metadata 'workflow' is internal runtime state and cannot be supplied"
-            )
+            raise RuntimeRequestError("request metadata 'workflow' is internal runtime state and cannot be supplied")
         workflow = metadata["workflow"]
         if not isinstance(workflow, dict):
             raise RuntimeRequestError("request metadata 'workflow' must be an object when provided")
@@ -703,17 +613,13 @@ def validate_runtime_request_metadata(
     if allow_internal_fields and "background_rate_limit_retry" in metadata:
         background_rate_limit_retry = metadata["background_rate_limit_retry"]
         if not isinstance(background_rate_limit_retry, bool):
-            raise RuntimeRequestError(
-                "request metadata 'background_rate_limit_retry' must be a boolean"
-            )
+            raise RuntimeRequestError("request metadata 'background_rate_limit_retry' must be a boolean")
         normalized["background_rate_limit_retry"] = background_rate_limit_retry
 
     if allow_internal_fields and "background_task_id" in metadata:
         background_task_id = metadata["background_task_id"]
         if not isinstance(background_task_id, str) or not background_task_id:
-            raise RuntimeRequestError(
-                "request metadata 'background_task_id' must be a non-empty string"
-            )
+            raise RuntimeRequestError("request metadata 'background_task_id' must be a non-empty string")
         normalized["background_task_id"] = background_task_id
 
     if allow_internal_fields:
@@ -1185,11 +1091,7 @@ class RuntimeSessionResult:
 
     @property
     def delegated_events(self) -> tuple[DelegatedLifecycleEventPayload, ...]:
-        return tuple(
-            delegated
-            for event in self.transcript
-            if (delegated := event.delegated_lifecycle) is not None
-        )
+        return tuple(delegated for event in self.transcript if (delegated := event.delegated_lifecycle) is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1226,26 +1128,10 @@ class BackgroundTaskResult:
                 {
                     "delegation": {
                         "mode": self.routing.mode,
-                        **(
-                            {"category": self.routing.category}
-                            if self.routing.category is not None
-                            else {}
-                        ),
-                        **(
-                            {"subagent_type": self.routing.subagent_type}
-                            if self.routing.subagent_type is not None
-                            else {}
-                        ),
-                        **(
-                            {"description": self.routing.description}
-                            if self.routing.description is not None
-                            else {}
-                        ),
-                        **(
-                            {"command": self.routing.command}
-                            if self.routing.command is not None
-                            else {}
-                        ),
+                        **({"category": self.routing.category} if self.routing.category is not None else {}),
+                        **({"subagent_type": self.routing.subagent_type} if self.routing.subagent_type is not None else {}),
+                        **({"description": self.routing.description} if self.routing.description is not None else {}),
+                        **({"command": self.routing.command} if self.routing.command is not None else {}),
                     }
                 }
                 if self.routing is not None
@@ -1275,26 +1161,10 @@ class BackgroundTaskResult:
                 {
                     "delegation": {
                         "mode": self.routing.mode,
-                        **(
-                            {"category": self.routing.category}
-                            if self.routing.category is not None
-                            else {}
-                        ),
-                        **(
-                            {"subagent_type": self.routing.subagent_type}
-                            if self.routing.subagent_type is not None
-                            else {}
-                        ),
-                        **(
-                            {"description": self.routing.description}
-                            if self.routing.description is not None
-                            else {}
-                        ),
-                        **(
-                            {"command": self.routing.command}
-                            if self.routing.command is not None
-                            else {}
-                        ),
+                        **({"category": self.routing.category} if self.routing.category is not None else {}),
+                        **({"subagent_type": self.routing.subagent_type} if self.routing.subagent_type is not None else {}),
+                        **({"description": self.routing.description} if self.routing.description is not None else {}),
+                        **({"command": self.routing.command} if self.routing.command is not None else {}),
                     }
                 }
             )
@@ -1428,9 +1298,7 @@ class BackgroundTaskRuntimeEntrypoint(Protocol):
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
-    def list_background_tasks_by_parent_session(
-        self, *, parent_session_id: str
-    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+    def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
 

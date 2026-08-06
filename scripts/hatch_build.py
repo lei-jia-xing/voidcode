@@ -31,9 +31,5 @@ class CustomBuildHook(BuildHookInterface):
         if not isinstance(force_include, dict):
             raise TypeError("build_data.force_include must be a mapping")
         force_include_map = cast(dict[str, str], force_include)
-        target_path = (
-            "src/voidcode/_web_dist"
-            if getattr(self, "target_name", "") == "sdist"
-            else "voidcode/_web_dist"
-        )
+        target_path = "src/voidcode/_web_dist" if getattr(self, "target_name", "") == "sdist" else "voidcode/_web_dist"
         force_include_map[str(staged_dist)] = target_path

@@ -22,9 +22,7 @@ from voidcode.skills import (
 
 
 def test_parse_skill_frontmatter_returns_required_metadata() -> None:
-    metadata = parse_skill_frontmatter(
-        "---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\n"
-    )
+    metadata = parse_skill_frontmatter("---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\n")
 
     assert metadata == SkillManifestFrontmatter(
         name="summarize",
@@ -159,18 +157,12 @@ def test_builtin_skill_registry_provides_workflow_skill_catalog() -> None:
     assert "status, diff, log, show, blame, and bisect" in git_master_content
     assert "MUST USE for ANY git operations" not in git_master_content
     assert "name: frontend-design" in registry.resolve("frontend-design").content
-    assert (
-        "Guidance for distinctive, production-grade frontend UI/UX work"
-        in registry.resolve("frontend-design").content
-    )
+    assert "Guidance for distinctive, production-grade frontend UI/UX work" in registry.resolve("frontend-design").content
     assert "when editing tools are available" in registry.resolve("frontend-design").content
     assert "# Playwright Browser Verification" in registry.resolve("playwright").content
     assert "descriptor/config-gated" in registry.resolve("playwright").content
     assert "Claude plugin" in registry.resolve("playwright").content
-    assert (
-        "# Review Work - VoidCode-Compatible Read-Only Review Guidance"
-        in registry.resolve("review-work").content
-    )
+    assert "# Review Work - VoidCode-Compatible Read-Only Review Guidance" in registry.resolve("review-work").content
     assert "unsupported agents" in registry.resolve("review-work").content
     unsupported_review_role = "or" + "acle"
     assert unsupported_review_role not in registry.resolve("review-work").content.lower()
@@ -183,17 +175,12 @@ def test_builtin_skill_registry_provides_workflow_skill_catalog() -> None:
 def test_builtin_skill_catalog_descriptions_stay_guidance_scoped() -> None:
     registry = load_builtin_skill_registry()
 
-    descriptions = "\n".join(
-        registry.resolve(skill_name).description for skill_name in registry.skills
-    )
+    descriptions = "\n".join(registry.resolve(skill_name).description for skill_name in registry.skills)
 
     assert "MUST USE" not in descriptions
     assert "all browser interactions" not in descriptions
     assert "Guidance for safe git workflows" in registry.resolve("git-master").description
-    assert (
-        "without assuming browser automation is always present"
-        in registry.resolve("playwright").description
-    )
+    assert "without assuming browser automation is always present" in registry.resolve("playwright").description
 
 
 def test_builtin_skill_registry_loads_content_from_local_markdown_resources() -> None:
@@ -201,9 +188,7 @@ def test_builtin_skill_registry_loads_content_from_local_markdown_resources() ->
 
     for skill_name in registry.skills:
         skill = registry.resolve(skill_name)
-        assert skill.entry_path == (
-            Path("/builtin/voidcode/skills") / skill_name / f"{skill_name}.md"
-        )
+        assert skill.entry_path == (Path("/builtin/voidcode/skills") / skill_name / f"{skill_name}.md")
         assert skill.directory == Path("/builtin/voidcode/skills") / skill_name
         assert skill.origin == "builtin"
         assert skill.content.strip()
@@ -224,14 +209,7 @@ def test_builtin_skill_merge_rejects_workspace_duplicate() -> None:
 def test_runtime_build_runtime_contexts_from_skill_bodies(tmp_path: Path) -> None:
     skill_dir = tmp_path / ".voidcode" / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
-    skill_contents = (
-        "---\n"
-        "name: summarize\n"
-        "description: Summarize selected files.\n"
-        "---\n"
-        "# Summarize\n"
-        "Use concise bullet points.\n"
-    )
+    skill_contents = "---\nname: summarize\ndescription: Summarize selected files.\n---\n# Summarize\nUse concise bullet points.\n"
     (skill_dir / "SKILL.md").write_text(
         skill_contents,
         encoding="utf-8",
@@ -244,11 +222,7 @@ def test_runtime_build_runtime_contexts_from_skill_bodies(tmp_path: Path) -> Non
             name="summarize",
             description="Summarize selected files.",
             content="# Summarize\nUse concise bullet points.",
-            prompt_context=(
-                "Skill: summarize\n"
-                "Description: Summarize selected files.\n"
-                "Instructions:\n# Summarize\nUse concise bullet points."
-            ),
+            prompt_context=("Skill: summarize\nDescription: Summarize selected files.\nInstructions:\n# Summarize\nUse concise bullet points."),
             execution_notes="# Summarize\nUse concise bullet points.",
             source_path=str((skill_dir / "SKILL.md").resolve()),
         ),

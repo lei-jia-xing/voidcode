@@ -16,9 +16,7 @@ _trim_diff = cast(Callable[[str], str], _edit._trim_diff)
 
 
 class _ReplaceFn(Protocol):
-    def __call__(
-        self, content: str, old_string: str, new_string: str, *, replace_all: bool = False
-    ) -> tuple[str, int]: ...
+    def __call__(self, content: str, old_string: str, new_string: str, *, replace_all: bool = False) -> tuple[str, int]: ...
 
 
 _replace = cast(_ReplaceFn, _edit._replace)
@@ -26,9 +24,7 @@ _replace = cast(_ReplaceFn, _edit._replace)
 CI_SETTINGS = settings(derandomize=True, database=None, max_examples=200)
 
 _text_chars = st.characters(blacklist_characters=["\x00"])
-_single_line = st.text(alphabet=_text_chars, min_size=0, max_size=20).filter(
-    lambda text: "\n" not in text and "\r" not in text
-)
+_single_line = st.text(alphabet=_text_chars, min_size=0, max_size=20).filter(lambda text: "\n" not in text and "\r" not in text)
 _multiline_text = st.lists(_single_line, min_size=0, max_size=6).map("\n".join)
 _search_line = st.text(
     alphabet=st.characters(blacklist_characters=["\x00", "\n", "\r"]),
@@ -73,9 +69,7 @@ def test_trim_diff_is_idempotent(diff_body: str) -> None:
 
 
 @CI_SETTINGS
-@given(
-    content=st.text(alphabet=st.characters(blacklist_characters=["\x00"]), min_size=1, max_size=40)
-)
+@given(content=st.text(alphabet=st.characters(blacklist_characters=["\x00"]), min_size=1, max_size=40))
 def test_replace_all_replacing_content_with_itself_is_rejected(content: str) -> None:
     old = "X"
     with pytest.raises(ValueError, match="identical"):
@@ -88,9 +82,7 @@ def test_replace_all_replacing_content_with_itself_is_rejected(content: str) -> 
     suffix=_single_line.filter(lambda text: "UNIQUE_MARKER" not in text),
     replacement=_replacement_line.filter(lambda text: text not in {"", "UNIQUE_MARKER"}),
 )
-def test_replace_single_occurrence_updates_exactly_one_unique_match(
-    prefix: str, suffix: str, replacement: str
-) -> None:
+def test_replace_single_occurrence_updates_exactly_one_unique_match(prefix: str, suffix: str, replacement: str) -> None:
     old = "UNIQUE_MARKER"
     content = f"{prefix}{old}{suffix}"
     if replacement == old:

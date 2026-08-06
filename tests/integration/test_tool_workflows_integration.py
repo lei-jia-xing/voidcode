@@ -206,10 +206,7 @@ def test_web_search_tool_uses_fallback_when_no_exa_key_integration(tmp_path: Pat
     _ = tmp_path
     tool = WebSearchTool()
 
-    html = (
-        '<a class="result__a" href="https://example.com/a">Result A</a>'
-        '<a class="result__snippet">Snippet A</a>'
-    )
+    html = '<a class="result__a" href="https://example.com/a">Result A</a><a class="result__snippet">Snippet A</a>'
 
     response = httpx.Response(
         200,

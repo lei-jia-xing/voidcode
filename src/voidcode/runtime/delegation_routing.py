@@ -31,11 +31,7 @@ def provider_fallback_with_preferred_model(
 ) -> RuntimeProviderFallbackConfig:
     return RuntimeProviderFallbackConfig(
         preferred_model=preferred_model,
-        fallback_models=tuple(
-            fallback_model
-            for fallback_model in provider_fallback.fallback_models
-            if fallback_model != preferred_model
-        ),
+        fallback_models=tuple(fallback_model for fallback_model in provider_fallback.fallback_models if fallback_model != preferred_model),
     )
 
 

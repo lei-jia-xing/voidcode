@@ -103,9 +103,7 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
         "max_steps": config.max_steps,
         "tool_timeout_seconds": config.tool_timeout_seconds,
         "fallback_models": (
-            list(config.provider_fallback.fallback_models)
-            if config.provider_fallback is not None and config.model is not None
-            else []
+            list(config.provider_fallback.fallback_models) if config.provider_fallback is not None and config.model is not None else []
         ),
     }
     serialized_policy = serialize_runtime_policy_config(config.policy)
@@ -133,14 +131,12 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
 
 def parse_persisted_runtime_config(
     runtime_config: Mapping[str, object],
+    *,
+    allow_legacy_permission_scopes: bool = False,
 ) -> PersistedRuntimeConfigMaterialization:
-    unknown_runtime_config_keys = sorted(
-        key for key in runtime_config if key not in PERSISTED_RUNTIME_CONFIG_KEYS
-    )
+    unknown_runtime_config_keys = sorted(key for key in runtime_config if key not in PERSISTED_RUNTIME_CONFIG_KEYS)
     if unknown_runtime_config_keys:
-        raise ValueError(
-            f"persisted runtime_config field '{unknown_runtime_config_keys[0]}' is not supported"
-        )
+        raise ValueError(f"persisted runtime_config field '{unknown_runtime_config_keys[0]}' is not supported")
     required_runtime_config_keys = {
         "approval_mode",
         "permission",
@@ -151,16 +147,16 @@ def parse_persisted_runtime_config(
     }
     missing_runtime_config_keys = sorted(required_runtime_config_keys - runtime_config.keys())
     if missing_runtime_config_keys:
-        raise ValueError(
-            "persisted runtime_config is missing required field(s): "
-            + ", ".join(missing_runtime_config_keys)
-        )
+        raise ValueError("persisted runtime_config is missing required field(s): " + ", ".join(missing_runtime_config_keys))
 
     approval_mode = permission_decision_or_none(runtime_config["approval_mode"])
     if approval_mode is None:
         raise ValueError("persisted runtime_config approval_mode is invalid")
 
-    permission = parse_persisted_external_permission_config(runtime_config["permission"])
+    permission = parse_persisted_external_permission_config(
+        runtime_config["permission"],
+        allow_missing_scopes=allow_legacy_permission_scopes,
+    )
 
     policy = None
     if "policy" in runtime_config:
@@ -181,9 +177,7 @@ def parse_persisted_runtime_config(
         max_steps = None
     elif isinstance(persisted_max_steps, int) and not isinstance(persisted_max_steps, bool):
         if persisted_max_steps < 0:
-            raise ValueError(
-                "persisted runtime_config max_steps must be a non-negative integer (0 = unlimited)"
-            )
+            raise ValueError("persisted runtime_config max_steps must be a non-negative integer (0 = unlimited)")
         max_steps = persisted_max_steps
     else:
         raise ValueError("persisted runtime_config max_steps must be an integer or null")
@@ -278,9 +272,7 @@ def parse_persisted_provider_fallback(
     if raw_fallback_models == []:
         return None
     if model is None:
-        raise ValueError(
-            "persisted runtime_config.model is required when fallback_models are present"
-        )
+        raise ValueError("persisted runtime_config.model is required when fallback_models are present")
     try:
         return parse_provider_fallback_payload(
             {
@@ -410,6 +402,8 @@ def serialize_external_permission_config(
 
 def parse_persisted_external_permission_config(
     raw_permission: object,
+    *,
+    allow_missing_scopes: bool = False,
 ) -> ExternalDirectoryPermissionConfig:
     if not isinstance(raw_permission, dict):
         raise ValueError("persisted runtime_config permission must be an object")
@@ -417,26 +411,21 @@ def parse_persisted_external_permission_config(
     allowed_keys = {"external_directory_read", "external_directory_write", "rules"}
     unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
     if unknown_keys:
-        raise ValueError(
-            f"persisted runtime_config permission field '{unknown_keys[0]}' is not supported"
-        )
-    required_keys = {"external_directory_read", "external_directory_write"}
-    missing_keys = sorted(required_keys - payload.keys())
-    if missing_keys:
-        raise ValueError(
-            "persisted runtime_config permission is missing required field(s): "
-            + ", ".join(missing_keys)
-        )
+        raise ValueError(f"persisted runtime_config permission field '{unknown_keys[0]}' is not supported")
+    missing_keys = sorted({"external_directory_read", "external_directory_write"} - payload.keys())
+    if missing_keys and not allow_missing_scopes:
+        raise ValueError("persisted runtime_config permission is missing required field(s): " + ", ".join(missing_keys))
+    defaults = ExternalDirectoryPermissionConfig()
     return ExternalDirectoryPermissionConfig(
         read=ExternalDirectoryPolicy(
             rules=parse_persisted_external_permission_rules(
-                payload["external_directory_read"],
+                payload.get("external_directory_read", dict(defaults.read.rules)),
                 field_path="permission.external_directory_read",
             )
         ),
         write=ExternalDirectoryPolicy(
             rules=parse_persisted_external_permission_rules(
-                payload["external_directory_write"],
+                payload.get("external_directory_write", dict(defaults.write.rules)),
                 field_path="permission.external_directory_write",
             )
         ),
@@ -448,9 +437,7 @@ def parse_persisted_runtime_tools_config(raw_value: object) -> RuntimeToolsConfi
     try:
         return parse_runtime_tools_payload(raw_value, source="persisted runtime_config.tools")
     except ValueError as exc:
-        raise ValueError(
-            format_invalid_provider_config_error("persisted runtime_config.tools", str(exc))
-        ) from exc
+        raise ValueError(format_invalid_provider_config_error("persisted runtime_config.tools", str(exc))) from exc
 
 
 def parse_persisted_external_permission_rules(
@@ -466,9 +453,7 @@ def parse_persisted_external_permission_rules(
             raise ValueError(f"persisted runtime_config {field_path} keys must be strings")
         decision = permission_decision_or_none(raw_decision)
         if decision is None:
-            raise ValueError(
-                f"persisted runtime_config {field_path}.{raw_pattern} must be allow, deny, or ask"
-            )
+            raise ValueError(f"persisted runtime_config {field_path}.{raw_pattern} must be allow, deny, or ask")
         parsed.append((raw_pattern, decision))
     return tuple(parsed)
 
@@ -489,9 +474,7 @@ def parse_persisted_pattern_permission_rules(
         payload = cast(dict[object, object], raw_rule)
         unknown_keys = sorted(str(key) for key in payload if key not in allowed_keys)
         if unknown_keys:
-            raise ValueError(
-                f"persisted runtime_config {field_path}.{unknown_keys[0]} is not supported"
-            )
+            raise ValueError(f"persisted runtime_config {field_path}.{unknown_keys[0]} is not supported")
         if "tool" not in payload:
             raise ValueError(f"persisted runtime_config {field_path}.tool is required")
         raw_tool = payload["tool"]
@@ -501,15 +484,11 @@ def parse_persisted_pattern_permission_rules(
         if raw_path is not None and (not isinstance(raw_path, str) or not raw_path.strip()):
             raise ValueError(f"persisted runtime_config {field_path}.path must be a string")
         raw_command = payload.get("command")
-        if raw_command is not None and (
-            not isinstance(raw_command, str) or not raw_command.strip()
-        ):
+        if raw_command is not None and (not isinstance(raw_command, str) or not raw_command.strip()):
             raise ValueError(f"persisted runtime_config {field_path}.command must be a string")
         decision = permission_decision_or_none(payload.get("decision"))
         if decision is None:
-            raise ValueError(
-                f"persisted runtime_config {field_path}.decision must be allow, deny, or ask"
-            )
+            raise ValueError(f"persisted runtime_config {field_path}.decision must be allow, deny, or ask")
         parsed.append(
             PatternPermissionRule(
                 tool=raw_tool,
@@ -537,9 +516,7 @@ def runtime_provider_config_metadata(
                     continue
                 custom_provider_payload = cast(dict[str, object], raw_custom_provider)
                 if "transient_retry" in custom_provider_payload:
-                    retained_custom[custom_name] = {
-                        "transient_retry": custom_provider_payload["transient_retry"]
-                    }
+                    retained_custom[custom_name] = {"transient_retry": custom_provider_payload["transient_retry"]}
             if retained_custom:
                 retained[provider_name] = retained_custom
             continue

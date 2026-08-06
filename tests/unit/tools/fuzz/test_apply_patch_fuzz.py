@@ -13,16 +13,12 @@ from hypothesis import strategies as st
 from voidcode.tools import ApplyPatchTool, ToolCall
 
 _apply_patch = importlib.import_module("voidcode.tools.apply_patch")
-_changes_from_patch = cast(
-    Callable[[str], list[dict[str, object]]], _apply_patch._changes_from_patch
-)
+_changes_from_patch = cast(Callable[[str], list[dict[str, object]]], _apply_patch._changes_from_patch)
 _format_diff_git_line = cast(Callable[[str, str], str], _apply_patch._format_diff_git_line)
 _looks_like_mode_only_patch = cast(Callable[[str], bool], _apply_patch._looks_like_mode_only_patch)
 _looks_like_marker_patch = cast(Callable[[str], bool], _apply_patch._looks_like_marker_patch)
 _normalize_patch_text = cast(Callable[[str], str], _apply_patch._normalize_patch_text)
-_parse_diff_git_paths = cast(
-    Callable[[str], tuple[str, str] | None], _apply_patch._parse_diff_git_paths
-)
+_parse_diff_git_paths = cast(Callable[[str], tuple[str, str] | None], _apply_patch._parse_diff_git_paths)
 
 CI_SETTINGS = settings(derandomize=True, database=None, max_examples=200)
 
@@ -145,9 +141,7 @@ def test_changes_from_patch_preserves_rename_metadata(paths: tuple[str, str]) ->
         ]
     )
 
-    assert _changes_from_patch(patch_text) == [
-        {"path": new_path, "old_path": old_path, "status": "R"}
-    ]
+    assert _changes_from_patch(patch_text) == [{"path": new_path, "old_path": old_path, "status": "R"}]
 
 
 @CI_SETTINGS

@@ -50,14 +50,13 @@ class PermissionEngine:
         tool_instance: Tool,
         tool_call: ToolCall,
         permission_rules: tuple[PatternPermissionRule, ...],
+        permission_config: ExternalDirectoryPermissionConfig | None = None,
     ) -> PermissionEvaluation:
-        path_scope, canonical_path, operation_class, external_paths = (
-            self._context_resolver.permission_context_for_tool_call(
-                tool=tool,
-                tool_instance=tool_instance,
-                tool_call=tool_call,
-                patch_path_extractor=self._patch_path_extractor,
-            )
+        path_scope, canonical_path, operation_class, external_paths = self._context_resolver.permission_context_for_tool_call(
+            tool=tool,
+            tool_instance=tool_instance,
+            tool_call=tool_call,
+            patch_path_extractor=self._patch_path_extractor,
         )
 
         normalized_paths = self._context_resolver.normalized_permission_path_candidates(
@@ -83,10 +82,8 @@ class PermissionEngine:
 
         if path_scope == "external" and canonical_path is not None:
             uses_write_policy = operation_class in ("write", "execute")
-            policy_surface = (
-                "external_directory_write" if uses_write_policy else "external_directory_read"
-            )
-            policy_config = self._permission_config
+            policy_surface = "external_directory_write" if uses_write_policy else "external_directory_read"
+            policy_config = permission_config or self._permission_config
             rw = policy_config.write if uses_write_policy else policy_config.read
             decisions: list[tuple[PermissionDecision, str, str]] = []
             for external_path in external_paths:

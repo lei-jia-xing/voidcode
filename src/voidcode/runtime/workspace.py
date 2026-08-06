@@ -113,13 +113,8 @@ class SingleWorkspaceRuntimeCoordinator:
             current = self._current_workspace
             recent_candidates = tuple(self._recent_workspaces)
         return WorkspaceRegistrySnapshot(
-            current=WorkspaceCandidate(path=current, available=current.is_dir()).as_summary(
-                current=True
-            ),
-            recent=tuple(
-                candidate.as_summary(current=candidate.path == current)
-                for candidate in recent_candidates
-            ),
+            current=WorkspaceCandidate(path=current, available=current.is_dir()).as_summary(current=True),
+            recent=tuple(candidate.as_summary(current=candidate.path == current) for candidate in recent_candidates),
             candidates=self._browse_candidates(current),
         )
 
@@ -153,11 +148,7 @@ class SingleWorkspaceRuntimeCoordinator:
             )
         runtime = self.runtime()
         active_session = next(
-            (
-                session
-                for session in runtime.list_sessions()
-                if session.status in {"running", "waiting"}
-            ),
+            (session for session in runtime.list_sessions() if session.status in {"running", "waiting"}),
             None,
         )
         if active_session is not None:
@@ -167,11 +158,7 @@ class SingleWorkspaceRuntimeCoordinator:
                 status_code=409,
             )
         active_task = next(
-            (
-                task
-                for task in runtime.list_background_tasks()
-                if task.status in {"queued", "running"}
-            ),
+            (task for task in runtime.list_background_tasks() if task.status in {"queued", "running"}),
             None,
         )
         if active_task is not None:
@@ -182,18 +169,10 @@ class SingleWorkspaceRuntimeCoordinator:
             )
 
     def _browse_candidates(self, current_workspace: Path) -> tuple[WorkspaceSummary, ...]:
-        parent = (
-            current_workspace.parent
-            if current_workspace.parent != current_workspace
-            else current_workspace
-        )
+        parent = current_workspace.parent if current_workspace.parent != current_workspace else current_workspace
         try:
             entries = sorted(
-                (
-                    entry.resolve()
-                    for entry in parent.iterdir()
-                    if entry.is_dir() and not entry.name.startswith(".")
-                ),
+                (entry.resolve() for entry in parent.iterdir() if entry.is_dir() and not entry.name.startswith(".")),
                 key=lambda item: (item.name.lower(), str(item)),
             )
         except OSError:
@@ -204,9 +183,7 @@ class SingleWorkspaceRuntimeCoordinator:
         else:
             ordered_entries = [current_workspace, *entries]
         return tuple(
-            WorkspaceCandidate(path=entry, available=True).as_summary(
-                current=entry == current_workspace
-            )
+            WorkspaceCandidate(path=entry, available=True).as_summary(current=entry == current_workspace)
             for entry in ordered_entries[:_RECENT_WORKSPACES_LIMIT]
         )
 
@@ -255,9 +232,7 @@ class SingleWorkspaceRuntimeCoordinator:
         config_path = user_runtime_config_path()
         payload = _read_user_config_json()
         raw_web = payload.get("web")
-        web_payload: dict[str, object] = (
-            dict(cast(dict[str, object], raw_web)) if isinstance(raw_web, dict) else {}
-        )
+        web_payload: dict[str, object] = dict(cast(dict[str, object], raw_web)) if isinstance(raw_web, dict) else {}
         web_payload["recent_workspaces"] = [str(workspace.path) for workspace in workspaces]
         payload["web"] = web_payload
         config_path.parent.mkdir(parents=True, exist_ok=True)

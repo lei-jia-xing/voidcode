@@ -53,9 +53,7 @@ class ModelProviderRegistry:
     model_catalog: dict[str, ProviderModelCatalog] | None = None
 
     @classmethod
-    def with_defaults(
-        cls, *, provider_configs: ProviderConfigs | None = None
-    ) -> ModelProviderRegistry:
+    def with_defaults(cls, *, provider_configs: ProviderConfigs | None = None) -> ModelProviderRegistry:
         configs = provider_configs or ProviderConfigs()
         return cls(
             providers={
@@ -112,10 +110,7 @@ class ModelProviderRegistry:
             provider_config = getattr(provider, "provider_config", None)
             if callable(provider_config):
                 return cast(LiteLLMProviderConfig | None, provider_config())
-        if (
-            self.custom_provider_configs is not None
-            and provider_name in self.custom_provider_configs
-        ):
+        if self.custom_provider_configs is not None and provider_name in self.custom_provider_configs:
             return self.custom_provider_configs[provider_name]
         return self.default_litellm_config
 
@@ -143,9 +138,7 @@ class ModelProviderRegistry:
             )
         return discovery.models
 
-    def model_metadata_for_model(
-        self, provider_name: str, model_name: str
-    ) -> ProviderModelMetadata | None:
+    def model_metadata_for_model(self, provider_name: str, model_name: str) -> ProviderModelMetadata | None:
         if self.model_catalog is not None:
             catalog = self.model_catalog.get(provider_name)
             if catalog is not None:

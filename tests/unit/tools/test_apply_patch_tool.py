@@ -43,9 +43,7 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
 
     old = target.read_text(encoding="utf-8").splitlines(keepends=True)
     new = ["patched-1\n", "line-2\n"]
-    patch_text = "".join(
-        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
-    )
+    patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
     tool = ApplyPatchTool()
     result = tool.invoke(
@@ -69,14 +67,10 @@ def test_apply_patch_rejects_unified_diff_update_without_prior_read_side_effects
     _commit_all(tmp_path, "baseline")
     old = target.read_text(encoding="utf-8").splitlines(keepends=True)
     new = ["patched-1\n", "line-2\n"]
-    patch_text = "".join(
-        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
-    )
+    patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             ApplyPatchTool().invoke(
                 ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
                 workspace=tmp_path,
@@ -105,9 +99,7 @@ def test_apply_patch_rejects_unified_diff_delete_without_prior_read_side_effects
     )
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             ApplyPatchTool().invoke(
                 ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
                 workspace=tmp_path,
@@ -135,9 +127,7 @@ def test_apply_patch_rejects_unified_diff_rename_without_prior_read_side_effects
     )
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             ApplyPatchTool().invoke(
                 ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
                 workspace=tmp_path,
@@ -211,9 +201,7 @@ def test_apply_patch_treats_unified_diff_marker_literals_as_unified_diff(
     _commit_all(tmp_path, "baseline")
     old = target.read_text(encoding="utf-8").splitlines(keepends=True)
     new = ["before\n", "*** Begin Patch\n", "*** End Patch\n", "new\n"]
-    patch_text = "".join(
-        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
-    )
+    patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
     result = ApplyPatchTool().invoke(
         ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
@@ -658,9 +646,7 @@ def test_apply_patch_runs_formatter_for_structured_changed_files(tmp_path: Path)
             "language": "python",
             "cwd": str(tmp_path),
             "command": [sys.executable, str(formatter_script), str(tmp_path / "main.py")],
-            "attempted_commands": [
-                [sys.executable, str(formatter_script), str(tmp_path / "main.py")]
-            ],
+            "attempted_commands": [[sys.executable, str(formatter_script), str(tmp_path / "main.py")]],
             "path": "main.py",
         }
     ]
@@ -831,9 +817,7 @@ def test_apply_patch_reports_only_patch_touched_paths_in_dirty_worktree(tmp_path
 
     old = target.read_text(encoding="utf-8").splitlines(keepends=True)
     new = ["patched-1\n", "line-2\n"]
-    patch_text = "".join(
-        difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt")
-    )
+    patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
     result = ApplyPatchTool().invoke(
         ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
@@ -991,9 +975,7 @@ def test_apply_patch_does_not_treat_mixed_mode_and_content_patch_as_mode_only(
     assert result.content == "M file.txt"
 
 
-def test_apply_patch_raises_helpful_error_when_git_is_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_apply_patch_raises_helpful_error_when_git_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def _raise_file_not_found(*args: object, **kwargs: object) -> object:
         del args, kwargs
         raise FileNotFoundError()

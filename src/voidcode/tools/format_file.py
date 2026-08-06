@@ -10,10 +10,7 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 
 FORMAT_DEFINITION = ToolDefinition(
     name="format_file",
-    description=(
-        "Auto-format a file using built-in formatter presets with default file mappings, "
-        "project-root detection, and fallback commands."
-    ),
+    description=("Auto-format a file using built-in formatter presets with default file mappings, project-root detection, and fallback commands."),
     input_schema={
         "type": "object",
         "properties": {"path": {"type": "string", "description": "Path to the file to format"}},

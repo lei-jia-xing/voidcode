@@ -10,42 +10,23 @@ from pydantic import BaseModel, ValidationError, field_validator
 from ._workspace import resolve_workspace_path
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
+# ── Unified args model for merged AstGrepTool ───────────────────────────────
 
-class AstGrepSearchArgs(BaseModel):
+
+class AstGrepArgs(BaseModel):
+    mode: str  # "search" | "preview" | "replace"
     pattern: str
     path: str
-    lang: str | None = None
-
-    @field_validator("pattern", mode="after")
-    @classmethod
-    def _validate_pattern(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("pattern must not be empty")
-        return value
-
-    @field_validator("path", mode="after")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("path must be a non-empty string")
-        return value
-
-    @field_validator("lang", mode="after")
-    @classmethod
-    def _validate_lang(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not value.strip():
-            raise ValueError("lang must not be empty")
-        return value
-
-
-class AstGrepReplaceArgs(BaseModel):
-    pattern: str
-    rewrite: str
-    path: str
+    rewrite: str | None = None
     lang: str | None = None
     apply: bool = False
+
+    @field_validator("mode", mode="after")
+    @classmethod
+    def _validate_mode(cls, value: str) -> str:
+        if value not in ("search", "preview", "replace"):
+            raise ValueError("mode must be one of search, preview, replace")
+        return value
 
     @field_validator("pattern", mode="after")
     @classmethod
@@ -93,9 +74,7 @@ def _parse_stream_output(stdout: str) -> list[dict[str, Any]]:
     return matches
 
 
-def _run_ast_grep(
-    *, cmd: list[str], workspace: Path, timeout_seconds: int = 30
-) -> ToolResult | subprocess.CompletedProcess[str]:
+def _run_ast_grep(*, cmd: list[str], workspace: Path, timeout_seconds: int = 30) -> ToolResult | subprocess.CompletedProcess[str]:
     try:
         completed = subprocess.run(
             cmd,
@@ -119,74 +98,28 @@ def _run_ast_grep(
     return completed
 
 
-def _raise_on_process_failure(
-    *, completed: subprocess.CompletedProcess[str], fallback_message: str
-) -> None:
+def _raise_on_process_failure(*, completed: subprocess.CompletedProcess[str], fallback_message: str) -> None:
     if completed.returncode != 0:
         raise ValueError(completed.stderr.strip() or fallback_message)
 
 
 def _is_no_match_result(completed: subprocess.CompletedProcess[str]) -> bool:
-    return (
-        completed.returncode == 1 and not completed.stdout.strip() and not completed.stderr.strip()
-    )
-
-
-def _validate_search_call(call: ToolCall) -> AstGrepSearchArgs:
-    try:
-        return AstGrepSearchArgs.model_validate(
-            {
-                "pattern": call.arguments.get("pattern"),
-                "path": call.arguments.get("path"),
-                "lang": call.arguments.get("lang"),
-            }
-        )
-    except ValidationError as exc:
-        first_error = exc.errors()[0]
-        field_name = first_error.get("loc", (None,))[0]
-        if field_name == "path":
-            raise ValueError("ast_grep_search requires a string path argument") from exc
-        if field_name == "lang":
-            raise ValueError("ast_grep_search requires a string lang argument") from exc
-        if first_error.get("type") == "value_error":
-            raise ValueError("ast_grep_search pattern must not be empty") from exc
-        raise ValueError("ast_grep_search requires a string pattern argument") from exc
-
-
-def _validate_replace_call(call: ToolCall) -> AstGrepReplaceArgs:
-    try:
-        return AstGrepReplaceArgs.model_validate(
-            {
-                "pattern": call.arguments.get("pattern"),
-                "rewrite": call.arguments.get("rewrite"),
-                "path": call.arguments.get("path"),
-                "lang": call.arguments.get("lang"),
-                "apply": call.arguments.get("apply", False),
-            }
-        )
-    except ValidationError as exc:
-        first_error = exc.errors()[0]
-        field_name = first_error.get("loc", (None,))[0]
-        if field_name == "path":
-            raise ValueError("ast_grep_replace requires a string path argument") from exc
-        if field_name == "rewrite":
-            raise ValueError("ast_grep_replace requires a string rewrite argument") from exc
-        if field_name == "lang":
-            raise ValueError("ast_grep_replace requires a string lang argument") from exc
-        if field_name == "apply":
-            raise ValueError("ast_grep_replace apply must be boolean") from exc
-        if first_error.get("type") == "value_error":
-            raise ValueError("ast_grep_replace pattern must not be empty") from exc
-        raise ValueError("ast_grep_replace requires a string pattern argument") from exc
+    return completed.returncode == 1 and not completed.stdout.strip() and not completed.stderr.strip()
 
 
 def _run_preview_replace(
-    *, args: AstGrepReplaceArgs, workspace: Path, timeout_seconds: int = 30
+    *,
+    pattern: str,
+    rewrite: str,
+    path_text: str,
+    lang: str | None,
+    workspace: Path,
+    timeout_seconds: int = 30,
 ) -> ToolResult | tuple[str, list[dict[str, Any]], int]:
-    _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
-    preview_cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern, "-r", args.rewrite]
-    if args.lang:
-        preview_cmd.extend(["--lang", args.lang])
+    _, relative_path = _resolve_candidate(workspace=workspace, path_text=path_text)
+    preview_cmd = ["ast-grep", "run", "--json=stream", "-p", pattern, "-r", rewrite]
+    if lang:
+        preview_cmd.extend(["--lang", lang])
     preview_cmd.append(relative_path)
 
     completed = _run_ast_grep(cmd=preview_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
@@ -203,14 +136,20 @@ def _run_preview_replace(
     return relative_path, matches, replacement_count
 
 
-class AstGrepSearchTool:
+# ── Unified AstGrepTool (merged search/preview/replace) ─────────────────────
+
+
+class AstGrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="ast_grep_search",
-        description="Search code structurally with ast-grep patterns.",
+        name="ast_grep",
+        description="Structural code search and rewrite with ast-grep.",
         input_schema={
+            "mode": {"type": "string"},
             "pattern": {"type": "string"},
             "path": {"type": "string"},
+            "rewrite": {"type": "string"},
             "lang": {"type": "string"},
+            "apply": {"type": "boolean"},
         },
         read_only=True,
     )
@@ -218,13 +157,47 @@ class AstGrepSearchTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         return self._invoke(call, workspace=workspace, timeout_seconds=30)
 
-    def invoke_with_runtime_timeout(
-        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
-    ) -> ToolResult:
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
 
     def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        args = _validate_search_call(call)
+        args = self._validate_call(call)
+        if args.mode == "search":
+            return self._invoke_search(args, workspace=workspace, timeout_seconds=timeout_seconds)
+        if args.mode in ("preview", "replace"):
+            return self._invoke_preview_replace(args, workspace=workspace, timeout_seconds=timeout_seconds)
+        raise ValueError(f"unknown ast_grep mode: {args.mode}")
+
+    def _validate_call(self, call: ToolCall) -> AstGrepArgs:
+        try:
+            return AstGrepArgs.model_validate(
+                {
+                    "mode": call.arguments.get("mode", "search"),
+                    "pattern": call.arguments.get("pattern"),
+                    "path": call.arguments.get("path"),
+                    "rewrite": call.arguments.get("rewrite"),
+                    "lang": call.arguments.get("lang"),
+                    "apply": call.arguments.get("apply", False),
+                }
+            )
+        except ValidationError as exc:
+            first_error = exc.errors()[0]
+            field_name = first_error.get("loc", (None,))[0]
+            if field_name == "mode":
+                raise ValueError("ast_grep mode must be one of search, preview, replace") from exc
+            if field_name == "path":
+                raise ValueError("ast_grep requires a string path argument") from exc
+            if field_name == "rewrite":
+                raise ValueError("ast_grep requires a string rewrite argument") from exc
+            if field_name == "lang":
+                raise ValueError("ast_grep requires a string lang argument") from exc
+            if field_name == "apply":
+                raise ValueError("ast_grep apply must be boolean") from exc
+            if first_error.get("type") == "value_error":
+                raise ValueError("ast_grep pattern must not be empty") from exc
+            raise ValueError("ast_grep requires a string pattern argument") from exc
+
+    def _invoke_search(self, args: AstGrepArgs, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         _, relative_path = _resolve_candidate(workspace=workspace, path_text=args.path)
         cmd = ["ast-grep", "run", "--json=stream", "-p", args.pattern]
         if args.lang:
@@ -242,9 +215,7 @@ class AstGrepSearchTool:
         if _is_no_match_result(completed):
             matches: list[dict[str, Any]] = []
         else:
-            _raise_on_process_failure(
-                completed=completed, fallback_message="ast-grep search failed"
-            )
+            _raise_on_process_failure(completed=completed, fallback_message="ast-grep search failed")
             matches = _parse_stream_output(completed.stdout)
 
         match_count = len(matches)
@@ -259,38 +230,24 @@ class AstGrepSearchTool:
                 "lang": args.lang,
                 "match_count": match_count,
                 "matches": matches,
+                "mode": "search",
                 "timeout_seconds": timeout_seconds,
             },
         )
 
-
-class AstGrepPreviewTool:
-    definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="ast_grep_preview",
-        description="Preview structural code rewrites with ast-grep without modifying files.",
-        input_schema={
-            "pattern": {"type": "string"},
-            "rewrite": {"type": "string"},
-            "path": {"type": "string"},
-            "lang": {"type": "string"},
-        },
-        read_only=True,
-    )
-
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=30)
-
-    def invoke_with_runtime_timeout(
-        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
-    ) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
-
-    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        args = _validate_replace_call(call)
-        args = args.model_copy(update={"apply": False})
+    def _invoke_preview_replace(self, args: AstGrepArgs, *, workspace: Path, timeout_seconds: int) -> ToolResult:
+        if args.mode == "replace" and not args.apply:
+            raise ValueError("ast_grep replace mode requires apply=True")
+        if args.mode == "replace" and args.rewrite is None:
+            raise ValueError("ast_grep replace mode requires rewrite")
+        if args.mode == "preview" and args.rewrite is None:
+            raise ValueError("ast_grep preview mode requires rewrite")
 
         preview = _run_preview_replace(
-            args=args,
+            pattern=args.pattern,
+            rewrite=args.rewrite or "",
+            path_text=args.path,
+            lang=args.lang,
             workspace=workspace,
             timeout_seconds=timeout_seconds,
         )
@@ -302,64 +259,26 @@ class AstGrepPreviewTool:
             )
         relative_path, matches, replacement_count = preview
 
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content=f"Previewed {replacement_count} AST replacement(s) in {relative_path}",
-            data={
-                "path": relative_path,
-                "pattern": args.pattern,
-                "rewrite": args.rewrite,
-                "lang": args.lang,
-                "replacement_count": replacement_count,
-                "matches": matches,
-                "applied": False,
-                "timeout_seconds": timeout_seconds,
-            },
-        )
-
-
-class AstGrepReplaceTool:
-    definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="ast_grep_replace",
-        description="Apply structural code rewrites with ast-grep.",
-        input_schema={
-            "pattern": {"type": "string"},
-            "rewrite": {"type": "string"},
-            "path": {"type": "string"},
-            "lang": {"type": "string"},
-            "apply": {"type": "boolean"},
-        },
-        read_only=False,
-    )
-
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=30)
-
-    def invoke_with_runtime_timeout(
-        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
-    ) -> ToolResult:
-        return self._invoke(call, workspace=workspace, timeout_seconds=timeout_seconds)
-
-    def _invoke(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
-        args = _validate_replace_call(call)
-        if not args.apply:
-            raise ValueError("ast_grep_replace requires apply=True")
-
-        preview = _run_preview_replace(
-            args=args,
-            workspace=workspace,
-            timeout_seconds=timeout_seconds,
-        )
-        if isinstance(preview, ToolResult):
+        if args.mode == "preview":
             return ToolResult(
                 tool_name=self.definition.name,
-                status=preview.status,
-                error=preview.error,
+                status="ok",
+                content=f"Previewed {replacement_count} AST replacement(s) in {relative_path}",
+                data={
+                    "path": relative_path,
+                    "pattern": args.pattern,
+                    "rewrite": args.rewrite,
+                    "lang": args.lang,
+                    "replacement_count": replacement_count,
+                    "matches": matches,
+                    "applied": False,
+                    "mode": "preview",
+                    "timeout_seconds": timeout_seconds,
+                },
             )
-        relative_path, matches, replacement_count = preview
 
-        apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", args.rewrite]
+        # replace mode
+        apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", (args.rewrite or "")]
         if args.lang:
             apply_cmd.extend(["--lang", args.lang])
         apply_cmd.extend(["-U", relative_path])
@@ -375,9 +294,7 @@ class AstGrepReplaceTool:
                 error=completed.error,
             )
         if not _is_no_match_result(completed):
-            _raise_on_process_failure(
-                completed=completed, fallback_message="ast-grep replace failed"
-            )
+            _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
 
         return ToolResult(
             tool_name=self.definition.name,
@@ -391,6 +308,7 @@ class AstGrepReplaceTool:
                 "replacement_count": replacement_count,
                 "matches": matches,
                 "applied": True,
+                "mode": "replace",
                 "timeout_seconds": timeout_seconds,
             },
         )

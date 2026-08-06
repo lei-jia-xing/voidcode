@@ -78,9 +78,7 @@ class WebFetchTool:
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         return self._invoke(call, workspace=workspace, runtime_timeout_seconds=None)
 
-    def invoke_with_runtime_timeout(
-        self, call: ToolCall, *, workspace: Path, timeout_seconds: int
-    ) -> ToolResult:
+    def invoke_with_runtime_timeout(self, call: ToolCall, *, workspace: Path, timeout_seconds: int) -> ToolResult:
         return self._invoke(call, workspace=workspace, runtime_timeout_seconds=timeout_seconds)
 
     def _invoke(
@@ -115,25 +113,15 @@ class WebFetchTool:
 
         # Build Accept header according to requested format to be friendlier for servers
         accept_by_format = {
-            "markdown": (
-                "text/markdown;q=1.0, text/x-markdown;q=0.9, "
-                "text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
-            ),
+            "markdown": ("text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"),
             "text": ("text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"),
-            "html": (
-                "text/html;q=1.0, application/xhtml+xml;q=0.9, "
-                "text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"
-            ),
+            "html": ("text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"),
         }
 
         accept_header = accept_by_format.get(format_value, "*/*")
 
         # Use a more realistic User-Agent to avoid bot detection on some servers
-        ua = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "VoidCode/1.0 Chrome/110.0.5481.100 Safari/537.36"
-        )
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) VoidCode/1.0 Chrome/110.0.5481.100 Safari/537.36"
 
         headers = {
             "User-Agent": ua,
@@ -151,19 +139,13 @@ class WebFetchTool:
                     if response.is_redirect:
                         location = response.headers.get("Location")
                         if not location:
-                            raise ValueError(
-                                "Failed to fetch URL: redirect response missing location"
-                            )
-                        redirected = validate_redirect_target(
-                            base_url=current_url, location=location
-                        )
+                            raise ValueError("Failed to fetch URL: redirect response missing location")
+                        redirected = validate_redirect_target(base_url=current_url, location=location)
                         current_url = redirected.url
                         continue
 
                     if response.status_code >= 400:
-                        raise ValueError(
-                            f"HTTP error {response.status_code}: {response.reason_phrase}"
-                        )
+                        raise ValueError(f"HTTP error {response.status_code}: {response.reason_phrase}")
 
                     final_url = str(response.url)
                     _ = validate_url(final_url)

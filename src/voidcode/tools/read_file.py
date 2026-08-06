@@ -123,10 +123,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     if mime and (mime.startswith("image/") or mime == "application/pdf"):
         attachment_size = candidate.stat().st_size
         if attachment_size > MAX_ATTACHMENT_BYTES:
-            raise ValueError(
-                "read_file attachment exceeds the maximum supported size "
-                f"({MAX_ATTACHMENT_BYTES} bytes): {relative_path}"
-            )
+            raise ValueError(f"read_file attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
         raw = candidate.read_bytes()
         data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
         label = "Image" if mime.startswith("image/") else "PDF"
@@ -145,9 +142,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         )
 
     if _is_binary_file(candidate):
-        raise ValueError(
-            f"read_file only supports text files or image/pdf attachments: {relative_path}"
-        )
+        raise ValueError(f"read_file only supports text files or image/pdf attachments: {relative_path}")
 
     limit = min(limit, DEFAULT_READ_LIMIT)
     rendered_lines: list[str] = []
@@ -195,16 +190,10 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     if has_more:
         if bytes_used >= MAX_BYTES:
             rendered.append(
-                "(Output capped at "
-                f"{MAX_BYTES // 1024} KB. Showing lines {offset}-{next_offset - 1}. "
-                f"Use offset={next_offset} to continue.)"
+                f"(Output capped at {MAX_BYTES // 1024} KB. Showing lines {offset}-{next_offset - 1}. Use offset={next_offset} to continue.)"
             )
         else:
-            rendered.append(
-                "(Showing lines "
-                f"{offset}-{next_offset - 1} of {total_lines}. "
-                f"Use offset={next_offset} to continue.)"
-            )
+            rendered.append(f"(Showing lines {offset}-{next_offset - 1} of {total_lines}. Use offset={next_offset} to continue.)")
     else:
         rendered.append(f"(End of file - total {total_lines} lines)")
     rendered.append("</content>")
@@ -263,9 +252,7 @@ class ReadFileTool:
             allow_outside_workspace=True,
         )
         candidate = resolution.candidate
-        relative_path = (
-            str(candidate.resolve()) if resolution.is_external else resolution.relative_path
-        )
+        relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
 
         if not candidate.exists():
             raise ValueError(f"read_file target does not exist: {args.filePath}")
@@ -288,7 +275,5 @@ class ReadFileTool:
             data=outcome.data,
             truncated=bool(outcome.data.get("truncated", False)),
             partial=bool(outcome.data.get("partial", False)),
-            attachment=cast(dict[str, object], outcome.data.get("attachment"))
-            if isinstance(outcome.data.get("attachment"), dict)
-            else None,
+            attachment=cast(dict[str, object], outcome.data.get("attachment")) if isinstance(outcome.data.get("attachment"), dict) else None,
         )

@@ -199,9 +199,7 @@ def _load_runtime_types() -> tuple[RuntimeRequestFactory, RuntimeFactory]:
     )
 
 
-def _load_stream_types() -> tuple[
-    RuntimeStreamChunkFactory, SessionRefFactory, SessionStateFactory
-]:
+def _load_stream_types() -> tuple[RuntimeStreamChunkFactory, SessionRefFactory, SessionStateFactory]:
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
     session_module = importlib.import_module("voidcode.runtime.session")
     return (
@@ -236,18 +234,9 @@ def _run_app(
     }
     asyncio.run(app(scope, _receive, _send))
 
-    start_message = next(
-        message for message in sent if cast(str, message["type"]) == "http.response.start"
-    )
-    headers = {
-        key.decode("utf-8").lower(): value.decode("utf-8")
-        for key, value in cast(list[tuple[bytes, bytes]], start_message["headers"])
-    }
-    body_parts = [
-        cast(bytes, message.get("body", b""))
-        for message in sent
-        if cast(str, message["type"]) == "http.response.body"
-    ]
+    start_message = next(message for message in sent if cast(str, message["type"]) == "http.response.start")
+    headers = {key.decode("utf-8").lower(): value.decode("utf-8") for key, value in cast(list[tuple[bytes, bytes]], start_message["headers"])}
+    body_parts = [cast(bytes, message.get("body", b"")) for message in sent if cast(str, message["type"]) == "http.response.body"]
     return (
         cast(int, start_message["status"]),
         headers,
@@ -293,8 +282,7 @@ def _wait_for_background_task_approval(
             return task
         time.sleep(0.01)
     raise AssertionError(
-        "background task did not reach approval wait: "
-        f"{task_id}, last_status={last_task.status if last_task is not None else None!r}"
+        f"background task did not reach approval wait: {task_id}, last_status={last_task.status if last_task is not None else None!r}"
     )
 
 
@@ -357,11 +345,7 @@ def test_http_sessions_list_shows_child_session_parent_id(tmp_path: Path) -> Non
 
     assert status == 200
     sessions = cast(list[dict[str, object]], json.loads(body.decode("utf-8")))
-    child_sessions = [
-        s
-        for s in sessions
-        if cast(dict[str, object], s["session"]).get("parent_id") == "leader-session"
-    ]
+    child_sessions = [s for s in sessions if cast(dict[str, object], s["session"]).get("parent_id") == "leader-session"]
     assert len(child_sessions) >= 1
 
 
@@ -372,9 +356,7 @@ def test_http_session_replay_returns_child_session_status(tmp_path: Path) -> Non
 
     runtime = runtime_class(workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    child = runtime.run(
-        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
-    )
+    child = runtime.run(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     child_id = child.session.session.id
 
     app = create_runtime_app(workspace=tmp_path)
@@ -383,10 +365,7 @@ def test_http_session_replay_returns_child_session_status(tmp_path: Path) -> Non
     assert status == 200
     payload = cast(dict[str, object], json.loads(body.decode("utf-8")))
     assert cast(dict[str, object], payload["session"])["status"] == "completed"
-    assert (
-        cast(dict[str, object], cast(dict[str, object], payload["session"])["session"])["parent_id"]
-        == "leader-session"
-    )
+    assert cast(dict[str, object], cast(dict[str, object], payload["session"])["session"])["parent_id"] == "leader-session"
 
 
 def test_http_session_result_returns_child_output(tmp_path: Path) -> None:
@@ -396,9 +375,7 @@ def test_http_session_result_returns_child_output(tmp_path: Path) -> None:
 
     runtime = runtime_class(workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    child = runtime.run(
-        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
-    )
+    child = runtime.run(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     child_id = child.session.session.id
 
     app = create_runtime_app(workspace=tmp_path)
@@ -476,9 +453,7 @@ def test_http_notifications_surface_approval_blocked_for_child_session(tmp_path:
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
     runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
-    _ = runtime.run(
-        runtime_request(prompt="write child.txt delegated", session_id="child-notify-session")
-    )
+    _ = runtime.run(runtime_request(prompt="write child.txt delegated", session_id="child-notify-session"))
 
     app = create_runtime_app(
         workspace=tmp_path,
@@ -694,9 +669,7 @@ def test_http_background_task_list_endpoints_expose_global_and_parent_scoped_vie
         def list_background_tasks(self) -> tuple[object, ...]:
             return all_tasks
 
-        def list_background_tasks_by_parent_session(
-            self, *, parent_session_id: str
-        ) -> tuple[object, ...]:
+        def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[object, ...]:
             assert parent_session_id == "leader-session"
             return (all_tasks[1],)
 
@@ -800,9 +773,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
 
     runtime = runtime_class(workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    started = runtime.start_background_task(
-        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
-    )
+    started = runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
 
     import time
 
@@ -867,9 +838,7 @@ def test_http_background_subagent_restart_reconcile_retrieves_terminal_task_resu
 
     first_runtime = runtime_class(workspace=tmp_path)
     _ = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    started = first_runtime.start_background_task(
-        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
-    )
+    started = first_runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     _wait_for_background_task_terminal(first_runtime, started.task.id)
 
     app = create_runtime_app(workspace=tmp_path)
@@ -907,9 +876,7 @@ def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_p
 
     runtime = runtime_class(workspace=tmp_path, graph=_EmptyOutputGraph())
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    started = runtime.start_background_task(
-        runtime_request(prompt="empty child", parent_session_id="leader-session")
-    )
+    started = runtime.start_background_task(runtime_request(prompt="empty child", parent_session_id="leader-session"))
     _wait_for_background_task_terminal(runtime, started.task.id)
 
     app = create_runtime_app(workspace=tmp_path, runtime_factory=lambda: runtime)
@@ -934,9 +901,7 @@ def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: P
 
     runtime = runtime_class(workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
-    started = runtime.start_background_task(
-        runtime_request(prompt="read sample.txt", parent_session_id="leader-session")
-    )
+    started = runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     _wait_for_background_task_terminal(runtime, started.task.id)
 
     app = create_runtime_app(workspace=tmp_path)
@@ -1042,14 +1007,9 @@ def test_http_tasks_endpoints_cover_real_runtime_waiting_approval_and_cancel(
     assert message["approval_blocked"] is True
     assert cast(dict[str, object], output_payload["session_result"])["status"] == "waiting"
     assert cast(dict[str, object], output_payload["session_result"])["output"] is None
-    assert "Approval blocked on write_file: write_file child.txt" in cast(
-        str, output_payload["output"]
-    )
+    assert "Approval blocked on write_file: write_file child.txt" in cast(str, output_payload["output"])
     assert cancel_payload["status"] == "cancelled"
-    assert (
-        cancel_payload["cancellation_cause"]
-        == "cancelled by parent while child session was waiting"
-    )
+    assert cancel_payload["cancellation_cause"] == "cancelled by parent while child session was waiting"
     assert cancel_payload["error"] == "cancelled by parent while child session was waiting"
 
 

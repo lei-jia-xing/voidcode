@@ -171,9 +171,7 @@ class WorkspaceReviewService:
         use_git_ignore: bool,
     ) -> tuple[ReviewTreeNode, ...]:
         children: list[ReviewTreeNode] = []
-        for entry in sorted(
-            root.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())
-        ):
+        for entry in sorted(root.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
             if self._should_exclude_from_tree(entry, tree_root, use_git_ignore=use_git_ignore):
                 continue
             if entry.is_dir() and self._should_descend_into(entry, tree_root):
@@ -264,9 +262,7 @@ class WorkspaceReviewService:
         gitignore = tree_root / ".gitignore"
         if gitignore.is_file():
             patterns = tuple(
-                line.strip()
-                for line in gitignore.read_text(encoding="utf-8").splitlines()
-                if line.strip() and not line.lstrip().startswith("#")
+                line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")
             )
         else:
             patterns = ()
@@ -293,9 +289,7 @@ class WorkspaceReviewService:
 
     def _is_untracked(self, root: Path, path: str) -> bool:
         result = self._run_git(root, "ls-files", "--others", "--exclude-standard", "--", path)
-        return result.returncode == 0 and any(
-            line.strip() == path for line in result.stdout.splitlines()
-        )
+        return result.returncode == 0 and any(line.strip() == path for line in result.stdout.splitlines())
 
     def _untracked_diff(self, path: str, *, root: Path) -> str:
         diff_path = Path(path).as_posix()
@@ -402,9 +396,7 @@ def _matches_gitignore_pattern(
 
     if anchored:
         if directory_only:
-            return relative_path == normalized_pattern or relative_path.startswith(
-                f"{normalized_pattern}/"
-            )
+            return relative_path == normalized_pattern or relative_path.startswith(f"{normalized_pattern}/")
         return _matches_path_segments(relative_path, normalized_pattern)
     if directory_only:
         return (
@@ -420,7 +412,4 @@ def _matches_path_segments(relative_path: str, pattern: str) -> bool:
     pattern_parts = Path(pattern).parts
     if len(path_parts) != len(pattern_parts):
         return False
-    return all(
-        fnmatchcase(path_part, pattern_part)
-        for path_part, pattern_part in zip(path_parts, pattern_parts, strict=True)
-    )
+    return all(fnmatchcase(path_part, pattern_part) for path_part, pattern_part in zip(path_parts, pattern_parts, strict=True))

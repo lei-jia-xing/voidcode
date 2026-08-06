@@ -68,10 +68,8 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
         return None
     usage = cast(dict[str, object], raw_usage)
     parsed = ProviderTokenUsage(
-        input_tokens=_usage_int(usage.get("prompt_tokens"))
-        or _usage_int(usage.get("input_tokens")),
-        output_tokens=_usage_int(usage.get("completion_tokens"))
-        or _usage_int(usage.get("output_tokens")),
+        input_tokens=_usage_int(usage.get("prompt_tokens")) or _usage_int(usage.get("input_tokens")),
+        output_tokens=_usage_int(usage.get("completion_tokens")) or _usage_int(usage.get("output_tokens")),
     )
     return parsed if parsed.total_tokens > 0 else None
 
@@ -148,10 +146,7 @@ def _truncate_provider_tool_name(base: str, *, suffix: str = "") -> str:
 
 
 def _sanitize_provider_tool_name(tool_name: str) -> str:
-    if (
-        _PROVIDER_TOOL_NAME_PATTERN.fullmatch(tool_name)
-        and len(tool_name) <= _MAX_PROVIDER_TOOL_NAME_LENGTH
-    ):
+    if _PROVIDER_TOOL_NAME_PATTERN.fullmatch(tool_name) and len(tool_name) <= _MAX_PROVIDER_TOOL_NAME_LENGTH:
         return tool_name
     normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_name).strip("_") or "tool"
     digest = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()
@@ -199,9 +194,7 @@ class LiteLLMBackendSingleAgentProvider:
     config: LiteLLMProviderConfig | None
     completion_kwargs: dict[str, object] | None = None
     use_raw_model_name: bool = False
-    tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(
-        default_factory=_empty_tool_feedback_model_overrides
-    )
+    tool_feedback_model_overrides: Mapping[str, ToolFeedbackMode] = field(default_factory=_empty_tool_feedback_model_overrides)
 
     @staticmethod
     def _provider_tool_name_maps(
@@ -209,11 +202,7 @@ class LiteLLMBackendSingleAgentProvider:
     ) -> tuple[dict[str, str], dict[str, str]]:
         original_to_provider: dict[str, str] = {}
         provider_to_original: dict[str, str] = {}
-        tool_names = dict.fromkeys(
-            tool.name
-            for tool in request.available_tools
-            if isinstance(tool.name, str) and tool.name
-        )
+        tool_names = dict.fromkeys(tool.name for tool in request.available_tools if isinstance(tool.name, str) and tool.name)
         for segment in request.assembled_context.segments:
             tool_name = segment.tool_name
             if isinstance(tool_name, str) and tool_name:
@@ -332,16 +321,10 @@ class LiteLLMBackendSingleAgentProvider:
         kwargs["reasoning_effort"] = request.reasoning_effort
         return kwargs
 
-    def _stream_completion_kwargs_for_request(
-        self, request: ProviderTurnRequest
-    ) -> dict[str, object]:
+    def _stream_completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
         kwargs = self._completion_kwargs_for_request(request)
         raw_stream_options = kwargs.get("stream_options")
-        stream_options = (
-            dict(cast(dict[str, object], raw_stream_options))
-            if isinstance(raw_stream_options, dict)
-            else {}
-        )
+        stream_options = dict(cast(dict[str, object], raw_stream_options)) if isinstance(raw_stream_options, dict) else {}
         stream_options.setdefault("include_usage", True)
         kwargs["stream_options"] = stream_options
         return kwargs
@@ -359,9 +342,7 @@ class LiteLLMBackendSingleAgentProvider:
             mode = self.tool_feedback_model_overrides.get(request_model_name)
         if mode is not None:
             return mode
-        metadata_mode = (
-            None if request.model_metadata is None else request.model_metadata.tool_feedback_mode
-        )
+        metadata_mode = None if request.model_metadata is None else request.model_metadata.tool_feedback_mode
         if metadata_mode is not None:
             return metadata_mode
         provider_name = request.provider_name or self.name
@@ -407,9 +388,7 @@ class LiteLLMBackendSingleAgentProvider:
             tool_feedback_lines: list[str] = []
             for result in assembled_context.tool_results:
                 raw_data = result.data
-                sanitized_data = (
-                    sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
-                )
+                sanitized_data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
                 raw_arguments = sanitized_data.get("arguments")
                 sanitized_arguments = (
                     self._provider_visible_arguments(
@@ -428,11 +407,7 @@ class LiteLLMBackendSingleAgentProvider:
                     "status": result.status,
                     "content": result.content or "",
                     "error": result.error,
-                    "data": {
-                        key: value
-                        for key, value in sanitized_data.items()
-                        if key not in {"tool_call_id", "arguments"}
-                    },
+                    "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
                     "truncated": result.truncated,
                     "partial": result.partial,
                     "reference": result.reference,
@@ -446,10 +421,7 @@ class LiteLLMBackendSingleAgentProvider:
                 messages.append({"role": segment.role, "content": segment.content})
             if tool_feedback_lines:
                 intro_line_1 = "Completed tool calls for current request:"
-                intro_line_2 = (
-                    "Use these results as latest state. "
-                    "Do not repeat completed calls unless retry is required."
-                )
+                intro_line_2 = "Use these results as latest state. Do not repeat completed calls unless retry is required."
                 messages.append(
                     {
                         "role": "user",
@@ -484,14 +456,7 @@ class LiteLLMBackendSingleAgentProvider:
                         "role": "assistant",
                         "content": segment.content,
                         **(
-                            {
-                                "reasoning_content": (
-                                    reasoning_content_by_tool_call_id.get(
-                                        segment.tool_call_id or ""
-                                    )
-                                    or " "
-                                )
-                            }
+                            {"reasoning_content": (reasoning_content_by_tool_call_id.get(segment.tool_call_id or "") or " ")}
                             if requires_reasoning_content
                             else {}
                         ),
@@ -514,11 +479,7 @@ class LiteLLMBackendSingleAgentProvider:
             if segment.role == "tool":
                 metadata = segment.metadata or {}
                 raw_data = metadata.get("data")
-                sanitized_data = (
-                    sanitize_tool_result_data(cast(dict[str, object], raw_data))
-                    if isinstance(raw_data, dict)
-                    else {}
-                )
+                sanitized_data = sanitize_tool_result_data(cast(dict[str, object], raw_data)) if isinstance(raw_data, dict) else {}
                 payload = {
                     "tool_name": self._provider_tool_name(
                         segment.tool_name,
@@ -527,11 +488,7 @@ class LiteLLMBackendSingleAgentProvider:
                     "content": segment.content or "",
                     "status": metadata.get("status"),
                     "error": metadata.get("error"),
-                    "data": {
-                        key: value
-                        for key, value in sanitized_data.items()
-                        if key not in {"tool_call_id", "arguments"}
-                    },
+                    "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
                     "truncated": metadata.get("truncated"),
                     "partial": metadata.get("partial"),
                     "reference": metadata.get("reference"),
@@ -671,9 +628,7 @@ class LiteLLMBackendSingleAgentProvider:
             tool_call_id_obj = raw_call.get("id")
             explicit_tool_call_id = tool_call_id_obj if isinstance(tool_call_id_obj, str) else None
             fallback_tool_call_id = (
-                f"{runtime_tool_name}_{index + 1}"
-                if explicit_tool_call_id is None and use_unique_fallback_ids
-                else runtime_tool_name
+                f"{runtime_tool_name}_{index + 1}" if explicit_tool_call_id is None and use_unique_fallback_ids else runtime_tool_name
             )
             tool_call_id = _normalize_tool_call_id(
                 explicit_tool_call_id,
@@ -701,9 +656,7 @@ class LiteLLMBackendSingleAgentProvider:
         return tool_calls[0] if tool_calls else None
 
     @staticmethod
-    def _map_exception(
-        exc: Exception, *, provider_name: str, model_name: str
-    ) -> ProviderExecutionError:
+    def _map_exception(exc: Exception, *, provider_name: str, model_name: str) -> ProviderExecutionError:
         if isinstance(exc, ProviderExecutionError):
             return exc
         if isinstance(exc, APIError):
@@ -757,16 +710,10 @@ class LiteLLMBackendSingleAgentProvider:
 
     @staticmethod
     def _redirect_litellm_debug_logs() -> logging.Handler:
-        log_path = Path(
-            os.environ.get("VOIDCODE_LITELLM_DEBUG_LOG", "/tmp/voidcode-litellm-debug.log")
-        )
+        log_path = Path(os.environ.get("VOIDCODE_LITELLM_DEBUG_LOG", "/tmp/voidcode-litellm-debug.log"))
         log_path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(log_path, encoding="utf-8")
-        handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(name)s:%(levelname)s %(filename)s:%(lineno)s - %(message)s"
-            )
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s:%(levelname)s %(filename)s:%(lineno)s - %(message)s"))
         for logger_name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy"):
             litellm_logger = logging.getLogger(logger_name)
             for existing_handler in tuple(litellm_logger.handlers):
@@ -779,9 +726,7 @@ class LiteLLMBackendSingleAgentProvider:
         model_identifier = self._model_identifier(request)
         original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
         timeout_seconds = (
-            _DEFAULT_COMPLETION_TIMEOUT_SECONDS
-            if self.config is None or self.config.timeout_seconds is None
-            else self.config.timeout_seconds
+            _DEFAULT_COMPLETION_TIMEOUT_SECONDS if self.config is None or self.config.timeout_seconds is None else self.config.timeout_seconds
         )
         messages = self._build_messages(request)
         self._log_provider_request_diagnostics(messages=messages, request=request)
@@ -797,10 +742,7 @@ class LiteLLMBackendSingleAgentProvider:
         payload.update(self._completion_kwargs_for_request(request))
         self._apply_ssl_verify_payload(payload)
         if request.available_tools:
-            payload["tools"] = [
-                self._to_tool_schema(tool, original_to_provider=original_to_provider)
-                for tool in request.available_tools
-            ]
+            payload["tools"] = [self._to_tool_schema(tool, original_to_provider=original_to_provider) for tool in request.available_tools]
             payload["tool_choice"] = "auto"
 
         try:
@@ -841,9 +783,7 @@ class LiteLLMBackendSingleAgentProvider:
         model_identifier = self._model_identifier(request)
         original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
         timeout_seconds = (
-            _DEFAULT_COMPLETION_TIMEOUT_SECONDS
-            if self.config is None or self.config.timeout_seconds is None
-            else self.config.timeout_seconds
+            _DEFAULT_COMPLETION_TIMEOUT_SECONDS if self.config is None or self.config.timeout_seconds is None else self.config.timeout_seconds
         )
         messages = self._build_messages(request)
         self._log_provider_request_diagnostics(messages=messages, request=request)
@@ -859,16 +799,11 @@ class LiteLLMBackendSingleAgentProvider:
         payload.update(self._stream_completion_kwargs_for_request(request))
         self._apply_ssl_verify_payload(payload)
         if request.available_tools:
-            payload["tools"] = [
-                self._to_tool_schema(tool, original_to_provider=original_to_provider)
-                for tool in request.available_tools
-            ]
+            payload["tools"] = [self._to_tool_schema(tool, original_to_provider=original_to_provider) for tool in request.available_tools]
             payload["tool_choice"] = "auto"
 
         try:
-            stream = cast(
-                Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload))
-            )
+            stream = cast(Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload)))
             streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
             latest_usage: ProviderTokenUsage | None = None
             for chunk in stream:
@@ -966,9 +901,7 @@ class LiteLLMBackendSingleAgentProvider:
             ) from exc
 
         completed_tool_calls = [
-            (index, accumulator)
-            for index, accumulator in sorted(streamed_tool_calls.items())
-            if accumulator.tool_name is not None
+            (index, accumulator) for index, accumulator in sorted(streamed_tool_calls.items()) if accumulator.tool_name is not None
         ]
         if completed_tool_calls:
             tool_payloads = [

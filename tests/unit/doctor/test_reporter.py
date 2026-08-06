@@ -60,9 +60,7 @@ class TestCreateReport:
         assert report.first_task_readiness is not None
         assert report.first_task_readiness.status == "not_ready"
         assert report.first_task_readiness.details["workspace_config_valid"] is True
-        assert report.first_task_readiness.details["local_tools"] == [
-            {"name": "ast-grep", "status": "ready"}
-        ]
+        assert report.first_task_readiness.details["local_tools"] == [{"name": "ast-grep", "status": "ready"}]
         assert report.first_task_readiness.blockers == ["provider.readiness check is missing"]
 
     def test_create_report_with_missing(self) -> None:
@@ -135,9 +133,7 @@ class TestCreateReport:
         assert report.first_task_readiness.status == "not_ready"
         assert report.first_task_readiness.details["workspace_config_valid"] is True
         assert report.first_task_readiness.details["local_tools"] == []
-        assert report.first_task_readiness.blockers == [
-            "Configure a provider/model, for example model: 'openai/gpt-4o'."
-        ]
+        assert report.first_task_readiness.blockers == ["Configure a provider/model, for example model: 'openai/gpt-4o'."]
         assert "config init --model provider/model" in report.first_task_readiness.next_step
 
     def test_create_report_marks_ready_provider_with_missing_tool_degraded(self) -> None:
@@ -168,13 +164,9 @@ class TestCreateReport:
         assert report.first_task_readiness is not None
         assert report.first_task_readiness.status == "degraded"
         assert report.first_task_readiness.details["workspace_config_valid"] is True
-        assert report.first_task_readiness.details["local_tools"] == [
-            {"name": "ast-grep", "status": "not_found"}
-        ]
+        assert report.first_task_readiness.details["local_tools"] == [{"name": "ast-grep", "status": "not_found"}]
         assert report.first_task_readiness.blockers == []
-        assert report.first_task_readiness.warnings == [
-            "ast-grep: 'ast-grep' not found. Tried: ast-grep"
-        ]
+        assert report.first_task_readiness.warnings == ["ast-grep: 'ast-grep' not found. Tried: ast-grep"]
 
 
 class TestFormatReport:

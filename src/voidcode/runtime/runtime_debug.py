@@ -52,9 +52,7 @@ def debug_session_state_inconsistency(
     resume_checkpoint: dict[str, object] | None,
 ) -> str | None:
     checkpoint_kind = (
-        cast(str, resume_checkpoint.get("kind"))
-        if isinstance(resume_checkpoint, dict) and isinstance(resume_checkpoint.get("kind"), str)
-        else None
+        cast(str, resume_checkpoint.get("kind")) if isinstance(resume_checkpoint, dict) and isinstance(resume_checkpoint.get("kind"), str) else None
     )
     if result.session.status == "waiting":
         if pending_approval is None and pending_question is None:
@@ -153,9 +151,7 @@ def payload_with_artifact_status(payload: dict[str, object]) -> dict[str, object
         **payload,
         "artifact": artifact_metadata,
         "artifact_status": artifact_metadata.get("status", payload.get("artifact_status")),
-        "artifact_missing": artifact_metadata.get(
-            "artifact_missing", payload.get("artifact_missing")
-        ),
+        "artifact_missing": artifact_metadata.get("artifact_missing", payload.get("artifact_missing")),
     }
 
 
@@ -186,9 +182,7 @@ def last_tool_summary(
             tool_name=tool_name,
             status=status,
             summary=summary,
-            arguments=(
-                dict(cast(dict[str, object], arguments)) if isinstance(arguments, dict) else {}
-            ),
+            arguments=(dict(cast(dict[str, object], arguments)) if isinstance(arguments, dict) else {}),
             artifact=artifact,
             sequence=event.sequence,
         )
@@ -217,9 +211,7 @@ def provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, o
         "tool_status",
     }
     payload = payload_with_artifact_status(payload)
-    return sanitize_tool_result_data(
-        {key: value for key, value in payload.items() if key not in runtime_envelope_keys}
-    )
+    return sanitize_tool_result_data({key: value for key, value in payload.items() if key not in runtime_envelope_keys})
 
 
 def prompt_and_tool_results_from_debug_events(
@@ -242,20 +234,10 @@ def prompt_and_tool_results_from_debug_events(
                 error=str(error_value) if is_error else None,
                 truncated=event.payload.get("truncated") is True,
                 partial=event.payload.get("partial") is True,
-                reference=(
-                    cast(str, event.payload.get("reference"))
-                    if isinstance(event.payload.get("reference"), str)
-                    else None
-                ),
-                error_kind=(
-                    cast(str, event.payload.get("error_kind"))
-                    if isinstance(event.payload.get("error_kind"), str) and is_error
-                    else None
-                ),
+                reference=(cast(str, event.payload.get("reference")) if isinstance(event.payload.get("reference"), str) else None),
+                error_kind=(cast(str, event.payload.get("error_kind")) if isinstance(event.payload.get("error_kind"), str) and is_error else None),
                 error_summary=(
-                    cast(str, event.payload.get("error_summary"))
-                    if isinstance(event.payload.get("error_summary"), str) and is_error
-                    else None
+                    cast(str, event.payload.get("error_summary")) if isinstance(event.payload.get("error_summary"), str) and is_error else None
                 ),
                 error_details=(
                     cast(dict[str, object], event.payload.get("error_details"))
@@ -263,9 +245,7 @@ def prompt_and_tool_results_from_debug_events(
                     else None
                 ),
                 retry_guidance=(
-                    cast(str, event.payload.get("retry_guidance"))
-                    if isinstance(event.payload.get("retry_guidance"), str) and is_error
-                    else None
+                    cast(str, event.payload.get("retry_guidance")) if isinstance(event.payload.get("retry_guidance"), str) and is_error else None
                 ),
             )
         )
@@ -285,8 +265,7 @@ def operator_guidance(
     if pending_approval is not None:
         return (
             "resolve_approval",
-            "Resolve approval request "
-            f"{pending_approval.request_id} for {pending_approval.tool_name}.",
+            f"Resolve approval request {pending_approval.request_id} for {pending_approval.tool_name}.",
         )
     if pending_question is not None:
         return (

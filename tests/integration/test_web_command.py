@@ -62,9 +62,7 @@ def test_web_prints_banner_and_url(capsys: Any, tmp_path: Path) -> None:
     assert "http://127.0.0.1:8080" in captured.out
 
 
-def test_web_prefers_repo_frontend_dist_when_packaged_assets_exist(
-    capsys: Any, tmp_path: Path
-) -> None:
+def test_web_prefers_repo_frontend_dist_when_packaged_assets_exist(capsys: Any, tmp_path: Path) -> None:
     server = importlib.import_module("voidcode.server")
     workspace = Path("/tmp/web-repo-priority-test")
     config = cast(Any, SimpleNamespace(approval_mode="allow"))
@@ -99,9 +97,7 @@ def test_web_prints_auto_assigned_url_when_port_unspecified(capsys: Any, tmp_pat
     try:
         expected_port = cast(int, listener_socket.getsockname()[1])
         with patch.object(server, "_run_runtime_server", autospec=True):
-            with patch.object(
-                server, "_frontend_dist_context", autospec=True
-            ) as frontend_context_mock:
+            with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
                 frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
                 with patch.object(
                     server,
@@ -135,9 +131,7 @@ def test_web_prints_ipv6_auto_assigned_url_when_host_is_ipv6(capsys: Any, tmp_pa
     try:
         expected_port = cast(int, listener_socket.getsockname()[1])
         with patch.object(server, "_run_runtime_server", autospec=True):
-            with patch.object(
-                server, "_frontend_dist_context", autospec=True
-            ) as frontend_context_mock:
+            with patch.object(server, "_frontend_dist_context", autospec=True) as frontend_context_mock:
                 frontend_context_mock.return_value = frontend_dist_override(frontend_dist)
                 with patch.object(
                     server,
@@ -291,11 +285,7 @@ def test_frontend_root_returns_html_when_dist_configured(tmp_path: Path) -> None
     assert start["status"] == 200
     headers = decode_headers(start)
     assert "text/html" in headers.get("content-type", "")
-    body = b"".join(
-        cast(bytes, m.get("body", b""))
-        for m in sent
-        if cast(str, m["type"]) == "http.response.body"
-    )
+    body = b"".join(cast(bytes, m.get("body", b"")) for m in sent if cast(str, m["type"]) == "http.response.body")
     assert b"<!DOCTYPE html>" in body
     assert b"VoidCode" in body
 
@@ -326,11 +316,7 @@ def test_frontend_serves_static_assets_when_dist_configured(tmp_path: Path) -> N
 
     start = cast_start(sent)
     assert start["status"] == 200
-    body = b"".join(
-        cast(bytes, m.get("body", b""))
-        for m in sent
-        if cast(str, m["type"]) == "http.response.body"
-    )
+    body = b"".join(cast(bytes, m.get("body", b"")) for m in sent if cast(str, m["type"]) == "http.response.body")
     assert len(body) > 0
 
 
@@ -362,11 +348,7 @@ def test_frontend_does_not_spa_fallback_unknown_api_routes(tmp_path: Path) -> No
     assert start["status"] == 404
     headers = decode_headers(start)
     assert "application/json" in headers.get("content-type", "")
-    body = b"".join(
-        cast(bytes, m.get("body", b""))
-        for m in sent
-        if cast(str, m["type"]) == "http.response.body"
-    )
+    body = b"".join(cast(bytes, m.get("body", b"")) for m in sent if cast(str, m["type"]) == "http.response.body")
     assert json.loads(body.decode("utf-8")) == {"error": "not found"}
 
 
@@ -398,11 +380,7 @@ def test_frontend_returns_404_for_missing_static_asset(tmp_path: Path) -> None:
     assert start["status"] == 404
     headers = decode_headers(start)
     assert "application/json" in headers.get("content-type", "")
-    body = b"".join(
-        cast(bytes, m.get("body", b""))
-        for m in sent
-        if cast(str, m["type"]) == "http.response.body"
-    )
+    body = b"".join(cast(bytes, m.get("body", b"")) for m in sent if cast(str, m["type"]) == "http.response.body")
     assert json.loads(body.decode("utf-8")) == {"error": "not found"}
 
 

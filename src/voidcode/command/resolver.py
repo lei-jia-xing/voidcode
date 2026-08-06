@@ -67,12 +67,8 @@ def resolve_tool_instruction(
         path_text = read_match.group("path").strip()
         if not path_text:
             raise ValueError("request path must not be empty")
-        _ensure_tool(
-            available_tools, "read_file", read_only=True, suffix=unavailable_message_suffix
-        )
-        return ToolCommandResolution(
-            ToolCall(tool_name="read_file", arguments={"filePath": path_text})
-        )
+        _ensure_tool(available_tools, "read_file", read_only=True, suffix=unavailable_message_suffix)
+        return ToolCommandResolution(ToolCall(tool_name="read_file", arguments={"filePath": path_text}))
 
     grep_match = GREP_REQUEST_PATTERN.match(instruction)
     if grep_match is not None:
@@ -83,21 +79,15 @@ def resolve_tool_instruction(
         if not path_text:
             raise ValueError("request path must not be empty")
         _ensure_tool(available_tools, "grep", read_only=True, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(
-            ToolCall(tool_name="grep", arguments={"pattern": pattern_text, "path": path_text})
-        )
+        return ToolCommandResolution(ToolCall(tool_name="grep", arguments={"pattern": pattern_text, "path": path_text}))
 
     run_match = RUN_REQUEST_PATTERN.match(instruction)
     if run_match is not None:
         command_text = run_match.group("command").strip()
         if not command_text:
             raise ValueError("request command must not be empty")
-        _ensure_tool(
-            available_tools, "shell_exec", read_only=False, suffix=unavailable_message_suffix
-        )
-        return ToolCommandResolution(
-            ToolCall(tool_name="shell_exec", arguments={"command": command_text})
-        )
+        _ensure_tool(available_tools, "shell_exec", read_only=False, suffix=unavailable_message_suffix)
+        return ToolCommandResolution(ToolCall(tool_name="shell_exec", arguments={"command": command_text}))
 
     write_match = WRITE_REQUEST_PATTERN.match(instruction)
     if write_match is not None:
@@ -107,12 +97,8 @@ def resolve_tool_instruction(
             raise ValueError("request path must not be empty")
         if not content_text:
             raise ValueError("request content must not be empty")
-        _ensure_tool(
-            available_tools, "write_file", read_only=False, suffix=unavailable_message_suffix
-        )
-        return ToolCommandResolution(
-            ToolCall(tool_name="write_file", arguments={"path": path_text, "content": content_text})
-        )
+        _ensure_tool(available_tools, "write_file", read_only=False, suffix=unavailable_message_suffix)
+        return ToolCommandResolution(ToolCall(tool_name="write_file", arguments={"path": path_text, "content": content_text}))
 
     raise ValueError(UNSUPPORTED_TOOL_COMMAND_MESSAGE)
 

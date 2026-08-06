@@ -43,9 +43,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-memory-vector = [
-  "sqlite-vec",
-]
 dev = [
   "hypothesis",
   "pre-commit",
@@ -92,7 +89,7 @@ path = "scripts/hatch_build.py"
 package = true
 
 [tool.ruff]
-line-length = 100
+line-length = 150
 target-version = "py313"
 
 [tool.ruff.lint]

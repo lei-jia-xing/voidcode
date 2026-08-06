@@ -53,7 +53,6 @@ type RuntimeEventType = Literal[
     "runtime.memory_deleted",
     "runtime.memory_searched",
     "runtime.memory_status_checked",
-    "runtime.context_pressure",
     "runtime.context_transform_applied",
     "runtime.session_started",
     "runtime.session_ended",
@@ -169,7 +168,6 @@ RUNTIME_MEMORY_ADDED: Final[RuntimeEventType] = "runtime.memory_added"
 RUNTIME_MEMORY_DELETED: Final[RuntimeEventType] = "runtime.memory_deleted"
 RUNTIME_MEMORY_SEARCHED: Final[RuntimeEventType] = "runtime.memory_searched"
 RUNTIME_MEMORY_STATUS_CHECKED: Final[RuntimeEventType] = "runtime.memory_status_checked"
-RUNTIME_CONTEXT_PRESSURE: Final[RuntimeEventType] = "runtime.context_pressure"
 RUNTIME_CONTEXT_TRANSFORM_APPLIED: Final[RuntimeEventType] = "runtime.context_transform_applied"
 RUNTIME_SESSION_STARTED: Final[RuntimeEventType] = "runtime.session_started"
 RUNTIME_SESSION_ENDED: Final[RuntimeEventType] = "runtime.session_ended"
@@ -178,19 +176,13 @@ RUNTIME_SKILLS_BINDING_MISMATCH: Final[RuntimeEventType] = "runtime.skills_bindi
 RUNTIME_BACKGROUND_TASK_REGISTERED: Final[RuntimeEventType] = "runtime.background_task_registered"
 RUNTIME_BACKGROUND_TASK_STARTED: Final[RuntimeEventType] = "runtime.background_task_started"
 RUNTIME_BACKGROUND_TASK_PROGRESS: Final[RuntimeEventType] = "runtime.background_task_progress"
-RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: Final[RuntimeEventType] = (
-    "runtime.background_task_idle_reminder"
-)
+RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: Final[RuntimeEventType] = "runtime.background_task_idle_reminder"
 RUNTIME_TOOL_PROGRESS: Final[RuntimeEventType] = "runtime.tool_progress"
-RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[RuntimeEventType] = (
-    "runtime.background_task_waiting_approval"
-)
+RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[RuntimeEventType] = "runtime.background_task_waiting_approval"
 RUNTIME_BACKGROUND_TASK_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_completed"
 RUNTIME_BACKGROUND_TASK_FAILED: Final[RuntimeEventType] = "runtime.background_task_failed"
 RUNTIME_BACKGROUND_TASK_CANCELLED: Final[RuntimeEventType] = "runtime.background_task_cancelled"
-RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[RuntimeEventType] = (
-    "runtime.background_task_notification_enqueued"
-)
+RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[RuntimeEventType] = "runtime.background_task_notification_enqueued"
 RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[RuntimeEventType] = "runtime.background_task_result_read"
 RUNTIME_DELEGATED_RESULT_AVAILABLE: Final[RuntimeEventType] = "runtime.delegated_result_available"
 RUNTIME_SKILL_LOADED: Final[RuntimeEventType] = "runtime.skill_loaded"
@@ -252,7 +244,6 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_MEMORY_DELETED,
     RUNTIME_MEMORY_SEARCHED,
     RUNTIME_MEMORY_STATUS_CHECKED,
-    RUNTIME_CONTEXT_PRESSURE,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_SESSION_STARTED,
     RUNTIME_SESSION_ENDED,
@@ -346,9 +337,7 @@ def runtime_policy_observability_payload(
         "delegation_policy": {
             "allowed_presets": _bounded_string_list(delegation_policy.get("allowed_presets")),
             "denied": _bounded_denial_list(delegation_policy.get("denied")),
-            "product_denial_reason": _string_or_none(
-                delegation_policy.get("product_denial_reason")
-            ),
+            "product_denial_reason": _string_or_none(delegation_policy.get("product_denial_reason")),
         },
         "hook_policy": {
             "allowed_event_scopes": _bounded_string_list(hook_policy.get("allowed_event_scopes")),
@@ -430,9 +419,7 @@ def _bounded_diagnostics(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping):
         return {}
     diagnostics: dict[str, object] = {}
-    bounded_items = list(cast(Mapping[str, object], value).items())[
-        :POLICY_OBSERVABILITY_LIST_LIMIT
-    ]
+    bounded_items = list(cast(Mapping[str, object], value).items())[:POLICY_OBSERVABILITY_LIST_LIMIT]
     for key, raw in bounded_items:
         if not isinstance(key, str):
             continue
@@ -542,9 +529,7 @@ ACP_DELEGATED_EXECUTION_FIELDS: Final[tuple[str, ...]] = (
     "lifecycle_status",
 )
 
-_DELEGATED_EVENT_STATUS_BY_TYPE: Final[
-    dict[DelegatedBackgroundTaskEventType | CoreEventType, DelegatedLifecycleStatus]
-] = {
+_DELEGATED_EVENT_STATUS_BY_TYPE: Final[dict[DelegatedBackgroundTaskEventType | CoreEventType, DelegatedLifecycleStatus]] = {
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: "waiting_approval",
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: "running",
     RUNTIME_BACKGROUND_TASK_COMPLETED: "completed",
@@ -666,9 +651,7 @@ class DelegatedExecutionPayload:
         *,
         lifecycle_status: DelegatedLifecycleStatus | None = None,
     ) -> DelegatedExecutionPayload:
-        nested_routing = DelegatedRoutingPayload.from_payload(
-            _mapping_or_none(payload.get("routing"))
-        )
+        nested_routing = DelegatedRoutingPayload.from_payload(_mapping_or_none(payload.get("routing")))
         parsed_status = _parse_delegated_lifecycle_status(payload.get("lifecycle_status"))
         return cls(
             parent_session_id=_string_or_none(payload.get("parent_session_id")),
@@ -750,9 +733,7 @@ class DelegatedLifecycleEventPayload:
             RUNTIME_ACP_DELEGATED_LIFECYCLE,
         ):
             return None
-        default_status = _DELEGATED_EVENT_STATUS_BY_TYPE.get(
-            cast(DelegatedBackgroundTaskEventType | CoreEventType, event.event_type)
-        )
+        default_status = _DELEGATED_EVENT_STATUS_BY_TYPE.get(cast(DelegatedBackgroundTaskEventType | CoreEventType, event.event_type))
         payload = event.payload
         delegation_payload = _mapping_or_none(payload.get("delegation")) or {}
         message_payload = _delegated_lifecycle_message_payload(payload)
@@ -768,9 +749,7 @@ class DelegatedLifecycleEventPayload:
         )
         return cls(
             session_id=_string_or_none(payload.get("session_id")) or event.session_id,
-            parent_session_id=(
-                _string_or_none(payload.get("parent_session_id")) or delegation.parent_session_id
-            ),
+            parent_session_id=(_string_or_none(payload.get("parent_session_id")) or delegation.parent_session_id),
             delegation=delegation,
             message=message,
         )

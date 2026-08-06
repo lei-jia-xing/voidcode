@@ -97,17 +97,13 @@ def test_edit_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="string oldString"):
         tool.invoke(
-            ToolCall(
-                tool_name="edit", arguments={"path": "f.txt", "oldString": 123, "newString": "b"}
-            ),
+            ToolCall(tool_name="edit", arguments={"path": "f.txt", "oldString": 123, "newString": "b"}),
             workspace=tmp_path,
         )
 
     with pytest.raises(ValueError, match="string newString"):
         tool.invoke(
-            ToolCall(
-                tool_name="edit", arguments={"path": "f.txt", "oldString": "a", "newString": 123}
-            ),
+            ToolCall(tool_name="edit", arguments={"path": "f.txt", "oldString": "a", "newString": 123}),
             workspace=tmp_path,
         )
 
@@ -324,9 +320,7 @@ def test_edit_tool_matches_block_anchors_with_small_typos(tmp_path: Path) -> Non
     )
 
     assert result.status == "ok"
-    assert file_path.read_text(encoding="utf-8") == (
-        "alpha\nstart block\nupdated middle\nend block\nomega\n"
-    )
+    assert file_path.read_text(encoding="utf-8") == ("alpha\nstart block\nupdated middle\nend block\nomega\n")
 
 
 def test_edit_tool_skips_formatter_when_no_matching_preset(tmp_path: Path) -> None:
@@ -421,9 +415,7 @@ def test_edit_tool_rejects_without_prior_read_before_formatter_execution(
     )
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
-        with pytest.raises(
-            ValueError, match="requires reading the current file before modifying it"
-        ):
+        with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             tool.invoke(
                 ToolCall(
                     tool_name="edit",
@@ -467,9 +459,7 @@ def test_edit_tool_runs_formatter_after_prior_read_and_write(tmp_path: Path) -> 
         )
     )
 
-    with bind_runtime_tool_context(
-        RuntimeToolInvocationContext(session_id="test", read_paths=read_paths)
-    ):
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test", read_paths=read_paths)):
         result = tool.invoke(
             ToolCall(
                 tool_name="edit",

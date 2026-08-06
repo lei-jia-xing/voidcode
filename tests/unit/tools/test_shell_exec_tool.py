@@ -452,9 +452,7 @@ def test_shell_exec_args_supports_description_field() -> None:
     """ShellExecArgs must accept an optional human-readable description."""
     from voidcode.tools.shell_exec import ShellExecArgs
 
-    args = ShellExecArgs.model_validate(
-        {"command": "ls -la", "description": "List directory contents"}
-    )
+    args = ShellExecArgs.model_validate({"command": "ls -la", "description": "List directory contents"})
     assert args.description == "List directory contents"
 
 

@@ -44,15 +44,10 @@ def enforce_read_before_write(
     if candidate.resolve().as_posix() in context.read_paths:
         return
     raise_tool_diagnostic(
-        message=(
-            f"{tool_name} requires reading the current file before modifying it: {display_path}"
-        ),
+        message=(f"{tool_name} requires reading the current file before modifying it: {display_path}"),
         error_kind="tool_input_mismatch",
         reason="write_without_read",
-        retry_guidance=(
-            "Use read_file on the target path first, review the current content, "
-            "then retry the change."
-        ),
+        retry_guidance=("Use read_file on the target path first, review the current content, then retry the change."),
         details={"path": display_path, "raw_path": raw_path},
     )
 

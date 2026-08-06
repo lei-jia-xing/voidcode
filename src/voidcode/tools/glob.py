@@ -39,10 +39,7 @@ class GlobTool:
             "pattern": {"type": "string", "description": "The glob pattern to match files against"},
             "path": {
                 "type": "string",
-                "description": (
-                    "The directory to search in (relative to workspace). "
-                    "Defaults to workspace root."
-                ),
+                "description": ("The directory to search in (relative to workspace). Defaults to workspace root."),
             },
         },
         read_only=True,
@@ -106,11 +103,7 @@ class GlobTool:
                 raise ValueError(f"glob path does not exist: {path_value}")
 
         workspace_root = workspace.resolve()
-        effective_root = (
-            resolved.candidate
-            if resolved is not None and resolved.is_external and resolved.candidate.is_dir()
-            else workspace_root
-        )
+        effective_root = resolved.candidate if resolved is not None and resolved.is_external and resolved.candidate.is_dir() else workspace_root
         matched, truncated = self._find_files(
             workspace_root,
             pattern_value,
@@ -125,9 +118,7 @@ class GlobTool:
 
         if effective_root == workspace_root:
             relative_matches = [m.relative_to(workspace_root).as_posix() for m in matched]
-            path_display = (
-                search_path.relative_to(workspace_root).as_posix() if search_path else "."
-            )
+            path_display = search_path.relative_to(workspace_root).as_posix() if search_path else "."
         else:
             relative_matches = [str(m.resolve()) for m in matched]
             path_display = str((search_path or effective_root).resolve())
@@ -138,10 +129,7 @@ class GlobTool:
             output_lines = relative_matches
             if truncated:
                 output_lines.append("")
-                output_lines.append(
-                    "(Results are truncated: showing first "
-                    f"{LIMIT} results. Consider using a more specific path or pattern.)"
-                )
+                output_lines.append(f"(Results are truncated: showing first {LIMIT} results. Consider using a more specific path or pattern.)")
             output = "\n".join(output_lines)
 
         return ToolResult(

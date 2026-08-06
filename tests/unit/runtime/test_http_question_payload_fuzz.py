@@ -15,9 +15,7 @@ class _QuestionAnswerParser(Protocol):
     def __call__(self, body: bytes) -> tuple[str, tuple[QuestionResponse, ...]]: ...
 
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:unclosed database in <sqlite3.Connection object.*:ResourceWarning"
-)
+pytestmark = pytest.mark.filterwarnings("ignore:unclosed database in <sqlite3.Connection object.*:ResourceWarning")
 
 CI_SETTINGS = settings(derandomize=True, database=None, deadline=None, max_examples=200)
 
@@ -25,9 +23,7 @@ _text_chars = st.characters(
     blacklist_categories=["Cs"],
     blacklist_characters=["\x00", "\n", "\r"],
 )
-_non_blank_text = st.text(alphabet=_text_chars, min_size=1, max_size=20).filter(
-    lambda text: text.strip() != "" and text == text.strip()
-)
+_non_blank_text = st.text(alphabet=_text_chars, min_size=1, max_size=20).filter(lambda text: text.strip() != "" and text == text.strip())
 _blank_text = st.sampled_from(("", " ", "  ", "\t", " \t "))
 _json_scalar = st.one_of(
     st.none(),
@@ -37,9 +33,7 @@ _json_scalar = st.one_of(
 )
 _json_like = st.recursive(
     _json_scalar | _non_blank_text,
-    lambda children: (
-        st.lists(children, max_size=3) | st.dictionaries(_non_blank_text, children, max_size=3)
-    ),
+    lambda children: st.lists(children, max_size=3) | st.dictionaries(_non_blank_text, children, max_size=3),
     max_leaves=6,
 )
 _invalid_text_value = st.one_of(_blank_text, _json_scalar, st.lists(_json_like, max_size=3))
@@ -134,9 +128,7 @@ def test_parse_question_answer_request_rejects_invalid_response_payloads(
     responses: object,
 ) -> None:
     with pytest.raises(ValueError):
-        _question_answer_parser()(
-            json.dumps({"request_id": "question-1", "responses": responses}).encode("utf-8")
-        )
+        _question_answer_parser()(json.dumps({"request_id": "question-1", "responses": responses}).encode("utf-8"))
 
 
 def test_parse_question_answer_request_rejects_non_json_payloads() -> None:

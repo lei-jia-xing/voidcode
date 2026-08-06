@@ -29,15 +29,9 @@ class CommandRegistry:
             return None
         return command.workflow_mode
 
-    def list(
-        self, *, include_hidden: bool = False, include_disabled: bool = False
-    ) -> tuple[CommandDefinition, ...]:
+    def list(self, *, include_hidden: bool = False, include_disabled: bool = False) -> tuple[CommandDefinition, ...]:
         commands = sorted(self._commands.values(), key=lambda command: command.name)
-        return tuple(
-            command
-            for command in commands
-            if (include_hidden or not command.hidden) and (include_disabled or command.enabled)
-        )
+        return tuple(command for command in commands if (include_hidden or not command.hidden) and (include_disabled or command.enabled))
 
 
 class UICommandRegistry:
@@ -54,12 +48,6 @@ class UICommandRegistry:
     def get(self, command_id: str) -> UICommandDefinition | None:
         return self._commands.get(command_id)
 
-    def list(
-        self, *, include_hidden: bool = False, include_disabled: bool = False
-    ) -> tuple[UICommandDefinition, ...]:
+    def list(self, *, include_hidden: bool = False, include_disabled: bool = False) -> tuple[UICommandDefinition, ...]:
         commands = sorted(self._commands.values(), key=lambda command: command.title)
-        return tuple(
-            command
-            for command in commands
-            if (include_hidden or not command.hidden) and (include_disabled or command.enabled)
-        )
+        return tuple(command for command in commands if (include_hidden or not command.hidden) and (include_disabled or command.enabled))

@@ -186,9 +186,7 @@ def test_parse_provider_configs_payload_parses_ssl_verify_for_simplified_provide
         source="runtime config field 'providers'",
     )
 
-    assert parsed == ProviderConfigs(
-        opencode_go=SimplifiedProviderConfig(api_key="opencode-key", ssl_verify=False)
-    )
+    assert parsed == ProviderConfigs(opencode_go=SimplifiedProviderConfig(api_key="opencode-key", ssl_verify=False))
 
 
 def test_parse_provider_configs_payload_parses_ssl_verify_for_custom_provider() -> None:
@@ -250,9 +248,7 @@ def test_parse_provider_configs_payload_rejects_invalid_transient_retry_delay_or
 
 
 def test_parse_provider_configs_payload_rejects_unknown_provider_block() -> None:
-    with pytest.raises(
-        ValueError, match="runtime config field 'providers.unknown' is not supported"
-    ):
+    with pytest.raises(ValueError, match="runtime config field 'providers.unknown' is not supported"):
         _ = parse_provider_configs_payload(
             {"unknown": {}},
             source="runtime config field 'providers'",
@@ -274,9 +270,7 @@ def test_merge_provider_configs_preserves_fallback_litellm_none_auth_scheme() ->
 
 def test_merge_provider_configs_preserves_fallback_litellm_token_auth_scheme() -> None:
     primary = ProviderConfigs(litellm=LiteLLMProviderConfig(api_key="env-key"))
-    fallback = ProviderConfigs(
-        litellm=LiteLLMProviderConfig(auth_scheme="token", auth_header="X-API-Key")
-    )
+    fallback = ProviderConfigs(litellm=LiteLLMProviderConfig(auth_scheme="token", auth_header="X-API-Key"))
 
     merged = merge_provider_configs(primary, fallback)
 
@@ -354,17 +348,13 @@ def test_serialize_provider_configs_preserves_explicit_empty_anthropic_beta_head
 
 
 def test_serialize_provider_configs_includes_custom_ssl_verify() -> None:
-    payload = serialize_provider_configs(
-        ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=False)})
-    )
+    payload = serialize_provider_configs(ProviderConfigs(custom={"team-gateway": LiteLLMProviderConfig(ssl_verify=False)}))
 
     assert payload == {"custom": {"team-gateway": {"auth_scheme": "bearer", "ssl_verify": False}}}
 
 
 def test_serialize_provider_configs_includes_simplified_ssl_verify() -> None:
-    payload = serialize_provider_configs(
-        ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=False))
-    )
+    payload = serialize_provider_configs(ProviderConfigs(opencode_go=SimplifiedProviderConfig(ssl_verify=False)))
 
     assert payload == {"opencode-go": {"ssl_verify": False}}
 
@@ -408,9 +398,7 @@ def test_parse_provider_configs_payload_rejects_invalid_custom_provider_name() -
         )
 
 
-@pytest.mark.parametrize(
-    "builtin_name", ["openai", "anthropic", "google", "copilot", "litellm", "opencode"]
-)
+@pytest.mark.parametrize("builtin_name", ["openai", "anthropic", "google", "copilot", "litellm", "opencode"])
 def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_with_builtin(
     builtin_name: str,
 ) -> None:
@@ -433,9 +421,7 @@ def test_parse_provider_configs_payload_rejects_custom_provider_name_colliding_w
         )
 
 
-def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_builtin_name() -> (
-    None
-):
+def test_parse_provider_configs_payload_rejects_case_or_whitespace_variant_of_builtin_name() -> None:
     with pytest.raises(
         ValueError,
         match=(
@@ -491,9 +477,7 @@ def test_parse_provider_fallback_payload_parses_chain_directly() -> None:
 
 
 def test_parse_provider_fallback_payload_rejects_duplicate_chain_models() -> None:
-    with pytest.raises(
-        ValueError, match="provider fallback chain must not contain duplicate models"
-    ):
+    with pytest.raises(ValueError, match="provider fallback chain must not contain duplicate models"):
         _ = parse_provider_fallback_payload(
             {
                 "preferred_model": "opencode/gpt-5.4",
@@ -763,9 +747,7 @@ def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
 
 
 def test_reject_unknown_simplified_provider() -> None:
-    with pytest.raises(
-        ValueError, match="runtime config field 'providers.unknown_cn' is not supported"
-    ):
+    with pytest.raises(ValueError, match="runtime config field 'providers.unknown_cn' is not supported"):
         _ = parse_provider_configs_payload(
             {"unknown_cn": {"api_key": "key"}},
             source="runtime config field 'providers'",

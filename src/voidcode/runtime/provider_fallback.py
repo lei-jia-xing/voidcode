@@ -38,11 +38,7 @@ class ProviderTransientRetryDecision:
             "retry_attempt": self.retry_attempt,
             "max_retries": self.max_retries,
             "delay_ms": self.delay_ms,
-            **(
-                {"provider_error_details": self.provider_error_details}
-                if self.provider_error_details is not None
-                else {}
-            ),
+            **({"provider_error_details": self.provider_error_details} if self.provider_error_details is not None else {}),
         }
 
 
@@ -64,11 +60,7 @@ class ProviderFallbackDecision:
             "to_provider": self.to_provider,
             "to_model": self.to_model,
             "attempt": self.attempt,
-            **(
-                {"provider_error_details": self.provider_error_details}
-                if self.provider_error_details is not None
-                else {}
-            ),
+            **({"provider_error_details": self.provider_error_details} if self.provider_error_details is not None else {}),
         }
 
 
@@ -83,9 +75,7 @@ class ProviderTerminalDecision:
     payload: dict[str, object]
 
 
-type ProviderFallbackPolicyDecision = (
-    ProviderTransientRetryDecision | ProviderFallbackDecision | ProviderTerminalDecision
-)
+type ProviderFallbackPolicyDecision = ProviderTransientRetryDecision | ProviderFallbackDecision | ProviderTerminalDecision
 
 
 def provider_transient_retry_delay_ms(
@@ -132,10 +122,7 @@ def decide_provider_error_policy(
                 **({"provider_error_details": error.details} if error.details is not None else {}),
             },
         )
-    if (
-        error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
-        and provider_retry_attempt < transient_retry_config.max_retries
-    ):
+    if error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS and provider_retry_attempt < transient_retry_config.max_retries:
         retry_attempt = provider_retry_attempt + 1
         return ProviderTransientRetryDecision(
             reason=error.kind,
@@ -151,11 +138,7 @@ def decide_provider_error_policy(
             ),
             provider_error_details=error.details,
         )
-    if (
-        error.kind in PROVIDER_FALLBACK_ELIGIBLE_KINDS
-        and fallback_target_provider is not None
-        and fallback_target_model is not None
-    ):
+    if error.kind in PROVIDER_FALLBACK_ELIGIBLE_KINDS and fallback_target_provider is not None and fallback_target_model is not None:
         return ProviderFallbackDecision(
             reason=error.kind,
             from_provider=error.provider_name,
