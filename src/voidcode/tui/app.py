@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast, runtime_checkable
 
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events, work
@@ -437,6 +438,7 @@ class VoidCodeTUI(App[int]):
             prompt=prompt,
             session_id=self.session_id,
             allocate_session_id=self.session_id is None,
+            metadata={"provider_stream": True},
         )
         self._start_stream(request)
 
@@ -591,7 +593,20 @@ class VoidCodeTUI(App[int]):
         path = self._display_copyable_path(display)
         if path:
             text.append(f"\n  {path}", style="dim")
+        command = self._display_command(display)
+        if command:
+            text.append(f"\n  $ {command}", style="cyan")
         return text
+
+    @classmethod
+    def _display_command(cls, display: dict[str, object] | None) -> str | None:
+        if display is None:
+            return None
+        copyable = display.get("copyable")
+        if not isinstance(copyable, dict):
+            return None
+        command = cast(dict[str, object], copyable).get("command")
+        return command if isinstance(command, str) and command else None
 
     def _buffer_tool_progress(self, payload: dict[str, object]) -> None:
         tool_call_id = payload.get("tool_call_id")
@@ -655,7 +670,10 @@ class VoidCodeTUI(App[int]):
         path = self._display_copyable_path(display)
         if path:
             header.append(f"\n  {path}", style="dim")
-        log.write(header)
+        command = self._display_command(display)
+        if command:
+            header.append(f"\n  $ {command}", style="cyan")
+        log.write(Panel(header, border_style=header_style.split()[-1], expand=False, padding=(0, 1)))
 
         kind = self._display_field(display, "kind") or ""
         if kind in ("write",):
