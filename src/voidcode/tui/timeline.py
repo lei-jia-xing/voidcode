@@ -21,6 +21,7 @@ class TimelineView(VerticalScroll):
         self._entries: list[Widget] = []
         self.max_lines = 2000
         self.wrap = True
+        self.expanded = False
 
     def write(self, renderable: RenderableType, *, classes: str = "timeline-entry") -> Static:
         entry = Static(renderable, classes=classes)
@@ -62,7 +63,7 @@ class TimelineView(VerticalScroll):
         classes: str = "timeline-block",
     ) -> Collapsible:
         body = Static(content, classes="timeline-block-content")
-        block = Collapsible(body, title=title, collapsed=collapsed, classes=classes)
+        block = Collapsible(body, title=title, collapsed=collapsed and not self.expanded, classes=classes)
         self._entries.append(block)
         self.mount(block)
         if key:
@@ -72,7 +73,14 @@ class TimelineView(VerticalScroll):
         self._prune_entries()
         return block
 
-    def update_block(self, key: str, *, title: str | None = None, content: RenderableType | None = None) -> None:
+    def update_block(
+        self,
+        key: str,
+        *,
+        title: str | None = None,
+        content: RenderableType | None = None,
+        classes: str | None = None,
+    ) -> None:
         block = self._tool_blocks.get(key)
         if block is None:
             return
@@ -80,9 +88,32 @@ class TimelineView(VerticalScroll):
             block.title = title
         if content is not None:
             self._tool_bodies[key].update(content)
+        if classes is not None:
+            block.set_classes(classes)
 
     def has_block(self, key: str) -> bool:
         return key in self._tool_blocks
+
+    def expand_block(self, key: str) -> bool:
+        block = self._tool_blocks.get(key)
+        if block is None:
+            return False
+        block.collapsed = False
+        self.scroll_to_widget(block, animate=False)
+        return True
+
+    def collapse_block(self, key: str) -> bool:
+        block = self._tool_blocks.get(key)
+        if block is None:
+            return False
+        block.collapsed = True
+        return True
+
+    def toggle_all_blocks(self) -> bool:
+        self.expanded = not self.expanded
+        for block in self._tool_blocks.values():
+            block.collapsed = not self.expanded
+        return self.expanded
 
     def remove_block(self, key: str) -> None:
         block = self._tool_blocks.pop(key, None)
@@ -107,11 +138,11 @@ class TimelineView(VerticalScroll):
         for child in self._entries:
             renderable = getattr(child, "renderable", None)
             if renderable is not None:
-                result.append([Segment(self._plain_text(renderable))])
+                result.extend(self._render_lines(renderable))
             elif isinstance(child, Collapsible):
                 result.append([Segment(str(child.title))])
                 body = child.query_one(".timeline-block-content", Static)
-                result.append([Segment(self._plain_text(body.renderable))])
+                result.extend(self._render_lines(body.renderable))
         return result
 
     def _prune_entries(self) -> None:
@@ -131,3 +162,9 @@ class TimelineView(VerticalScroll):
         console = Console(record=True, width=120, color_system=None, file=StringIO())
         console.print(cast(RenderableType, renderable), end="")
         return console.export_text(clear=False)
+
+    @staticmethod
+    def _render_lines(renderable: object) -> list[list[Segment]]:
+        console = Console(width=120, color_system="truecolor", file=StringIO())
+        segments = console.render(cast(RenderableType, renderable))
+        return [list(line) for line in Segment.split_lines(segments)]

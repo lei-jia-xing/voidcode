@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal, Protocol, cast, runtime_checkable
 
+from rich.console import Group, RenderableType
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Input, RichLog, Static
+from textual.widgets import Footer, Input, Static
 
 from ..runtime.config import (
     RuntimeConfig,
@@ -31,6 +32,7 @@ from ..runtime.contracts import CommandSummary, RuntimeRequest, RuntimeStreamChu
 from ..runtime.events import EventEnvelope
 from ..runtime.lsp import LspManagerState
 from ..runtime.permission import PermissionDecision, PermissionResolution
+from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import StoredSessionSummary
 from .messages import (
@@ -41,10 +43,12 @@ from .messages import (
 )
 from .screens import (
     ApprovalModal,
+    QuestionModal,
     SessionListModal,
     ThemeModePickerModal,
     ThemePickerModal,
 )
+from .timeline import TimelineView
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +76,14 @@ class RuntimeProtocol(Protocol):
     ) -> Iterator[RuntimeStreamChunk]: ...
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]: ...
+
+    def answer_question_stream(
+        self,
+        session_id: str,
+        *,
+        question_request_id: str,
+        responses: tuple[QuestionResponse, ...],
+    ) -> Iterator[RuntimeStreamChunk]: ...
 
     def current_lsp_state(self) -> LspManagerState: ...
 
@@ -121,6 +133,8 @@ class _ComposerInput(Input):
 
 
 class VoidCodeTUI(App[int]):
+    BINDINGS = [("ctrl+o", "tools_expand", "Expand tools")]
+
     CSS = """
     Screen {
         layout: vertical;
@@ -147,8 +161,52 @@ class VoidCodeTUI(App[int]):
         border: solid $panel;
         background: $surface;
     }
+    .timeline-entry {
+        margin: 0 1;
+        padding: 0 1;
+    }
+    .user-message {
+        margin: 1 1 0 1;
+        padding: 0 1;
+        border-left: thick $secondary;
+        background: $panel;
+        color: $text;
+    }
+    .timeline-block {
+        margin: 0 1;
+        padding: 0;
+    }
+    .timeline-block-content {
+        padding: 0 1 1 2;
+        color: $text-muted;
+    }
+    .tool-running {
+        color: $accent;
+    }
+    .tool-pending {
+        color: $text-muted;
+    }
+    .tool-success {
+        color: $success;
+    }
+    .tool-error {
+        color: $error;
+    }
+    .thinking-block {
+        color: $text-muted;
+        border-left: tall $primary-muted;
+    }
+    .assistant-stream {
+        margin: 1 1 0 1;
+        border-left: tall $accent;
+        padding: 0 1;
+        background: $surface;
+        color: $text;
+    }
     #current-response {
-        height: 1;
+        height: auto;
+        max-height: 12;
+        overflow-y: auto;
         padding: 0 1;
         color: $text-muted;
     }
@@ -180,6 +238,7 @@ class VoidCodeTUI(App[int]):
         self.runtime = runtime
         self.session_id: str | None = None
         self.pending_request_id: str | None = None
+        self.pending_question_request_id: str | None = None
         self.current_state = "Idle"
         self._stream_active = False
         self._session_titles: dict[str, str] = {}
@@ -192,11 +251,16 @@ class VoidCodeTUI(App[int]):
         self._tool_display_by_call_id: dict[str, dict[str, object]] = {}
         self._tool_content_by_call_id: dict[str, str] = {}
         self._tool_artifact_by_call_id: dict[str, str] = {}
+        self._approval_context_by_request_id: dict[str, dict[str, object]] = {}
+        self._prompt_queue: deque[str] = deque()
         self._pending_output: list[str] = []
         self._stream_output_buffer = ""
         self._thinking_buffer = ""
         self._streamed_provider_text = False
         self._preview_flush_scheduled = False
+        self._stream_render_counter = 0
+        self._active_thinking_key: str | None = None
+        self._active_response_key: str | None = None
 
         if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
             merged_preferences = config.tui.preferences
@@ -214,7 +278,7 @@ class VoidCodeTUI(App[int]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-layout"):
             with Vertical(id="transcript-column"):
-                transcript_log = RichLog(id="transcript-log", markup=True, wrap=True, max_lines=2000)
+                transcript_log = TimelineView(id="transcript-log")
                 transcript_log.tooltip = "Session transcript; Tab completes /commands, Shift+Tab moves focus out of the composer"
                 yield transcript_log
                 yield Static("", id="current-response")
@@ -281,15 +345,36 @@ class VoidCodeTUI(App[int]):
     def action_session_resume(self) -> None:
         self._handle_command("session.resume")
 
+    def action_tools_expand(self) -> None:
+        timeline = self.query_one("#transcript-log", TimelineView)
+        expanded = timeline.toggle_all_blocks()
+        self.notify("Tool details expanded" if expanded else "Tool details collapsed")
+
+    def _reset_transient_view_state(self) -> None:
+        self.pending_request_id = None
+        self.pending_question_request_id = None
+        self._approval_context_by_request_id.clear()
+        self._pending_tool_progress.clear()
+        self._tool_display_by_call_id.clear()
+        self._tool_content_by_call_id.clear()
+        self._tool_artifact_by_call_id.clear()
+        self._pending_output.clear()
+        self._prompt_queue.clear()
+        self._stream_output_buffer = ""
+        self._thinking_buffer = ""
+        self._active_thinking_key = None
+        self._active_response_key = None
+
     def _handle_command(self, command: str | None) -> None:
         if command == "session.new":
+            self._reset_transient_view_state()
             self.session_id = None
             self._current_prompt = None
             self._set_state("Idle")
             self.query_one("#session-panel", Static).update("None")
             self._update_context_panel(None)
-            self.query_one("#transcript-log", RichLog).clear()
-            self.query_one("#transcript-log", RichLog).write(Text("--- New Session ---", style="bold"))
+            self.query_one("#transcript-log", TimelineView).clear()
+            self.query_one("#transcript-log", TimelineView).write(Text("--- New Session ---", style="bold"))
             self.query_one("#composer-input", Input).focus()
         elif command == "session.resume":
             try:
@@ -301,6 +386,7 @@ class VoidCodeTUI(App[int]):
 
             def _handle_session(session_id: str | None) -> None:
                 if session_id:
+                    self._reset_transient_view_state()
                     self.session_id = session_id
 
                     short_id = session_id.removeprefix("session-")[:8]
@@ -309,8 +395,8 @@ class VoidCodeTUI(App[int]):
                         title += f" - {self._session_titles[session_id][:30]}"
                     self.query_one("#session-panel", Static).update(title)
 
-                    self.query_one("#transcript-log", RichLog).clear()
-                    self.query_one("#transcript-log", RichLog).write(Text(f"--- Resumed Session {short_id} ---", style="bold"))
+                    self.query_one("#transcript-log", TimelineView).clear()
+                    self.query_one("#transcript-log", TimelineView).write(Text(f"--- Resumed Session {short_id} ---", style="bold"))
                     self._set_state("Running")
                     self._set_stream_active(True)
                     self._replay_stream(session_id)
@@ -336,7 +422,7 @@ class VoidCodeTUI(App[int]):
             self.theme = effective.theme.name
 
         wrap = effective.reading.wrap if effective.reading.wrap is not None else True
-        self.query_one("#transcript-log", RichLog).wrap = wrap
+        self.query_one("#transcript-log", TimelineView).wrap = wrap
 
         collapsed = effective.reading.sidebar_collapsed if effective.reading.sidebar_collapsed is not None else False
         sidebar = self.query_one("#sidebar-column", VerticalScroll)
@@ -415,6 +501,8 @@ class VoidCodeTUI(App[int]):
         self._persist_global_preferences()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "composer-input":
+            return
         prompt = event.value.strip()
         if not prompt:
             return
@@ -424,10 +512,17 @@ class VoidCodeTUI(App[int]):
             self._handle_slash_command(prompt)
             return
 
-        if self._stream_active or self.pending_request_id is not None:
+        event.input.value = ""
+        if self._stream_active or self.pending_request_id is not None or self.pending_question_request_id is not None:
+            self._prompt_queue.append(prompt)
+            self.query_one("#transcript-log", TimelineView).write(Text(f"Queued ({len(self._prompt_queue)}): {prompt}", style="dim cyan"))
+            self.notify(f"Prompt queued · {len(self._prompt_queue)} waiting")
             return
 
-        event.input.value = ""
+        self._start_prompt(prompt)
+
+    def _start_prompt(self, prompt: str) -> None:
+        self._begin_stream_render()
         self._write_user_prompt(prompt)
         self._set_state("Running")
         self._set_stream_active(True)
@@ -444,6 +539,27 @@ class VoidCodeTUI(App[int]):
         )
         self._start_stream(request)
 
+    def _begin_stream_render(self) -> None:
+        self._stream_render_counter += 1
+        prefix = f"turn-{self._stream_render_counter}"
+        self._active_thinking_key = f"{prefix}-thinking"
+        self._active_response_key = f"{prefix}-response"
+
+    def _ensure_stream_render(self) -> tuple[str, str]:
+        if self._active_thinking_key is None or self._active_response_key is None:
+            self._begin_stream_render()
+        assert self._active_thinking_key is not None
+        assert self._active_response_key is not None
+        return self._active_thinking_key, self._active_response_key
+
+    def _start_next_queued_prompt(self) -> bool:
+        if self._stream_active or self.pending_request_id is not None or self.pending_question_request_id is not None:
+            return False
+        if not self._prompt_queue:
+            return False
+        self._start_prompt(self._prompt_queue.popleft())
+        return True
+
     def _handle_slash_command(self, raw: str) -> None:
         parts = raw.split(maxsplit=1)
         command = parts[0].lower()
@@ -451,10 +567,10 @@ class VoidCodeTUI(App[int]):
         if command == "/expand":
             self._handle_expand(arg)
             return
-        self.query_one("#transcript-log", RichLog).write(Text(f"Unknown command: {command}", style="bold red"))
+        self.query_one("#transcript-log", TimelineView).write(Text(f"Unknown command: {command}", style="bold red"))
 
     def _handle_expand(self, tool_call_id: str) -> None:
-        log = self.query_one("#transcript-log", RichLog)
+        log = self.query_one("#transcript-log", TimelineView)
         if not tool_call_id:
             log.write(Text("Usage: /expand <tool_call_id>", style="bold yellow"))
             return
@@ -484,6 +600,19 @@ class VoidCodeTUI(App[int]):
             log.write(Text(f"✖ No stored output for tool_call_id: {tool_call_id}", style="bold red"))
             return
 
+        if log.has_block(tool_call_id):
+            display = self._tool_display_by_call_id.get(tool_call_id)
+            path = self._display_copyable_path(display)
+            kind = self._display_field(display, "kind") or ""
+            renderable: RenderableType = Text(content)
+            if kind == "edit":
+                renderable = self._diff_renderable(content)
+            elif kind in ("read", "search"):
+                renderable = self._build_syntax_for_path(path, content) or Text(content)
+            log.update_block(tool_call_id, content=renderable)
+            log.expand_block(tool_call_id)
+            return
+
         log.write(Text(f"── /expand {tool_call_id} ──", style="bold cyan"))
         display = self._tool_display_by_call_id.get(tool_call_id)
         path = self._display_copyable_path(display)
@@ -496,7 +625,25 @@ class VoidCodeTUI(App[int]):
         log.write(Text(content))
 
     def _write_user_prompt(self, prompt: str) -> None:
-        self.query_one("#transcript-log", RichLog).write(Text(f"User: {prompt}"))
+        self.query_one("#transcript-log", TimelineView).write(
+            Text(prompt),
+            classes="timeline-entry user-message",
+        )
+
+    def _write_question_answers(self, request_id: str, responses: tuple[QuestionResponse, ...]) -> None:
+        content = Text()
+        for index, response in enumerate(responses):
+            content.append(f"{response.header}\n", style="bold cyan")
+            content.append("; ".join(response.answers), style="green")
+            if index < len(responses) - 1:
+                content.append("\n\n")
+        self.query_one("#transcript-log", TimelineView).write_block(
+            "✓ Answered",
+            content,
+            key=f"question-answer-{request_id}",
+            collapsed=False,
+            classes="timeline-block question-answer tool-success",
+        )
 
     def _write_event_line(self, event: EventEnvelope) -> None:
         if event.event_type == "graph.provider_stream":
@@ -505,13 +652,26 @@ class VoidCodeTUI(App[int]):
                 text = payload.get("text")
                 if isinstance(text, str) and text:
                     self._thinking_buffer += text
-                    self.query_one("#current-response", Static).update(Text(f"Thinking\n{self._thinking_buffer}", style="dim italic"))
+                    thinking_key, _ = self._ensure_stream_render()
+                    log = self.query_one("#transcript-log", TimelineView)
+                    thinking = Text(self._thinking_buffer, style="dim italic")
+                    if log.has_block(thinking_key):
+                        log.update_block(thinking_key, content=thinking)
+                    else:
+                        log.write_block(
+                            "◐ Thinking",
+                            thinking,
+                            key=thinking_key,
+                            collapsed=False,
+                            classes="timeline-block thinking-block",
+                        )
                 return
             if payload.get("channel") == "text" and payload.get("kind") in {"delta", "content"}:
                 text = payload.get("text")
                 if isinstance(text, str) and text:
                     self._streamed_provider_text = True
-                    self._thinking_buffer = ""
+                    thinking_key, _ = self._ensure_stream_render()
+                    self.query_one("#transcript-log", TimelineView).collapse_block(thinking_key)
                     self._pending_output.append(text)
                     self._schedule_stream_preview_flush()
             return
@@ -523,6 +683,8 @@ class VoidCodeTUI(App[int]):
             "runtime.approval_requested",
             "runtime.failed",
             "runtime.approval_resolved",
+            "runtime.question_requested",
+            "runtime.question_answered",
         ):
             return
 
@@ -534,18 +696,38 @@ class VoidCodeTUI(App[int]):
 
         if event.event_type == "graph.tool_request_created":
             text = self._render_tool_request_line(tool_name, display)
-            self.query_one("#transcript-log", RichLog).write(text)
+            log = self.query_one("#transcript-log", TimelineView)
+            if isinstance(tool_call_id, str) and tool_call_id:
+                if display is not None:
+                    self._tool_display_by_call_id[tool_call_id] = display
+                log.write_block(
+                    text.plain,
+                    self._tool_call_details(display),
+                    key=tool_call_id,
+                    classes="timeline-block tool-pending",
+                )
+            else:
+                log.write(text)
             return
 
         if event.event_type == "runtime.tool_started":
             if isinstance(tool_call_id, str) and display is not None:
                 self._tool_display_by_call_id[tool_call_id] = display
-            text = Text(f"◉ {tool_name}: starting...", style="dim")
-            self.query_one("#transcript-log", RichLog).write(text)
+            log = self.query_one("#transcript-log", TimelineView)
+            title = self._tool_lifecycle_title("◐", tool_name, display)
+            if isinstance(tool_call_id, str) and tool_call_id:
+                if log.has_block(tool_call_id):
+                    log.update_block(tool_call_id, title=title, classes="timeline-block tool-running")
+                else:
+                    log.write_block(title, key=tool_call_id, classes="timeline-block tool-running")
+            else:
+                log.write(Text(title, style="dim"))
             return
 
         if event.event_type == "runtime.tool_progress":
             self._buffer_tool_progress(payload)
+            if isinstance(tool_call_id, str):
+                self._update_tool_progress_block(tool_call_id, tool_name, display)
             return
 
         if event.event_type == "runtime.tool_completed":
@@ -553,10 +735,24 @@ class VoidCodeTUI(App[int]):
             return
 
         if event.event_type == "runtime.approval_requested":
+            request_id = payload.get("request_id")
+            if isinstance(request_id, str) and request_id:
+                self._approval_context_by_request_id[request_id] = payload
             text = Text(f"⚠ Approval requested for tool: {tool_name}", style="bold yellow")
         elif event.event_type == "runtime.approval_resolved":
             decision = payload.get("decision", "unknown")
-            text = Text(f"ℹ Approval {decision} for tool: {tool_name}", style="bold cyan")
+            request_id = payload.get("request_id")
+            context = self._approval_context_by_request_id.pop(request_id, None) if isinstance(request_id, str) else None
+            resolved_tool = context.get("tool") if context is not None else None
+            if isinstance(resolved_tool, str) and resolved_tool:
+                text = Text(f"ℹ Approval {decision} for tool: {resolved_tool}", style="bold cyan")
+            else:
+                text = Text(f"ℹ Approval {decision}", style="bold cyan")
+        elif event.event_type == "runtime.question_requested":
+            count = payload.get("question_count", 1)
+            text = Text(f"? Agent requested input ({count})", style="bold yellow")
+        elif event.event_type == "runtime.question_answered":
+            text = Text("ℹ Answer submitted", style="bold cyan")
         elif event.event_type == "runtime.failed":
             error_msg = payload.get("error_summary", payload.get("error", "Unknown error"))
             formatted_error = self._format_runtime_error(error_msg)
@@ -564,7 +760,7 @@ class VoidCodeTUI(App[int]):
         else:
             text = Text(f"EVENT {event.event_type} source={event.source}", style="dim")
 
-        self.query_one("#transcript-log", RichLog).write(text)
+        self.query_one("#transcript-log", TimelineView).write(text)
 
     @staticmethod
     def _extract_display(payload: dict[str, object]) -> dict[str, object] | None:
@@ -608,6 +804,22 @@ class VoidCodeTUI(App[int]):
         return text
 
     @classmethod
+    def _tool_call_details(cls, display: dict[str, object] | None) -> Text:
+        if display is None:
+            return Text("")
+        lines: list[str] = []
+        args = display.get("args")
+        if isinstance(args, list):
+            lines.extend(str(arg) for arg in args if isinstance(arg, (str, int, float, bool)))
+        command = cls._display_command(display)
+        if command and command not in lines:
+            lines.insert(0, f"$ {command}")
+        path = cls._display_copyable_path(display)
+        if path and path not in lines:
+            lines.insert(0, path)
+        return Text("\n".join(lines), style="dim")
+
+    @classmethod
     def _display_command(cls, display: dict[str, object] | None) -> str | None:
         if display is None:
             return None
@@ -633,13 +845,56 @@ class VoidCodeTUI(App[int]):
         else:
             buffer.append(chunk)
 
+    def _update_tool_progress_block(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        display: dict[str, object] | None,
+    ) -> None:
+        log = self.query_one("#transcript-log", TimelineView)
+        streams = self._pending_tool_progress.get(tool_call_id)
+        if not streams:
+            return
+        content = self._tool_progress_renderable(streams)
+        title = self._tool_lifecycle_title("◐", tool_name, display)
+        if log.has_block(tool_call_id):
+            log.update_block(tool_call_id, title=title, content=content, classes="timeline-block tool-running")
+        else:
+            log.write_block(title, content, key=tool_call_id, classes="timeline-block tool-running")
+
+    @staticmethod
+    def _tool_progress_renderable(streams: dict[str, list[str]]) -> Group:
+        entries: list[RenderableType] = []
+        for stream_name, chunks in streams.items():
+            body = "".join(chunks).rstrip()
+            if not body:
+                continue
+            style = "dim" if stream_name == "stdout" else "dim red"
+            entries.append(Text(f"└ {stream_name}", style=style))
+            entries.append(Text(body, style=style))
+        return Group(*entries)
+
+    def _tool_lifecycle_title(
+        self,
+        icon: str,
+        tool_name: str,
+        display: dict[str, object] | None,
+    ) -> str:
+        title = self._display_field(display, "title")
+        summary = self._display_field(display, "summary")
+        if title and summary:
+            return f"{icon} {title}: {summary}"
+        if summary:
+            return f"{icon} {summary}"
+        return f"{icon} {tool_name}"
+
     def _flush_tool_progress(self, tool_call_id: str | None) -> None:
         if not isinstance(tool_call_id, str) or not tool_call_id:
             return
         streams = self._pending_tool_progress.pop(tool_call_id, None)
         if not streams:
             return
-        log = self.query_one("#transcript-log", RichLog)
+        log = self.query_one("#transcript-log", TimelineView)
         for stream_name, chunks in streams.items():
             body = "".join(chunks).rstrip()
             if not body:
@@ -654,11 +909,9 @@ class VoidCodeTUI(App[int]):
         payload: dict[str, object],
         display: dict[str, object] | None,
     ) -> None:
-        log = self.query_one("#transcript-log", RichLog)
+        log = self.query_one("#transcript-log", TimelineView)
         tool_call_id = payload.get("tool_call_id")
         tool_call_id_str = tool_call_id if isinstance(tool_call_id, str) else None
-
-        self._flush_tool_progress(tool_call_id_str)
 
         if display is None and tool_call_id_str is not None:
             display = self._tool_display_by_call_id.get(tool_call_id_str)
@@ -668,47 +921,44 @@ class VoidCodeTUI(App[int]):
         header_style = "bold red" if is_error else "bold green"
         icon = "✖" if is_error else "✔"
 
-        title = self._display_field(display, "title")
-        summary = self._display_field(display, "summary")
-        if title and summary:
-            header = Text(f"{icon} {title}: {summary}", style=header_style)
-        elif summary:
-            header = Text(f"{icon} {summary}", style=header_style)
-        else:
-            header = Text(f"{icon} Completed tool: {tool_name}", style=header_style)
-        path = self._display_copyable_path(display)
-        if path:
-            header.append(f"\n  {path}", style="dim")
-        command = self._display_command(display)
-        if command:
-            header.append(f"\n  $ {command}", style="cyan")
-        log.write(Panel(header, border_style=header_style.split()[-1], expand=False, padding=(0, 1)))
+        header = self._tool_lifecycle_title(icon, tool_name, display)
+        body: list[RenderableType] = []
+        streams = self._pending_tool_progress.pop(tool_call_id_str, None) if tool_call_id_str is not None else None
+        if streams:
+            body.append(self._tool_progress_renderable(streams))
 
         kind = self._display_field(display, "kind") or ""
-        if kind in ("write",):
-            return
-
         content = payload.get("content")
-        if not isinstance(content, str) or not content:
-            return
-
-        if tool_call_id_str is not None:
+        if isinstance(content, str) and content and tool_call_id_str is not None:
             self._tool_content_by_call_id[tool_call_id_str] = content
             artifact = payload.get("artifact_id")
             if isinstance(artifact, str) and artifact:
                 self._tool_artifact_by_call_id[tool_call_id_str] = artifact
 
-        if kind == "edit":
-            self._write_diff_render(log, content)
-            return
+        if isinstance(content, str) and content and kind != "write":
+            path = self._display_copyable_path(display)
+            if kind == "edit":
+                body.append(self._diff_renderable(content))
+            elif kind in ("read", "search"):
+                body.append(self._build_syntax_for_path(path, content) or self._content_preview(content, tool_call_id_str))
+            else:
+                body.append(self._content_preview(content, tool_call_id_str))
 
-        if kind in ("read", "search"):
-            syntax = self._build_syntax_for_path(path, content)
-            if syntax is not None:
-                log.write(syntax)
-                return
-
-        self._write_content_block(log, content, tool_call_id_str)
+        rendered_body: RenderableType = Group(*body)
+        if tool_call_id_str is not None:
+            if log.has_block(tool_call_id_str):
+                log.update_block(
+                    tool_call_id_str,
+                    title=header,
+                    content=rendered_body,
+                    classes=f"timeline-block tool-{'error' if is_error else 'success'}",
+                )
+            else:
+                log.write_block(header, rendered_body, key=tool_call_id_str, classes=f"timeline-block tool-{'error' if is_error else 'success'}")
+        else:
+            log.write(Text(header, style=header_style))
+            for renderable in body:
+                log.write(renderable)
 
     @staticmethod
     def _build_syntax_for_path(path: str | None, content: str) -> Syntax | None:
@@ -724,11 +974,10 @@ class VoidCodeTUI(App[int]):
             return None
 
     @staticmethod
-    def _write_diff_render(log: RichLog, content: str) -> None:
+    def _diff_renderable(content: str) -> Text:
         lines = content.splitlines()
         if not any(line.startswith(("+++", "---", "@@")) for line in lines):
-            log.write(Text(content))
-            return
+            return Text(content)
         text = Text()
         for line in lines:
             if line.startswith("+++"):
@@ -743,11 +992,31 @@ class VoidCodeTUI(App[int]):
                 text.append(line + "\n", style="blue")
             else:
                 text.append(line + "\n")
-        log.write(text)
+        return text
+
+    @staticmethod
+    def _content_preview(
+        content: str,
+        tool_call_id: str | None,
+        *,
+        max_lines: int = 10,
+        preview_head_lines: int = 5,
+    ) -> Text:
+        lines = content.splitlines()
+        if len(lines) <= max_lines:
+            return Text(content)
+        head = "\n".join(lines[:preview_head_lines])
+        remaining = len(lines) - preview_head_lines
+        hint = f"\n… {remaining} more lines"
+        if tool_call_id:
+            hint += f" · Ctrl+O or /expand {tool_call_id}"
+        text = Text(head)
+        text.append(hint, style="dim")
+        return text
 
     @staticmethod
     def _write_content_block(
-        log: RichLog,
+        log: TimelineView,
         content: str,
         tool_call_id: str | None,
         *,
@@ -768,7 +1037,7 @@ class VoidCodeTUI(App[int]):
         log.write(Text(hint, style="dim"))
 
     def _write_output_line(self, output: str) -> None:
-        self.query_one("#transcript-log", RichLog).write(Markdown(output))
+        self.query_one("#transcript-log", TimelineView).write(Markdown(output))
 
     @staticmethod
     def _format_runtime_error(error: object) -> str:
@@ -822,7 +1091,12 @@ class VoidCodeTUI(App[int]):
         self.post_message(ContextPanelUpdated(label))
 
     def on_context_panel_updated(self, message: ContextPanelUpdated) -> None:
-        self.query_one("#context-panel", Static).update(message.label)
+        # Async updates may arrive while a modal is the active screen. Sidebar
+        # widgets belong to the root screen, so never resolve them through the
+        # current-screen App.query_one() path.
+        if not self.screen_stack:
+            return
+        self.screen_stack[0].query_one("#context-panel", Static).update(message.label)
 
     def _schedule_stream_preview_flush(self) -> None:
         if self._preview_flush_scheduled:
@@ -837,7 +1111,11 @@ class VoidCodeTUI(App[int]):
         output = "".join(self._pending_output)
         self._pending_output.clear()
         self._stream_output_buffer += output
-        self.query_one("#current-response", Static).update(Markdown(self._stream_output_buffer))
+        _, response_key = self._ensure_stream_render()
+        log = self.query_one("#transcript-log", TimelineView)
+        preview = Text(self._stream_output_buffer)
+        if not log.update_live(response_key, preview):
+            log.write_live(response_key, preview)
 
     def _set_state(self, state: str) -> None:
         self.current_state = state
@@ -849,6 +1127,8 @@ class VoidCodeTUI(App[int]):
             current.update("Working...")
         elif state == "Waiting approval":
             current.update("Waiting for approval...")
+        elif state == "Waiting input":
+            current.update("Waiting for your answer...")
         elif state == "Completed":
             current.update("")
         elif state == "Failed":
@@ -856,7 +1136,7 @@ class VoidCodeTUI(App[int]):
 
     def _set_stream_active(self, active: bool) -> None:
         self._stream_active = active
-        self.query_one("#composer-input", Input).disabled = active or self.pending_request_id is not None
+        self.query_one("#composer-input", Input).disabled = False
 
     @work(thread=True)
     def _replay_stream(self, session_id: str) -> None:
@@ -897,6 +1177,30 @@ class VoidCodeTUI(App[int]):
                 session_id=session_id,
                 approval_request_id=request_id,
                 approval_decision=decision,
+            ):
+                saw_chunk = True
+                last_status = chunk.session.status
+                self.post_message(StreamChunkReceived(chunk))
+            if not saw_chunk:
+                raise ValueError("runtime stream emitted no chunks")
+            self.post_message(StreamCompleted(last_status))
+        except Exception as error:
+            self.post_message(StreamFailed(error))
+
+    @work(thread=True)
+    def _answer_question_stream(
+        self,
+        session_id: str,
+        request_id: str,
+        responses: tuple[QuestionResponse, ...],
+    ) -> None:
+        last_status = "Idle"
+        saw_chunk = False
+        try:
+            for chunk in self.runtime.answer_question_stream(
+                session_id,
+                question_request_id=request_id,
+                responses=responses,
             ):
                 saw_chunk = True
                 last_status = chunk.session.status
@@ -948,6 +1252,26 @@ class VoidCodeTUI(App[int]):
                 self.push_screen(ApprovalModal(event), _handle_decision)
                 return
 
+            if chunk.session.status == "waiting" and event.event_type == "runtime.question_requested":
+                payload = event.payload or {}
+                request_id = payload.get("request_id")
+                self.pending_question_request_id = request_id if isinstance(request_id, str) and request_id else None
+                self._set_state("Waiting input")
+                self._set_stream_active(False)
+
+                def _handle_answers(responses: tuple[QuestionResponse, ...] | None) -> None:
+                    if responses is None or self.session_id is None or self.pending_question_request_id is None:
+                        return
+                    question_request_id = self.pending_question_request_id
+                    self._write_question_answers(question_request_id, responses)
+                    self.pending_question_request_id = None
+                    self._set_state("Running")
+                    self._set_stream_active(True)
+                    self._answer_question_stream(self.session_id, question_request_id, responses)
+
+                self.push_screen(QuestionModal(event), _handle_answers)
+                return
+
             if event.event_type == "runtime.failed":
                 self._set_state("Failed")
             elif chunk.session.status == "running":
@@ -972,16 +1296,37 @@ class VoidCodeTUI(App[int]):
         if message.final_status == "failed":
             self._set_state("Failed")
         else:
-            if self._stream_output_buffer:
-                self._write_output_line(self._stream_output_buffer)
+            if self._stream_output_buffer and self._active_response_key is not None:
+                log = self.query_one("#transcript-log", TimelineView)
+                log.update_live(
+                    self._active_response_key,
+                    Markdown(self._stream_output_buffer),
+                )
+                log.finish_live(self._active_response_key)
+            if self._thinking_buffer and self._active_thinking_key is not None:
+                log = self.query_one("#transcript-log", TimelineView)
+                log.update_block(
+                    self._active_thinking_key,
+                    title="Thinking",
+                    content=Text(self._thinking_buffer, style="dim italic"),
+                    classes="timeline-block thinking-block",
+                )
+                log.collapse_block(self._active_thinking_key)
             self._stream_output_buffer = ""
             self._thinking_buffer = ""
+            self._active_thinking_key = None
+            self._active_response_key = None
             self._set_state("Idle")
         self._set_stream_active(False)
+        if not self._start_next_queued_prompt():
+            self.query_one("#composer-input", Input).focus()
 
     def on_stream_failed(self, message: StreamFailed) -> None:
         self._flush_stream_preview()
-        self.query_one("#transcript-log", RichLog).write(Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red"))
+        self.query_one("#transcript-log", TimelineView).write(Text(f"Error: {self._format_runtime_error(message.error)}", style="bold red"))
         self.pending_request_id = None
+        self.pending_question_request_id = None
         self._set_state("Failed")
         self._set_stream_active(False)
+        if not self._start_next_queued_prompt():
+            self.query_one("#composer-input", Input).focus()

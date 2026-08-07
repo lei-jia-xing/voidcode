@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from textual.widgets import Input, RichLog
+from textual.widgets import Collapsible, Input, OptionList
 
 from voidcode.runtime.config import (
     RuntimeTuiConfig,
@@ -14,6 +14,7 @@ from voidcode.runtime.config import (
     RuntimeTuiReadingPreferences,
     RuntimeTuiThemePreferences,
 )
+from voidcode.tui.timeline import TimelineView
 
 
 @dataclass(frozen=True)
@@ -148,23 +149,31 @@ async def test_tui_waiting_stream_keeps_waiting_state(app_class: Any) -> None:
         assert app.pending_request_id == "req-1"
         main_screen = app.screen_stack[-2]
         assert main_screen.query_one("#status-panel").renderable == "Waiting approval"
-        assert main_screen.query_one("#composer-input").disabled is True
+        assert main_screen.query_one("#composer-input").disabled is False
 
 
 @pytest.mark.anyio
-async def test_tui_ignores_submission_while_stream_active(app_class: Any) -> None:
-    VoidCodeTUI, _, _ = app_class
+async def test_tui_queues_submissions_fifo_while_stream_active(app_class: Any) -> None:
+    VoidCodeTUI, _, StreamCompleted = app_class
 
     mock_runtime = _mock_runtime()
     app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
 
-    async with app.run_test() as pilot:
-        app._stream_active = True
-        app.query_one("#composer-input").disabled = True
-        await pilot.press("x", "enter")
-        await pilot.pause()
+    with patch.object(app, "_start_stream") as start_stream:
+        async with app.run_test() as pilot:
+            composer = app.query_one("#composer-input", Input)
+            app._stream_active = True
+            app.on_input_submitted(Input.Submitted(composer, "first"))
+            app.on_input_submitted(Input.Submitted(composer, "second"))
+            assert list(app._prompt_queue) == ["first", "second"]
 
-    mock_runtime.run_stream.assert_not_called()
+            app._stream_active = False
+            assert app._start_next_queued_prompt() is True
+            app.on_stream_completed(StreamCompleted("completed"))
+            await pilot.pause()
+
+    prompts = [call.args[0].prompt for call in start_stream.call_args_list]
+    assert prompts == ["first", "second"]
 
 
 @pytest.mark.anyio
@@ -185,6 +194,78 @@ async def test_tui_renders_output_as_markdown(app_class: Any) -> None:
         assert "bold" in plain_text
         assert "**" not in plain_text
         assert app.current_state == "Idle"
+
+
+@pytest.mark.anyio
+async def test_tui_visually_separates_user_and_agent_messages(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    async with app.run_test() as pilot:
+        app._write_user_prompt("Please inspect this")
+        app.on_stream_chunk_received(StreamChunkReceived(_make_chunk(status="completed", output="Inspection done")))
+        app.on_stream_completed(StreamCompleted("completed"))
+        await pilot.pause()
+
+        user = app.query_one("#transcript-log .user-message")
+        agent = app.query_one("#transcript-log .assistant-stream")
+        assert user.has_class("user-message")
+        assert agent.has_class("assistant-stream")
+        plain = "\n".join("".join(segment.text for segment in line) for line in app.query_one("#transcript-log").lines)
+        assert "Please inspect this" in plain
+        assert "Inspection done" in plain
+        assert "You" not in plain
+        assert "Agent" not in plain
+
+
+@pytest.mark.anyio
+async def test_tui_stream_keeps_thinking_block_and_updates_one_response_entry(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
+
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    async with app.run_test() as pilot:
+        for text in ("Check ", "the code"):
+            app.on_stream_chunk_received(
+                StreamChunkReceived(
+                    _make_chunk(
+                        status="running",
+                        event=_runtime_event(
+                            "graph.provider_stream",
+                            source="graph",
+                            channel="reasoning",
+                            kind="delta",
+                            text=text,
+                        ),
+                    )
+                )
+            )
+        for text in ("Hello ", "**world**"):
+            app.on_stream_chunk_received(
+                StreamChunkReceived(
+                    _make_chunk(
+                        status="running",
+                        event=_runtime_event(
+                            "graph.provider_stream",
+                            source="graph",
+                            channel="text",
+                            kind="delta",
+                            text=text,
+                        ),
+                    )
+                )
+            )
+        app._flush_stream_preview()
+        app.on_stream_completed(StreamCompleted("completed"))
+        await pilot.pause()
+
+        thinking = app.query_one("#transcript-log .thinking-block", Collapsible)
+        assert thinking.title == "Thinking"
+        assert thinking.collapsed is True
+        plain = "\n".join("".join(segment.text for segment in line) for line in app.query_one("#transcript-log").lines)
+        assert "Check the code" in plain
+        assert "Hello world" in plain
+        assert "**world**" not in plain
+        assert len(list(app.query("#transcript-log .assistant-stream"))) == 1
 
 
 @pytest.mark.anyio
@@ -612,6 +693,45 @@ async def test_tui_tool_display_summary_rendered(app_class: Any) -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_approval_resolution_reuses_requested_tool_context(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    async with app.run_test() as pilot:
+        app.on_stream_chunk_received(
+            StreamChunkReceived(
+                _make_chunk(
+                    status="running",
+                    event=_runtime_event(
+                        "runtime.approval_requested",
+                        request_id="approval-1",
+                        tool="write_file",
+                        target_summary="README.md",
+                    ),
+                )
+            )
+        )
+        app.on_stream_chunk_received(
+            StreamChunkReceived(
+                _make_chunk(
+                    status="running",
+                    event=_runtime_event(
+                        "runtime.approval_resolved",
+                        request_id="approval-1",
+                        decision="allow",
+                    ),
+                )
+            )
+        )
+        await pilot.pause()
+
+        log = app.query_one("#transcript-log")
+        plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
+        assert "Approval allow for tool: write_file" in plain
+        assert "unknown_tool" not in plain
+
+
+@pytest.mark.anyio
 async def test_tui_tool_result_content_inline_for_short_results(app_class: Any) -> None:
     VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
 
@@ -647,6 +767,67 @@ async def test_tui_tool_result_content_inline_for_short_results(app_class: Any) 
         assert "line one" in plain
         assert "line three" in plain
         assert "more lines" not in plain
+
+
+@pytest.mark.anyio
+async def test_tui_tool_lifecycle_updates_one_collapsible_block(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    display = {"kind": "shell", "title": "Shell", "summary": "echo hello"}
+    async with app.run_test() as pilot:
+        for event in (
+            _runtime_event("graph.tool_request_created", tool="shell_exec", tool_call_id="call-1", display=display),
+            _runtime_event("runtime.tool_started", tool="shell_exec", tool_call_id="call-1", display=display),
+            _runtime_event(
+                "runtime.tool_progress",
+                tool="shell_exec",
+                tool_call_id="call-1",
+                stream="stdout",
+                chunk="hello",
+            ),
+            _runtime_event(
+                "runtime.tool_completed",
+                tool="shell_exec",
+                tool_call_id="call-1",
+                status="ok",
+                content="hello",
+                display=display,
+            ),
+        ):
+            app.on_stream_chunk_received(StreamChunkReceived(_make_chunk(status="running", event=event)))
+        await pilot.pause()
+
+        blocks = list(app.query("#transcript-log Collapsible"))
+        assert len(blocks) == 1
+        assert isinstance(blocks[0], Collapsible)
+        assert blocks[0].title == "✔ Shell: echo hello"
+
+
+@pytest.mark.anyio
+async def test_tui_ctrl_o_toggles_tool_blocks(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    async with app.run_test() as pilot:
+        app.on_stream_chunk_received(
+            StreamChunkReceived(
+                _make_chunk(
+                    status="running",
+                    event=_runtime_event(
+                        "runtime.tool_started",
+                        tool="read_file",
+                        tool_call_id="call-expand",
+                    ),
+                )
+            )
+        )
+        await pilot.pause()
+        block = app.query_one("#transcript-log Collapsible", Collapsible)
+        assert block.collapsed is True
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert block.collapsed is False
 
 
 @pytest.mark.anyio
@@ -779,7 +960,7 @@ async def test_tui_tool_result_edit_diff_coloring(app_class: Any) -> None:
 
 
 @pytest.mark.anyio
-async def test_tui_expand_slash_command_writes_stored_content(app_class: Any) -> None:
+async def test_tui_expand_slash_command_expands_tool_block_with_stored_content(app_class: Any) -> None:
     VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
 
     long_content = "\n".join(f"row {i}" for i in range(1, 26))
@@ -815,8 +996,8 @@ async def test_tui_expand_slash_command_writes_stored_content(app_class: Any) ->
 
         log = app.query_one("#transcript-log")
         plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
-        assert "/expand call-expand" in plain
         assert "row 25" in plain
+        assert app.query_one("#transcript-log Collapsible", Collapsible).collapsed is False
 
 
 @pytest.mark.anyio
@@ -913,6 +1094,45 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
         await pilot.pause()
 
         assert app.query_one("#context-panel").renderable == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
+
+
+@pytest.mark.anyio
+async def test_tui_context_update_targets_root_screen_while_question_modal_is_open(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    async with app.run_test() as pilot:
+        app.on_stream_chunk_received(
+            StreamChunkReceived(
+                _make_chunk(
+                    status="waiting",
+                    event=_runtime_event(
+                        "runtime.question_requested",
+                        request_id="question-context-race",
+                        tool="question",
+                        question_count=1,
+                        questions=[
+                            {
+                                "header": "Choice",
+                                "question": "Continue?",
+                                "multiple": False,
+                                "options": [{"label": "Yes", "description": "Continue"}],
+                            }
+                        ],
+                    ),
+                )
+            )
+        )
+        await pilot.pause()
+
+        from voidcode.tui.messages import ContextPanelUpdated
+        from voidcode.tui.screens import QuestionModal
+
+        assert isinstance(app.screen, QuestionModal)
+        app.on_context_panel_updated(ContextPanelUpdated("7 results\n[Budget: 256 tokens]"))
+        await pilot.pause()
+
+        assert app.screen_stack[0].query_one("#context-panel").renderable == "7 results\n[Budget: 256 tokens]"
 
 
 @pytest.mark.anyio
@@ -1044,7 +1264,7 @@ async def test_tui_transcript_line_cap_prevents_unbounded_growth(app_class: Any)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        log = app.query_one("#transcript-log", RichLog)
+        log = app.query_one("#transcript-log", TimelineView)
 
         assert log.max_lines == 2000
 
@@ -1065,7 +1285,7 @@ async def test_tui_content_block_enforces_max_lines(app_class: Any) -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        log = app.query_one("#transcript-log", RichLog)
+        log = app.query_one("#transcript-log", TimelineView)
         before = len(log.lines)
         long_content = "\n".join(f"line {i}" for i in range(1, 501))
 
@@ -1140,7 +1360,7 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
         assert app.current_state == "Waiting approval"
         assert app.pending_request_id == "req-smoke"
         base_screen = app.screen_stack[0]
-        assert base_screen.query_one("#composer-input").disabled is True
+        assert base_screen.query_one("#composer-input").disabled is False
 
         approval_modal = app.screen
         assert isinstance(approval_modal, ApprovalModal)
@@ -1148,6 +1368,146 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
 
         plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
         assert "⚠ Approval requested for tool: write_file" in plain
+
+
+@pytest.mark.anyio
+async def test_tui_question_modal_submits_answers_and_resumes_stream(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    mock_runtime = _mock_runtime()
+    mock_runtime.answer_question_stream.return_value = iter((_make_chunk(session_id="question-session", status="completed", output="continued"),))
+    app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
+
+    async with app.run_test() as pilot:
+        app.on_stream_chunk_received(
+            StreamChunkReceived(
+                _make_chunk(
+                    session_id="question-session",
+                    status="waiting",
+                    event=_runtime_event(
+                        "runtime.question_requested",
+                        request_id="question-1",
+                        tool="question",
+                        question_count=1,
+                        questions=[
+                            {
+                                "header": "Approach",
+                                "question": "Which approach?",
+                                "multiple": False,
+                                "options": [
+                                    {"label": "Minimal", "description": "Small change"},
+                                    {"label": "Complete", "description": "Full flow"},
+                                ],
+                            }
+                        ],
+                    ),
+                )
+            )
+        )
+        await pilot.pause()
+
+        from voidcode.tui.screens import QuestionModal
+
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        assert app.current_state == "Waiting input"
+        options = modal.query_one("#question-options", OptionList)
+        options.highlighted = 2
+        await pilot.press("enter")
+        custom = modal.query_one("#question-custom", Input)
+        assert custom.display is True
+        custom.value = "Complete"
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+
+        log = app.screen_stack[0].query_one("#transcript-log")
+        plain = "\n".join("".join(segment.text for segment in line) for line in log.lines)
+        assert "✓ Answered" in plain
+        assert "Approach" in plain
+
+    mock_runtime.answer_question_stream.assert_called_once()
+    call = mock_runtime.answer_question_stream.call_args
+    assert call.args == ("question-session",)
+    assert call.kwargs["question_request_id"] == "question-1"
+    assert call.kwargs["responses"][0].header == "Approach"
+    assert call.kwargs["responses"][0].answers == ("Complete",)
+
+
+@pytest.mark.anyio
+async def test_tui_question_wizard_handles_multi_select_pages_and_review(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+
+    mock_runtime = _mock_runtime()
+    mock_runtime.answer_question_stream.return_value = iter((_make_chunk(session_id="wizard-session", status="completed", output="continued"),))
+    app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
+
+    async with app.run_test() as pilot:
+        app.on_stream_chunk_received(
+            StreamChunkReceived(
+                _make_chunk(
+                    session_id="wizard-session",
+                    status="waiting",
+                    event=_runtime_event(
+                        "runtime.question_requested",
+                        request_id="question-wizard",
+                        tool="question",
+                        question_count=2,
+                        questions=[
+                            {
+                                "header": "Features",
+                                "question": "Which features?",
+                                "multiple": True,
+                                "options": [
+                                    {"label": "Tests", "description": "Add coverage"},
+                                    {"label": "Docs", "description": "Update documentation"},
+                                ],
+                            },
+                            {
+                                "header": "Mode",
+                                "question": "Which mode?",
+                                "multiple": False,
+                                "options": [
+                                    {"label": "Fast", "description": "Fewer checks"},
+                                    {"label": "Safe", "description": "Full verification"},
+                                ],
+                            },
+                        ],
+                    ),
+                )
+            )
+        )
+        await pilot.pause()
+
+        from voidcode.tui.screens import QuestionModal
+
+        modal = app.screen
+        assert isinstance(modal, QuestionModal)
+        options = modal.query_one("#question-options", OptionList)
+        options.highlighted = 0
+        await pilot.press("space")
+        options.highlighted = 1
+        await pilot.press("enter")
+        assert "Tests" in modal.answers[0].selected
+        assert "Docs" in modal.answers[0].selected
+
+        await pilot.click("#question-next")
+        assert modal.page_index == 1
+        options.highlighted = 1
+        await pilot.press("enter")
+        assert modal.query_one("#question-review").display is True
+        review = modal.query_one("#question-review")
+        review_plain = str(review.renderable)
+        assert "Features" in review_plain
+        assert "Mode" in review_plain
+
+        await pilot.click("#question-submit")
+        await pilot.pause()
+        await pilot.pause()
+
+    responses = mock_runtime.answer_question_stream.call_args.kwargs["responses"]
+    assert responses[0].answers == ("Tests", "Docs")
+    assert responses[1].answers == ("Safe",)
 
 
 @pytest.mark.anyio
