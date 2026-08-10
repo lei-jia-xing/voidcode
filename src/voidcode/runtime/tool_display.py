@@ -159,7 +159,7 @@ def _build_copyable(
         return payload if payload else None
 
     # Path-based tools
-    path_key = "filePath" if tool_name in {"read_file", "lsp"} else "path"
+    path_key = "path"
     path = _first_primitive(arguments, path_key)
     if path is not None:
         payload["path"] = path
@@ -199,9 +199,9 @@ def build_tool_display(
         copyable = _build_copyable(tool_name, arguments, result_data)
 
     elif tool_name in {"read_file"}:
-        path = _first_primitive(arguments, "filePath")
+        path = _first_primitive(arguments, "path")
         summary = path if path else "Read file"
-        args = _extract_primitive_args(arguments, "filePath")
+        args = _extract_primitive_args(arguments, "path")
         if path:
             copyable = {"path": path}
 
@@ -299,7 +299,6 @@ def build_tool_display(
             "description",
             "query",
             "url",
-            "filePath",
             "path",
             "pattern",
             "name",

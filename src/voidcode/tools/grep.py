@@ -90,6 +90,7 @@ class GrepTool:
             "context": {"type": "integer", "minimum": 0, "description": "Number of surrounding lines to include for each match."},
             "include": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to include."},
             "exclude": {"type": "array", "items": {"type": "string"}, "description": "Optional glob filters for files to exclude."},
+            "required": ["pattern", "path"],
         },
         read_only=True,
         path_argument_keys=("path",),

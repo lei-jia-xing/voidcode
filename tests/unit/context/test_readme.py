@@ -19,7 +19,7 @@ def test_directory_readme_contexts_load_root_and_nearest_readmes(tmp_path: Path)
                 tool_name="read_file",
                 status="ok",
                 content="content",
-                data={"path": "src/app.py", "arguments": {"filePath": "src/app.py"}},
+                data={"path": "src/app.py", "arguments": {"path": "src/app.py"}},
             ),
         ),
     )
@@ -41,7 +41,7 @@ def test_directory_readme_contexts_ignore_external_paths(tmp_path: Path) -> None
                 content="content",
                 data={
                     "path": str((tmp_path.parent / "outside" / "secret.txt").resolve()),
-                    "arguments": {"filePath": str((tmp_path.parent / "outside" / "secret.txt").resolve())},
+                    "arguments": {"path": str((tmp_path.parent / "outside" / "secret.txt").resolve())},
                 },
             ),
         ),

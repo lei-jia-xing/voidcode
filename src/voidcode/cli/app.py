@@ -752,7 +752,7 @@ def _trace_tool_summary(payload: dict[str, object]) -> str | None:
         return path
     arguments = payload.get("arguments")
     if _is_string_keyed_mapping(arguments):
-        for key in ("filePath", "path", "pattern", "query", "url", "description"):
+        for key in ("path", "pattern", "query", "url", "description"):
             value = _trace_string(arguments.get(key))
             if value:
                 return value
@@ -2485,6 +2485,16 @@ def _handle_doctor_command(args: DoctorArgs) -> int:
     config_error: str | None = None
     config: RuntimeConfig | None = None
     results: list[CapabilityCheckResult] = []
+    if args.fix:
+        if args.model is None or not args.model.strip():
+            raise CliError(code=EXIT_USAGE_ERROR, message="doctor --fix requires --model provider/model")
+        config_path = workspace.resolve() / RUNTIME_CONFIG_FILE_NAME
+        if config_path.exists():
+            raise CliError(code=EXIT_CONFIG_ERROR, message=f"runtime config already exists: {config_path}; edit it or run config init --force")
+        payload = generate_starter_runtime_config(model=args.model)
+        written_path = write_runtime_config_payload(workspace, payload)
+        print(json.dumps({"config_path": str(written_path), "next_command": f"voidcode doctor --workspace {workspace}"}))
+        return EXIT_SUCCESS
     try:
         config = load_runtime_config(workspace)
     except ValueError as exc:
@@ -3458,13 +3468,17 @@ def mcp_list(workspace: Path, json_output: bool) -> int:
 @root_cli.command(help="Check runtime capability readiness (external tools, formatters, LSP, MCP).")
 @_workspace_option("Workspace root used to resolve runtime config.")
 @click.option("--verbose", "verbose", "-v", is_flag=True)
+@click.option("--fix", is_flag=True, help="Create a starter runtime config when none exists.")
+@click.option("--model", type=str, help="Provider/model used with --fix, for example openai/gpt-4o.")
 @_json_option("Output report in JSON format.")
-def doctor(workspace: Path, verbose: bool, json_output: bool) -> int:
+def doctor(workspace: Path, verbose: bool, fix: bool, model: str | None, json_output: bool) -> int:
     return _handle_doctor_command(
         DoctorArgs(
             workspace=workspace,
             verbose=verbose,
             json=json_output,
+            fix=fix,
+            model=model,
         )
     )
 

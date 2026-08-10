@@ -84,7 +84,7 @@ def test_stub_provider_protocol_proposes_tool_call_for_first_turn() -> None:
 
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
-    assert result.tool_call.arguments == {"filePath": "sample.txt"}
+    assert result.tool_call.arguments == {"path": "sample.txt"}
     assert result.output is None
 
 

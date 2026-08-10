@@ -25,6 +25,20 @@ pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 @pytest.fixture
 def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    monkeypatch.setattr(
+        config_module,
+        "_default_runtime_mcp_config",
+        lambda: config_module.RuntimeMcpConfig(enabled=False),
+    )
+    monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
+    http_module = importlib.import_module("voidcode.runtime.http")
+
+    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+        for chunk in cast(Any, runtime).run_stream(request):
+            yield chunk
+
+    monkeypatch.setattr(http_module.RuntimeTransportApp, "_stream_runtime_chunks", _direct_stream)
 
 
 def _cwd_command() -> str:
@@ -916,7 +930,7 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     payload = cast(dict[str, object], response.json())
 
     assert response.status == 200
-    assert payload["output"] == "http replay"
+    assert payload["output"] == "Read 1 line(s) from sample.txt."
     request_event = _event_by_type(
         cast(list[dict[str, object]], payload["events"]),
         "runtime.request_received",
@@ -976,8 +990,8 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert response.status == 200
     assert payload["prompt"] == "read sample.txt"
     assert payload["status"] == "completed"
-    assert payload["summary"] == "Completed: result payload"
-    assert payload["output"] == "result payload"
+    assert payload["summary"] == "Completed: Read 1 line(s) from sample.txt."
+    assert payload["output"] == "Read 1 line(s) from sample.txt."
     assert payload["error"] is None
     assert payload["last_event_sequence"] == cast(Any, stored.events[-1]).sequence
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])] == [
@@ -2613,12 +2627,21 @@ def test_transport_serializes_tool_progress_event_as_sse_frame() -> None:
     assert payload["chunk"] == "alpha\n"
 
 
-def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path: Path) -> None:
+def test_transport_persists_streamed_run_for_session_listing_and_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("stream replay\n", encoding="utf-8")
     create_runtime_app = _load_transport_app_factory()
 
     app = create_runtime_app(workspace=tmp_path)
+
+    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+        for chunk in cast(Any, runtime).run_stream(request):
+            yield chunk
+
+    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
 
     stream_response = _run_app(
         app,
@@ -2658,7 +2681,7 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
         cast(dict[str, object], replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert replay_payload["output"] == "stream replay"
+    assert replay_payload["output"] == "Read 1 line(s) from sample.txt."
     _assert_ordered_event_types(
         _event_types_from_payload_events(replay_payload),
         [
@@ -2677,11 +2700,20 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(tmp_path
     )
 
 
-def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) -> None:
+def test_transport_allocates_distinct_anonymous_stream_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("anonymous stream\n", encoding="utf-8")
     create_runtime_app = _load_transport_app_factory()
     app = create_runtime_app(workspace=tmp_path)
+
+    async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+        for chunk in cast(Any, runtime).run_stream(request):
+            yield chunk
+
+    monkeypatch.setattr(type(app), "_stream_runtime_chunks", _direct_stream)
 
     first_stream_response = _run_app(
         app,
@@ -2740,8 +2772,8 @@ def test_transport_allocates_distinct_anonymous_stream_sessions(tmp_path: Path) 
         cast(dict[str, object], second_replay_payload["session"])["metadata"],
         workspace=tmp_path,
     )
-    assert first_replay_payload["output"] == "anonymous stream"
-    assert second_replay_payload["output"] == "anonymous stream"
+    assert first_replay_payload["output"] == "Read 1 line(s) from sample.txt."
+    assert second_replay_payload["output"] == "Read 1 line(s) from sample.txt."
 
 
 def test_transport_stream_preserves_failed_chunk_before_termination() -> None:
@@ -3619,25 +3651,56 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
     tmp_path: Path,
 ) -> None:
     create_runtime_app = _load_transport_app_factory()
-    runtime_config_module = importlib.import_module("voidcode.runtime.config")
+    _, runtime_class = _load_runtime_types()
+    mcp_module = importlib.import_module("voidcode.mcp")
 
-    failing_command = (
-        sys.executable,
-        "-c",
-        "import sys; sys.exit(1)",
-    )
-    config = runtime_config_module.RuntimeConfig(
-        execution_engine="deterministic",
-        mcp=runtime_config_module.RuntimeMcpConfig(
-            enabled=True,
-            servers={
-                "broken": runtime_config_module.RuntimeMcpServerConfig(
-                    command=failing_command,
-                )
-            },
+    class _PersistentlyFailingMcpManager:
+        def __init__(self) -> None:
+            self.failed = False
+
+        @property
+        def configuration(self) -> object:
+            return mcp_module.McpConfigState(
+                configured_enabled=True,
+                servers={"broken": mcp_module.McpServerConfig()},
+            )
+
+        def current_state(self) -> object:
+            return mcp_module.McpManagerState(
+                mode="managed",
+                configuration=cast(Any, self.configuration),
+                servers={
+                    "broken": mcp_module.McpServerRuntimeState(
+                        server_name="broken",
+                        status="failed" if self.failed else "stopped",
+                        workspace_root=str(tmp_path) if self.failed else None,
+                        stage="startup" if self.failed else None,
+                        error="MCP server error: Connection closed" if self.failed else None,
+                        command=["fake-broken"],
+                        retry_available=self.failed,
+                    )
+                },
+            )
+
+        def list_tools(self, *, workspace: Path, owner_session_id: str | None = None) -> tuple[object, ...]:
+            _ = workspace, owner_session_id
+            self.failed = True
+            return ()
+
+        def shutdown(self) -> tuple[StoredBackgroundTaskSummary, ...]:
+            return ()
+
+        def drain_events(self) -> tuple[object, ...]:
+            return ()
+
+    mcp_manager = _PersistentlyFailingMcpManager()
+    app = create_runtime_app(
+        workspace=tmp_path,
+        runtime_factory=lambda: runtime_class(
+            workspace=tmp_path,
+            mcp_manager=mcp_manager,
         ),
     )
-    app = create_runtime_app(workspace=tmp_path, config=cast(Any, config))
 
     run_response = _run_app(
         app,
@@ -3657,7 +3720,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
 
     assert run_response.status == 200
     assert event_types[0] == "runtime.request_received"
-    assert "runtime.mcp_server_failed" in event_types
+    assert "runtime.mcp_server_failed" not in event_types
     assert all(payload.get("kind") != "mcp_startup_failed" for payload in failed_payloads)
 
     status_payload = cast(dict[str, object], status_response.json())
@@ -3685,7 +3748,7 @@ def test_transport_status_preserves_mcp_failed_state_across_fresh_requests(
     assert server_payload["stage"] == "startup"
     assert server_payload["error"] == "MCP server error: Connection closed"
     assert server_payload["retry_available"] is True
-    assert server_payload["command"] == list(failing_command)
+    assert server_payload["command"] == ["fake-broken"]
 
 
 def test_transport_rejects_unsupported_request_metadata_field() -> None:

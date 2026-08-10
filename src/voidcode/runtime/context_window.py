@@ -282,6 +282,8 @@ def _context_tier_metadata(
     counts: dict[str, int] = {"instruction": 0, "workspace": 0, "task": 0, "recent": 0}
     for segment in segments:
         metadata = segment.metadata or {}
+        if metadata.get("source") == "runtime_dynamic_boundary":
+            continue
         raw_tier = metadata.get("tier")
         if raw_tier not in counts:
             continue

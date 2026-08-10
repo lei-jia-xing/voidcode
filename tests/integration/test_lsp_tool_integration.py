@@ -132,7 +132,7 @@ class _LspGraph:
                     tool_name="lsp",
                     arguments={
                         "operation": "documentSymbol",
-                        "filePath": "sample.py",
+                        "path": "sample.py",
                     },
                 )
             )
@@ -182,7 +182,7 @@ def test_runtime_managed_lsp_tool_rejects_disabled_manager(tmp_path: Path) -> No
                 tool_name="lsp",
                 arguments={
                     "operation": "documentSymbol",
-                    "filePath": "sample.py",
+                    "path": "sample.py",
                 },
             ),
             workspace=tmp_path,
@@ -207,7 +207,7 @@ def test_runtime_managed_lsp_tool_surfaces_failed_startup_state(tmp_path: Path, 
                 tool_name="lsp",
                 arguments={
                     "operation": "documentSymbol",
-                    "filePath": "sample.py",
+                    "path": "sample.py",
                 },
             ),
             workspace=tmp_path,
@@ -246,7 +246,7 @@ def test_runtime_managed_lsp_tool_uses_builtin_root_markers_for_workspace_select
                         tool_name="lsp",
                         arguments={
                             "operation": "documentSymbol",
-                            "filePath": "apps/demo/src/sample.py",
+                            "path": "apps/demo/src/sample.py",
                         },
                     )
                 )
@@ -329,7 +329,7 @@ def test_runtime_managed_lsp_tool_surfaces_protocol_failure_from_server(tmp_path
                 tool_name="lsp",
                 arguments={
                     "operation": "documentSymbol",
-                    "filePath": "sample.py",
+                    "path": "sample.py",
                 },
             ),
             workspace=tmp_path,

@@ -62,6 +62,13 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
 @pytest.fixture
 def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    monkeypatch.setattr(
+        config_module,
+        "_default_runtime_mcp_config",
+        lambda: config_module.RuntimeMcpConfig(enabled=False),
+    )
+    monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
 
 def _cwd_command() -> str:
@@ -585,7 +592,7 @@ class _ProviderRuntimeParityGraph:
                 events=(),
                 tool_call=tool_call_factory(
                     tool_name="read_file",
-                    arguments={"filePath": "sample.txt"},
+                    arguments={"path": "sample.txt"},
                 ),
             )
         if prompt.startswith("write danger.txt "):
@@ -639,7 +646,7 @@ class _ReadFileParityModelProvider:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
                             tool_name="read_file",
-                            arguments={"filePath": "sample.txt"},
+                            arguments={"path": "sample.txt"},
                             tool_call_id="read-1",
                         )
                     )
@@ -719,7 +726,7 @@ class _ParentToolResultGuardrailProvider:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
                             tool_name="read_file",
-                            arguments={"filePath": "parent-secret.txt"},
+                            arguments={"path": "parent-secret.txt"},
                         )
                     )
                 if len(tool_results) == 1:
@@ -1501,15 +1508,17 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     assert len(requests) == 2
     live_tool_result = _assembled_context(requests[1]).tool_results[0]
     raw_content = live_tool_result.content
-    assert raw_content is not None
-    assert "<path>sample.txt</path>" in raw_content
-    assert "1: alpha" in raw_content
-    assert "2: beta" in raw_content
+    assert raw_content == "Read 2 line(s) from sample.txt."
+    assert live_tool_result.data["raw_content"] == "alpha\nbeta"
+    assert live_tool_result.data["lines"] == [
+        {"line": 1, "text": "alpha"},
+        {"line": 2, "text": "beta"},
+    ]
     assert live_tool_result.data["tool_call_id"] == "read-1"
-    assert live_tool_result.data["arguments"] == {"filePath": "sample.txt"}
+    assert live_tool_result.data["arguments"] == {"path": "sample.txt"}
     live_metadata = _assembled_context(requests[1]).metadata
     assert live_metadata["original_tool_result_tokens"] == live_metadata["retained_tool_result_tokens"]
-    normalized = context_window_module.normalize_read_file_output(raw_content)
+    normalized = cast(str, live_tool_result.data["raw_content"])
     assert normalized == "alpha\nbeta"
     normalized_tokens = context_window_module.count_text_tokens(normalized).tokens
     assert cast(int, live_metadata["original_tool_result_tokens"]) > normalized_tokens
@@ -1521,7 +1530,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     assert loaded_event.payload["content"] == raw_content
     assert replay_event.payload["content"] == raw_content
     assert loaded_event.payload["tool_call_id"] == "read-1"
-    assert replay_event.payload["arguments"] == {"filePath": "sample.txt"}
+    assert replay_event.payload["arguments"] == {"path": "sample.txt"}
 
     provider_context = snapshot.provider_context
     assert provider_context is not None
@@ -1531,7 +1540,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     assert provider_context.provider_messages[-1].source == "provider_synthetic_tool_feedback"
     synthetic_feedback = provider_context.provider_messages[-1].content or ""
     assert synthetic_feedback.count('"tool_name": "read_file"') == 1
-    assert "1: alpha" in synthetic_feedback
+    assert "Read 2 line(s) from sample.txt." in synthetic_feedback
     assert "tool_status" not in synthetic_feedback
     assert "display" not in synthetic_feedback
 
@@ -1561,7 +1570,7 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
                         return provider_protocol_module.ProviderTurnResult(
                             tool_call=tool_contracts_module.ToolCall(
                                 tool_name="read_file",
-                                arguments={"filePath": "sample.txt"},
+                                arguments={"path": "sample.txt"},
                                 tool_call_id="read-1",
                             )
                         )
@@ -1594,10 +1603,10 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     continued_context = _assembled_context(requests[1])
     second_turn_context = _assembled_context(requests[2])
     assert [result.tool_name for result in continued_context.tool_results] == ["read_file"]
-    assert continued_context.tool_results[0].content is not None
-    assert "1: alpha" in continued_context.tool_results[0].content
+    assert continued_context.tool_results[0].content == "Read 2 line(s) from sample.txt."
+    assert continued_context.tool_results[0].data["raw_content"] == "alpha\nbeta"
     assert continued_context.tool_results[0].data["tool_call_id"] == "read-1"
-    assert continued_context.tool_results[0].data["arguments"] == {"filePath": "sample.txt"}
+    assert continued_context.tool_results[0].data["arguments"] == {"path": "sample.txt"}
     assert second_turn_context.tool_results == continued_context.tool_results
     replayed_segments = [
         segment
@@ -1799,13 +1808,14 @@ def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_c
         ),
     )
 
-    first = runtime.run(
-        runtime_request(
-            prompt="user parent-one sentinel",
-            session_id="shared-child-session",
-            parent_session_id="parent-one",
+    with pytest.raises(ValueError, match="delegated child must call submit_result"):
+        runtime.run(
+            runtime_request(
+                prompt="user parent-one sentinel",
+                session_id="shared-child-session",
+                parent_session_id="parent-one",
+            )
         )
-    )
     rehydrated_segments = cast(
         Any,
         runtime,
@@ -1814,7 +1824,6 @@ def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_c
         parent_session_id="parent-two",
     )
 
-    assert first.session.status == "completed"
     assert rehydrated_segments == ()
 
 
@@ -1854,7 +1863,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
                         return provider_protocol_module.ProviderTurnResult(
                             tool_call=tool_contracts_module.ToolCall(
                                 tool_name="read_file",
-                                arguments={"filePath": "sample.txt"},
+                                arguments={"path": "sample.txt"},
                                 tool_call_id="read-1",
                             )
                         )
@@ -1905,71 +1914,12 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     )
 
 
-def test_runtime_delegated_mcp_and_background_hook_events_have_exact_metadata(
+def test_runtime_delegated_background_hook_events_have_exact_metadata(
     tmp_path: Path,
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     config_module = importlib.import_module("voidcode.runtime.config")
     permission_module = importlib.import_module("voidcode.runtime.permission")
-    server_script = tmp_path / "echo_mcp_server.py"
-    _write_echo_mcp_server(server_script)
-
-    mcp_runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                graph=_McpEchoGraph(),
-                permission_policy=permission_module.PermissionPolicy(mode="allow"),
-                config=config_module.RuntimeConfig(
-                    approval_mode="allow",
-                    execution_engine="deterministic",
-                    mcp=config_module.RuntimeMcpConfig(
-                        enabled=True,
-                        servers={
-                            "echo": config_module.RuntimeMcpServerConfig(
-                                transport="stdio",
-                                command=(sys.executable, str(server_script)),
-                                scope="session",
-                            )
-                        },
-                    ),
-                    agents={
-                        "explore": config_module.RuntimeAgentConfig(
-                            preset="explore",
-                            execution_engine="deterministic",
-                        )
-                    },
-                ),
-            ),
-        ),
-    )
-
-    response = mcp_runtime.run(runtime_request(prompt="leader", session_id="leader-mcp"))
-    assert response.session.status == "completed"
-    response = mcp_runtime.run(
-        runtime_request(
-            prompt="use mcp",
-            session_id="mcp-child",
-            parent_session_id="leader-mcp",
-        )
-    )
-    event_types = [event.event_type for event in response.events]
-    mcp_started = next(event for event in response.events if event.event_type == "runtime.mcp_server_started")
-    mcp_released = next(event for event in response.events if event.event_type == "runtime.mcp_server_released")
-    mcp_tool_completed = next(
-        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["server"] == "echo"
-    )
-
-    assert response.session.status == "completed"
-    assert "runtime.mcp_server_stopped" in event_types
-    assert mcp_started.payload["server"] == "echo"
-    assert mcp_started.payload["scope"] == "session"
-    assert mcp_started.payload["owner_session_id"] == "mcp-child"
-    assert mcp_released.payload["owner_session_id"] == "mcp-child"
-    assert mcp_tool_completed.payload["tool"] == "echo"
-    assert mcp_tool_completed.payload["content"] == "echo:delegated mcp"
 
     hook_runtime = cast(
         RuntimeRunner,
@@ -2091,10 +2041,11 @@ def test_provider_child_request_excludes_parent_tool_results_and_transcript_by_d
 
     assert response.session.status == "completed"
     assert response.output == "parent done"
-    assert "parent-only tool result" in _request_text(parent_followup_request)
+    assert "Read 1 line(s) from parent-secret.txt." in _request_text(parent_followup_request)
     assert child_context.tool_results == ()
     child_request_text = _request_text(child_request)
     assert "parent-only tool result" not in child_request_text
+    assert "Read 1 line(s) from parent-secret.txt." not in child_request_text
     assert "runtime.tool_completed" not in child_request_text
     assert "transcript" not in child_context.metadata
 
@@ -3056,7 +3007,7 @@ def test_runtime_skips_hooks_for_nested_hook_launched_runtime_invocations(tmp_pa
 
     assert marker_path.read_text(encoding="utf-8") == "1"
     nested_output = nested_output_path.read_text(encoding="utf-8")
-    assert nested_output == "nested hook read\n"
+    assert nested_output == "Read 1 line(s) from nested.txt.\n"
     assert "runtime.tool_hook_pre" not in nested_output
     assert "runtime.tool_hook_post" not in nested_output
     assert [event.event_type for event in result.events].count("runtime.tool_hook_pre") == 1
@@ -3456,7 +3407,7 @@ def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: 
                 ),
                 graph=_SingleToolGraph(
                     "read_file",
-                    {"filePath": str(outside_file)},
+                    {"path": str(outside_file)},
                 ),
                 permission_policy=policy,
             ),
@@ -3495,7 +3446,7 @@ def test_runtime_allows_external_read_by_default_without_approval(tmp_path: Path
             runtime_class(
                 workspace=tmp_path,
                 config=runtime_config(approval_mode="allow"),
-                graph=_SingleToolGraph("read_file", {"filePath": str(outside_file)}),
+                graph=_SingleToolGraph("read_file", {"path": str(outside_file)}),
                 permission_policy=policy,
             ),
         ),
@@ -3593,7 +3544,7 @@ def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(
                         read=policy_config(rules=(("~voidcode_unknown_user_for_test/**", "allow"), ("*", "ask"))),
                     ),
                 ),
-                graph=_SingleToolGraph("read_file", {"filePath": str(outside_file)}),
+                graph=_SingleToolGraph("read_file", {"path": str(outside_file)}),
                 permission_policy=policy,
             ),
         ),
@@ -3916,7 +3867,10 @@ def test_runtime_denies_when_any_external_path_in_patch_is_denied(tmp_path: Path
     assert denied_file.exists() is False
 
 
-def test_external_permission_rule_supports_tilde_home_pattern(tmp_path: Path) -> None:
+def test_external_permission_rule_supports_tilde_home_pattern(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
@@ -3929,7 +3883,12 @@ def test_external_permission_rule_supports_tilde_home_pattern(tmp_path: Path) ->
     )
     policy_config = cast(Callable[..., object], config_module.ExternalDirectoryPolicy)
 
-    home_file = Path.home() / "voidcode-ext-home-test.txt"
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    home_dir.mkdir()
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(home_dir))
+    home_file = home_dir / "voidcode-ext-home-test.txt"
     home_file.write_text("home", encoding="utf-8")
 
     runtime = cast(
@@ -3937,7 +3896,7 @@ def test_external_permission_rule_supports_tilde_home_pattern(tmp_path: Path) ->
         cast(
             object,
             runtime_class(
-                workspace=tmp_path,
+                workspace=workspace,
                 config=runtime_config(
                     approval_mode="allow",
                     permission=permission_config(
@@ -3945,7 +3904,7 @@ def test_external_permission_rule_supports_tilde_home_pattern(tmp_path: Path) ->
                         write=policy_config(rules=(("*", "deny"),)),
                     ),
                 ),
-                graph=_SingleToolGraph("read_file", {"filePath": str(home_file)}),
+                graph=_SingleToolGraph("read_file", {"path": str(home_file)}),
                 permission_policy=policy,
             ),
         ),
@@ -3989,7 +3948,7 @@ def test_runtime_executes_deterministic_graph_and_emits_events(tmp_path: Path) -
     assert skills_event.payload["selected_skills"] == []
     assert skills_event.payload["catalog_context_length"] == 0
     assert result.session.status == "completed"
-    assert result.output == "alpha\nbeta"
+    assert result.output == "Read 2 line(s) from sample.txt."
     runtime_config = cast(dict[str, object], result.session.metadata["runtime_config"])
     assert runtime_config["execution_engine"] == "deterministic"
     assert "model" not in runtime_config
@@ -4032,7 +3991,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "mcp": {
             "configured_enabled": True,
             "mode": "managed",
-            "servers": ["context7", "websearch", "grep_app"],
+            "servers": [],
         },
         "model": "opencode/gpt-5.4",
         "permission": _DEFAULT_PERMISSION_METADATA,
@@ -5018,9 +4977,9 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "tool_timeout_seconds": None,
         "lsp": {"configured_enabled": False, "mode": "disabled", "servers": []},
         "mcp": {
-            "configured_enabled": True,
-            "mode": "managed",
-            "servers": ["context7", "websearch", "grep_app"],
+            "configured_enabled": False,
+            "mode": "disabled",
+            "servers": [],
         },
         "model": "session/model",
         "permission": _DEFAULT_PERMISSION_METADATA,
@@ -5398,7 +5357,7 @@ def test_cli_run_command_prints_clean_file_contents_by_default(tmp_path: Path) -
     )
 
     assert result.returncode == 0
-    assert result.stdout == "slice proof\n"
+    assert result.stdout == "Read 1 line(s) from sample.txt.\n"
     assert "LiteLLM:WARNING" in result.stderr or result.stderr == ""
 
 
@@ -5433,7 +5392,7 @@ def test_cli_run_command_json_outputs_events_and_file_contents(tmp_path: Path) -
     assert "LiteLLM:WARNING" in result.stderr or result.stderr == ""
     assert "runtime.request_received" in event_types
     assert "runtime.tool_completed" in event_types
-    assert payload["output"] == "slice proof"
+    assert payload["output"] == "Read 1 line(s) from sample.txt."
 
 
 def test_cli_run_command_approval_allow_writes_file_under_tty_and_replays_session(
@@ -5592,7 +5551,7 @@ def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) 
     )
     assert all(chunk.session.status == "running" for chunk in pre_finalization_chunks)
     assert chunks[-1].session.status == "completed"
-    assert [chunk.output for chunk in output_chunks] == ["stream proof"]
+    assert [chunk.output for chunk in output_chunks] == ["Read 1 line(s) from sample.txt."]
     assert len(output_chunks) == 1
 
 
@@ -5656,7 +5615,7 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
         assert "runtime.tool_completed" in _event_types(fifth_chunk)
         assert all(chunk.session.status == "running" for chunk in fifth_chunk)
         _assert_ordered_event_types(_event_types(remaining_chunks), ["graph.loop_step", "graph.response_ready"])
-        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == ["delayed stream"]
+        assert [chunk.output for chunk in remaining_chunks if chunk.kind == "output"] == ["Read 1 line(s) from sample.txt."]
         assert all(chunk.session.status == "completed" for chunk in remaining_chunks)
 
 

@@ -199,7 +199,7 @@ class ShellExecTool:
         name="shell_exec",
         description="Execute a command inside the current workspace.",
         input_schema={
-            "command": {"type": "string"},
+            "command": {"type": "string", "minLength": 1, "description": "Shell command to execute in the workspace."},
             "timeout": {
                 "type": "integer",
                 "description": "Timeout in seconds (max 600)",
@@ -208,6 +208,7 @@ class ShellExecTool:
                 "type": "string",
                 "description": "Human-readable description of the command",
             },
+            "required": ["command"],
         },
         read_only=False,
     )

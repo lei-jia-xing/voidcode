@@ -562,7 +562,7 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
         graph=_ToolCallGraph(
             ToolCall(
                 tool_name="read_file",
-                arguments={"filePath": "sample.txt"},
+                arguments={"path": "sample.txt"},
             )
         ),
         config=RuntimeConfig(

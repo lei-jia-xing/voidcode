@@ -41,6 +41,7 @@ from .protocol import (
     ProviderTurnRequest,
     ProviderTurnResult,
 )
+from .trace import write_provider_trace
 
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
 _SYNTHETIC_TOOL_FEEDBACK_PREFIX = "Completed tool calls for current request:"
@@ -67,11 +68,19 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
     if not isinstance(raw_usage, dict):
         return None
     usage = cast(dict[str, object], raw_usage)
+    details = usage.get("prompt_tokens_details")
+    details_dict = cast(dict[str, object], details) if isinstance(details, dict) else {}
     parsed = ProviderTokenUsage(
         input_tokens=_usage_int(usage.get("prompt_tokens")) or _usage_int(usage.get("input_tokens")),
         output_tokens=_usage_int(usage.get("completion_tokens")) or _usage_int(usage.get("output_tokens")),
+        cache_read_tokens=(
+            _usage_int(usage.get("cache_read_input_tokens"))
+            or _usage_int(usage.get("cached_tokens"))
+            or _usage_int(details_dict.get("cached_tokens"))
+        ),
+        cache_write_tokens=(_usage_int(usage.get("cache_creation_input_tokens")) or _usage_int(details_dict.get("cache_creation_input_tokens"))),
     )
-    return parsed if parsed.total_tokens > 0 else None
+    return parsed if parsed.total_tokens > 0 or parsed.cache_read_tokens > 0 or parsed.cache_write_tokens > 0 else None
 
 
 def _merge_extra_body(kwargs: dict[str, object], extra_body: dict[str, object]) -> None:
@@ -752,6 +761,17 @@ class LiteLLMBackendSingleAgentProvider:
         try:
             response = self._call_litellm_completion(cast(dict[str, Any], payload))
             response_payload = cast(dict[str, object], response.model_dump())
+            write_provider_trace(
+                request=payload,
+                response=response_payload,
+                metadata={
+                    "session_id": request.session_id,
+                    "provider": request.provider_name or self.name,
+                    "model": request.model_name or request.raw_model,
+                    "attempt": request.attempt,
+                    "stream": False,
+                },
+            )
             usage = _extract_token_usage(response_payload)
             raw_choices = response_payload.get("choices")
             if not isinstance(raw_choices, list) or not raw_choices:
@@ -810,6 +830,7 @@ class LiteLLMBackendSingleAgentProvider:
             stream = cast(Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload)))
             streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
             latest_usage: ProviderTokenUsage | None = None
+            raw_chunks: list[object] = []
             for chunk in stream:
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(
@@ -821,6 +842,7 @@ class LiteLLMBackendSingleAgentProvider:
                     yield ProviderStreamEvent(kind="done", done_reason="cancelled")
                     return
                 chunk_payload = cast(dict[str, object], chunk.model_dump())
+                raw_chunks.append(chunk_payload)
                 latest_usage = _extract_token_usage(chunk_payload) or latest_usage
                 raw_choices = chunk_payload.get("choices")
                 if not isinstance(raw_choices, list) or not raw_choices:
@@ -947,4 +969,15 @@ class LiteLLMBackendSingleAgentProvider:
             kind="done",
             done_reason="completed",
             usage=latest_usage,
+        )
+        write_provider_trace(
+            request=payload,
+            response={"chunks": raw_chunks},
+            metadata={
+                "session_id": request.session_id,
+                "provider": request.provider_name or self.name,
+                "model": request.model_name or request.raw_model,
+                "attempt": request.attempt,
+                "stream": True,
+            },
         )

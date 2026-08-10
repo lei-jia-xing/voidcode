@@ -198,8 +198,8 @@ def test_glob_tool_handles_paths_and_ignores_integration(tmp_path: Path) -> None
     assert glob_result.content is not None
 
     assert glob_result.status == "ok"
-    assert "src/main.py" in glob_result.content
-    assert "build/generated.py" not in glob_result.content
+    assert "src/main.py" in cast(list[str], glob_result.data["matches"])
+    assert "build/generated.py" not in cast(list[str], glob_result.data["matches"])
 
 
 def test_web_search_tool_uses_fallback_when_no_exa_key_integration(tmp_path: Path) -> None:
@@ -224,4 +224,4 @@ def test_web_search_tool_uses_fallback_when_no_exa_key_integration(tmp_path: Pat
     assert result.data.get("source") == "duckduckgo"
     assert result.fallback_reason is None
     assert isinstance(result.content, str)
-    assert "https://example.com/a" in result.content
+    assert "https://example.com/a" in cast(str, result.data["results"])

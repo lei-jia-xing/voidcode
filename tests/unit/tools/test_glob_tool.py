@@ -21,7 +21,7 @@ def test_glob_tool_finds_matching_files(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "*.py"}),
         workspace=tmp_path,
     )
-    content = cast(str, result.content)
+    content = cast(list[str], result.data["matches"])
 
     assert result.tool_name == "glob"
     assert result.status == "ok"
@@ -43,7 +43,7 @@ def test_glob_tool_returns_no_files_when_none_match(tmp_path: Path) -> None:
         workspace=tmp_path,
     )
 
-    assert result.content == "No files found"
+    assert result.content == "Found 0 file(s)."
     assert result.data["count"] == 0
 
 
@@ -79,9 +79,9 @@ def test_glob_tool_respects_path_argument(tmp_path: Path) -> None:
         ToolCall(tool_name="glob", arguments={"pattern": "*.txt", "path": "subdir"}),
         workspace=tmp_path,
     )
-    content = cast(str, result.content)
+    content = cast(list[str], result.data["matches"])
 
-    assert "nested.txt" in content
+    assert "subdir/nested.txt" in content
     assert "root.txt" not in content
 
 
@@ -97,7 +97,7 @@ def test_glob_tool_allows_path_outside_workspace(tmp_path: Path) -> None:
     )
     assert result.status == "ok"
     assert result.data["path"] == str(outside.resolve())
-    assert str((outside / "a.txt").resolve()) in cast(str, result.content)
+    assert str((outside / "a.txt").resolve()) in cast(list[str], result.data["matches"])
 
 
 def test_glob_tool_ignores_common_directories(tmp_path: Path) -> None:

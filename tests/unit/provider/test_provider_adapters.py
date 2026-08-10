@@ -1878,14 +1878,14 @@ def test_provider_adapter_preserves_multiple_provider_tool_calls(
                 "id": "call-alpha",
                 "function": {
                     "name": "read_file",
-                    "arguments": json.dumps({"filePath": "alpha.txt"}),
+                    "arguments": json.dumps({"path": "alpha.txt"}),
                 },
             },
             {
                 "id": "call-beta",
                 "function": {
                     "name": "read_file",
-                    "arguments": json.dumps({"filePath": "beta.txt"}),
+                    "arguments": json.dumps({"path": "beta.txt"}),
                 },
             },
         ],
@@ -1895,8 +1895,8 @@ def test_provider_adapter_preserves_multiple_provider_tool_calls(
 
     assert [call.tool_call_id for call in result.tool_calls] == ["call-alpha", "call-beta"]
     assert [call.arguments for call in result.tool_calls] == [
-        {"filePath": "alpha.txt"},
-        {"filePath": "beta.txt"},
+        {"path": "alpha.txt"},
+        {"path": "beta.txt"},
     ]
     assert result.tool_call is result.tool_calls[0]
 
@@ -1913,13 +1913,13 @@ def test_provider_adapter_generates_unique_fallback_ids_for_batched_tool_calls(
             {
                 "function": {
                     "name": "read_file",
-                    "arguments": json.dumps({"filePath": "alpha.txt"}),
+                    "arguments": json.dumps({"path": "alpha.txt"}),
                 },
             },
             {
                 "function": {
                     "name": "read_file",
-                    "arguments": json.dumps({"filePath": "beta.txt"}),
+                    "arguments": json.dumps({"path": "beta.txt"}),
                 },
             },
         ],
@@ -2651,7 +2651,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
                         "id": "call-read",
                         "function": {
                             "name": "read_file",
-                            "arguments": '{"filePath":"README.md"}',
+                            "arguments": '{"path":"README.md"}',
                         },
                     }
                 ],
@@ -2692,7 +2692,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
     assert len(tool_events) == 1
     assert tool_events[0].text is not None
     assert json.loads(tool_events[0].text) == {
-        "arguments": {"filePath": "README.md"},
+        "arguments": {"path": "README.md"},
         "tool_call_id": "call-read",
         "tool_name": "read_file",
     }
@@ -2928,7 +2928,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
                 "id": "read:file:1",
                 "function": {
                     "name": "read_file",
-                    "arguments": '{"filePath":"sample.txt"}',
+                    "arguments": '{"path":"sample.txt"}',
                 },
             }
         ],
@@ -2938,7 +2938,7 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
 
     assert result.tool_call is not None
     assert result.tool_call.tool_name == "read_file"
-    assert result.tool_call.arguments == {"filePath": "sample.txt"}
+    assert result.tool_call.arguments == {"path": "sample.txt"}
     assert result.tool_call.tool_call_id == "read_file_1"
 
 
@@ -2983,7 +2983,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
                         "index": 0,
                         "function": {
                             "name": "read_file",
-                            "arguments": '{"filePath":"sample.txt"}',
+                            "arguments": '{"path":"sample.txt"}',
                         },
                     }
                 ],
@@ -2999,7 +2999,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text=('{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, "tool_call_id": "read_file"}'),
+            text=('{"tool_name": "read_file", "arguments": {"path": "sample.txt"}, "tool_call_id": "read_file"}'),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -3022,7 +3022,7 @@ def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
                         "index": 0,
                         "function": {
                             "name": "read_file",
-                            "arguments": '{"filePath":',
+                            "arguments": '{"path":',
                         },
                     }
                 ],
@@ -3049,7 +3049,7 @@ def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text=('{"tool_name": "read_file", "arguments": {"filePath": "sample.txt"}, "tool_call_id": "read_file"}'),
+            text=('{"tool_name": "read_file", "arguments": {"path": "sample.txt"}, "tool_call_id": "read_file"}'),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -3073,7 +3073,7 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
                     },
                     {
                         "index": 1,
-                        "function": {"name": "read_file", "arguments": '{"filePath":'},
+                        "function": {"name": "read_file", "arguments": '{"path":'},
                     },
                 ],
                 None,
@@ -3099,7 +3099,7 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
                 '{"tool_calls": [{"tool_name": "write_file", '
                 '"arguments": {"path": "out.txt", "content": "ok"}, '
                 '"tool_call_id": "write_file_1"}, {"tool_name": "read_file", '
-                '"arguments": {"filePath": "sample.txt"}, '
+                '"arguments": {"path": "sample.txt"}, '
                 '"tool_call_id": "read_file_2"}]}'
             ),
         ),

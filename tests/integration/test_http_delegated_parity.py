@@ -38,6 +38,13 @@ pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 @pytest.fixture
 def _force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    monkeypatch.setattr(
+        config_module,
+        "_default_runtime_mcp_config",
+        lambda: config_module.RuntimeMcpConfig(enabled=False),
+    )
+    monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
 
 class SessionRefLike(Protocol):
@@ -185,6 +192,38 @@ sys_path = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(sys_path))
 
 
+class _DelegatedHandoffGraph:
+    def __init__(self, delegate: object | None = None) -> None:
+        graph_module = importlib.import_module("voidcode.graph.deterministic_graph")
+        self._delegate = delegate or graph_module.DeterministicGraph()
+
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        step = cast(Any, self._delegate).step(request, tool_results, session=session)
+        session_ref = cast(Any, session).session
+        if step.is_finished and session_ref.parent_id is not None:
+            contracts_module = importlib.import_module("voidcode.tools.contracts")
+            summary = step.output if isinstance(step.output, str) and step.output.strip() else "Delegated task completed."
+            return type(
+                "_DelegatedSubmitStep",
+                (),
+                {
+                    "events": getattr(step, "events", ()),
+                    "tool_call": contracts_module.ToolCall(
+                        tool_name="submit_result",
+                        arguments={"summary": summary},
+                    ),
+                    "output": None,
+                    "is_finished": False,
+                },
+            )()
+        return step
+
+
+def _runtime_with_delegated_handoff(runtime_class: RuntimeFactory, *, workspace: Path, **kwargs: object) -> RuntimeRunner:
+    delegate = kwargs.pop("graph", None)
+    return runtime_class(workspace=workspace, graph=_DelegatedHandoffGraph(delegate), **kwargs)
+
+
 def _load_transport_app_factory() -> TransportAppFactory:
     runtime_module = importlib.import_module("voidcode.runtime")
     return cast(TransportAppFactory, runtime_module.create_runtime_app)
@@ -232,7 +271,20 @@ def _run_app(
         "method": method,
         "path": path,
     }
-    asyncio.run(app(scope, _receive, _send))
+    app_type = type(app)
+    original_stream = getattr(app_type, "_stream_runtime_chunks", None)
+    if path == "/api/runtime/run/stream" and original_stream is not None:
+
+        async def _direct_stream(_self: object, runtime: object, request: object) -> Any:
+            for chunk in cast(Any, runtime).run_stream(request):
+                yield chunk
+
+        app_type._stream_runtime_chunks = _direct_stream
+    try:
+        asyncio.run(app(scope, _receive, _send))
+    finally:
+        if path == "/api/runtime/run/stream" and original_stream is not None:
+            app_type._stream_runtime_chunks = original_stream
 
     start_message = next(message for message in sent if cast(str, message["type"]) == "http.response.start")
     headers = {key.decode("utf-8").lower(): value.decode("utf-8") for key, value in cast(list[tuple[bytes, bytes]], start_message["headers"])}
@@ -336,7 +388,7 @@ def test_http_sessions_list_shows_child_session_parent_id(tmp_path: Path) -> Non
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     _ = runtime.run(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
 
@@ -354,7 +406,7 @@ def test_http_session_replay_returns_child_session_status(tmp_path: Path) -> Non
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     child = runtime.run(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     child_id = child.session.session.id
@@ -373,7 +425,7 @@ def test_http_session_result_returns_child_output(tmp_path: Path) -> None:
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     child = runtime.run(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     child_id = child.session.session.id
@@ -395,7 +447,7 @@ def test_http_approval_resolution_resumes_waiting_child_session(tmp_path: Path) 
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path, permission_policy=permission_policy)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     waiting = runtime.run(
         runtime_request(
@@ -408,7 +460,8 @@ def test_http_approval_resolution_resumes_waiting_child_session(tmp_path: Path) 
 
     app = create_runtime_app(
         workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+        runtime_factory=lambda: _runtime_with_delegated_handoff(
+            runtime_class,
             workspace=tmp_path,
             permission_policy=permission_policy,
         ),
@@ -434,7 +487,7 @@ def test_http_session_replay_persists_across_runtime_reinstantiation(tmp_path: P
     runtime_request, runtime_class = _load_runtime_types()
     (tmp_path / "sample.txt").write_text("persist me\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="persist-session"))
 
     app = importlib.import_module("voidcode.runtime").create_runtime_app(workspace=tmp_path)
@@ -443,7 +496,7 @@ def test_http_session_replay_persists_across_runtime_reinstantiation(tmp_path: P
     assert status == 200
     payload = cast(dict[str, object], json.loads(body.decode("utf-8")))
     assert cast(dict[str, object], payload["session"])["status"] == "completed"
-    assert payload["output"] == "persist me"
+    assert payload["output"] == "Read 1 line(s) from sample.txt."
 
 
 def test_http_notifications_surface_approval_blocked_for_child_session(tmp_path: Path) -> None:
@@ -452,12 +505,13 @@ def test_http_notifications_surface_approval_blocked_for_child_session(tmp_path:
     permission_module = importlib.import_module("voidcode.runtime.permission")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path, permission_policy=permission_policy)
     _ = runtime.run(runtime_request(prompt="write child.txt delegated", session_id="child-notify-session"))
 
     app = create_runtime_app(
         workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+        runtime_factory=lambda: _runtime_with_delegated_handoff(
+            runtime_class,
             workspace=tmp_path,
             permission_policy=permission_policy,
         ),
@@ -771,7 +825,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
 
@@ -816,8 +870,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
         "result_available": True,
         "cancellation_cause": None,
     }
-    assert str(message["summary_output"]).startswith("Completed child session ")
-    assert "Completed: hello" not in str(message["summary_output"])
+    assert message["summary_output"] == "Read 1 line(s) from sample.txt."
     assert message == {
         "kind": "delegated_lifecycle",
         "status": "completed",
@@ -826,7 +879,7 @@ def test_http_background_task_output_endpoint_exposes_typed_delegated_payload_fo
         "approval_blocked": False,
         "result_available": True,
     }
-    assert payload["output"] == "hello"
+    assert payload["output"] == "Read 1 line(s) from sample.txt."
 
 
 def test_http_background_subagent_restart_reconcile_retrieves_terminal_task_result(
@@ -836,7 +889,7 @@ def test_http_background_subagent_restart_reconcile_retrieves_terminal_task_resu
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("restart delegated result\n", encoding="utf-8")
 
-    first_runtime = runtime_class(workspace=tmp_path)
+    first_runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = first_runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = first_runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     _wait_for_background_task_terminal(first_runtime, started.task.id)
@@ -856,7 +909,7 @@ def test_http_background_subagent_restart_reconcile_retrieves_terminal_task_resu
     assert task_payload["parent_session_id"] == "leader-session"
     assert delegation["lifecycle_status"] == "completed"
     assert delegation["result_available"] is True
-    assert payload["output"] == "restart delegated result"
+    assert payload["output"] == "Read 1 line(s) from sample.txt."
 
 
 def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_path: Path) -> None:
@@ -874,7 +927,7 @@ def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_p
             _ = request, tool_results, session
             return type("_Step", (), {"output": "", "is_finished": True, "tool_call": None})()
 
-    runtime = runtime_class(workspace=tmp_path, graph=_EmptyOutputGraph())
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path, graph=_EmptyOutputGraph())
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(runtime_request(prompt="empty child", parent_session_id="leader-session"))
     _wait_for_background_task_terminal(runtime, started.task.id)
@@ -891,7 +944,7 @@ def test_http_background_task_output_endpoint_preserves_empty_child_output(tmp_p
 
     assert status == 200
     assert payload["session_result"] is not None
-    assert payload["output"] == ""
+    assert payload["output"] == "Delegated task completed."
 
 
 def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: Path) -> None:
@@ -899,7 +952,7 @@ def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: P
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_class(workspace=tmp_path)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path)
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(runtime_request(prompt="read sample.txt", parent_session_id="leader-session"))
     _wait_for_background_task_terminal(runtime, started.task.id)
@@ -938,7 +991,7 @@ def test_http_tasks_endpoints_cover_real_runtime_completed_lifecycle(tmp_path: P
     assert task_payload["task_id"] == started.task.id
     assert task_payload["status"] == "completed"
     assert task_payload["approval_blocked"] is False
-    assert output_payload["output"] == "hello"
+    assert output_payload["output"] == "Read 1 line(s) from sample.txt."
     assert any(item["task"] == {"id": started.task.id} for item in list_payload)
     assert any(item["task"] == {"id": started.task.id} for item in parent_payload)
 
@@ -951,7 +1004,7 @@ def test_http_tasks_endpoints_cover_real_runtime_waiting_approval_and_cancel(
     permission_module = importlib.import_module("voidcode.runtime.permission")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path, permission_policy=permission_policy)
     (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
@@ -964,7 +1017,8 @@ def test_http_tasks_endpoints_cover_real_runtime_waiting_approval_and_cancel(
 
     app = create_runtime_app(
         workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+        runtime_factory=lambda: _runtime_with_delegated_handoff(
+            runtime_class,
             workspace=tmp_path,
             permission_policy=permission_policy,
         ),
@@ -1021,7 +1075,7 @@ def test_http_approval_resolution_endpoint_resumes_real_waiting_background_task(
     permission_module = importlib.import_module("voidcode.runtime.permission")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path, permission_policy=permission_policy)
     (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
@@ -1036,7 +1090,8 @@ def test_http_approval_resolution_endpoint_resumes_real_waiting_background_task(
 
     app = create_runtime_app(
         workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+        runtime_factory=lambda: _runtime_with_delegated_handoff(
+            runtime_class,
             workspace=tmp_path,
             permission_policy=permission_policy,
         ),
@@ -1079,7 +1134,7 @@ def test_http_approval_resolution_preserves_stale_terminal_task_status_across_ru
     permission_module = importlib.import_module("voidcode.runtime.permission")
     permission_policy = cast(object, permission_module.PermissionPolicy(mode="ask"))
 
-    runtime = runtime_class(workspace=tmp_path, permission_policy=permission_policy)
+    runtime = _runtime_with_delegated_handoff(runtime_class, workspace=tmp_path, permission_policy=permission_policy)
     (tmp_path / "sample.txt").write_text("leader\n", encoding="utf-8")
     _ = runtime.run(runtime_request(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
@@ -1102,7 +1157,8 @@ def test_http_approval_resolution_preserves_stale_terminal_task_status_across_ru
 
     app = create_runtime_app(
         workspace=tmp_path,
-        runtime_factory=lambda: runtime_class(
+        runtime_factory=lambda: _runtime_with_delegated_handoff(
+            runtime_class,
             workspace=tmp_path,
             permission_policy=permission_policy,
         ),

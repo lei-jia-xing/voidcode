@@ -64,6 +64,7 @@ class MultiEditTool:
                     },
                 },
             },
+            "required": ["path", "edits"],
         },
         read_only=False,
         path_argument_keys=("path",),

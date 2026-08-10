@@ -78,9 +78,10 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "preserved_system_segment",
         "runtime_memory_usage_guidance",
         "skill_prompt",
+        "runtime_tool_policy_summary",
+        "runtime_dynamic_boundary",
         "runtime_pending_state",
         "runtime_todo_state",
-        "runtime_tool_policy_summary",
         "continuity_summary",
         "runtime_context_artifact_reference",
         "current_user_prompt",
@@ -95,9 +96,10 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "instruction",
         "instruction",
         "instruction",
-        "task",
-        "task",
         "instruction",
+        "workspace",
+        "task",
+        "task",
         "recent",
         "recent",
         "task",
@@ -119,6 +121,7 @@ def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
         "runtime_instruction_precedence",
         "runtime_memory_usage_guidance",
         "runtime_tool_policy_summary",
+        "runtime_dynamic_boundary",
         "current_user_prompt",
     ]
 
@@ -150,6 +153,7 @@ def test_build_prompt_assembly_plan_keeps_non_system_transform_roles() -> None:
         "transform_assistant",
         "transform_system",
         "runtime_tool_policy_summary",
+        "runtime_dynamic_boundary",
         "current_user_prompt",
     ]
     assistant_section = plan.sections[3]
@@ -172,7 +176,7 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
         pending_state_section=pending,
     )
 
-    pending_section = plan.sections[3]
+    pending_section = plan.sections[5]
     assert pending_section.source == "runtime_pending_state"
     assert pending_section.metadata == {
         "status": "waiting_question",
@@ -206,14 +210,14 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         "agent_prompt",
         "agent_profile_overlay",
         "runtime_environment_stable",
-    ]
-    assert sources[boundary_index + 1 :] == [
-        "runtime_environment_dynamic",
         "runtime_instruction_precedence",
         "workflow_mode_prompt",
         "runtime_memory_usage_guidance",
-        "runtime_todo_state",
         "runtime_tool_policy_summary",
+    ]
+    assert sources[boundary_index + 1 :] == [
+        "runtime_environment_dynamic",
+        "runtime_todo_state",
         "current_user_prompt",
     ]
     assert plan.sections[boundary_index].content == dynamic_boundary_marker()
@@ -320,6 +324,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "hook_context",
         "runtime_workspace_memory",
         "runtime_tool_policy_summary",
+        "runtime_dynamic_boundary",
         "current_user_prompt",
     ]
     assert [fragment["layer"] for fragment in fragments] == [
@@ -332,6 +337,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "hook_injected_context",
         "project_context",
         "tool_policy_summary",
+        "project_context",
         "user_request",
     ]
 
@@ -394,8 +400,9 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "runtime_memory_usage_guidance",
         "skill_prompt",
         "transform_hook",
-        "runtime_todo_state",
         "runtime_tool_policy_summary",
+        "runtime_dynamic_boundary",
+        "runtime_todo_state",
         "current_user_prompt",
     ]
     assert [section.tier for section in plan.sections] == [
@@ -406,8 +413,9 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "instruction",
         "instruction",
         "workspace",
-        "task",
         "instruction",
+        "workspace",
+        "task",
         "task",
     ]
     skill_section = next(s for s in plan.sections if s.source == "skill_prompt")

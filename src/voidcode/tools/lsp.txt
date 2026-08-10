@@ -8,6 +8,9 @@ Supported operations:
 - diagnostics: Read document diagnostics for a file
 - goToDefinition: Find where a symbol is defined
 - findReferences: Find all references to a symbol
+- rename: Rename a symbol and return the workspace edit
+- codeAction: Return fixes and refactors for a source range
+- willRenameFiles: Ask the server for workspace edits required before moving a file
 - hover: Get hover information for a symbol
 - documentSymbol: Get all symbols in a document
 - workspaceSymbol: Search for symbols across the workspace
@@ -17,10 +20,13 @@ Supported operations:
 - outgoingCalls: Find calls made by the symbol at a position
 
 All operations require:
-- filePath: The workspace-relative file to operate on
+- path: The workspace-relative file to operate on
 
 Additional requirements:
-- goToDefinition / findReferences / hover / goToImplementation / prepareCallHierarchy / incomingCalls / outgoingCalls require line and character (1-based)
+- goToDefinition / findReferences / hover / goToImplementation / prepareCallHierarchy / incomingCalls / outgoingCalls / rename / codeAction require line and character (1-based)
+- rename also requires newName
+- willRenameFiles requires newPath and does not require line/character
+- codeAction accepts endLine, endCharacter, and diagnostics; its range defaults to the starting position
 - documentSymbol and diagnostics do not require line or character
 - workspaceSymbol accepts query; use it when you know a symbol name but not a cursor position
 - server is optional; provide it only when you need to force a specific LSP server in a multi-server workspace

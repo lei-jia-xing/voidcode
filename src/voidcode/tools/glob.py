@@ -41,6 +41,7 @@ class GlobTool:
                 "type": "string",
                 "description": ("The directory to search in (relative to workspace). Defaults to workspace root."),
             },
+            "required": ["pattern"],
         },
         read_only=True,
         path_argument_keys=("path",),
@@ -123,14 +124,7 @@ class GlobTool:
             relative_matches = [str(m.resolve()) for m in matched]
             path_display = str((search_path or effective_root).resolve())
 
-        if not relative_matches:
-            output = "No files found"
-        else:
-            output_lines = relative_matches
-            if truncated:
-                output_lines.append("")
-                output_lines.append(f"(Results are truncated: showing first {LIMIT} results. Consider using a more specific path or pattern.)")
-            output = "\n".join(output_lines)
+        output = f"Found {len(relative_matches)} file(s)" + ("; results are truncated." if truncated else ".")
 
         return ToolResult(
             tool_name=self.definition.name,

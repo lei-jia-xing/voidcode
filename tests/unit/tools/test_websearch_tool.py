@@ -162,7 +162,7 @@ def test_websearch_tool_uses_beautifulsoup_ddg_fallback_parsing() -> None:
     assert result.status == "ok"
     assert result.data["source"] == "duckduckgo"
     assert isinstance(result.content, str)
-    lines = result.content.splitlines()
+    lines = str(result.data["results"]).splitlines()
     assert lines[0] == "1. Result A"
     assert lines[1] == "   https://example.com/a"
     assert lines[2] == "   Snippet A..."
@@ -199,9 +199,10 @@ def test_websearch_tool_parses_broader_ddg_html_without_result_class() -> None:
     assert result.data["source"] == "duckduckgo"
     assert result.fallback_reason is None
     assert isinstance(result.content, str)
-    assert "Result C" in result.content
-    assert "https://example.net/c" in result.content
-    assert "Snippet C..." in result.content
+    results = str(result.data["results"])
+    assert "Result C" in results
+    assert "https://example.net/c" in results
+    assert "Snippet C..." in results
 
 
 def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> None:
@@ -216,7 +217,7 @@ def test_websearch_tool_reports_truthful_metadata_when_ddg_parsing_fails() -> No
     assert result.status == "ok"
     assert result.data["source"] == "duckduckgo-error"
     assert result.fallback_reason == "duckduckgo fallback failed before parsing results"
-    assert result.content == "No search results found. Please try a different query."
+    assert result.content == "Found web results for test using duckduckgo-error."
 
 
 def test_websearch_tool_reports_truthful_metadata_when_ddg_html_has_no_results() -> None:
@@ -233,7 +234,7 @@ def test_websearch_tool_reports_truthful_metadata_when_ddg_html_has_no_results()
     assert result.status == "ok"
     assert result.data["source"] == "duckduckgo-empty"
     assert result.fallback_reason == "duckduckgo fallback returned no parseable results"
-    assert result.content == "No search results found. Please try a different query."
+    assert result.content == "Found web results for test using duckduckgo-empty."
 
 
 def test_tools_package_and_default_registry_export_websearch_tool() -> None:

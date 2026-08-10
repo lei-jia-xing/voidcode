@@ -84,4 +84,4 @@ def test_glob_tool_reports_truncation_at_limit(tmp_path: Path) -> None:
     assert result.data["truncated"] is True
     assert len(matches) >= _limit
     assert result.data["count"] == len(matches)
-    assert "Results are truncated" in (result.content or "")
+    assert "truncated" in (result.content or "")

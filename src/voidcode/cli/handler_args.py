@@ -152,6 +152,8 @@ class DoctorArgs:
     workspace: Path = field(default_factory=Path.cwd)
     verbose: bool = False
     json: bool = False
+    fix: bool = False
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

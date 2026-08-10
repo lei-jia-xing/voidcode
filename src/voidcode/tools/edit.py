@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import re
 from pathlib import Path
 from typing import ClassVar
@@ -539,6 +540,11 @@ class EditTool:
                 "type": "boolean",
                 "description": "Replace all occurrences of oldString (default: false)",
             },
+            "expectedHash": {
+                "type": "string",
+                "description": "Optional SHA-256 hash from a prior read. Rejects stale edits when the file changed.",
+            },
+            "required": ["path", "oldString", "newString"],
         },
         read_only=False,
         path_argument_keys=("path",),
@@ -590,6 +596,19 @@ class EditTool:
         )
 
         content_old = read_utf8_text(candidate)
+        expected_hash = call.arguments.get("expectedHash")
+        if expected_hash is not None:
+            if not isinstance(expected_hash, str):
+                raise ValueError("edit expectedHash must be a string")
+            actual_hash = hashlib.sha256(content_old.encode("utf-8")).hexdigest()
+            if expected_hash != actual_hash:
+                raise_tool_diagnostic(
+                    message="Edit rejected because the file changed since it was read (stale edit).",
+                    error_kind="stale_edit",
+                    reason="content_hash_mismatch",
+                    retry_guidance="Read the file again, use the returned data.content_hash, then retry the edit.",
+                    details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
+                )
 
         ending = _detect_line_ending(content_old)
         normalized_old = _normalize_line_endings(old_string)

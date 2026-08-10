@@ -82,7 +82,7 @@ def test_webfetch_markdown_uses_markdown_conversion_for_html() -> None:
     request_mock.assert_called_once()
     assert result.status == "ok"
     assert result.content is not None
-    assert "# Title" in result.content or "TITLE" in result.content
+    assert "TITLE" in str(result.data["content"])
 
 
 def test_webfetch_tolerates_malformed_html() -> None:
@@ -96,7 +96,7 @@ def test_webfetch_tolerates_malformed_html() -> None:
 
     assert result.status == "ok"
     assert isinstance(result.content, str)
-    assert "Hello" in result.content
+    assert "Hello" in str(result.data["content"])
 
 
 def test_webfetch_text_preserves_list_item_separation() -> None:
@@ -110,9 +110,10 @@ def test_webfetch_text_preserves_list_item_separation() -> None:
 
     assert result.status == "ok"
     assert isinstance(result.content, str)
-    assert "AlphaBeta" not in result.content
-    assert "Alpha" in result.content
-    assert "Beta" in result.content
+    fetched = str(result.data["content"])
+    assert "AlphaBeta" not in fetched
+    assert "Alpha" in fetched
+    assert "Beta" in fetched
 
 
 def test_webfetch_returns_attachment_for_image() -> None:

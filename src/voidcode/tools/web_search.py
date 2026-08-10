@@ -314,6 +314,7 @@ class WebSearchTool:
                 "type": "integer",
                 "description": "Number of results to return (default: 8)",
             },
+            "required": ["query"],
         },
         read_only=True,
     )
@@ -365,12 +366,13 @@ class WebSearchTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=output,
+            content=f"Found web results for {args.query} using {source}.",
             data={
                 "query": args.query,
                 "num_results": num_results,
                 "source": source,
                 "timeout_seconds": timeout,
+                "results": output,
             },
             timeout_seconds=timeout,
             source=source,

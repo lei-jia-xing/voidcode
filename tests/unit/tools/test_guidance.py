@@ -6,10 +6,10 @@ def test_definition_with_guidance_preserves_path_argument_keys() -> None:
     definition = ToolDefinition(
         name="read_file",
         description="Read a file",
-        input_schema={"filePath": {"type": "string"}},
-        path_argument_keys=("filePath",),
+        input_schema={"path": {"type": "string"}},
+        path_argument_keys=("path",),
     )
 
     decorated = definition_with_guidance(definition)
 
-    assert decorated.path_argument_keys == ("filePath",)
+    assert decorated.path_argument_keys == ("path",)

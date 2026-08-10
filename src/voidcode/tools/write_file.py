@@ -34,6 +34,7 @@ class WriteFileTool:
                 "type": "string",
                 "description": "Complete UTF-8 file contents; this replaces the existing file.",
             },
+            "required": ["path", "content"],
         },
         read_only=False,
         path_argument_keys=("path",),

@@ -815,7 +815,14 @@ class ApplyPatchTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="apply_patch",
         description=_APPLY_PATCH_DESCRIPTION,
-        input_schema={"patch": {"type": "string"}},
+        input_schema={
+            "patch": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Patch text using the supported apply_patch format.",
+            },
+            "required": ["patch"],
+        },
         read_only=False,
     )
 

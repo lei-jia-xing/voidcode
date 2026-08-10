@@ -56,9 +56,6 @@ def _read_result_path(result: ToolResult) -> str | None:
     raw_arguments = result.data.get("arguments")
     if isinstance(raw_arguments, dict):
         arguments = cast(dict[str, object], raw_arguments)
-        raw_file_path = arguments.get("filePath")
-        if isinstance(raw_file_path, str) and raw_file_path.strip():
-            return raw_file_path
         raw_path = arguments.get("path")
         if isinstance(raw_path, str) and raw_path.strip():
             return raw_path

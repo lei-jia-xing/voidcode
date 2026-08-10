@@ -20,7 +20,7 @@ def test_read_paths_for_tool_results_collects_successful_workspace_reads(tmp_pat
                 tool_name="read_file",
                 status="ok",
                 content="sample",
-                data={"path": "sample.txt", "arguments": {"filePath": "sample.txt"}},
+                data={"path": "sample.txt", "arguments": {"path": "sample.txt"}},
             ),
         ),
         workspace=tmp_path,

@@ -90,7 +90,7 @@ def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) 
         if isinstance(raw_arguments, dict):
             arguments = cast(dict[str, object], raw_arguments)
             append(arguments.get("path"))
-            append(arguments.get("filePath"))
+            append(arguments.get("path"))
         raw_matches = result.data.get("matches")
         if isinstance(raw_matches, list | tuple):
             for raw_match in raw_matches:

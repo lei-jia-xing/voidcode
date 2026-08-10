@@ -986,7 +986,7 @@ def test_lsp_tool_accepts_documented_operation_name(tmp_path: Path) -> None:
             tool_name="lsp",
             arguments={
                 "operation": "goToDefinition",
-                "filePath": "sample.py",
+                "path": "sample.py",
                 "line": 1,
                 "character": 1,
             },
@@ -1028,7 +1028,7 @@ def test_lsp_tool_accepts_workspace_symbol_query_without_position(tmp_path: Path
             tool_name="lsp",
             arguments={
                 "operation": "workspaceSymbol",
-                "filePath": "sample.py",
+                "path": "sample.py",
                 "query": "Sample",
             },
         ),
@@ -1070,7 +1070,7 @@ def test_lsp_tool_accepts_document_symbol_without_position(tmp_path: Path) -> No
             tool_name="lsp",
             arguments={
                 "operation": "documentSymbol",
-                "filePath": "sample.py",
+                "path": "sample.py",
             },
         ),
         workspace=tmp_path,
@@ -1113,7 +1113,7 @@ def test_lsp_tool_accepts_document_diagnostics_without_position(tmp_path: Path) 
             tool_name="lsp",
             arguments={
                 "operation": "diagnostics",
-                "filePath": "sample.py",
+                "path": "sample.py",
             },
         ),
         workspace=tmp_path,

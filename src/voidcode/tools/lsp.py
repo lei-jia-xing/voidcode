@@ -29,6 +29,9 @@ class LspOperation(enum.Enum):
     DIAGNOSTICS = "textDocument/diagnostic"
     GO_TO_DEFINITION = "textDocument/definition"
     FIND_REFERENCES = "textDocument/references"
+    RENAME = "textDocument/rename"
+    CODE_ACTION = "textDocument/codeAction"
+    WILL_RENAME_FILES = "workspace/willRenameFiles"
     HOVER = "textDocument/hover"
     DOCUMENT_SYMBOL = "textDocument/documentSymbol"
     WORKSPACE_SYMBOL = "workspace/symbol"
@@ -42,6 +45,9 @@ _LSP_OPERATIONS: dict[str, LspOperation] = {
     "diagnostics": LspOperation.DIAGNOSTICS,
     "goToDefinition": LspOperation.GO_TO_DEFINITION,
     "findReferences": LspOperation.FIND_REFERENCES,
+    "rename": LspOperation.RENAME,
+    "codeAction": LspOperation.CODE_ACTION,
+    "willRenameFiles": LspOperation.WILL_RENAME_FILES,
     "hover": LspOperation.HOVER,
     "documentSymbol": LspOperation.DOCUMENT_SYMBOL,
     "workspaceSymbol": LspOperation.WORKSPACE_SYMBOL,
@@ -58,13 +64,14 @@ class LspTool:
         input_schema={
             "operation": {
                 "type": "string",
+                "enum": sorted(_LSP_OPERATIONS),
                 "description": (
                     "LSP operation. Preferred names include diagnostics, goToDefinition, "
                     "findReferences, hover, documentSymbol, workspaceSymbol, "
                     "goToImplementation, incomingCalls, and outgoingCalls."
                 ),
             },
-            "filePath": {
+            "path": {
                 "type": "string",
                 "description": ("Workspace-relative file path used for target selection and server resolution."),
             },
@@ -80,7 +87,13 @@ class LspTool:
                 "type": "string",
                 "description": ("Optional workspaceSymbol search query. Empty string requests all symbols."),
             },
-            "server": {"type": "string"},
+            "server": {"type": "string", "description": "Optional configured LSP server name."},
+            "newName": {"type": "string", "minLength": 1, "description": "Replacement symbol name for rename."},
+            "newPath": {"type": "string", "minLength": 1, "description": "Destination workspace-relative path for willRenameFiles."},
+            "endLine": {"type": "integer", "minimum": 1, "description": "Optional 1-based end line for codeAction; defaults to line."},
+            "endCharacter": {"type": "integer", "minimum": 1, "description": "Optional 1-based end character for codeAction; defaults to character."},
+            "diagnostics": {"type": "array", "items": {"type": "object"}, "description": "Optional LSP diagnostics used as codeAction context."},
+            "required": ["operation", "path"],
         },
         read_only=True,
     )
@@ -123,18 +136,29 @@ class LspTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         op_value = call.arguments.get("operation")
-        file_path = call.arguments.get("filePath")
+        file_path = call.arguments.get("path")
         line = call.arguments.get("line")
         character = call.arguments.get("character")
         query = call.arguments.get("query")
         server = call.arguments.get("server")
+        new_name = call.arguments.get("newName")
+        end_line = call.arguments.get("endLine")
+        end_character = call.arguments.get("endCharacter")
+        diagnostics = call.arguments.get("diagnostics", [])
+        new_path = call.arguments.get("newPath")
 
         if server is not None and not isinstance(server, str):
             raise ValueError("lsp requires a string 'server' argument when provided")
         if query is not None and not isinstance(query, str):
             raise ValueError("lsp requires a string 'query' argument when provided")
+        if new_name is not None and not isinstance(new_name, str):
+            raise ValueError("lsp requires a string 'newName' argument when provided")
+        if not isinstance(diagnostics, list) or not all(isinstance(item, dict) for item in diagnostics):
+            raise ValueError("lsp diagnostics must be an array of objects")
+        if new_path is not None and not isinstance(new_path, str):
+            raise ValueError("lsp requires a string 'newPath' argument when provided")
         if not isinstance(file_path, str):
-            raise ValueError("lsp requires a string 'filePath' argument")
+            raise ValueError("lsp requires a string 'path' argument")
         if isinstance(line, (int, float)):
             line_value = int(line)
         else:
@@ -152,7 +176,12 @@ class LspTool:
             LspOperation.DIAGNOSTICS,
             LspOperation.DOCUMENT_SYMBOL,
             LspOperation.WORKSPACE_SYMBOL,
+            LspOperation.WILL_RENAME_FILES,
         )
+        if operation == LspOperation.RENAME and not isinstance(new_name, str):
+            raise ValueError("lsp rename requires a string 'newName' argument")
+        if operation == LspOperation.WILL_RENAME_FILES and not isinstance(new_path, str):
+            raise ValueError("lsp willRenameFiles requires a string 'newPath' argument")
         if position_required and (line_value is None or character_value is None):
             raise ValueError("lsp requires numeric 'line' and 'character' arguments (1-based)")
         if line_value is not None and line_value < 1:
@@ -173,7 +202,12 @@ class LspTool:
         )
         text_document = lsp_types.TextDocumentIdentifier(uri=candidate.as_uri())
         params: dict[str, object]
-        if operation == LspOperation.DIAGNOSTICS:
+        if operation == LspOperation.WILL_RENAME_FILES:
+            destination = (workspace_root / cast(str, new_path)).resolve()
+            if not destination.is_relative_to(workspace_root):
+                raise ValueError("lsp newPath must be inside the current workspace")
+            params = {"files": [{"oldUri": candidate.as_uri(), "newUri": destination.as_uri()}]}
+        elif operation == LspOperation.DIAGNOSTICS:
             params = cast(
                 dict[str, object],
                 self._converter.unstructure(
@@ -187,6 +221,35 @@ class LspTool:
                 self._converter.unstructure(
                     lsp_types.DocumentSymbolParams(text_document=text_document),
                     unstructure_as=lsp_types.DocumentSymbolParams,
+                ),
+            )
+        elif operation == LspOperation.RENAME and position is not None:
+            params = cast(
+                dict[str, object],
+                self._converter.unstructure(
+                    lsp_types.RenameParams(text_document=text_document, position=position, new_name=cast(str, new_name)),
+                    unstructure_as=lsp_types.RenameParams,
+                ),
+            )
+        elif operation == LspOperation.CODE_ACTION and position is not None:
+            end_line_value = int(end_line) if isinstance(end_line, (int, float)) else line_value
+            end_character_value = int(end_character) if isinstance(end_character, (int, float)) else character_value
+            if end_line_value is None or end_character_value is None or end_line_value < 1 or end_character_value < 1:
+                raise ValueError("lsp codeAction endLine and endCharacter must be >= 1")
+            params = cast(
+                dict[str, object],
+                self._converter.unstructure(
+                    lsp_types.CodeActionParams(
+                        text_document=text_document,
+                        range=lsp_types.Range(
+                            start=position,
+                            end=lsp_types.Position(line=end_line_value - 1, character=end_character_value - 1),
+                        ),
+                        context=lsp_types.CodeActionContext(
+                            diagnostics=[self._converter.structure(item, lsp_types.Diagnostic) for item in diagnostics],
+                        ),
+                    ),
+                    unstructure_as=lsp_types.CodeActionParams,
                 ),
             )
         elif position is not None:

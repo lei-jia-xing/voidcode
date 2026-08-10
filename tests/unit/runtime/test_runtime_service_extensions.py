@@ -278,12 +278,29 @@ def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prom
     path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
 
 
+def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
+    return RuntimeRequest(
+        prompt=prompt,
+        parent_session_id=parent_session_id,
+        metadata={
+            "delegation": {
+                "mode": "background",
+                "subagent_type": "worker",
+                "selected_preset": "worker",
+                "selected_execution_engine": "provider",
+            }
+        },
+    )
+
+
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
 @pytest.fixture
 def force_deterministic_engine_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VOIDCODE_EXECUTION_ENGINE", "deterministic")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    monkeypatch.setattr(config_module, "_default_runtime_mcp_servers", lambda: {})
 
 
 def test_runtime_top_level_agent_allowlist_matches_manifest_selectability() -> None:
@@ -527,7 +544,7 @@ class _StubGraph:
     ) -> _StubStep:
         _ = session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}))
+            return _StubStep(tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}))
         return _StubStep(output=request.prompt, is_finished=True)
 
 
@@ -590,6 +607,8 @@ class _ApprovalThenCaptureSkillGraph:
         type(self).last_request = request
         if not tool_results:
             return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}))
+        if session.session.parent_id is not None:
+            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -771,6 +790,8 @@ class _QuestionThenDoneGraph:
                     },
                 )
             )
+        if session.session.parent_id is not None:
+            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -823,6 +844,8 @@ class _QuestionThenApprovalGraph:
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
+        if session.session.parent_id is not None:
+            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -1146,7 +1169,7 @@ class _DistillAwareTurnProvider:
 
         self.main_calls += 1
         if self.main_calls <= 2:
-            return ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"}))
         return ProviderTurnResult(output="done")
 
 
@@ -1199,12 +1222,12 @@ class _BatchedReadsTurnProvider:
                 tool_calls=(
                     ToolCall(
                         tool_name="read_file",
-                        arguments={"filePath": "alpha.txt"},
+                        arguments={"path": "alpha.txt"},
                         tool_call_id="call-alpha",
                     ),
                     ToolCall(
                         tool_name="read_file",
-                        arguments={"filePath": "beta.txt"},
+                        arguments={"path": "beta.txt"},
                         tool_call_id="call-beta",
                     ),
                 )
@@ -1246,7 +1269,7 @@ class _DeniedWriteThenReadTurnProvider:
             )
         last_result = turn_request.tool_results[-1]
         if last_result.data.get("permission_denied") is True:
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "safe.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "safe.txt"}))
         return ProviderTurnResult(output="recovered from denial")
 
     def stream_turn(self, request: object):
@@ -1419,7 +1442,7 @@ class _UnreadWriteThenReadTurnProvider:
         last_result = turn_request.tool_results[-1]
         error_details = last_result.error_details or {}
         if error_details.get("reason") == "write_without_read":
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "safe.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "safe.txt"}))
         if last_result.tool_name == "read_file" and last_result.status == "ok":
             return ProviderTurnResult(
                 tool_call=ToolCall(
@@ -1526,7 +1549,14 @@ class _BackgroundTaskSuccessGraph:
         *,
         session: SessionState,
     ) -> _StubStep:
-        _ = tool_results, session
+        _ = tool_results
+        if session.session.parent_id is not None:
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="submit_result",
+                    arguments={"summary": request.prompt},
+                )
+            )
         return _StubStep(output=request.prompt, is_finished=True)
 
 
@@ -1538,7 +1568,9 @@ class _BackgroundTaskApprovalGraph:
         *,
         session: SessionState,
     ) -> _StubStep:
-        _ = request, tool_results, session
+        _ = request, session
+        if tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
         return _StubStep(
             tool_call=ToolCall(
                 tool_name="write_file",
@@ -1650,7 +1682,7 @@ class _TwoEpisodeTransientTurnProvider:
                 message=f"transient failure episode {self.model_provider.calls}",
             )
         if not turn_request.tool_results:
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}))
         return ProviderTurnResult(output="recovered twice")
 
 
@@ -1766,7 +1798,7 @@ class _TwoEpisodeFallbackTurnProvider:
             return ProviderTurnResult(
                 tool_call=ToolCall(
                     tool_name="read_file",
-                    arguments={"filePath": "sample.txt"},
+                    arguments={"path": "sample.txt"},
                 )
             )
         return ProviderTurnResult(output="fallback complete")
@@ -1904,7 +1936,12 @@ class _ParentSkillThenSyncTaskGraph:
     ) -> _StubStep:
         if session.session.parent_id is not None:
             type(self).child_system_segments = tuple(segment.content for segment in request.assembled_context.segments if segment.role == "system")
-            return _StubStep(output="child done", is_finished=True)
+            return _StubStep(
+                tool_call=ToolCall(
+                    tool_name="submit_result",
+                    arguments={"summary": "child done"},
+                )
+            )
         if not tool_results:
             return _StubStep(tool_call=ToolCall(tool_name="skill", arguments={"name": "demo"}))
         if len(tool_results) == 1:
@@ -2215,7 +2252,7 @@ def test_runtime_background_child_idle_emits_one_parent_reminder_per_episode(
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background needs approval"))
     waiting = _wait_for_background_task_session(runtime, started.task.id)
     runtime._background_task_supervisor.backfill_parent_background_task_event(task=waiting)
     runtime._background_task_supervisor.backfill_parent_background_task_event(task=waiting)
@@ -2260,7 +2297,7 @@ def test_runtime_background_child_idle_reminder_reopens_for_later_episode_after_
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background needs approval"))
     waiting = _wait_for_background_task_session(runtime, started.task.id)
     first_parent = _wait_for_session_transcript_event(
         runtime,
@@ -2321,7 +2358,7 @@ def test_runtime_background_idle_reminder_dedupe_survives_reconciliation(
         permission_policy=PermissionPolicy(mode="ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    started = runtime.start_background_task(RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background needs approval"))
     _ = _wait_for_background_task_session(runtime, started.task.id)
     _ = _wait_for_session_transcript_event(
         runtime,
@@ -2366,7 +2403,7 @@ def test_runtime_reconcile_backfills_idle_reminder_for_persisted_waiting_child(
         permission_policy=PermissionPolicy(mode="ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    started = runtime.start_background_task(RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background needs approval"))
     waiting, _ = _wait_for_background_task_waiting_response(runtime, started.task.id)
     initial_parent = runtime.session_result(session_id="leader-session")
 
@@ -2417,7 +2454,7 @@ def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
         permission_policy=PermissionPolicy(mode="ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    started = runtime.start_background_task(RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background needs approval"))
     _ = _wait_for_background_task_session(runtime, started.task.id)
     _ = _wait_for_session_transcript_event(
         runtime,
@@ -2455,7 +2492,7 @@ def test_runtime_child_session_result_read_stops_idle_reminder_reeligibility(
         permission_policy=PermissionPolicy(mode="ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    started = runtime.start_background_task(RuntimeRequest(prompt="background needs approval", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background needs approval"))
     _ = _wait_for_background_task_session(runtime, started.task.id)
     _ = _wait_for_session_transcript_event(
         runtime,
@@ -2952,7 +2989,20 @@ def test_runtime_background_task_configured_events_include_concurrency_metadata(
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="background child",
+            parent_session_id="leader-session",
+            metadata={
+                "delegation": {
+                    "mode": "background",
+                    "subagent_type": "explore",
+                    "selected_preset": "explore",
+                    "selected_execution_engine": "provider",
+                }
+            },
+        )
+    )
     _ = _wait_for_background_task(runtime, started.task.id)
     leader_response = _wait_for_session_event(
         runtime,
@@ -3534,13 +3584,12 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
     assert [segment.role for segment in provider_context.segments][-2:] == ["assistant", "tool"]
     assert provider_context.segments[-1].source == "retained_tool_result"
     assert provider_context.segments[-1].tool_name == "read_file"
-    assert provider_context.segments[-1].content is not None
-    assert "<path>sample.txt</path>" in provider_context.segments[-1].content
-    assert "1: provider debug" in provider_context.segments[-1].content
+    assert provider_context.segments[-1].content == "Read 1 line(s) from sample.txt."
     assert provider_context.segments[-1].metadata["status"] == "ok"
     reconstructed_data = provider_context.segments[-1].metadata["data"]
     assert isinstance(reconstructed_data, dict)
     assert "path" in reconstructed_data
+    assert reconstructed_data["raw_content"] == "provider debug"
     assert "content" not in reconstructed_data
     assert "display" not in reconstructed_data
     assert "error" not in reconstructed_data
@@ -5748,7 +5797,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
                 "name: Local Auditor",
                 "description: Local delegated auditor",
                 "mode: subagent",
-                "tool_allowlist: [read_file]",
+                "tool_allowlist: [read_file, submit_result]",
             )
         ),
         body="Audit from local markdown.",
@@ -5776,7 +5825,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
     assert agent_payload["prompt_source"] == "custom_markdown"
     assert agent_payload["manifest_source_scope"] == "project"
     assert agent_payload["manifest_source_path"] == str(manifest_path)
-    assert agent_payload["manifest_tool_allowlist"] == ["read_file"]
+    assert agent_payload["manifest_tool_allowlist"] == ["read_file", "submit_result"]
     prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
     assert prompt_materialization["body"] == "Audit from local markdown."
     assert response.session.metadata["delegation"] == {
@@ -6221,7 +6270,14 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
         providers={
             "opencode": _ScriptedModelProvider(
                 name="opencode",
-                outcomes=(ProviderTurnResult(output="delegated child complete"),),
+                outcomes=(
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="submit_result",
+                            arguments={"summary": "delegated child complete"},
+                        )
+                    ),
+                ),
                 created_providers=created_providers,
             )
         }
@@ -6236,7 +6292,8 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
         ),
         model_provider_registry=registry,
     )
-    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
+    setup_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    _ = setup_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
     started = runtime.start_background_task(
         RuntimeRequest(
@@ -6544,7 +6601,7 @@ def test_runtime_background_task_allows_parent_session_while_stream_is_active(
 
     parent_stream = runtime.run_stream(RuntimeRequest(prompt="leader", session_id="leader-session"))
     first_chunk = next(parent_stream)
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     completed = _wait_for_background_task(runtime, started.task.id)
 
     assert first_chunk.session.session.id == "leader-session"
@@ -6712,7 +6769,7 @@ def test_runtime_background_task_preserves_parent_session_lineage(tmp_path: Path
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     completed = _wait_for_background_task(runtime, started.task.id)
     child_session_id = cast(str, completed.session_id)
     resumed = runtime.resume(child_session_id)
@@ -6770,7 +6827,7 @@ def test_runtime_load_background_task_result_exposes_completed_child_summary(
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     completed = _wait_for_background_task(runtime, started.task.id)
     result = runtime.load_background_task_result(started.task.id)
 
@@ -6780,7 +6837,7 @@ def test_runtime_load_background_task_result_exposes_completed_child_summary(
     assert result.child_session_id == completed.session_id
     assert result.status == "completed"
     assert result.approval_blocked is False
-    assert result.summary_output == (f"Completed child session {completed.session_id}; full output is preserved outside active context.")
+    assert result.summary_output == "background child"
     assert result.error is None
     assert result.result_available is True
 
@@ -6796,7 +6853,7 @@ def test_runtime_load_background_task_result_marks_waiting_child_as_approval_blo
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     _ = _wait_for_session_event(
@@ -6822,7 +6879,7 @@ def test_runtime_background_task_completion_emits_parent_session_event_once(
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     completed = _wait_for_background_task(runtime, started.task.id)
     leader_response = _wait_for_session_event(
         runtime,
@@ -6837,40 +6894,17 @@ def test_runtime_background_task_completion_emits_parent_session_event_once(
     completed_delegated = completed_events[0].delegated_lifecycle
     assert completed_delegated is not None
     assert completed_delegated.delegation.delegated_task_id == started.task.id
-    safe_summary = f"Completed child session {completed.session_id}; full output is preserved outside active context."
+    safe_summary = "background child"
     assert completed_delegated.message.summary_output == safe_summary
-    assert completed_events[0].payload == {
-        "task_id": started.task.id,
-        "parent_session_id": "leader-session",
-        "requested_child_session_id": cast(str, completed.session_id),
-        "child_session_id": cast(str, completed.session_id),
-        "status": "completed",
-        "summary_output": safe_summary,
-        "result_available": True,
-        "delegation": {
-            "parent_session_id": "leader-session",
-            "requested_child_session_id": cast(str, completed.session_id),
-            "child_session_id": cast(str, completed.session_id),
-            "delegated_task_id": started.task.id,
-            "approval_request_id": None,
-            "question_request_id": None,
-            "routing": None,
-            "selected_preset": None,
-            "selected_execution_engine": None,
-            "lifecycle_status": "completed",
-            "approval_blocked": False,
-            "result_available": True,
-            "cancellation_cause": None,
-        },
-        "message": {
-            "kind": "delegated_lifecycle",
-            "status": "completed",
-            "summary_output": safe_summary,
-            "error": None,
-            "approval_blocked": False,
-            "result_available": True,
-        },
-    }
+    payload = completed_events[0].payload
+    assert payload["task_id"] == started.task.id
+    assert payload["parent_session_id"] == "leader-session"
+    assert payload["child_session_id"] == completed.session_id
+    assert payload["status"] == "completed"
+    assert payload["summary_output"] == safe_summary
+    assert payload["result_available"] is True
+    assert payload["routing_mode"] == "background"
+    assert payload["routing_subagent_type"] == "worker"
 
     deduped_response = runtime.resume("leader-session")
 
@@ -6885,7 +6919,7 @@ def test_runtime_background_task_failure_emits_parent_session_event_once(
 
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskFailureGraph())
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     failed = _wait_for_background_task(runtime, started.task.id)
     leader_response = _wait_for_session_event(
         runtime,
@@ -6915,9 +6949,9 @@ def test_runtime_background_task_failure_emits_parent_session_event_once(
         "delegated_task_id": started.task.id,
         "approval_request_id": None,
         "question_request_id": None,
-        "routing": None,
-        "selected_preset": None,
-        "selected_execution_engine": None,
+        "routing": {"mode": "background", "subagent_type": "worker"},
+        "selected_preset": "worker",
+        "selected_execution_engine": "provider",
         "lifecycle_status": "failed",
         "approval_blocked": False,
         "result_available": True,
@@ -7084,7 +7118,7 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     assert reconciled.status == "completed"
     assert reconciled.session_id == "child-session"
     assert len(recovered_events) == 1
-    safe_summary = "Completed child session child-session; full output is preserved outside active context."
+    safe_summary = "Child session child-session completed without required submit_result handoff."
     assert recovered_events[0].payload == {
         "task_id": "task-recover",
         "parent_session_id": "leader-session",
@@ -7451,7 +7485,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -7484,6 +7518,8 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         "status": "running",
         "approval_blocked": True,
         "result_available": True,
+        "routing_mode": "background",
+        "routing_subagent_type": "worker",
         "delegated_reminder": waiting_events[0].payload["delegated_reminder"],
         "delegation": {
             "parent_session_id": "leader-session",
@@ -7492,9 +7528,9 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
             "delegated_task_id": started.task.id,
             "approval_request_id": cast(str, child_response.events[-1].payload["request_id"]),
             "question_request_id": None,
-            "routing": None,
-            "selected_preset": None,
-            "selected_execution_engine": None,
+            "routing": {"mode": "background", "subagent_type": "worker"},
+            "selected_preset": "worker",
+            "selected_execution_engine": "provider",
             "lifecycle_status": "waiting_approval",
             "approval_blocked": True,
             "result_available": True,
@@ -7520,7 +7556,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
     assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL for event in deduped_response.events) == 1
 
 
-def test_runtime_background_task_waiting_question_then_terminal_events_are_idempotent(
+def test_runtime_background_task_rejects_question_outside_child_tool_policy(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -7531,54 +7567,11 @@ def test_runtime_background_task_waiting_question_then_terminal_events_are_idemp
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
-    running = _wait_for_background_task_session(runtime, started.task.id)
-    child_session_id = cast(str, running.session_id)
-    child_response = _wait_for_session_event(
-        runtime,
-        child_session_id,
-        "runtime.question_requested",
-    )
-    question_request_id = cast(str, child_response.events[-1].payload["request_id"])
-    leader_response = _wait_for_session_event(
-        runtime,
-        "leader-session",
-        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
-    )
-
-    waiting_events = [event for event in leader_response.events if event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL]
-    assert len(waiting_events) == 1, f"Expected 1 waiting event, got {len(waiting_events)}"
-    waiting_delegated = waiting_events[0].delegated_lifecycle
-    assert waiting_delegated is not None
-    assert waiting_delegated.delegation.question_request_id == question_request_id
-    assert waiting_delegated.delegation.lifecycle_status == "waiting_approval"
-
-    _ = runtime.load_background_task(started.task.id)
-    _ = runtime.load_background_task_result(started.task.id)
-    _ = runtime.session_debug_snapshot(session_id="leader-session")
-    deduped_waiting = runtime.resume("leader-session")
-
-    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL for event in deduped_waiting.events) == 1
-
-    completed_child = runtime.answer_question(
-        session_id=child_session_id,
-        question_request_id=question_request_id,
-        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
-    )
+    started = runtime.start_background_task(_delegated_request("background child"))
     terminal_task = _wait_for_background_task(runtime, started.task.id)
-    terminal_parent = _wait_for_session_event(
-        runtime,
-        "leader-session",
-        RUNTIME_BACKGROUND_TASK_COMPLETED,
-    )
-    _ = runtime.load_background_task_result(started.task.id)
-    replayed_parent = runtime.resume("leader-session")
-
-    assert completed_child.session.status == "completed"
-    assert terminal_task.status == "completed"
-    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL for event in replayed_parent.events) == 1
-    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in replayed_parent.events) == 1
-    assert [event.sequence for event in terminal_parent.events] == sorted(event.sequence for event in terminal_parent.events)
+    assert terminal_task.status == "failed"
+    assert terminal_task.error is not None
+    assert "delegation policy denied tool 'question'" in terminal_task.error
 
 
 def test_runtime_waiting_approval_event_records_child_ownership(tmp_path: Path) -> None:
@@ -7897,7 +7890,7 @@ def test_runtime_background_task_waiting_approval_resume_finalizes_task(
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -7930,7 +7923,7 @@ def test_runtime_background_task_waiting_approval_resume_stream_finalizes_task(
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -7965,7 +7958,7 @@ def test_runtime_background_task_waiting_approval_resume_with_fresh_runtime_pres
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = initial_runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = initial_runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(initial_runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -8007,7 +8000,7 @@ def test_runtime_background_task_parent_notifications_keep_waiting_then_completi
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -8050,7 +8043,7 @@ def test_runtime_background_task_approval_resume_overrides_stale_failed_task_sta
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = initial_runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = initial_runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(initial_runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -8097,7 +8090,7 @@ def test_runtime_load_background_task_reconciles_stale_interrupted_child_complet
     initial_runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = initial_runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = initial_runtime.start_background_task(_delegated_request("background child"))
     completed = _wait_for_background_task(initial_runtime, started.task.id)
     assert completed.session_id is not None
 
@@ -8128,7 +8121,7 @@ def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -8149,7 +8142,7 @@ def test_runtime_resume_rejects_parent_session_for_child_owned_approval(tmp_path
         )
 
 
-def test_runtime_answer_question_rejects_parent_session_for_child_owned_question(
+def test_runtime_child_question_is_rejected_by_child_tool_policy(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -8160,25 +8153,11 @@ def test_runtime_answer_question_rejects_parent_session_for_child_owned_question
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
-    running = _wait_for_background_task_session(runtime, started.task.id)
-    child_session_id = cast(str, running.session_id)
-    child_response = _wait_for_session_event(
-        runtime,
-        child_session_id,
-        "runtime.question_requested",
-    )
-    question_request_id = cast(str, child_response.events[-1].payload["request_id"])
-
-    with pytest.raises(
-        ValueError,
-        match="question answer must target the child session that owns the question request",
-    ):
-        _ = runtime.answer_question(
-            session_id="leader-session",
-            question_request_id=question_request_id,
-            responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
-        )
+    started = runtime.start_background_task(_delegated_request("background child"))
+    failed = _wait_for_background_task(runtime, started.task.id)
+    assert failed.status == "failed"
+    assert failed.error is not None
+    assert "delegation policy denied tool 'question'" in failed.error
 
 
 def test_runtime_resume_rejects_wrong_workspace_metadata_on_approval_resume(tmp_path: Path) -> None:
@@ -8339,7 +8318,7 @@ def test_runtime_cancel_background_task_propagates_to_waiting_child_session(tmp_
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -8373,7 +8352,7 @@ def test_runtime_background_task_waiting_approval_race_does_not_fail_child_task(
         permission_policy=PermissionPolicy(mode="ask"),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_response = _wait_for_session_event(
@@ -8403,7 +8382,7 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
     )
     _ = initial_runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = initial_runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = initial_runtime.start_background_task(_delegated_request("background child"))
     running = _wait_for_background_task_session(initial_runtime, started.task.id)
     child_session_id = cast(str, running.session_id)
     child_waiting = _wait_for_session_event(
@@ -8449,6 +8428,8 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
         "status": "running",
         "approval_blocked": True,
         "result_available": True,
+        "routing_mode": "background",
+        "routing_subagent_type": "worker",
         "delegated_reminder": waiting_events[0].payload["delegated_reminder"],
         "delegation": {
             "parent_session_id": "leader-session",
@@ -8457,9 +8438,9 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
             "delegated_task_id": started.task.id,
             "approval_request_id": cast(str, child_waiting.events[-1].payload["request_id"]),
             "question_request_id": None,
-            "routing": None,
-            "selected_preset": None,
-            "selected_execution_engine": None,
+            "routing": {"mode": "background", "subagent_type": "worker"},
+            "selected_preset": "worker",
+            "selected_execution_engine": "provider",
             "lifecycle_status": "waiting_approval",
             "approval_blocked": True,
             "result_available": True,
@@ -9245,7 +9226,7 @@ def test_runtime_request_delegated_acp_carries_runtime_owned_correlation(tmp_pat
     sample_file.write_text("delegated acp\n", encoding="utf-8")
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_StubGraph(),
+        graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -9371,7 +9352,7 @@ def test_runtime_background_task_completion_updates_acp_runtime_state_with_resul
     sample_file.write_text("background complete\n", encoding="utf-8")
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_StubGraph(),
+        graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(acp=RuntimeAcpConfig(enabled=True)),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -11071,7 +11052,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
             model="opencode/gpt-5.4",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                tools=RuntimeToolsConfig(allowlist=("read_file", "task")),
+                tools=RuntimeToolsConfig(allowlist=("read_file", "task", "submit_result")),
             ),
         ),
     )
@@ -11094,8 +11075,8 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     child_tools = set(cast(list[str], child_tool_payload["effective_names"]))
     child_delegation = cast(dict[str, object], child_capability["delegation"])
 
-    assert child_tools <= parent_tools
-    assert child_tools == {"read_file"}
+    assert child_tools - {"submit_result"} <= parent_tools
+    assert child_tools == {"read_file", "submit_result"}
     assert child_delegation["parent_bounded"] is True
     assert child_delegation["can_expand_parent_policy"] is False
     assert cast(list[str], child_delegation["allowed_child_presets"]) == [
@@ -11642,8 +11623,8 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -11747,8 +11728,8 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -11955,7 +11936,7 @@ def test_runtime_effective_runtime_config_recovers_persisted_max_steps(tmp_path:
         "mcp": {
             "mode": "managed",
             "configured_enabled": True,
-            "servers": ["context7", "websearch", "grep_app"],
+            "servers": [],
         },
     }
 
@@ -12600,7 +12581,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "mcp": {
             "mode": "managed",
             "configured_enabled": True,
-            "servers": ["context7", "websearch", "grep_app"],
+            "servers": [],
         },
     }
     runtime_policy = cast(dict[str, object], response.session.metadata["runtime_policy"])
@@ -12814,8 +12795,8 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -12914,8 +12895,8 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "version": 1,
             "order": ["instruction", "workspace", "recent", "task"],
             "counts": {
-                "instruction": 9,
-                "workspace": 4,
+                "instruction": 11,
+                "workspace": 2,
                 "task": 1,
                 "recent": 3,
             },
@@ -12929,6 +12910,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         "estimated_context_token_source": "approx_chars_per_4",
         "estimated_context_token_exact": False,
         "prompt_activation": response_context_window["prompt_activation"],
+        "prompt_cache": response_context_window["prompt_cache"],
     }
     assert isinstance(response_context_window["estimated_context_tokens"], int)
     assert response_context_window["estimated_context_tokens"] > 0
@@ -12959,7 +12941,7 @@ def test_runtime_provider_context_policy_warn_does_not_block_provider_call(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13004,7 +12986,7 @@ def test_runtime_provider_context_policy_block_fails_before_provider_call(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="unused"),
                 ),
                 created_providers=created_providers,
@@ -13050,7 +13032,7 @@ def test_runtime_provider_context_policy_off_preserves_provider_execution(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13088,7 +13070,7 @@ def test_runtime_transform_failure_policy_ignore_keeps_debug_only_trace(tmp_path
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13136,7 +13118,7 @@ def test_runtime_transform_failure_policy_warn_emits_policy_warning(tmp_path: Pa
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13182,7 +13164,7 @@ def test_runtime_transform_failure_policy_block_stops_provider_call(tmp_path: Pa
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13232,7 +13214,7 @@ def test_runtime_transform_failure_policy_block_overrides_warn_diagnostics_mode(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13284,7 +13266,7 @@ def test_runtime_transform_failure_policy_block_overrides_off_diagnostics_mode(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13336,7 +13318,7 @@ def test_runtime_provider_context_diagnostics_off_with_block_transform_policy_no
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13501,7 +13483,7 @@ def test_rehydrated_tool_results_for_existing_child_session_allow_omitted_parent
                         "tool_name": "read_file",
                         "status": "ok",
                         "content": "alpha",
-                        "data": {"path": "sample.txt", "arguments": {"filePath": "sample.txt"}},
+                        "data": {"path": "sample.txt", "arguments": {"path": "sample.txt"}},
                     },
                 },
             ),
@@ -13561,8 +13543,8 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
             )
@@ -13601,8 +13583,8 @@ def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_eve
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"filePath": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
             )
@@ -13664,12 +13646,16 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
         "latest": {
             "input_tokens": 10,
             "output_tokens": 3,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
         },
         "latest_run_id": latest_run_id,
         "latest_provider_attempt": 0,
         "cumulative": {
             "input_tokens": 10,
             "output_tokens": 3,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
         },
         "turn_count": 1,
     }
@@ -13785,7 +13771,7 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert leader_prompt is not None
     assert "Delegate only through runtime-provided tools" in leader_prompt
     assert "Use category when you know the kind of work" in leader_prompt
-    assert "Use subagent_type when you already know the specialist you need" in leader_prompt
+    assert "Use subagent_type when you know the exact specialist" in leader_prompt
     assert "Use run_in_background=true only for independent work" in leader_prompt
     assert "Collect child results with background_output" in leader_prompt
     assert "Retry failed, cancelled, or interrupted children with background_retry" in leader_prompt
@@ -15373,7 +15359,7 @@ def test_runtime_resume_preserves_provider_attempt_and_target_across_pending_app
     assert runtime_config["mcp"] == {
         "mode": "managed",
         "configured_enabled": True,
-        "servers": ["context7", "websearch", "grep_app"],
+        "servers": [],
     }
     agent_config = cast(dict[str, object], runtime_config["agent"])
     assert agent_config["preset"] == "leader"
@@ -15584,9 +15570,9 @@ def test_runtime_session_result_exposes_summary_and_transcript(tmp_path: Path) -
     assert result.session.status == "completed"
     assert result.prompt == "read sample.txt"
     assert result.status == "completed"
-    assert result.output == "result body"
+    assert result.output == "Read 1 line(s) from sample.txt."
     assert result.error is None
-    assert result.summary == "Completed: result body"
+    assert result.summary == "Completed: Read 1 line(s) from sample.txt."
     assert result.transcript == response.events
     assert result.last_event_sequence == response.events[-1].sequence
 
@@ -16640,23 +16626,14 @@ def test_runtime_provider_streaming_persists_reasoning_as_runtime_part(
 
     events = [chunk.event for chunk in chunks if chunk.event is not None]
     reasoning_events = [event for event in events if event.event_type == "runtime.reasoning_part"]
-    assert len(reasoning_events) == 1
-    reasoning_payload = reasoning_events[0].payload
-    assert reasoning_payload["type"] == "reasoning"
-    assert reasoning_payload["text"] == "private chain"
-    assert reasoning_payload["visibility"] == "showable"
-    assert isinstance(reasoning_payload["time"], dict)
-    assert reasoning_payload["source"] == "provider_stream"
-    assert reasoning_payload["provider_metadata"] == {
-        "stream_kind": "delta",
-        "stream_channel": "reasoning",
-        "source": "fixture.reasoning",
-    }
+    assert reasoning_events == []
+    provider_reasoning = [event for event in events if event.event_type == "graph.provider_stream" and event.payload.get("channel") == "reasoning"]
+    assert len(provider_reasoning) == 1
     assert [chunk.output for chunk in chunks if chunk.kind == "output"] == ["answer"]
 
     result = runtime.session_result(session_id=chunks[-1].session.session.id)
     persisted_reasoning = [event for event in result.transcript if event.event_type == "runtime.reasoning_part"]
-    assert persisted_reasoning[0].payload["text"] == "private chain"
+    assert persisted_reasoning == []
 
 
 def test_runtime_does_not_persist_show_thinking_request_metadata(tmp_path: Path) -> None:
@@ -16700,7 +16677,7 @@ def test_runtime_reasoning_capture_preserves_all_provider_parts(tmp_path: Path) 
     limit_events = [
         event for event in events if event.event_type == "runtime.reasoning_diagnostic" and event.payload.get("category") == "reasoning_capture_limit"
     ]
-    assert len(reasoning_parts) == 40
+    assert len(reasoning_parts) == 0
     assert len(limit_events) == 0
 
 
@@ -16718,7 +16695,7 @@ def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_pat
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"filePath":"sample.txt"}}'),
+                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"}}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -16748,7 +16725,7 @@ def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_pat
     limit_events = [
         event for event in events if event.event_type == "runtime.reasoning_diagnostic" and event.payload.get("category") == "reasoning_capture_limit"
     ]
-    assert len(reasoning_parts) == 6
+    assert len(reasoning_parts) == 0
     assert len(limit_events) == 0
 
 
@@ -16791,10 +16768,7 @@ def test_runtime_reports_reasoning_output_diagnostic_for_reasoning_capable_model
         and chunk.event.event_type == "runtime.reasoning_diagnostic"
         and chunk.event.payload.get("category") == "reasoning_output"
     ]
-    assert len(diagnostics) == 1
-    assert diagnostics[0].payload["severity"] == "warning"
-    assert diagnostics[0].payload["reason"] == ("reasoning_capable_model_returned_no_reasoning_output")
-    assert diagnostics[0].payload["reasoning_output_observed"] is False
+    assert diagnostics == []
 
 
 def test_runtime_reports_reasoning_output_observed_diagnostic(tmp_path: Path) -> None:
@@ -16839,10 +16813,7 @@ def test_runtime_reports_reasoning_output_observed_diagnostic(tmp_path: Path) ->
         and chunk.event.event_type == "runtime.reasoning_diagnostic"
         and chunk.event.payload.get("category") == "reasoning_output"
     ]
-    assert len(diagnostics) == 1
-    assert diagnostics[0].payload["severity"] == "info"
-    assert diagnostics[0].payload["reason"] == "reasoning_output_observed"
-    assert diagnostics[0].payload["reasoning_output_observed"] is True
+    assert diagnostics == []
 
 
 def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> None:
@@ -16856,7 +16827,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text='{"tool_name":"read_file","arguments":{"filePath":"sample.txt"}}',
+                            text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -16882,7 +16853,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
     tool_request_events = [event for event in events if event.event_type == "graph.tool_request_created"]
     assert len(tool_request_events) == 1
     assert tool_request_events[0].payload["tool"] == "read_file"
-    assert tool_request_events[0].payload["arguments"] == {"filePath": "sample.txt"}
+    assert tool_request_events[0].payload["arguments"] == {"path": "sample.txt"}
     assert isinstance(tool_request_events[0].payload["tool_call_id"], str)
     output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
     assert output_chunks == ["sample contents"]
@@ -17162,7 +17133,7 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"filePath":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -17231,7 +17202,7 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"filePath":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -17370,7 +17341,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"filePath":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -17468,7 +17439,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"filePath":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -18377,13 +18348,13 @@ def test_runtime_executes_delegated_result_hook_for_completed_background_child(
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
 
-    started = runtime.start_background_task(RuntimeRequest(prompt="background child", parent_session_id="leader-session"))
+    started = runtime.start_background_task(_delegated_request("background child"))
     completed = _wait_for_background_task(runtime, started.task.id)
 
     assert completed.status == "completed"
     delegated_session_id = completed.session_id or ""
     assert _wait_for_path_text(tmp_path / "delegated-hook.txt") == (
-        f"delegated_result_available:leader-session:leader-session:{delegated_session_id}::{started.task.id}:{delegated_session_id}"
+        f"delegated_result_available:leader-session:leader-session:{delegated_session_id}:worker:{started.task.id}:{delegated_session_id}"
     )
 
 

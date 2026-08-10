@@ -25,7 +25,7 @@ class _InvokableTool(Protocol):
 @pytest.mark.parametrize(
     ("tool", "arguments"),
     [
-        (ReadFileTool(), {"filePath": "link.txt"}),
+        (ReadFileTool(), {"path": "link.txt"}),
         (WriteFileTool(), {"path": "linkdir/out.txt", "content": "x"}),
         (EditTool(), {"path": "link.txt", "oldString": "a", "newString": "b"}),
     ],

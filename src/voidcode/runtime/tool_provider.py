@@ -7,6 +7,7 @@ from typing import Protocol
 
 from ..hook.config import RuntimeHooksConfig
 from ..skills.models import SkillMetadata
+from ..tools.apply_workspace_edit import ApplyWorkspaceEditTool
 from ..tools.contracts import Tool
 from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
@@ -23,6 +24,7 @@ from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 BUILTIN_TOOL_NAMES = frozenset(
     {
         "apply_patch",
+        "apply_workspace_edit",
         "ast_grep",
         "background_cancel",
         "background_output",
@@ -216,6 +218,7 @@ class BuiltinToolProvider:
     def provide_tools(self) -> tuple[Tool, ...]:
         edit_tool = EditTool(hooks_config=self._hooks_config)
         tools: list[Tool] = [
+            ApplyWorkspaceEditTool(),
             edit_tool,
             GlobTool(),
             GrepTool(),

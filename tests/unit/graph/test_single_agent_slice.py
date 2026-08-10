@@ -112,7 +112,7 @@ class _MixedNonStreamingTurnProvider:
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
         return ProviderTurnResult(
-            tool_call=ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
+            tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
             output="done",
         )
 
@@ -126,12 +126,12 @@ class _BatchNonStreamingTurnProvider:
             tool_calls=(
                 ToolCall(
                     tool_name="read_file",
-                    arguments={"filePath": "alpha.txt"},
+                    arguments={"path": "alpha.txt"},
                     tool_call_id="call-alpha",
                 ),
                 ToolCall(
                     tool_name="read_file",
-                    arguments={"filePath": "beta.txt"},
+                    arguments={"path": "beta.txt"},
                     tool_call_id="call-beta",
                 ),
             )
@@ -347,9 +347,9 @@ class _StreamToolBatchTurnProvider:
                     text=(
                         '{"tool_calls":['
                         '{"tool_name":"read_file","tool_call_id":"call-alpha",'
-                        '"arguments":{"filePath":"alpha.txt"}},'
+                        '"arguments":{"path":"alpha.txt"}},'
                         '{"tool_name":"read_file","tool_call_id":"call-beta",'
-                        '"arguments":{"filePath":"beta.txt"}}]}'
+                        '"arguments":{"path":"beta.txt"}}]}'
                     ),
                 ),
                 ProviderStreamEvent(kind="done", done_reason="completed"),

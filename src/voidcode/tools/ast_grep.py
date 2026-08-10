@@ -144,12 +144,13 @@ class AstGrepTool:
         name="ast_grep",
         description="Structural code search and rewrite with ast-grep.",
         input_schema={
-            "mode": {"type": "string"},
-            "pattern": {"type": "string"},
-            "path": {"type": "string"},
+            "mode": {"type": "string", "enum": ["search", "preview", "replace"], "description": "AST operation to perform."},
+            "pattern": {"type": "string", "minLength": 1, "description": "ast-grep pattern."},
+            "path": {"type": "string", "minLength": 1, "description": "File or directory path relative to workspace."},
             "rewrite": {"type": "string"},
             "lang": {"type": "string"},
             "apply": {"type": "boolean"},
+            "required": ["mode", "pattern", "path"],
         },
         read_only=True,
     )

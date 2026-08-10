@@ -301,7 +301,7 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
                 tool_name="read_file",
                 status="ok",
                 content="content",
-                data={"path": "src/app.py", "arguments": {"filePath": "src/app.py"}},
+                data={"path": "src/app.py", "arguments": {"path": "src/app.py"}},
             ),
         ),
         session_metadata={},
@@ -514,7 +514,7 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
                 tool_name="read_file",
                 content="current code",
                 status="ok",
-                data={"tool_call_id": "read-1", "arguments": {"filePath": "src/app.py"}},
+                data={"tool_call_id": "read-1", "arguments": {"path": "src/app.py"}},
             ),
         ),
         session_metadata={

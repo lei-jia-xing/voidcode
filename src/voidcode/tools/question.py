@@ -64,7 +64,8 @@ class QuestionTool:
             "questions": {
                 "type": "array",
                 "description": "Array of {question, header, options, multiple} objects.",
-            }
+            },
+            "required": ["questions"],
         },
         read_only=True,
     )

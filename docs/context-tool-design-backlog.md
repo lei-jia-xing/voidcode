@@ -23,7 +23,7 @@ considered complete until implementation and focused tests provide evidence.
 
 - [x] Preserve `ToolDefinition.path_argument_keys` whenever definitions are
   decorated with guidance.
-- [ ] Make every input schema explicit about required fields, constraints, enums,
+- [x] Make every input schema explicit about required fields, constraints, enums,
   and field-level descriptions. `read_file` now documents path, offset, limit,
   and continuation semantics; `write_file` and `multi_edit` now document their
   replacement semantics; `grep` now documents explicit literal/regex selection
@@ -32,13 +32,13 @@ considered complete until implementation and focused tests provide evidence.
   behavior and retry guidance.
 - [ ] Converge on `content` as a short human summary and put machine-readable
   payloads in `data`.
-- [ ] Plan a compatibility migration from `read_file.filePath` to `path`.
-- [ ] Provide structured file lines/raw content so edit calls do not need to
+- [x] Switch `read_file` to the canonical `path` field without a legacy alias.
+- [x] Provide structured file lines/raw content so edit calls do not need to
   strip presentation line prefixes.
 
 ## Evidence Already Found
 
-- `src/voidcode/tools/guidance.py` currently drops `path_argument_keys`.
+- `src/voidcode/tools/guidance.py` preserves `path_argument_keys` and has regression coverage.
 - `src/voidcode/runtime/prompt_assembly.py` places the dynamic boundary before
   workflow, skills, hooks, memory, and tool policy sections.
 - `tests/unit/runtime/test_prompt_stable_prefix.py` hashes a prefix for tests,

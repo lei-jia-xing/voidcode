@@ -1,4 +1,5 @@
 from .apply_patch import ApplyPatchTool
+from .apply_workspace_edit import ApplyWorkspaceEditTool
 from .ast_grep import AstGrepTool
 from .background_cancel import BackgroundCancelTool
 from .background_output import BackgroundOutputTool
@@ -39,6 +40,7 @@ from .write_file import WriteFileTool
 
 __all__ = [
     "ApplyPatchTool",
+    "ApplyWorkspaceEditTool",
     "AstGrepTool",
     "BackgroundCancelTool",
     "BackgroundOutputTool",

@@ -95,6 +95,7 @@ class TodoWriteTool:
                 "type": "array",
                 "description": ("Full replacement list of {content, status} items. At most one item may have status='in_progress'."),
             },
+            "required": ["todos"],
         },
         read_only=True,
     )

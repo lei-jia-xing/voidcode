@@ -2,6 +2,8 @@
 
 关于将此路线图转变为具体交付阶段的执行清单，请参阅 [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md)。关于面向客户端的运行时契约，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
+关于与 Oh My Pi 的阶段性能力对比，以及由此形成的真实任务成功率、read/edit、LSP、首次配置、上下文连续性和受限子代理产品化优先级，请参阅 [`oh-my-pi-comparison-priorities.md`](./oh-my-pi-comparison-priorities.md)。
+
 ## 当前状态
 
 VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成。仓库已经完成了初始环境/引导工作，现在还包括了一个稳定的 deterministic reference/debug engine、已落地的 provider-backed execution path，以及 runtime-owned delegated child execution 基线。同时，为工具、技能以及 LSP/ACP/MCP 的载体预留了初始扩展基础设施，而更广泛的 MVP 实现和 IDE 集成在当前阶段尚不在范围内。post-MVP 的明确方向之一是 multi-agent 支持，但这不会改变 runtime 作为系统控制面的边界。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,15 +18,15 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
 class ReadFileArgs(BaseModel):
-    filePath: str
+    path: str
     offset: int | None = None
     limit: int | None = None
 
-    @field_validator("filePath", mode="after")
+    @field_validator("path", mode="after")
     @classmethod
-    def _validate_file_path(cls, value: str) -> str:
+    def _validate_path(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("filePath must not be empty")
+            raise ValueError("path must not be empty")
         return value
 
     @field_validator("offset", mode="after")
@@ -135,6 +136,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                 "type": "attachment",
                 "content_type": mime,
                 "byte_count": len(raw),
+                "content_hash": hashlib.sha256(raw).hexdigest(),
                 "attachment": {"mime": mime, "data_uri": data_uri},
                 "truncated": False,
                 "partial": False,
@@ -143,6 +145,12 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
 
     if _is_binary_file(candidate):
         raise ValueError(f"read_file only supports text files or image/pdf attachments: {relative_path}")
+
+    digest = hashlib.sha256()
+    with candidate.open("rb") as hash_handle:
+        for chunk in iter(lambda: hash_handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    content_hash = digest.hexdigest()
 
     limit = min(limit, DEFAULT_READ_LIMIT)
     rendered_lines: list[str] = []
@@ -181,10 +189,8 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     next_offset = offset + len(rendered_lines)
     content_truncated = content_truncated or has_more
 
-    rendered = rendered_lines
-
     return _ReadOutcome(
-        content="\n".join(rendered),
+        content=(f"Read {len(rendered_lines)} line(s) from {relative_path}" + ("; output is truncated." if content_truncated else ".")),
         data={
             "path": relative_path,
             "type": "file",
@@ -195,6 +201,9 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
             "truncated": content_truncated,
             "partial": content_truncated,
             "byte_count": bytes_used,
+            "content_hash": content_hash,
+            "lines": [{"line": offset + index, "text": line} for index, line in enumerate(rendered_lines)],
+            "raw_content": "\n".join(rendered_lines),
         },
     )
 
@@ -207,7 +216,7 @@ class ReadFileTool:
         name="read_file",
         description="Read a file inside the current workspace.",
         input_schema={
-            "filePath": {
+            "path": {
                 "type": "string",
                 "description": "Path relative to the workspace (or an explicitly permitted external path).",
             },
@@ -221,16 +230,17 @@ class ReadFileTool:
                 "minimum": 1,
                 "description": "Maximum lines to return; use data.next_offset to continue when truncated.",
             },
+            "required": ["path"],
         },
         read_only=True,
-        path_argument_keys=("filePath",),
+        path_argument_keys=("path",),
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
             args = ReadFileArgs.model_validate(
                 {
-                    "filePath": call.arguments.get("filePath"),
+                    "path": call.arguments.get("path"),
                     "offset": call.arguments.get("offset"),
                     "limit": call.arguments.get("limit"),
                 }
@@ -240,23 +250,23 @@ class ReadFileTool:
 
         resolution = resolve_workspace_path_policy(
             workspace=workspace,
-            raw_path=args.filePath,
+            raw_path=args.path,
             allow_outside_workspace=True,
         )
         candidate = resolution.candidate
         relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
 
         if not candidate.exists():
-            raise ValueError(f"read_file target does not exist: {args.filePath}")
+            raise ValueError(f"read_file target does not exist: {args.path}")
 
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
         if candidate.is_dir():
-            suggestions = suggest_workspace_paths(workspace=workspace, raw_path=args.filePath)
+            suggestions = suggest_workspace_paths(workspace=workspace, raw_path=args.path)
             suffix = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-            raise ValueError(f"read_file does not support directories: {args.filePath}.{suffix}")
+            raise ValueError(f"read_file does not support directories: {args.path}.{suffix}")
         if not candidate.is_file():
-            raise ValueError(f"read_file only supports regular files: {args.filePath}")
+            raise ValueError(f"read_file only supports regular files: {args.path}")
 
         outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit)
 

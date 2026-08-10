@@ -61,6 +61,7 @@ class InteractiveShellTool:
                 "type": "string",
                 "description": "Human-readable description of the tmux action",
             },
+            "required": ["tmux_command"],
         },
         read_only=False,
     )

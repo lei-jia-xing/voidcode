@@ -17,13 +17,14 @@ def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) ->
     tool = ReadFileTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt", "offset": 2, "limit": 2}),
+        ToolCall(tool_name="read_file", arguments={"path": "sample.txt", "offset": 2, "limit": 2}),
         workspace=tmp_path,
     )
 
     assert result.tool_name == "read_file"
     assert result.status == "ok"
-    assert result.content == "beta\ngamma"
+    assert result.content == "Read 2 line(s) from sample.txt; output is truncated."
+    assert result.data["raw_content"] == "beta\ngamma"
     assert result.data["path"] == "sample.txt"
     assert result.data["offset"] == 2
     assert result.data["limit"] == 2
@@ -40,7 +41,7 @@ def test_read_file_tool_rejects_directories_with_suggestions(tmp_path: Path) -> 
     tool = ReadFileTool()
 
     with pytest.raises(ValueError, match="does not support directories") as exc_info:
-        tool.invoke(ToolCall(tool_name="read_file", arguments={"filePath": "."}), workspace=tmp_path)
+        tool.invoke(ToolCall(tool_name="read_file", arguments={"path": "."}), workspace=tmp_path)
 
     assert "Did you mean:" in str(exc_info.value)
 
@@ -51,7 +52,7 @@ def test_read_file_tool_returns_attachment_for_images(tmp_path: Path) -> None:
     tool = ReadFileTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"filePath": "image.png"}),
+        ToolCall(tool_name="read_file", arguments={"path": "image.png"}),
         workspace=tmp_path,
     )
 
@@ -66,7 +67,7 @@ def test_read_file_tool_allows_workspace_escape_path_with_absolute_display(tmp_p
     tool = ReadFileTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"filePath": "../outside-read.txt"}),
+        ToolCall(tool_name="read_file", arguments={"path": "../outside-read.txt"}),
         workspace=tmp_path,
     )
 
@@ -87,7 +88,7 @@ def test_read_file_tool_allows_symlink_escape_when_runtime_permission_allows(
 
     tool = ReadFileTool()
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"filePath": "link.txt"}),
+        ToolCall(tool_name="read_file", arguments={"path": "link.txt"}),
         workspace=tmp_path,
     )
     assert result.status == "ok"
@@ -101,12 +102,13 @@ def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> 
 
     with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
         result = tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
+            ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
             workspace=tmp_path,
         )
 
     assert result.status == "ok"
-    assert result.content == "alpha\nbeta"
+    assert result.content == "Read 2 line(s) from sample.txt."
+    assert result.data["raw_content"] == "alpha\nbeta"
 
 
 def test_read_file_tool_rejects_non_regular_target(tmp_path: Path) -> None:
@@ -119,7 +121,7 @@ def test_read_file_tool_rejects_non_regular_target(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="only supports regular files"):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "sample.fifo"}),
+            ToolCall(tool_name="read_file", arguments={"path": "sample.fifo"}),
             workspace=tmp_path,
         )
 
@@ -128,13 +130,13 @@ def test_read_file_tool_reports_field_specific_validation_errors(tmp_path: Path)
     tool = ReadFileTool()
 
     file_path_error = (
-        r"read_file Validation error: filePath: "
+        r"read_file Validation error: path: "
         r"Input should be a valid string \(received int\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=file_path_error):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": 123}),
+            ToolCall(tool_name="read_file", arguments={"path": 123}),
             workspace=tmp_path,
         )
 
@@ -145,7 +147,7 @@ def test_read_file_tool_reports_field_specific_validation_errors(tmp_path: Path)
     )
     with pytest.raises(ValueError, match=offset_error):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt", "offset": 0}),
+            ToolCall(tool_name="read_file", arguments={"path": "sample.txt", "offset": 0}),
             workspace=tmp_path,
         )
 
@@ -156,7 +158,7 @@ def test_read_file_tool_reports_field_specific_validation_errors(tmp_path: Path)
     )
     with pytest.raises(ValueError, match=limit_error):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt", "limit": 0}),
+            ToolCall(tool_name="read_file", arguments={"path": "sample.txt", "limit": 0}),
             workspace=tmp_path,
         )
 
@@ -164,7 +166,7 @@ def test_read_file_tool_reports_field_specific_validation_errors(tmp_path: Path)
 def test_read_file_tool_reports_missing_file_path(tmp_path: Path) -> None:
     tool = ReadFileTool()
     missing_file_path_error = (
-        r"read_file Validation error: filePath: "
+        r"read_file Validation error: path: "
         r"Input should be a valid string \(received NoneType\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
@@ -181,7 +183,7 @@ def test_read_file_tool_rejects_oversized_attachment_before_read_bytes(tmp_path:
     with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
         with pytest.raises(ValueError, match="attachment exceeds the maximum supported size"):
             tool.invoke(
-                ToolCall(tool_name="read_file", arguments={"filePath": "image.png"}),
+                ToolCall(tool_name="read_file", arguments={"path": "image.png"}),
                 workspace=tmp_path,
             )
 
@@ -192,14 +194,13 @@ def test_read_file_tool_does_not_emit_offset_guidance_for_clipped_line_only(tmp_
     tool = ReadFileTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"filePath": "sample.txt"}),
+        ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
         workspace=tmp_path,
     )
 
     assert result.status == "ok"
-    assert "line truncated to 2000 chars" in (result.content or "")
-    assert "Use offset=" not in (result.content or "")
-    assert result.content == "x" * MAX_LINE_LENGTH + "... (line truncated to 2000 chars)"
+    assert "truncated" in (result.content or "")
+    assert result.data["raw_content"].startswith("x" * MAX_LINE_LENGTH)
     assert result.data["next_offset"] is None
     assert result.data["truncated"] is True
     assert result.data["partial"] is True

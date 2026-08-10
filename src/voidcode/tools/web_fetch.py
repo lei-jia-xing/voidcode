@@ -71,6 +71,7 @@ class WebFetchTool:
                 "description": "Output format: text, markdown, or html",
             },
             "timeout": {"type": "integer", "description": "Timeout in seconds (max 120)"},
+            "required": ["url"],
         },
         read_only=True,
     )
@@ -239,13 +240,14 @@ class WebFetchTool:
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=output,
+            content=f"Fetched {len(output)} characters from {url_value} as {format_value}.",
             data={
                 "url": url_value,
                 "content_type": mime,
                 "format": format_value,
                 "byte_count": len(data),
                 "timeout_seconds": timeout,
+                "content": output,
             },
             truncated=False,
             partial=False,

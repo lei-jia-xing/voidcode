@@ -469,18 +469,6 @@ def build_prompt_assembly_plan(
             tier="workspace",
             layer="project_context",
         )
-        append_system(
-            dynamic_boundary_marker(),
-            source="runtime_dynamic_boundary",
-            tier="workspace",
-            layer="project_context",
-        )
-        append_system(
-            dynamic_env_card,
-            source="runtime_environment_dynamic",
-            tier="workspace",
-            layer="project_context",
-        )
     else:
         append_system(
             _BASE_SAFETY_GUIDANCE,
@@ -565,6 +553,31 @@ def build_prompt_assembly_plan(
                 metadata=injection.metadata,
             )
 
+    append_system(
+        workspace_memory_context,
+        source="runtime_workspace_memory",
+        tier="workspace",
+        layer="project_context",
+        metadata={"section": "Workspace Memory"},
+    )
+    append_system(
+        _TOOL_POLICY_SUMMARY,
+        source="runtime_tool_policy_summary",
+        tier="instruction",
+        layer="tool_policy_summary",
+    )
+    append_system(
+        dynamic_boundary_marker(),
+        source="runtime_dynamic_boundary",
+        tier="workspace",
+        layer="project_context",
+    )
+    append_system(
+        dynamic_env_card,
+        source="runtime_environment_dynamic",
+        tier="workspace",
+        layer="project_context",
+    )
     if pending_state_section is not None:
         if pending_state_section.role == "system":
             append_system(
@@ -589,19 +602,6 @@ def build_prompt_assembly_plan(
         source="runtime_todo_state",
         tier="task",
         layer="task_state",
-    )
-    append_system(
-        workspace_memory_context,
-        source="runtime_workspace_memory",
-        tier="workspace",
-        layer="project_context",
-        metadata={"section": "Workspace Memory"},
-    )
-    append_system(
-        _TOOL_POLICY_SUMMARY,
-        source="runtime_tool_policy_summary",
-        tier="instruction",
-        layer="tool_policy_summary",
     )
     append_system(
         continuity_summary,

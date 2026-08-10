@@ -78,6 +78,26 @@ def _is_waiting_approval_background_task(task: Any) -> bool:
     return getattr(task, "approval_request_id", None) is not None
 
 
+class _DelegatedHandoffGraph:
+    def __init__(self) -> None:
+        self._delegate = importlib.import_module("voidcode.graph.deterministic_graph").DeterministicGraph()
+
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+        step = self._delegate.step(request, tool_results, session=session)
+        if step.is_finished and cast(Any, session).session.parent_id is not None:
+            tool_call = ToolCall(
+                tool_name="submit_result",
+                arguments={"summary": step.output or "Delegated task completed."},
+            )
+            return SimpleNamespace(
+                events=step.events,
+                tool_call=tool_call,
+                output=None,
+                is_finished=False,
+            )
+        return step
+
+
 class _QuestionThenDoneGraph:
     def step(self, request: Any, tool_results: tuple[object, ...], *, session: Any) -> Any:
         _ = request, session
@@ -496,7 +516,7 @@ def test_cli_sessions_resume_replays_completed_session_after_restart(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_cli_sessions_list_shows_delegated_child_sessions(tmp_path: Path) -> None:
+def test_cli_sessions_list_omits_child_that_failed_required_handoff(tmp_path: Path) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = tmp_path
     runtime_module = importlib.import_module("voidcode.runtime")
@@ -504,19 +524,20 @@ def test_cli_sessions_list_shows_delegated_child_sessions(tmp_path: Path) -> Non
 
     runtime = runtime_module.VoidCodeRuntime(workspace=workspace)
     _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
-    _ = runtime.run(
-        runtime_module.RuntimeRequest(
-            prompt="read sample.txt",
-            parent_session_id="leader-session",
+    with pytest.raises(ValueError, match="delegated child must call submit_result"):
+        runtime.run(
+            runtime_module.RuntimeRequest(
+                prompt="read sample.txt",
+                parent_session_id="leader-session",
+            )
         )
-    )
 
     result = cli.main(["sessions", "list", "--workspace", str(workspace)])
 
     assert result == 0
     listed = runtime.list_sessions()
     child_ids = {s.session.id for s in listed if s.session.parent_id == "leader-session"}
-    assert len(child_ids) >= 1
+    assert child_ids == set()
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +917,7 @@ def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(tmp_path:
     runtime_module = importlib.import_module("voidcode.runtime")
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
 
-    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
+    runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path, graph=_DelegatedHandoffGraph())
     _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
     started = runtime.start_background_task(
         runtime_module.RuntimeRequest(
@@ -937,9 +958,8 @@ def test_cli_tasks_surfaces_real_runtime_completed_delegated_lifecycle(tmp_path:
     assert f"child_session_id={completed.child_session_id}" in status_output
     assert "result_available=True" in status_output
     assert f"TASK id={started.task.id} status=completed" in task_output
-    assert "summary_output='Completed child session " in task_output
-    assert "summary_output='Completed: hello'" not in task_output
-    assert "RESULT\nhello\n" in task_output
+    assert "summary_output='Read 1 line(s) from sample.txt.'" in task_output
+    assert "RESULT\nRead 1 line(s) from sample.txt.\n" in task_output
     assert f"TASK id={started.task.id} status=completed" in list_output
     assert f"TASK id={started.task.id} status=completed" in filtered_output
 

@@ -1125,7 +1125,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
                 tool="read_file",
                 status="ok",
                 content="sample",
-                arguments={"filePath": "sample.txt"},
+                arguments={"path": "sample.txt"},
             ),
         ),
         _make_chunk(
