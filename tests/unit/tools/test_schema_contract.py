@@ -42,7 +42,7 @@ def test_builtin_schema_declares_required_fields(tool: type[object], required: l
 def test_read_file_schema_uses_only_path() -> None:
     schema = ReadFileTool.definition.input_schema
     assert "path" in schema
-    assert "path" not in schema
+    assert "filePath" not in schema
     assert ReadFileTool.definition.path_argument_keys == ("path",)
 
 
