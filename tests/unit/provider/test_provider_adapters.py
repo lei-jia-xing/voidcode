@@ -518,6 +518,52 @@ def test_provider_adapter_wraps_property_schema_with_description_argument(
     }
 
 
+def test_provider_adapter_lifts_required_from_legacy_flat_tool_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    request = _build_turn_request(model_name="openai")
+    request = ProviderTurnRequest(
+        assembled_context=_assembled_context(
+            prompt=request.prompt,
+            tool_results=request.tool_results,
+            context_window=request.context_window,
+            applied_skills=request.applied_skills,
+        ),
+        available_tools=(
+            ToolDefinition(
+                name="glob",
+                description="find files",
+                input_schema={
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string"},
+                    "required": ["pattern"],
+                },
+                read_only=True,
+            ),
+        ),
+        raw_model=request.raw_model,
+        provider_name=request.provider_name,
+        model_name=request.model_name,
+    )
+    _patch_litellm_completion(monkeypatch, mode="completion", completion_content="done")
+
+    _ = provider.propose_turn(request)
+
+    payload = cast(dict[str, object], _LAST_REQUEST_PAYLOAD["kwargs"])
+    tools = cast(list[dict[str, object]], payload["tools"])
+    function = cast(dict[str, object], tools[0]["function"])
+    assert function["parameters"] == {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string"},
+            "path": {"type": "string"},
+        },
+        "additionalProperties": True,
+        "required": ["pattern"],
+    }
+
+
 def test_provider_adapter_wraps_task_tool_description_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -130,7 +130,6 @@ def _is_object_json_schema(schema: dict[str, object]) -> bool:
             "oneOf",
             "patternProperties",
             "propertyNames",
-            "required",
             "unevaluatedProperties",
         )
     )
@@ -261,11 +260,15 @@ class LiteLLMBackendSingleAgentProvider:
             parameters = dict(input_schema)
             parameters.setdefault("type", "object")
         else:
+            properties = dict(input_schema)
+            required = properties.pop("required", None)
             parameters = {
                 "type": "object",
-                "properties": input_schema,
+                "properties": properties,
                 "additionalProperties": True,
             }
+            if isinstance(required, list) and all(isinstance(item, str) for item in required):
+                parameters["required"] = list(required)
         return {
             "type": "function",
             "function": {
@@ -672,11 +675,13 @@ class LiteLLMBackendSingleAgentProvider:
     def _map_exception(exc: Exception, *, provider_name: str, model_name: str) -> ProviderExecutionError:
         if isinstance(exc, ProviderExecutionError):
             return exc
-        if isinstance(exc, APIError):
+        status_code = getattr(exc, "status_code", None)
+        error_code = getattr(exc, "code", None)
+        if isinstance(exc, APIError) or isinstance(status_code, int) or isinstance(error_code, str):
             payload: dict[str, object] = {
                 "message": str(exc),
-                "status_code": getattr(exc, "status_code", None),
-                "code": getattr(exc, "code", None),
+                "status_code": status_code,
+                "code": error_code,
             }
             return provider_execution_error_from_api_payload(
                 provider_name=provider_name,

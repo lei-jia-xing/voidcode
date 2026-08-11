@@ -235,6 +235,8 @@ def _classify_api_error_kind(
             "streaming is not supported",
             "tools are not supported",
             "tool calling is not supported",
+            "invalid schema for function",
+            "invalid function schema",
         )
     ):
         return "unsupported_feature"

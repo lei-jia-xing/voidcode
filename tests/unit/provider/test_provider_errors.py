@@ -102,6 +102,20 @@ def test_parse_provider_api_error_maps_unsupported_feature() -> None:
     assert parsed.fallback_allowed is True
 
 
+def test_parse_provider_api_error_maps_invalid_function_schema_without_retry() -> None:
+    parsed = parse_provider_api_error(
+        {
+            "status_code": 400,
+            "message": "Invalid schema for function 'glob': pattern is not of type string",
+            "code": "invalid_request_error",
+        }
+    )
+
+    assert parsed.kind == "unsupported_feature"
+    assert parsed.retryable is False
+    assert parsed.fallback_allowed is True
+
+
 def test_parse_provider_api_error_checks_unsupported_feature_before_403_fallback() -> None:
     parsed = parse_provider_api_error({"status_code": 403, "message": "Streaming is not supported for this model"})
 
