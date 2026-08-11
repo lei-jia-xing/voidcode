@@ -154,26 +154,22 @@ async def test_tui_waiting_stream_keeps_waiting_state(app_class: Any) -> None:
 
 @pytest.mark.anyio
 async def test_tui_queues_submissions_fifo_while_stream_active(app_class: Any) -> None:
-    VoidCodeTUI, _, StreamCompleted = app_class
+    VoidCodeTUI, _, _ = app_class
 
     mock_runtime = _mock_runtime()
+    mock_runtime.queue_steering.return_value = [{"kind": "steering", "content": "first"}]
     app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
 
-    with patch.object(app, "_start_stream") as start_stream:
-        async with app.run_test() as pilot:
-            composer = app.query_one("#composer-input", Input)
-            app._stream_active = True
-            app.on_input_submitted(Input.Submitted(composer, "first"))
-            app.on_input_submitted(Input.Submitted(composer, "second"))
-            assert list(app._prompt_queue) == ["first", "second"]
+    async with app.run_test() as pilot:
+        app.session_id = "tui-session"
+        composer = app.query_one("#composer-input", Input)
+        app._stream_active = True
+        app.on_input_submitted(Input.Submitted(composer, "first"))
+        app.on_input_submitted(Input.Submitted(composer, "second"))
+        await pilot.pause()
 
-            app._stream_active = False
-            assert app._start_next_queued_prompt() is True
-            app.on_stream_completed(StreamCompleted("completed"))
-            await pilot.pause()
-
-    prompts = [call.args[0].prompt for call in start_stream.call_args_list]
-    assert prompts == ["first", "second"]
+    assert mock_runtime.queue_steering.call_args_list[0].args == ("tui-session", "first")
+    assert mock_runtime.queue_steering.call_args_list[1].args == ("tui-session", "second")
 
 
 @pytest.mark.anyio

@@ -255,6 +255,7 @@ from .hook_preset_metadata import (
     hook_preset_refs_for_mode_and_agent,
     resolved_hook_preset_snapshot_from_session_metadata,
 )
+from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager
 from .memory import MemoryConfig, MemoryKind, MemoryRecord, MemorySearchResult, build_memory_manager
@@ -377,6 +378,7 @@ from .tool_provider import (
     LocalCustomToolProvider,
 )
 from .tool_registry import ToolPolicyDecision, ToolRegistry
+from .tool_replay import ToolExecutionIntent, recovery_action
 from .tool_scope import RuntimeToolScopeResolver
 from .workflow import (
     WorkflowModeResolution,
@@ -1772,7 +1774,7 @@ class VoidCodeRuntime:
                 },
                 dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{correlation_id}"),
             )
-        except UnknownSessionError:
+        except (AttributeError, UnknownSessionError):
             logger.debug(
                 "skipping ACP delegated lifecycle event for unavailable parent session: %s",
                 parent_session_id,
@@ -1851,6 +1853,33 @@ class VoidCodeRuntime:
 
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
+
+            # Follow-up messages are delivered only after the current run has
+            # reached a durable terminal state. They become ordinary prompts
+            # on the same session and therefore share the existing runtime
+            # approval, persistence, and event paths.
+            if final_session.status == "completed":
+                followup_metadata, followups = drain_runtime_messages(
+                    final_session.metadata,
+                    kind="follow_up",
+                )
+                if followups:
+                    self._session_store.update_session_metadata(
+                        workspace=self._workspace,
+                        session_id=session_id,
+                        metadata=followup_metadata,
+                    )
+                    for followup in followups:
+                        followup_request = RuntimeRequest(
+                            prompt=followup.content,
+                            session_id=session_id,
+                            parent_session_id=request.parent_session_id,
+                            metadata=request.metadata,
+                        )
+                        yield from self._run_with_persistence(
+                            followup_request,
+                            allow_internal_metadata=allow_internal_metadata,
+                        )
         finally:
             self._unregister_active_session_id(session_id, run_id=run_id)
 
@@ -1986,6 +2015,22 @@ class VoidCodeRuntime:
             if request.session_id is not None
             else None
         )
+        if existing_session is not None and request.session_id is not None:
+            queued_metadata, queued_steering = drain_runtime_messages(
+                existing_session.session.metadata,
+                kind="steering",
+            )
+            if queued_steering:
+                steering_text = "\n\n".join(message.content for message in queued_steering)
+                request = replace(
+                    request,
+                    prompt=(f"{request.prompt}\n\nRuntime steering messages:\n{steering_text}" if request.prompt.strip() else steering_text),
+                )
+                self._session_store.update_session_metadata(
+                    workspace=self._workspace,
+                    session_id=resolved_session_id,
+                    metadata=queued_metadata,
+                )
         rehydrated_conversation_segments = self._rehydrated_conversation_segments_for_existing_session(
             stored=existing_session,
             parent_session_id=request.parent_session_id,
@@ -2675,6 +2720,20 @@ class VoidCodeRuntime:
         return cleaned or error
 
     def _persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
+        runtime_state = response.session.metadata.get("runtime_state")
+        if response.session.status in {"completed", "failed"} and isinstance(runtime_state, dict) and "pending_tool_intent" in runtime_state:
+            cleaned_state = dict(cast(dict[str, object], runtime_state))
+            cleaned_state.pop("pending_tool_intent", None)
+            response = RuntimeResponse(
+                session=SessionState(
+                    session=response.session.session,
+                    status=response.session.status,
+                    turn=response.session.turn,
+                    metadata={**response.session.metadata, "runtime_state": cleaned_state},
+                ),
+                events=response.events,
+                output=response.output,
+            )
         if response.session.status == "waiting":
             pending_question = self._pending_question_from_response(response)
             if pending_question is not None:
@@ -3351,7 +3410,7 @@ class VoidCodeRuntime:
         active_metadata = self._active_session_metadata(session_id) if active else None
         try:
             result = self._load_session_result(session_id=session_id)
-        except UnknownSessionError:
+        except (AttributeError, UnknownSessionError):
             if not active:
                 raise
             return self._active_only_session_debug_snapshot(session_id=session_id)
@@ -4684,6 +4743,122 @@ class VoidCodeRuntime:
     @staticmethod
     def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
         return run_id_from_session_metadata(metadata)
+
+    def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
+        """Persist a message to deliver before the next provider turn."""
+        return self._queue_runtime_message(session_id, content=content, kind="steering")
+
+    def queue_follow_up(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
+        """Persist a message to deliver after the current run reaches idle."""
+        return self._queue_runtime_message(session_id, content=content, kind="follow_up")
+
+    def _queue_runtime_message(
+        self,
+        session_id: str,
+        *,
+        content: str,
+        kind: Literal["steering", "follow_up"],
+    ) -> tuple[dict[str, object], ...]:
+        validate_session_id(session_id)
+        response = self._load_stored_response(session_id=session_id)
+        metadata = enqueue_runtime_message(response.session.metadata, content=content, kind=kind)
+        self._session_store.update_session_metadata(
+            workspace=self._workspace,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        raw = metadata.get("pending_messages")
+        if not isinstance(raw, list):
+            return ()
+        return tuple(cast(dict[str, object], item) for item in raw if isinstance(item, dict))
+
+    def drain_queued_messages(
+        self,
+        session_id: str,
+        *,
+        kind: Literal["steering", "follow_up"],
+    ) -> tuple[str, ...]:
+        validate_session_id(session_id)
+        response = self._load_stored_response(session_id=session_id)
+        metadata, messages = drain_runtime_messages(response.session.metadata, kind=kind)
+        self._session_store.update_session_metadata(
+            workspace=self._workspace,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        return tuple(message.content for message in messages)
+
+    def _persist_tool_execution_intent(self, session: SessionState, intent: dict[str, object]) -> None:
+        runtime_state = session.metadata.get("runtime_state")
+        state = dict(cast(dict[str, object], runtime_state)) if isinstance(runtime_state, dict) else {}
+        pending = dict(intent)
+        state["pending_tool_intent"] = pending
+        metadata = {**session.metadata, "runtime_state": state}
+        try:
+            self._session_store.update_session_metadata(
+                workspace=self._workspace,
+                session_id=session.session.id,
+                metadata=metadata,
+            )
+        except UnknownSessionError:
+            # The initial run snapshot may not have committed yet.
+            logger.debug("tool intent persistence deferred for new session %s", session.session.id)
+
+    def _clear_tool_execution_intent(self, session: SessionState) -> None:
+        try:
+            persisted_session = self._load_stored_response(session_id=session.session.id).session
+        except UnknownSessionError:
+            logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
+            return
+        runtime_state = persisted_session.metadata.get("runtime_state")
+        if not isinstance(runtime_state, dict) or "pending_tool_intent" not in runtime_state:
+            return
+        state = dict(cast(dict[str, object], runtime_state))
+        state.pop("pending_tool_intent", None)
+        try:
+            self._session_store.update_session_metadata(
+                workspace=self._workspace,
+                session_id=session.session.id,
+                metadata={**persisted_session.metadata, "runtime_state": state},
+            )
+        except UnknownSessionError:
+            logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
+
+    def pending_tool_intent(self, session_id: str) -> dict[str, object] | None:
+        """Return an unsettled tool intent left by an interrupted process."""
+        validate_session_id(session_id)
+        response = self._load_stored_response(session_id=session_id)
+        raw_runtime_state = response.session.metadata.get("runtime_state")
+        if not isinstance(raw_runtime_state, dict):
+            return None
+        runtime_state = cast(dict[str, object], raw_runtime_state)
+        intent = runtime_state.get("pending_tool_intent")
+        return cast(dict[str, object], intent) if isinstance(intent, dict) else None
+
+    def pending_tool_recovery(self, session_id: str) -> dict[str, object] | None:
+        """Return the deterministic recovery action for an unsettled tool."""
+        raw_intent = self.pending_tool_intent(session_id)
+        if raw_intent is None:
+            return None
+        try:
+            intent = ToolExecutionIntent(
+                tool_call_id=str(raw_intent["tool_call_id"]),
+                tool_name=str(raw_intent["tool_name"]),
+                arguments=cast(dict[str, object], raw_intent["arguments"]),
+                replay_policy=cast(Literal["safe", "never"], raw_intent["replay_policy"]),
+                status=cast(Literal["pending", "completed", "interrupted"], raw_intent.get("status", "pending")),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"persisted pending tool intent for session {session_id!r} is corrupt") from exc
+        return {
+            "action": recovery_action(intent),
+            "message": (
+                "The interrupted tool is safe to replay."
+                if recovery_action(intent) == "replay"
+                else "The interrupted tool may have side effects and must not be replayed automatically."
+            ),
+            "intent": intent.metadata_payload(),
+        }
 
     def resume(
         self,

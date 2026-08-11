@@ -6,6 +6,7 @@ from typing import ClassVar, Literal, Protocol, runtime_checkable
 
 type ToolResultStatus = Literal["ok", "error"]
 type ToolErrorDetails = dict[str, object]
+type ToolReplayPolicy = Literal["safe", "never"]
 
 
 class RuntimeToolTimeoutError(TimeoutError):
@@ -23,6 +24,13 @@ class ToolDefinition:
     input_schema: dict[str, object] = field(default_factory=dict)
     read_only: bool = True
     path_argument_keys: tuple[str, ...] = ()
+    # Safe read/query tools may be replayed after a process crash. Mutating
+    # tools default to never replay unless they explicitly opt in.
+    replay_policy: ToolReplayPolicy | None = None
+
+    @property
+    def effective_replay_policy(self) -> ToolReplayPolicy:
+        return self.replay_policy or ("safe" if self.read_only else "never")
 
 
 @dataclass(frozen=True, slots=True)

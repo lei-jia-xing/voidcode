@@ -68,6 +68,7 @@ from .session import SessionState
 from .session_metadata_helpers import todo_state_matches_payload
 from .tool_display import build_tool_display, build_tool_status
 from .tool_execution import RuntimeToolExecutor
+from .tool_replay import ToolExecutionIntent
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
@@ -609,6 +610,12 @@ class RuntimeRunLoopCoordinator:
         sequence += 1
         start_args = dict(tool_call.arguments)
         started_display = build_tool_display(tool_call.tool_name, start_args)
+        execution_intent = ToolExecutionIntent.from_call(
+            tool_call,
+            tool.definition,
+            tool_call_id=tool_call_id,
+        )
+        runtime._persist_tool_execution_intent(session, execution_intent.metadata_payload())
         started_status = build_tool_status(
             tool_call.tool_name,
             tool_call_id,
@@ -627,6 +634,7 @@ class RuntimeRunLoopCoordinator:
                 payload={
                     "tool": tool_call.tool_name,
                     "tool_call_id": tool_call_id,
+                    "execution_intent": execution_intent.metadata_payload(),
                     "display": started_display,
                     "tool_status": started_status,
                 },
@@ -871,6 +879,7 @@ class RuntimeRunLoopCoordinator:
                 payload=completed_payload,
             ),
         )
+        runtime._clear_tool_execution_intent(session)
 
         if _is_abort_signal_requested(abort_signal):
             yield runtime._failed_chunk(

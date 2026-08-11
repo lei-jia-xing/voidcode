@@ -1957,7 +1957,7 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
             "status": "completed",
             "turn": 1,
             "prompt": _multi_step_prompt(),
-            "updated_at": 2,
+            "updated_at": 4,
         }
     ]
     assert replay_response.status == 200

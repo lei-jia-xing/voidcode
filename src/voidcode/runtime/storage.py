@@ -108,6 +108,8 @@ class SessionStore(Protocol):
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse: ...
 
+    def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None: ...
+
     def load_session_result(self, *, workspace: Path, session_id: str) -> RuntimeSessionResult: ...
 
     def revert_session(self, *, workspace: Path, session_id: str, sequence: int) -> RuntimeSessionRevertMarker: ...
@@ -2621,6 +2623,18 @@ class SqliteSessionStore:
             session_id=session_id,
             filter_reverted=True,
         )
+
+    def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
+        """Persist bounded runtime metadata without fabricating a new response."""
+        persisted = session_metadata_for_persistence(metadata)
+        with self._write_connect(workspace) as connection:
+            updated = connection.execute(
+                "UPDATE sessions SET metadata_json = ?, updated_at = ? WHERE workspace_id = ? AND session_id = ?",
+                (json.dumps(persisted, sort_keys=True), self._next_timestamp(connection=connection), str(workspace), session_id),
+            ).rowcount
+            if updated != 1:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            connection.commit()
 
     def _load_session_response(
         self,

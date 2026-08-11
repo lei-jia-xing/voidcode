@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal, Protocol, cast, runtime_checkable
@@ -67,6 +66,8 @@ class RuntimeProtocol(Protocol):
     """
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
+
+    def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]: ...
 
     def resume_stream(
         self,
@@ -253,7 +254,6 @@ class VoidCodeTUI(App[int]):
         self._tool_content_by_call_id: dict[str, str] = {}
         self._tool_artifact_by_call_id: dict[str, str] = {}
         self._approval_context_by_request_id: dict[str, dict[str, object]] = {}
-        self._prompt_queue: deque[str] = deque()
         self._pending_output: list[str] = []
         self._stream_output_buffer = ""
         self._thinking_buffer = ""
@@ -365,7 +365,6 @@ class VoidCodeTUI(App[int]):
         self._tool_artifact_by_call_id.clear()
         self._tracked_background_task_ids.clear()
         self._pending_output.clear()
-        self._prompt_queue.clear()
         self._stream_output_buffer = ""
         self._thinking_buffer = ""
         self._active_thinking_key = None
@@ -521,9 +520,19 @@ class VoidCodeTUI(App[int]):
 
         event.input.value = ""
         if self._stream_active or self.pending_request_id is not None or self.pending_question_request_id is not None:
-            self._prompt_queue.append(prompt)
-            self.query_one("#transcript-log", TimelineView).write(Text(f"Queued ({len(self._prompt_queue)}): {prompt}", style="dim cyan"))
-            self.notify(f"Prompt queued · {len(self._prompt_queue)} waiting")
+            if self.session_id is None:
+                event.input.value = prompt
+                self.notify("Cannot queue steering without an active session", severity="error")
+                return
+            try:
+                queued = self.runtime.queue_steering(self.session_id, prompt)
+            except Exception:
+                event.input.value = prompt
+                logger.exception("Failed to persist TUI steering message")
+                self.notify("Runtime rejected steering message", severity="error")
+                return
+            self.query_one("#transcript-log", TimelineView).write(Text(f"Steering queued ({len(queued)}): {prompt}", style="dim cyan"))
+            self.notify(f"Steering queued · {len(queued)} waiting")
             return
 
         self._start_prompt(prompt)
@@ -558,14 +567,6 @@ class VoidCodeTUI(App[int]):
         assert self._active_thinking_key is not None
         assert self._active_response_key is not None
         return self._active_thinking_key, self._active_response_key
-
-    def _start_next_queued_prompt(self) -> bool:
-        if self._stream_active or self.pending_request_id is not None or self.pending_question_request_id is not None:
-            return False
-        if not self._prompt_queue:
-            return False
-        self._start_prompt(self._prompt_queue.popleft())
-        return True
 
     def _handle_slash_command(self, raw: str) -> None:
         parts = raw.split(maxsplit=1)
@@ -1470,8 +1471,7 @@ class VoidCodeTUI(App[int]):
             self._active_response_key = None
             self._set_state("Idle")
         self._set_stream_active(False)
-        if not self._start_next_queued_prompt():
-            self.query_one("#composer-input", Input).focus()
+        self.query_one("#composer-input", Input).focus()
 
     def on_stream_failed(self, message: StreamFailed) -> None:
         self._flush_stream_preview()
@@ -1480,5 +1480,4 @@ class VoidCodeTUI(App[int]):
         self.pending_question_request_id = None
         self._set_state("Failed")
         self._set_stream_active(False)
-        if not self._start_next_queued_prompt():
-            self.query_one("#composer-input", Input).focus()
+        self.query_one("#composer-input", Input).focus()

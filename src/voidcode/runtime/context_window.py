@@ -91,6 +91,8 @@ class ContextProjection:
     summary_text: str | None = None
     objective: str | None = None
     current_goal: str | None = None
+    next_step: str | None = None
+    files_changed: tuple[str, ...] = ()
     verbatim_user_constraints: tuple[str, ...] = ()
     progress_completed: tuple[str, ...] = ()
     blockers_open_questions: tuple[str, ...] = ()
@@ -124,6 +126,8 @@ class ContextProjection:
             "summary_text": self.summary_text,
             "objective": self.objective,
             "current_goal": self.current_goal,
+            "next_step": self.next_step,
+            "files_changed": list(self.files_changed),
             "verbatim_user_constraints": list(self.verbatim_user_constraints),
             "progress_completed": list(self.progress_completed),
             "blockers_open_questions": list(self.blockers_open_questions),
@@ -503,6 +507,9 @@ def continuity_state_from_metadata_payload(
     current_goal = payload.get("current_goal")
     if current_goal is not None and not isinstance(current_goal, str):
         current_goal = None
+    next_step = payload.get("next_step")
+    if next_step is not None and not isinstance(next_step, str):
+        next_step = None
     dropped = payload.get("dropped_tool_result_count")
     retained = payload.get("retained_tool_result_count")
     source = payload.get("source")
@@ -540,6 +547,8 @@ def continuity_state_from_metadata_payload(
         summary_text=summary_text,
         objective=objective,
         current_goal=current_goal,
+        next_step=next_step,
+        files_changed=_metadata_string_tuple(payload, "files_changed"),
         verbatim_user_constraints=_metadata_string_tuple(payload, "verbatim_user_constraints"),
         progress_completed=_metadata_string_tuple(payload, "progress_completed"),
         blockers_open_questions=_metadata_string_tuple(payload, "blockers_open_questions"),
@@ -1088,6 +1097,7 @@ def _build_continuity_state(
     if objective is None:
         objective = _line_preview(prompt, limit=160) if prompt.strip() else None
     current_goal = _line_preview(prompt, limit=160) if prompt.strip() else objective
+    next_step = current_goal
     progress, blockers, refs, delegated = _facts_from_tool_results(
         previewable_dropped_results,
         preview_item_limit=preview_item_limit,
@@ -1107,6 +1117,7 @@ def _build_continuity_state(
         return ContextProjection(
             objective=objective,
             current_goal=current_goal,
+            next_step=next_step,
             verbatim_user_constraints=constraints,
             progress_completed=previous_progress,
             blockers_open_questions=previous_blockers,
@@ -1138,6 +1149,7 @@ def _build_continuity_state(
     state_without_summary = ContextProjection(
         objective=objective,
         current_goal=current_goal,
+        next_step=next_step,
         verbatim_user_constraints=constraints,
         progress_completed=_merge_unique_strings(previous_progress, progress, limit=16),
         blockers_open_questions=_merge_unique_strings(previous_blockers, blockers, limit=12),

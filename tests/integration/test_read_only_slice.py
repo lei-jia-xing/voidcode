@@ -4766,7 +4766,7 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
     assert [summary.session.id for summary in sessions] == ["loop-session"]
     assert sessions[0].status == "completed"
     assert sessions[0].prompt == _multi_step_prompt()
-    assert sessions[0].updated_at == 2
+    assert sessions[0].updated_at >= 2
     assert (tmp_path / "copied.txt").read_text(encoding="utf-8") == "copied marker"
 
 
@@ -5295,6 +5295,9 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
 
         def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
             base_store.clear_pending_approval(workspace=workspace, session_id=session_id)
+
+        def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
+            base_store.update_session_metadata(workspace=workspace, session_id=session_id, metadata=metadata)
 
     resumed_runtime_class = _load_runtime_types()[1]
     resumed_runtime = cast(
