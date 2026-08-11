@@ -37,6 +37,7 @@ from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import StoredSessionSummary
 from .messages import (
     ContextPanelUpdated,
+    ParentSessionEventsPolled,
     StreamChunkReceived,
     StreamCompleted,
     StreamFailed,
@@ -261,6 +262,10 @@ class VoidCodeTUI(App[int]):
         self._stream_render_counter = 0
         self._active_thinking_key: str | None = None
         self._active_response_key: str | None = None
+        self._last_event_sequence_by_session: dict[str, int] = {}
+        self._background_event_poll_active = False
+        self._tracked_background_task_ids: set[str] = set()
+        self._background_poll_timer_scheduled = False
 
         if self._global_tui_preferences is None and isinstance(config.tui, RuntimeTuiConfig):
             merged_preferences = config.tui.preferences
@@ -358,6 +363,7 @@ class VoidCodeTUI(App[int]):
         self._tool_display_by_call_id.clear()
         self._tool_content_by_call_id.clear()
         self._tool_artifact_by_call_id.clear()
+        self._tracked_background_task_ids.clear()
         self._pending_output.clear()
         self._prompt_queue.clear()
         self._stream_output_buffer = ""
@@ -388,6 +394,7 @@ class VoidCodeTUI(App[int]):
                 if session_id:
                     self._reset_transient_view_state()
                     self.session_id = session_id
+                    self._last_event_sequence_by_session[session_id] = 0
 
                     short_id = session_id.removeprefix("session-")[:8]
                     title = short_id
@@ -685,10 +692,20 @@ class VoidCodeTUI(App[int]):
             "runtime.approval_resolved",
             "runtime.question_requested",
             "runtime.question_answered",
+            "runtime.background_task_idle_reminder",
+            "runtime.background_task_completed",
+            "runtime.background_task_failed",
+            "runtime.background_task_cancelled",
+            "runtime.background_task_waiting_approval",
+            "runtime.background_task_group_completed",
+            "runtime.delegated_result_available",
         ):
             return
 
         payload = event.payload or {}
+        if event.event_type.startswith("runtime.background_task_") or event.event_type == "runtime.delegated_result_available":
+            self._render_background_event(event.event_type, payload, sequence=event.sequence)
+            return
         raw_tool_name = payload.get("tool", "unknown_tool")
         tool_name = raw_tool_name if isinstance(raw_tool_name, str) else "unknown_tool"
         tool_call_id = payload.get("tool_call_id")
@@ -761,6 +778,123 @@ class VoidCodeTUI(App[int]):
             text = Text(f"EVENT {event.event_type} source={event.source}", style="dim")
 
         self.query_one("#transcript-log", TimelineView).write(text)
+
+    def _render_background_event(
+        self,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        sequence: int,
+    ) -> None:
+        log = self.query_one("#transcript-log", TimelineView)
+        task_id = payload.get("task_id")
+        task_label = task_id if isinstance(task_id, str) and task_id else "background task"
+        short_task_id = task_label.removeprefix("task-")[:12]
+        summary = payload.get("summary_output")
+        error = payload.get("error")
+        child_session_id = payload.get("child_session_id")
+
+        if event_type == "runtime.background_task_completed":
+            title = f"✓ Background completed · {short_task_id}"
+            style = "bold green"
+            body = summary if isinstance(summary, str) and summary else "Result is available through background_output."
+        elif event_type == "runtime.background_task_failed":
+            title = f"✖ Background failed · {short_task_id}"
+            style = "bold red"
+            body = error if isinstance(error, str) and error else "Background task failed."
+        elif event_type == "runtime.background_task_cancelled":
+            title = f"■ Background cancelled · {short_task_id}"
+            style = "bold yellow"
+            body = error if isinstance(error, str) and error else "Background task was cancelled."
+        elif event_type == "runtime.background_task_waiting_approval":
+            title = f"⚠ Background waiting for approval · {short_task_id}"
+            style = "bold yellow"
+            body = "Open the child session to resolve its pending approval."
+        elif event_type == "runtime.background_task_idle_reminder":
+            title = f"◌ Background waiting · {short_task_id}"
+            style = "bold yellow"
+            reminder = payload.get("reminder")
+            body = reminder if isinstance(reminder, str) and reminder else "Delegated child session is waiting for external action."
+        elif event_type == "runtime.background_task_group_completed":
+            group_id = payload.get("parallel_group_id")
+            title = f"✓ Background group completed · {group_id or 'group'}"
+            style = "bold green"
+            body = f"Terminal tasks: {payload.get('terminal_task_count', 0)}"
+        else:
+            title = f"↳ Delegated result available · {short_task_id}"
+            style = "bold cyan"
+            body = summary if isinstance(summary, str) and summary else "Delegated result is ready to read."
+
+        if event_type in {
+            "runtime.background_task_completed",
+            "runtime.background_task_failed",
+            "runtime.background_task_cancelled",
+        } and isinstance(task_id, str):
+            self._tracked_background_task_ids.discard(task_id)
+
+        details = Text(body)
+        if isinstance(child_session_id, str) and child_session_id:
+            details.append(f"\nchild: {child_session_id}", style="dim")
+        details.append(f"\ntask: {task_label}", style="dim")
+        log.write_block(
+            title,
+            details,
+            key=f"background-event-{sequence}-{task_label}",
+            collapsed=False,
+            classes="timeline-block background-event",
+        )
+        self.notify(Text(title, style=style).plain)
+
+    def _poll_parent_session_events(self) -> None:
+        self._background_poll_timer_scheduled = False
+        if self._stream_active or self._background_event_poll_active or self.session_id is None or not self._tracked_background_task_ids:
+            if self._stream_active and self._tracked_background_task_ids:
+                self._schedule_background_event_poll()
+            return
+        self._background_event_poll_active = True
+        self._poll_parent_session_events_worker(self.session_id)
+
+    def _schedule_background_event_poll(self) -> None:
+        if self._background_poll_timer_scheduled or not self._tracked_background_task_ids:
+            return
+        self._background_poll_timer_scheduled = True
+        self.set_timer(1.0, self._poll_parent_session_events)
+
+    @work(thread=True)
+    def _poll_parent_session_events_worker(self, session_id: str) -> None:
+        try:
+            last_sequence = self._last_event_sequence_by_session.get(session_id, 0)
+            replayed_chunks = tuple(self.runtime.resume_stream(session_id=session_id))
+            new_chunks = self._ordered_new_event_chunks(replayed_chunks, after_sequence=last_sequence)
+            for chunk in new_chunks:
+                event = chunk.event
+                assert event is not None
+                if event.event_type in {
+                    "runtime.background_task_completed",
+                    "runtime.background_task_failed",
+                    "runtime.background_task_cancelled",
+                }:
+                    task_id = event.payload.get("task_id")
+                    if isinstance(task_id, str):
+                        self._tracked_background_task_ids.discard(task_id)
+            if new_chunks:
+                self.post_message(ParentSessionEventsPolled(session_id, tuple(new_chunks)))
+        except Exception as exc:
+            logger.debug("Failed to poll parent session events: %s", exc)
+        finally:
+            self._background_event_poll_active = False
+            if self._tracked_background_task_ids:
+                self.call_from_thread(self._schedule_background_event_poll)
+
+    @staticmethod
+    def _ordered_new_event_chunks(
+        chunks: tuple[RuntimeStreamChunk, ...],
+        *,
+        after_sequence: int,
+    ) -> list[RuntimeStreamChunk]:
+        new_chunks = [chunk for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.sequence > after_sequence]
+        new_chunks.sort(key=lambda chunk: chunk.event.sequence if chunk.event is not None else 0)
+        return new_chunks
 
     @staticmethod
     def _extract_display(payload: dict[str, object]) -> dict[str, object] | None:
@@ -912,6 +1046,12 @@ class VoidCodeTUI(App[int]):
         log = self.query_one("#transcript-log", TimelineView)
         tool_call_id = payload.get("tool_call_id")
         tool_call_id_str = tool_call_id if isinstance(tool_call_id, str) else None
+        if tool_name == "task" and payload.get("status") == "ok":
+            background_task_id = payload.get("task_id")
+            background_status = payload.get("status")
+            if isinstance(background_task_id, str) and background_task_id and background_status in {"queued", "running", "ok"}:
+                self._tracked_background_task_ids.add(background_task_id)
+                self._schedule_background_event_poll()
 
         if display is None and tool_call_id_str is not None:
             display = self._tool_display_by_call_id.get(tool_call_id_str)
@@ -1219,6 +1359,12 @@ class VoidCodeTUI(App[int]):
             self._update_context_panel_worker(chunk.session.metadata)
 
         if chunk.kind == "event" and chunk.event is not None:
+            event_sequence = chunk.event.sequence
+            if event_sequence > 0:
+                last_sequence = self._last_event_sequence_by_session.get(self.session_id, 0)
+                if event_sequence <= last_sequence:
+                    return
+                self._last_event_sequence_by_session[self.session_id] = event_sequence
             self._flush_stream_preview()
             if self.session_id:
                 short_id = self.session_id.removeprefix("session-")[:8]
@@ -1285,6 +1431,12 @@ class VoidCodeTUI(App[int]):
             if not self._streamed_provider_text:
                 self._pending_output.append(chunk.output)
                 self._schedule_stream_preview_flush()
+
+    def on_parent_session_events_polled(self, message: ParentSessionEventsPolled) -> None:
+        if self.session_id != message.session_id:
+            return
+        for chunk in message.chunks:
+            self.on_stream_chunk_received(StreamChunkReceived(chunk))
 
     def on_stream_completed(self, message: StreamCompleted) -> None:
         self._flush_stream_preview()

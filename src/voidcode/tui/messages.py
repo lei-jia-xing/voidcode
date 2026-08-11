@@ -11,6 +11,13 @@ class StreamChunkReceived(Message):
         self.chunk = chunk
 
 
+class ParentSessionEventsPolled(Message):
+    def __init__(self, session_id: str, chunks: tuple[RuntimeStreamChunk, ...]) -> None:
+        super().__init__()
+        self.session_id = session_id
+        self.chunks = chunks
+
+
 class ContextPanelUpdated(Message):
     def __init__(self, label: str) -> None:
         super().__init__()

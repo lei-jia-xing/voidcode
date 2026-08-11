@@ -269,6 +269,75 @@ async def test_tui_stream_keeps_thinking_block_and_updates_one_response_entry(ap
 
 
 @pytest.mark.anyio
+async def test_tui_polls_and_renders_background_events_in_parent_sequence_order(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+    chunks = (
+        _make_chunk(
+            session_id="leader-session",
+            status="completed",
+            event=_runtime_event(
+                "runtime.background_task_completed",
+                sequence=3,
+                task_id="task-second",
+                child_session_id="child-second",
+                summary_output="second result",
+            ),
+        ),
+        _make_chunk(
+            session_id="leader-session",
+            status="completed",
+            event=_runtime_event(
+                "runtime.background_task_completed",
+                sequence=2,
+                task_id="task-first",
+                child_session_id="child-first",
+                summary_output="first result",
+            ),
+        ),
+    )
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+
+    async with app.run_test() as pilot:
+        app.session_id = "leader-session"
+        app._last_event_sequence_by_session["leader-session"] = 1
+        ordered = app._ordered_new_event_chunks(chunks, after_sequence=1)
+        for chunk in ordered:
+            app.on_stream_chunk_received(StreamChunkReceived(chunk))
+        await pilot.pause()
+
+        blocks = list(app.query("#transcript-log .background-event"))
+        assert [block.title for block in blocks] == [
+            "✓ Background completed · first",
+            "✓ Background completed · second",
+        ]
+        assert app._last_event_sequence_by_session["leader-session"] == 3
+
+
+@pytest.mark.anyio
+async def test_tui_deduplicates_replayed_background_notification_events(app_class: Any) -> None:
+    VoidCodeTUI, StreamChunkReceived, _ = app_class
+    app = VoidCodeTUI(workspace=Path("."), runtime=_mock_runtime())
+    chunk = _make_chunk(
+        session_id="leader-session",
+        status="completed",
+        event=_runtime_event(
+            "runtime.background_task_completed",
+            sequence=7,
+            task_id="task-once",
+            summary_output="done",
+        ),
+    )
+
+    async with app.run_test() as pilot:
+        app.on_stream_chunk_received(StreamChunkReceived(chunk))
+        app.on_stream_chunk_received(StreamChunkReceived(chunk))
+        await pilot.pause()
+
+        blocks = list(app.query("#transcript-log .background-event"))
+        assert len(blocks) == 1
+
+
+@pytest.mark.anyio
 async def test_tui_failed_stream_stays_failed(app_class: Any) -> None:
     VoidCodeTUI, StreamChunkReceived, StreamCompleted = app_class
 
