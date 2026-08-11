@@ -7,6 +7,8 @@ from types import ModuleType
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
+import pytest
+
 from voidcode.runtime.context_transforms import (
     HookPresetGuidanceTransformProvider,
     RuntimeContextTransformInjection,
@@ -16,11 +18,11 @@ from voidcode.runtime.context_transforms import (
     RuntimeFileRulesTransformProvider,
 )
 from voidcode.runtime.context_window import (
+    ContextProjection,
     ContextWindowPolicy,
     DroppedToolResultDiagnostic,
     RuntimeAssembledContext,
     RuntimeContextSegment,
-    RuntimeContinuityState,
     _retain_indexes_within_token_budget,
     assemble_provider_context,
     context_window_policy_from_payload,
@@ -1626,13 +1628,13 @@ def test_context_window_policy_metadata_round_trips() -> None:
 
 
 def test_continuity_summary_metadata_is_derived_from_state() -> None:
-    first = RuntimeContinuityState(
+    first = ContextProjection(
         summary_text="one",
         dropped_tool_result_count=1,
         retained_tool_result_count=3,
         dropped_tool_results=(DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=1),),
     )
-    second = RuntimeContinuityState(
+    second = ContextProjection(
         summary_text="one",
         dropped_tool_result_count=2,
         retained_tool_result_count=3,
@@ -1663,7 +1665,7 @@ def _continuity_tool_result(status: Literal["ok", "error"], content: str | None 
 
 
 def test_continuity_state_metadata_payload_uses_instance_version() -> None:
-    state = RuntimeContinuityState(
+    state = ContextProjection(
         summary_text="continuity summary",
         dropped_tool_result_count=1,
         retained_tool_result_count=2,
@@ -1700,31 +1702,25 @@ def test_continuity_state_from_metadata_payload_rejects_malformed_version_safely
     assert continuity_state_from_metadata_payload(payload) is None
 
 
-def test_assemble_provider_context_ignores_malformed_prior_continuity_metadata() -> None:
-    assembled = assemble_provider_context(
-        prompt="continue",
-        tool_results=(_tool_result(1),),
-        session_metadata={
-            "runtime_state": {
-                "continuity": {
-                    "version": "bad",
-                    "summary_text": "must not be trusted as transcript truth",
-                    "dropped_tool_result_count": 1,
-                    "retained_tool_result_count": 1,
-                    "source": "tool_result_window",
+def test_assemble_provider_context_rejects_legacy_continuity_metadata() -> None:
+    with pytest.raises(ValueError, match="legacy runtime continuity metadata"):
+        assemble_provider_context(
+            prompt="continue",
+            tool_results=(_tool_result(1),),
+            session_metadata={
+                "runtime_state": {
+                    "continuity": {
+                        "version": "bad",
+                        "summary_text": "must not be trusted as transcript truth",
+                    }
                 }
-            }
-        },
-        policy=_context_window_policy(model_context_window_tokens=100),
-    )
-
-    assert assembled.continuity_state is None
-    assert "continuity_state" not in assembled.metadata
-    assert all(segment.metadata is None or segment.metadata.get("source") != "continuity_summary" for segment in assembled.segments)
+            },
+            policy=_context_window_policy(model_context_window_tokens=100),
+        )
 
 
 def test_continuity_state_round_trip_includes_source_references() -> None:
-    state = RuntimeContinuityState(
+    state = ContextProjection(
         summary_text="summary",
         dropped_tool_result_count=1,
         retained_tool_result_count=1,

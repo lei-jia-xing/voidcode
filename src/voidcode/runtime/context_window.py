@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
 from ..agent.prompt_sections import dynamic_boundary_marker
 from ..tools.contracts import ToolResult
+from .context_projection import project_summary
 from .context_transforms import (
     RuntimeContextTransformResult,
     build_provider_context_transform_result,
@@ -81,7 +82,12 @@ class DroppedToolResultDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeContinuityState:
+class ContextProjection:
+    # Canonical context projection identity. The runtime treats this object as
+    # the provider-facing projection produced by compaction.
+    projection_id: str | None = None
+    source_event_sequence: int | None = None
+    source_checkpoint_id: str | None = None
     summary_text: str | None = None
     objective: str | None = None
     current_goal: str | None = None
@@ -112,6 +118,9 @@ class RuntimeContinuityState:
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
+            "projection_id": self.projection_id,
+            "source_event_sequence": self.source_event_sequence,
+            "source_checkpoint_id": self.source_checkpoint_id,
             "summary_text": self.summary_text,
             "objective": self.objective,
             "current_goal": self.current_goal,
@@ -153,6 +162,7 @@ class ContextWindowPolicy:
     default_tool_result_tokens: int | None = 1_500
     per_tool_result_tokens: Mapping[str, int] = field(default_factory=_empty_tool_limits)
     tokenizer_model: str | None = "cl100k_base"
+    summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "per_tool_result_tokens", dict(self.per_tool_result_tokens))
@@ -174,6 +184,7 @@ class ContextWindowPolicy:
         payload: dict[str, object] = {
             "version": 1,
             "auto_compaction": self.auto_compaction,
+            "summary_strategy": self.summary_strategy,
         }
         if self.model_context_window_tokens is not None:
             payload["model_context_window_tokens"] = self.model_context_window_tokens
@@ -204,9 +215,11 @@ class RuntimeContextWindow:
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
     truncated_tool_result_count: int = 0
-    continuity_state: RuntimeContinuityState | None = None
+    continuity_state: ContextProjection | None = None
     summary_anchor: str | None = None
     summary_source: dict[str, int] | None = None
+    summary_strategy: Literal["deterministic", "model_assisted", "fallback"] = "deterministic"
+    summary_fallback_reason: str | None = None
 
     def metadata_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -232,11 +245,14 @@ class RuntimeContextWindow:
         if self.truncated_tool_result_count:
             payload["truncated_tool_result_count"] = self.truncated_tool_result_count
         if self.continuity_state is not None:
-            payload["continuity_state"] = self.continuity_state.metadata_payload()
+            payload["projection"] = self.continuity_state.metadata_payload()
         if self.summary_anchor is not None:
             payload["summary_anchor"] = self.summary_anchor
         if self.summary_source is not None:
             payload["summary_source"] = dict(self.summary_source)
+        payload["summary_strategy"] = self.summary_strategy
+        if self.summary_fallback_reason is not None:
+            payload["summary_fallback_reason"] = self.summary_fallback_reason
         return payload
 
 
@@ -259,7 +275,7 @@ class ToolResultProjection:
 class RuntimeAssembledContext:
     prompt: str
     tool_results: tuple[ToolResult, ...]
-    continuity_state: RuntimeContinuityState | None
+    continuity_state: ContextProjection | None
     segments: tuple[RuntimeContextSegment, ...]
     metadata: dict[str, object]
     loaded_skills: tuple[dict[str, object], ...] = ()
@@ -314,7 +330,7 @@ def _compact_recent_tier_segments(
 
         drop_recent = False
         if tier == "recent":
-            if source in {"continuity_summary", "runtime_context_artifact_reference"}:
+            if source in {"context_projection", "runtime_context_artifact_reference"}:
                 drop_recent = True
 
         if drop_recent:
@@ -471,7 +487,7 @@ def _dropped_tool_diagnostics_from_metadata_payload(
 
 def continuity_state_from_metadata_payload(
     payload: Mapping[str, object],
-) -> RuntimeContinuityState | None:
+) -> ContextProjection | None:
     version = payload.get("version")
     if not isinstance(version, int) or isinstance(version, bool):
         return None
@@ -520,7 +536,7 @@ def continuity_state_from_metadata_payload(
     token_estimate_source = payload.get("token_estimate_source")
     if token_estimate_source is not None and not isinstance(token_estimate_source, str):
         return None
-    return RuntimeContinuityState(
+    return ContextProjection(
         summary_text=summary_text,
         objective=objective,
         current_goal=current_goal,
@@ -552,14 +568,23 @@ def continuity_state_from_metadata_payload(
 
 def _previous_continuity_state(
     session_metadata: Mapping[str, object],
-) -> RuntimeContinuityState | None:
+) -> ContextProjection | None:
     runtime_state = session_metadata.get("runtime_state")
     if not isinstance(runtime_state, dict):
         return None
-    continuity = cast(dict[str, object], runtime_state).get("continuity")
+    if "continuity" in runtime_state or "continuity_summary" in runtime_state:
+        raise ValueError("legacy runtime continuity metadata is no longer supported; start a new session")
+    continuity = cast(dict[str, object], runtime_state).get("context_projection")
     if not isinstance(continuity, dict):
         return None
-    return continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
+    state = continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
+    if state is None or state.projection_id is not None:
+        return state
+    raw_summary = cast(dict[str, object], runtime_state).get("context_projection_summary")
+    summary = cast(dict[str, object], raw_summary) if isinstance(raw_summary, dict) else None
+    if summary is not None and isinstance(summary.get("anchor"), str):
+        return replace(state, projection_id=cast(str, summary["anchor"]))
+    return state
 
 
 def _merge_unique_strings(*groups: tuple[str, ...], limit: int = 12) -> tuple[str, ...]:
@@ -631,7 +656,7 @@ def _facts_from_tool_results(
     return tuple(progress), tuple(blockers), tuple(refs), tuple(delegated)
 
 
-def _continuity_summary_text(state: RuntimeContinuityState) -> str:
+def _continuity_summary_text(state: ContextProjection) -> str:
     sections: list[str] = []
 
     def add_section(title: str, values: tuple[str, ...] | str | None) -> None:
@@ -987,6 +1012,9 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
     auto_compaction = payload.get("auto_compaction", True)
     if not isinstance(auto_compaction, bool):
         raise ValueError("context window policy field 'auto_compaction' must be a boolean")
+    summary_strategy = payload.get("summary_strategy", "deterministic")
+    if summary_strategy not in {"deterministic", "model_assisted"}:
+        raise ValueError("context window policy field 'summary_strategy' must be deterministic or model_assisted")
     tokenizer_model = payload.get("tokenizer_model")
     if tokenizer_model is not None and not isinstance(tokenizer_model, str):
         raise ValueError("context window policy field 'tokenizer_model' must be a string")
@@ -997,6 +1025,7 @@ def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPoli
         default_tool_result_tokens=_coerce_optional_int(payload, "default_tool_result_tokens"),
         per_tool_result_tokens=per_tool,
         tokenizer_model=tokenizer_model,
+        summary_strategy=cast(Literal["deterministic", "model_assisted"], summary_strategy),
     )
 
 
@@ -1051,7 +1080,7 @@ def _build_continuity_state(
     token_budget: int | None = None,
     token_estimate_source: str | None = None,
     tokenizer_model: str | None = None,
-) -> RuntimeContinuityState:
+) -> ContextProjection:
     dropped_count = len(dropped_results)
     previewable_dropped_results = tuple(result for result in dropped_results if result.tool_name != "todo_write")
     previous = _previous_continuity_state(session_metadata)
@@ -1075,7 +1104,7 @@ def _build_continuity_state(
     previous_tail = previous.recent_tail if previous is not None else ()
     constraints = _merge_unique_strings(previous_constraints, _constraint_lines(prompt), limit=12)
     if dropped_count == 0:
-        return RuntimeContinuityState(
+        return ContextProjection(
             objective=objective,
             current_goal=current_goal,
             verbatim_user_constraints=constraints,
@@ -1106,7 +1135,7 @@ def _build_continuity_state(
         if remaining > 0:
             lines.append(f"... and {remaining} more")
         dropped_preview_summary = "\n".join(lines)
-    state_without_summary = RuntimeContinuityState(
+    state_without_summary = ContextProjection(
         objective=objective,
         current_goal=current_goal,
         verbatim_user_constraints=constraints,
@@ -1136,7 +1165,7 @@ def _build_continuity_state(
     summary_text = canonical_summary
     if dropped_preview_summary is not None:
         summary_text = f"{canonical_summary}\n\n## Dropped Tool Preview\n{dropped_preview_summary}"
-    return RuntimeContinuityState(
+    return ContextProjection(
         summary_text=summary_text,
         objective=state_without_summary.objective,
         current_goal=state_without_summary.current_goal,
@@ -1168,7 +1197,7 @@ def _summary_anchor(summary_text: str | None, *, dropped_count: int, retained_co
 
 
 def continuity_summary_metadata(
-    continuity_state: RuntimeContinuityState,
+    continuity_state: ContextProjection,
 ) -> tuple[str | None, dict[str, int] | None]:
     summary_anchor = _summary_anchor(
         continuity_state.summary_text,
@@ -1187,7 +1216,7 @@ def continuity_summary_metadata(
 
 
 def _artifact_reference_segments(
-    continuity_state: RuntimeContinuityState | None,
+    continuity_state: ContextProjection | None,
 ) -> tuple[RuntimeContextSegment, ...]:
     if continuity_state is None:
         return ()
@@ -1347,6 +1376,7 @@ def prepare_provider_context(
     tool_results: tuple[ToolResult, ...],
     session_metadata: dict[str, object],
     policy: ContextWindowPolicy | None = None,
+    summary_projector: Callable[[Mapping[str, object]], str] | None = None,
 ) -> RuntimeContextWindow:
     effective_policy = policy or ContextWindowPolicy()
     original_count = len(tool_results)
@@ -1380,6 +1410,7 @@ def prepare_provider_context(
             token_estimate_source=(_token_estimate_source(effective_policy) if token_budget is not None else None),
             model_context_window_tokens=effective_policy.model_context_window_tokens,
             reserved_output_tokens=effective_policy.reserved_output_tokens,
+            summary_strategy=("fallback" if effective_policy.summary_strategy == "model_assisted" else "deterministic"),
         )
 
     projection = project_tool_results_for_context_window(
@@ -1416,7 +1447,22 @@ def prepare_provider_context(
         if compacted
         else None
     )
+    summary_strategy: Literal["deterministic", "model_assisted", "fallback"] = "deterministic"
+    summary_fallback_reason: str | None = None
+    if continuity_state is not None:
+        projected_summary, summary_strategy, summary_fallback_reason = project_summary(
+            strategy=effective_policy.summary_strategy,
+            facts=continuity_state.metadata_payload(),
+            deterministic_summary=continuity_state.summary_text or "",
+            projector=summary_projector,
+        )
+        continuity_state = replace(continuity_state, summary_text=projected_summary)
     summary_anchor, summary_source = continuity_summary_metadata(continuity_state) if continuity_state is not None else (None, None)
+    if continuity_state is not None and continuity_state.projection_id is None:
+        continuity_state = replace(
+            continuity_state,
+            projection_id=summary_anchor,
+        )
     return RuntimeContextWindow(
         prompt=prompt,
         tool_results=retained_results,
@@ -1431,6 +1477,8 @@ def prepare_provider_context(
         token_estimate_source=token_estimate_source,
         model_context_window_tokens=effective_policy.model_context_window_tokens,
         reserved_output_tokens=effective_policy.reserved_output_tokens,
+        summary_strategy=summary_strategy,
+        summary_fallback_reason=summary_fallback_reason,
         truncated_tool_result_count=projection.truncated_count,
         continuity_state=continuity_state,
         summary_anchor=summary_anchor,
@@ -1452,17 +1500,19 @@ def assemble_provider_context(
     context_transform_result: RuntimeContextTransformResult | None = None,
     preserved_system_segments: tuple[str, ...] = (),
     loaded_skills: tuple[dict[str, object], ...] = (),
-    preserved_continuity_state: RuntimeContinuityState | None = None,
+    preserved_continuity_state: ContextProjection | None = None,
     workspace_memory_context: str = "",
     workspace: Path | None = None,
     replay_retained_tool_messages: bool = True,
     replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
+    summary_projector: Callable[[Mapping[str, object]], str] | None = None,
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
         tool_results=tool_results,
         session_metadata=session_metadata,
         policy=policy,
+        summary_projector=summary_projector,
     )
     transform_result = context_transform_result or build_provider_context_transform_result(
         workspace=workspace,
@@ -1472,9 +1522,13 @@ def assemble_provider_context(
     pending_state_segment = _pending_state_segment(session_metadata)
     todo_prompt_context = render_provider_todo_state(session_metadata)
     continuity_state = preserved_continuity_state or context_window.continuity_state or _previous_continuity_state(session_metadata)
+    if continuity_state is not None and continuity_state.projection_id is None:
+        anchor, _ = continuity_summary_metadata(continuity_state)
+        if anchor is not None:
+            continuity_state = replace(continuity_state, projection_id=anchor)
     metadata_payload = context_window.metadata_payload()
-    if continuity_state is not None and "continuity_state" not in metadata_payload:
-        metadata_payload["continuity_state"] = continuity_state.metadata_payload()
+    if continuity_state is not None and "projection" not in metadata_payload:
+        metadata_payload["projection"] = continuity_state.metadata_payload()
     if continuity_state is not None and "summary_anchor" not in metadata_payload:
         summary_anchor, summary_source = continuity_summary_metadata(continuity_state)
         if summary_anchor is not None:
@@ -1486,7 +1540,7 @@ def assemble_provider_context(
     if continuity_state is not None:
         summary_text = continuity_state.summary_text
         if isinstance(summary_text, str) and summary_text.strip():
-            continuity_summary = f"Runtime continuity summary:\n{summary_text.strip()}"
+            continuity_summary = f"Runtime context projection:\n{summary_text.strip()}"
         artifact_reference_sections = tuple(
             PromptAssemblySection(
                 role=segment.role,

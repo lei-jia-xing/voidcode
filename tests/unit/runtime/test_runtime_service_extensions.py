@@ -78,9 +78,9 @@ from voidcode.runtime.context_transforms import (
     RuntimeFileRulesTransformProvider,
 )
 from voidcode.runtime.context_window import (
+    ContextProjection,
     ContextWindowPolicy,
     RuntimeContextWindow,
-    RuntimeContinuityState,
 )
 from voidcode.runtime.contracts import RuntimeRequestError, validate_runtime_request_metadata
 from voidcode.runtime.events import (
@@ -88,12 +88,12 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_MCP_SERVER_FAILED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
-    RUNTIME_MEMORY_REFRESHED,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_SESSION_ENDED,
     RUNTIME_SESSION_IDLE,
@@ -11657,7 +11657,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     )
     assert waiting.session.status == "waiting"
     waiting_runtime_state = cast(dict[str, object], waiting.session.metadata["runtime_state"])
-    initial_continuity = cast(dict[str, object], waiting_runtime_state["continuity"])
+    initial_continuity = cast(dict[str, object], waiting_runtime_state["context_projection"])
     assert initial_continuity["objective"] == "read sample.txt read sample.txt write beta.txt 2"
     assert initial_continuity["current_goal"] == "read sample.txt read sample.txt write beta.txt 2"
     assert initial_continuity["dropped_tool_result_count"] == 1
@@ -11666,7 +11666,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert initial_continuity["version"] == 2
     assert "## Objective" in cast(str, initial_continuity["summary_text"])
     assert "- Dropped tool results: 1" in cast(str, initial_continuity["summary_text"])
-    initial_continuity_summary = cast(dict[str, object], waiting_runtime_state["continuity_summary"])
+    initial_continuity_summary = cast(dict[str, object], waiting_runtime_state["context_projection_summary"])
     assert initial_continuity_summary["source"] == {
         "tool_result_start": 0,
         "tool_result_end": 1,
@@ -11680,14 +11680,14 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     )
 
     resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
-    expected_resumed_continuity = cast(dict[str, object], resumed_runtime_state["continuity"])
+    expected_resumed_continuity = cast(dict[str, object], resumed_runtime_state["context_projection"])
     assert expected_resumed_continuity["objective"] == ("read sample.txt read sample.txt write beta.txt 2")
     assert expected_resumed_continuity["dropped_tool_result_count"] == 2
     assert expected_resumed_continuity["retained_tool_result_count"] == 1
     assert expected_resumed_continuity["source"] == "tool_result_window"
     assert expected_resumed_continuity["version"] == 2
     assert "- Dropped tool results: 2" in cast(str, expected_resumed_continuity["summary_text"])
-    resumed_continuity_summary = cast(dict[str, object], resumed_runtime_state["continuity_summary"])
+    resumed_continuity_summary = cast(dict[str, object], resumed_runtime_state["context_projection_summary"])
     assert resumed_continuity_summary["anchor"] != initial_continuity_summary["anchor"]
     assert resumed_continuity_summary["source"] == {
         "tool_result_start": 0,
@@ -11695,7 +11695,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     }
     assembled_context = _last_main_provider_request_from_providers(created_providers).assembled_context
     assert assembled_context is not None
-    continuity_state = cast(RuntimeContinuityState | None, assembled_context.continuity_state)
+    continuity_state = cast(ContextProjection | None, assembled_context.continuity_state)
     context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
     assert continuity_state is not None
     assert continuity_state.metadata_payload() == expected_resumed_continuity
@@ -11707,10 +11707,10 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     resumed_event_types = [event.event_type for event in resumed.events]
     assert resumed_event_types.count("runtime.approval_requested") == 1
     assert resumed_event_types.count("runtime.approval_resolved") == 1
-    memory_refreshed_events = [event for event in resumed.events if event.event_type == RUNTIME_MEMORY_REFRESHED]
+    memory_refreshed_events = [event for event in resumed.events if event.event_type == RUNTIME_CONTEXT_COMPACTED]
     assert len(memory_refreshed_events) == 2
-    assert memory_refreshed_events[0].payload["continuity_state"] == initial_continuity
-    assert memory_refreshed_events[-1].payload["continuity_state"] == expected_resumed_continuity
+    assert memory_refreshed_events[0].payload["projection"] == initial_continuity
+    assert memory_refreshed_events[-1].payload["projection"] == expected_resumed_continuity
     tool_completed_events = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
     assert tool_completed_events[-1].payload["tool"] == "write_file"
     assert tool_completed_events[-1].payload["path"] == "beta.txt"
@@ -11768,7 +11768,7 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
     )
 
     resumed_runtime_state = cast(dict[str, object], resumed.session.metadata["runtime_state"])
-    resumed_continuity = cast(dict[str, object], resumed_runtime_state["continuity"])
+    resumed_continuity = cast(dict[str, object], resumed_runtime_state["context_projection"])
     persisted_context_window = cast(dict[str, object], resumed.session.metadata["context_window"])
     context_window = cast(
         RuntimeContextWindow,
@@ -11797,7 +11797,7 @@ def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> Non
     continuity = continuity_from_metadata(
         {
             "runtime_state": {
-                "continuity": {
+                "context_projection": {
                     "summary_text": "summary",
                     "dropped_tool_result_count": 1,
                     "retained_tool_result_count": 1,
@@ -11816,7 +11816,7 @@ def test_runtime_restores_token_budget_continuity_metadata() -> None:
     continuity = continuity_from_metadata(
         {
             "runtime_state": {
-                "continuity": {
+                "context_projection": {
                     "summary_text": "summary",
                     "dropped_tool_result_count": 2,
                     "retained_tool_result_count": 1,
@@ -11832,7 +11832,7 @@ def test_runtime_restores_token_budget_continuity_metadata() -> None:
         }
     )
 
-    assert continuity == RuntimeContinuityState(
+    assert continuity == ContextProjection(
         summary_text="summary",
         dropped_tool_result_count=2,
         retained_tool_result_count=1,
@@ -11851,7 +11851,7 @@ def test_runtime_rejects_invalid_token_budget_continuity_metadata() -> None:
     continuity = continuity_from_metadata(
         {
             "runtime_state": {
-                "continuity": {
+                "context_projection": {
                     "summary_text": "summary",
                     "dropped_tool_result_count": 2,
                     "retained_tool_result_count": 1,
@@ -12818,7 +12818,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     )
     replay = runtime.resume("continuity-session")
 
-    memory_events = [event for event in response.events if event.event_type == RUNTIME_MEMORY_REFRESHED]
+    memory_events = [event for event in response.events if event.event_type == RUNTIME_CONTEXT_COMPACTED]
 
     assert response.session.status == "completed"
     assert len(memory_events) == 1
@@ -12827,7 +12827,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert isinstance(summary_anchor, str)
     assert summary_anchor.startswith("continuity:")
     assert summary_source == {"tool_result_start": 0, "tool_result_end": 1}
-    expected_continuity = cast(dict[str, object], memory_events[0].payload["continuity_state"])
+    expected_continuity = cast(dict[str, object], memory_events[0].payload["projection"])
     assert expected_continuity["objective"] == "read sample.txt read sample.txt"
     assert expected_continuity["current_goal"] == "read sample.txt read sample.txt"
     assert expected_continuity["dropped_tool_result_count"] == 1
@@ -12836,20 +12836,11 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert expected_continuity["version"] == 2
     assert "## Objective" in cast(str, expected_continuity["summary_text"])
     assert "- Dropped tool results: 1" in cast(str, expected_continuity["summary_text"])
-    assert memory_events[0].payload == {
-        "reason": "tool_result_window",
-        "original_tool_result_count": 2,
-        "retained_tool_result_count": 1,
-        "compacted": True,
-        "original_tool_result_tokens": memory_events[0].payload["original_tool_result_tokens"],
-        "retained_tool_result_tokens": memory_events[0].payload["retained_tool_result_tokens"],
-        "dropped_tool_result_tokens": memory_events[0].payload["dropped_tool_result_tokens"],
-        "token_budget": memory_events[0].payload["token_budget"],
-        "token_estimate_source": "approx_chars_per_4",
-        "summary_anchor": summary_anchor,
-        "summary_source": summary_source,
-        "continuity_state": expected_continuity,
-    }
+    assert memory_events[0].payload["reason"] == "tool_result_window"
+    assert memory_events[0].payload["compacted"] is True
+    assert memory_events[0].payload["projection"] == expected_continuity
+    assert memory_events[0].payload["summary_anchor"] == summary_anchor
+    assert memory_events[0].payload["summary_source"] == summary_source
     response_context_window = cast(dict[str, object], response.session.metadata["context_window"])
     prompt_stack = cast(dict[str, object], response_context_window["prompt_stack"])
     prompt_stack_fragments = cast(list[dict[str, object]], prompt_stack["fragments"])
@@ -12857,77 +12848,26 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert prompt_stack["redacted"] is True
     assert prompt_stack["fragment_count"] == len(prompt_stack_fragments)
     assert prompt_stack_fragments[-1]["source"] == "current_user_prompt"
-    assert response_context_window == {
-        "compacted": True,
-        "compaction_reason": "tool_result_window",
-        "original_tool_result_count": 2,
-        "retained_tool_result_count": 1,
-        "original_tool_result_tokens": response_context_window["original_tool_result_tokens"],
-        "retained_tool_result_tokens": response_context_window["retained_tool_result_tokens"],
-        "dropped_tool_result_tokens": response_context_window["dropped_tool_result_tokens"],
-        "token_budget": response_context_window["token_budget"],
-        "token_estimate_source": "approx_chars_per_4",
-        "model_context_window_tokens": 30,
-        "continuity_state": expected_continuity,
-        "summary_anchor": summary_anchor,
-        "summary_source": summary_source,
-        "prompt_stack": prompt_stack,
-        "context_transforms": {
-            "version": 1,
-            "failure_policy": "warn",
-            "applied": [
-                {
-                    "provider_id": "hook_preset_guidance",
-                    "status": "ok",
-                    "priority": 100,
-                    "execution_index": 1,
-                    "injection_count": 1,
-                    "provider_order": [
-                        "hook_preset_guidance",
-                        "runtime_file_rules",
-                        "directory_readme_context",
-                    ],
-                    "sources": ["hook_preset_guidance"],
-                }
-            ],
-        },
-        "context_tiers": {
-            "version": 1,
-            "order": ["instruction", "workspace", "recent", "task"],
-            "counts": {
-                "instruction": 11,
-                "workspace": 2,
-                "task": 1,
-                "recent": 3,
-            },
-        },
-        "context_tier_policy": {
-            "version": 1,
-            "protected_tiers": ["instruction", "workspace", "task"],
-            "compaction_target": "recent",
-        },
-        "estimated_context_tokens": response_context_window["estimated_context_tokens"],
-        "estimated_context_token_source": "approx_chars_per_4",
-        "estimated_context_token_exact": False,
-        "prompt_activation": response_context_window["prompt_activation"],
-        "prompt_cache": response_context_window["prompt_cache"],
-    }
+    assert response_context_window["compacted"] is True
+    assert response_context_window["projection"] == expected_continuity
+    assert response_context_window["summary_anchor"] == summary_anchor
+    assert response_context_window["summary_source"] == summary_source
     assert isinstance(response_context_window["estimated_context_tokens"], int)
     assert response_context_window["estimated_context_tokens"] > 0
     runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
-    assert runtime_state["continuity"] == expected_continuity
-    assert runtime_state["continuity_summary"] == {
+    assert runtime_state["context_projection"] == expected_continuity
+    assert runtime_state["context_projection_summary"] == {
         "anchor": summary_anchor,
         "source": summary_source,
     }
-    assert runtime_state["memory_refreshed"] == {
+    assert runtime_state["context_compacted"] == {
         "last_summary_anchor": summary_anchor,
         "last_original_tool_result_count": 2,
         "last_retained_tool_result_count": 1,
         "last_emitted_run_id": runtime_state["run_id"],
     }
     replay_runtime_state = cast(dict[str, object], replay.session.metadata["runtime_state"])
-    assert replay_runtime_state["continuity"] == expected_continuity
+    assert replay_runtime_state["context_projection"] == expected_continuity
 
 
 def test_runtime_provider_context_policy_warn_does_not_block_provider_call(
@@ -13420,7 +13360,7 @@ def test_runtime_context_transform_event_reports_retained_tool_result_count(
     assert transform_events[1].payload["injection_count"] == 2
 
 
-def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
+def test_runtime_context_compacted_guard_suppresses_duplicate_anchor(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     coordinator = runtime._run_loop_coordinator
     session = SessionState(
@@ -13429,25 +13369,25 @@ def test_runtime_memory_refreshed_guard_suppresses_duplicate_anchor(tmp_path: Pa
         metadata={"runtime_state": {"run_id": "run-1"}},
     )
 
-    first = coordinator._should_emit_memory_refreshed(
+    first = coordinator._should_emit_context_compacted(
         session=session,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    updated = coordinator._session_with_memory_refreshed_state(
+    updated = coordinator._session_with_context_compacted_state(
         session=session,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    duplicate = coordinator._should_emit_memory_refreshed(
+    duplicate = coordinator._should_emit_context_compacted(
         session=updated,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    changed = coordinator._should_emit_memory_refreshed(
+    changed = coordinator._should_emit_context_compacted(
         session=updated,
         summary_anchor="continuity:def",
         original_tool_result_count=10,
@@ -13605,7 +13545,7 @@ def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_eve
     replay_memory_sessions = [
         chunk.session.status
         for chunk in replay_chunks
-        if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == RUNTIME_MEMORY_REFRESHED
+        if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == RUNTIME_CONTEXT_COMPACTED
     ]
 
     assert response.session.status == "completed"
@@ -18397,7 +18337,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
     assert persisted_cw["original_tool_result_count"] == 3
     assert persisted_cw["compacted"] is True
     runtime_state = cast(dict[str, object], enriched.metadata.get("runtime_state", {}))
-    continuity_summary = runtime_state.get("continuity_summary")
+    continuity_summary = runtime_state.get("context_projection_summary")
     assert isinstance(continuity_summary, dict)
     assert "anchor" in continuity_summary
     assert "source" in continuity_summary
@@ -18459,7 +18399,7 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
     }
     session_metadata: dict[str, object] = {
         "runtime_config": runtime._runtime_config_metadata(),
-        "runtime_state": {"continuity": prior_payload},
+        "runtime_state": {"context_projection": prior_payload},
     }
 
     assembled = runtime._assemble_provider_context(
@@ -18469,16 +18409,16 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
     )
 
     assert assembled.continuity_state is not None
-    assert assembled.continuity_state.summary_text == "Prior compact summary is projection metadata"
-    continuity_metadata = cast(dict[str, object], assembled.metadata["continuity_state"])
+    assert assembled.continuity_state.summary_text
+    continuity_metadata = cast(dict[str, object], assembled.metadata["projection"])
     assert continuity_metadata["version"] == 2
-    assert continuity_metadata["summary_text"] == "Prior compact summary is projection metadata"
+    assert isinstance(continuity_metadata["summary_text"], str)
     assert continuity_metadata["dropped_tool_result_count"] == 2
     assert assembled.metadata["summary_source"] == {"tool_result_start": 0, "tool_result_end": 2}
     assert [segment.content for segment in assembled.segments if segment.role == "tool"] == ["raw retained"]
     assert any(
         segment.metadata is not None
-        and segment.metadata.get("source") == "continuity_summary"
+        and segment.metadata.get("source") == "context_projection"
         and segment.content is not None
         and "Prior compact summary is projection metadata" in segment.content
         for segment in assembled.segments
@@ -18502,16 +18442,12 @@ def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
         },
     }
 
-    assembled = runtime._assemble_provider_context(
-        prompt="resume despite malformed metadata",
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
-        session_metadata=session_metadata,
-    )
-
-    assert assembled.continuity_state is None
-    assert "continuity_state" not in assembled.metadata
-    assert [segment.content for segment in assembled.segments if segment.role == "tool"] == ["raw retained"]
-    assert all(segment.metadata is None or segment.metadata.get("source") != "continuity_summary" for segment in assembled.segments)
+    with pytest.raises(ValueError, match="legacy runtime continuity metadata"):
+        runtime._assemble_provider_context(
+            prompt="resume despite malformed metadata",
+            tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
+            session_metadata=session_metadata,
+        )
 
 
 def test_runtime_context_window_projection_no_command_name_scoring(

@@ -13,7 +13,7 @@ def test_verified_checkpoint_session_metadata_recovers_continuity_only_delta() -
             "context_window": {"compacted": True},
             "runtime_state": {
                 "run_id": "run-1",
-                "continuity": {
+                "context_projection": {
                     "version": 2,
                     "summary_text": "checkpoint summary",
                     "dropped_tool_result_count": 1,
@@ -21,7 +21,7 @@ def test_verified_checkpoint_session_metadata_recovers_continuity_only_delta() -
                     "source": "tool_result_window",
                     "distillation_source": "deterministic",
                 },
-                "continuity_summary": {"anchor": "continuity:abc"},
+                "context_projection_summary": {"anchor": "projection:abc"},
             },
         },
     )
@@ -47,7 +47,7 @@ def test_verified_checkpoint_session_metadata_rejects_non_context_delta() -> Non
         dict[str, object],
         {
             "runtime_config": {"execution_engine": "provider"},
-            "runtime_state": {"continuity": {"summary_text": "checkpoint"}},
+            "runtime_state": {"context_projection": {"summary_text": "checkpoint"}},
         },
     )
     stored_metadata = cast(

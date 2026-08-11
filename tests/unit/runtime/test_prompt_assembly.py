@@ -82,7 +82,7 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "runtime_dynamic_boundary",
         "runtime_pending_state",
         "runtime_todo_state",
-        "continuity_summary",
+        "context_projection",
         "runtime_context_artifact_reference",
         "current_user_prompt",
     ]

@@ -10,10 +10,10 @@ from voidcode.provider.protocol import ProviderErrorKind
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
 from voidcode.runtime.context_window import (
+    ContextProjection,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
-    RuntimeContinuityState,
 )
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
@@ -1062,7 +1062,7 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
         compaction_reason="tool_result_window",
         original_tool_result_count=3,
         retained_tool_result_count=1,
-        continuity_state=RuntimeContinuityState(
+        continuity_state=ContextProjection(
             summary_text=(
                 "Compacted 2 earlier tool results:\n"
                 '1. read_file ok path=sample.txt content_preview="old\\n"\n'
@@ -1095,7 +1095,7 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
 
     assert provider.requests[0].assembled_context is not None
     assert provider.requests[0].assembled_context.tool_results == bounded_context.tool_results
-    assert provider.requests[0].assembled_context.continuity_state == RuntimeContinuityState(
+    assert provider.requests[0].assembled_context.continuity_state == ContextProjection(
         summary_text=(
             "Compacted 2 earlier tool results:\n"
             '1. read_file ok path=sample.txt content_preview="old\\n"\n'

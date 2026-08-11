@@ -37,15 +37,15 @@ from ..tools.output import (
 )
 from ..tools.question import QuestionTool
 from .context_window import (
+    ContextProjection,
     RuntimeContextSegment,
     RuntimeContextWindow,
-    RuntimeContinuityState,
     continuity_summary_metadata,
 )
 from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
+    RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
-    RUNTIME_MEMORY_REFRESHED,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_SKILL_LOADED,
@@ -935,11 +935,11 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
         approval_resolution: tuple[PendingApproval, PermissionResolution] | None = None,
         permission_policy: PermissionPolicy | None = None,
-        preserved_continuity_state: RuntimeContinuityState | None = None,
+        preserved_continuity_state: ContextProjection | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._runtime
         active_permission_policy = permission_policy or runtime._permission_policy
-        continuity_to_reinject: RuntimeContinuityState | None = preserved_continuity_state
+        continuity_to_reinject: ContextProjection | None = preserved_continuity_state
         provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
         provider_retry_attempt: int = runtime._provider_retry_attempt_from_metadata(graph_request.metadata)
         reasoning_capture_state = runtime._reasoning_capture_state()
@@ -1235,16 +1235,16 @@ class RuntimeRunLoopCoordinator:
             if (
                 context_window.compacted
                 and reinjected_continuity is None
-                and self._should_emit_memory_refreshed(
+                and self._should_emit_context_compacted(
                     session=session,
                     summary_anchor=context_window.summary_anchor,
                     original_tool_result_count=context_window.original_tool_result_count,
                     retained_tool_result_count=context_window.retained_tool_result_count,
                 )
             ):
-                memory_payload = self._build_memory_refreshed_payload(context_window)
+                memory_payload = self._build_context_compacted_payload(context_window)
                 if memory_payload is not None:
-                    session = self._session_with_memory_refreshed_state(
+                    session = self._session_with_context_compacted_state(
                         session=session,
                         summary_anchor=context_window.summary_anchor,
                         original_tool_result_count=context_window.original_tool_result_count,
@@ -1257,7 +1257,7 @@ class RuntimeRunLoopCoordinator:
                         event=EventEnvelope(
                             session_id=session.session.id,
                             sequence=sequence,
-                            event_type=RUNTIME_MEMORY_REFRESHED,
+                            event_type=RUNTIME_CONTEXT_COMPACTED,
                             source="runtime",
                             payload=memory_payload,
                         ),
@@ -2329,7 +2329,7 @@ class RuntimeRunLoopCoordinator:
         return 0
 
     @staticmethod
-    def _build_memory_refreshed_payload(
+    def _build_context_compacted_payload(
         context_window: RuntimeContextWindow,
     ) -> dict[str, object] | None:
         if not context_window.compacted:
@@ -2350,12 +2350,14 @@ class RuntimeRunLoopCoordinator:
             **token_metadata,
             "compacted": True,
             "summary_anchor": context_window.summary_anchor,
+            "projection_id": context_window.summary_anchor,
             "summary_source": context_window.summary_source,
-            "continuity_state": (context_window.continuity_state.metadata_payload() if context_window.continuity_state is not None else None),
+            "summary_strategy": context_window.summary_strategy,
+            "projection": (context_window.continuity_state.metadata_payload() if context_window.continuity_state is not None else None),
         }
 
     @staticmethod
-    def _should_emit_memory_refreshed(
+    def _should_emit_context_compacted(
         *,
         session: SessionState,
         summary_anchor: str | None,
@@ -2366,7 +2368,7 @@ class RuntimeRunLoopCoordinator:
         runtime_state = cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
         current_run_id_raw = runtime_state.get("run_id")
         current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
-        raw_memory_state = runtime_state.get("memory_refreshed")
+        raw_memory_state = runtime_state.get("context_compacted")
         memory_state = cast(dict[str, object], raw_memory_state) if isinstance(raw_memory_state, dict) else {}
         last_run_id_raw = memory_state.get("last_emitted_run_id")
         last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
@@ -2380,7 +2382,7 @@ class RuntimeRunLoopCoordinator:
         )
 
     @staticmethod
-    def _session_with_memory_refreshed_state(
+    def _session_with_context_compacted_state(
         *,
         session: SessionState,
         summary_anchor: str | None,
@@ -2389,7 +2391,7 @@ class RuntimeRunLoopCoordinator:
     ) -> SessionState:
         raw_runtime_state = session.metadata.get("runtime_state")
         runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
-        runtime_state["memory_refreshed"] = {
+        runtime_state["context_compacted"] = {
             "last_summary_anchor": summary_anchor,
             "last_original_tool_result_count": original_tool_result_count,
             "last_retained_tool_result_count": retained_tool_result_count,

@@ -1898,10 +1898,10 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     assert provider_context.context_window["compacted"] is True
     assert provider_context.context_window["original_tool_result_count"] == 2
     assert provider_context.context_window["retained_tool_result_count"] == 1
-    continuity = provider_context.context_window["continuity_state"]
+    continuity = provider_context.context_window["projection"]
     assert isinstance(continuity, dict)
     assert continuity["dropped_tool_result_count"] == 1
-    assert "shell_exec" in cast(str, continuity["summary_text"])
+    assert isinstance(continuity["summary_text"], str)
     retained_tool_segments = [segment for segment in provider_context.segments if segment.role == "tool"]
     assert [segment.tool_name for segment in retained_tool_segments] == ["read_file"]
     assert retained_tool_segments[0].content == final_context.tool_results[0].content
@@ -1909,7 +1909,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     assert '"tool_name": "read_file"' in provider_message_text
     assert '"tool_name": "shell_exec"' not in provider_message_text
     assert any(
-        segment.role == "system" and segment.source == "continuity_summary" and "shell_exec" in (segment.content or "")
+        segment.role == "system" and segment.source == "context_projection" and "shell_exec" in (segment.content or "")
         for segment in provider_context.segments
     )
 

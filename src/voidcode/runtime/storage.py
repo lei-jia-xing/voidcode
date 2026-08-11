@@ -2778,7 +2778,7 @@ class SqliteSessionStore:
         if not isinstance(raw_runtime_state, dict):
             return next_metadata
         runtime_state = dict(cast(dict[str, object], raw_runtime_state))
-        runtime_state.pop("continuity", None)
+        runtime_state.pop("context_projection", None)
         todo_state = self._todo_state_from_events(events)
         if todo_state is None:
             runtime_state.pop("todos", None)

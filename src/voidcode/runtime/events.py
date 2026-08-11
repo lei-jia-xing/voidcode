@@ -48,7 +48,7 @@ type CoreEventType = Literal[
     "runtime.failed",
 ]
 type RuntimeEventType = Literal[
-    "runtime.memory_refreshed",
+    "runtime.context_compacted",
     "runtime.memory_added",
     "runtime.memory_deleted",
     "runtime.memory_searched",
@@ -165,7 +165,7 @@ RUNTIME_QUESTION_REQUESTED: Final[CoreEventType] = "runtime.question_requested"
 RUNTIME_QUESTION_ANSWERED: Final[CoreEventType] = "runtime.question_answered"
 RUNTIME_FAILED: Final[CoreEventType] = "runtime.failed"
 
-RUNTIME_MEMORY_REFRESHED: Final[RuntimeEventType] = "runtime.memory_refreshed"
+RUNTIME_CONTEXT_COMPACTED: Final[RuntimeEventType] = "runtime.context_compacted"
 RUNTIME_MEMORY_ADDED: Final[RuntimeEventType] = "runtime.memory_added"
 RUNTIME_MEMORY_DELETED: Final[RuntimeEventType] = "runtime.memory_deleted"
 RUNTIME_MEMORY_SEARCHED: Final[RuntimeEventType] = "runtime.memory_searched"
@@ -242,7 +242,7 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_FAILED,
 )
 RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
-    RUNTIME_MEMORY_REFRESHED,
+    RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_MEMORY_ADDED,
     RUNTIME_MEMORY_DELETED,
     RUNTIME_MEMORY_SEARCHED,

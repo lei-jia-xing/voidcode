@@ -2510,7 +2510,7 @@ def test_transport_serializes_additive_future_event_type_unchanged() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
     events_module = importlib.import_module("voidcode.runtime.events")
-    future_event_type = cast(str, events_module.RUNTIME_MEMORY_REFRESHED)
+    future_event_type = cast(str, events_module.RUNTIME_CONTEXT_COMPACTED)
     session = session_state(
         session=session_ref(id="future-event-session"),
         status="running",

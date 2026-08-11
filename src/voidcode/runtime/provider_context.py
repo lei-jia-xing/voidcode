@@ -581,7 +581,7 @@ def _compact_projection_role_diagnostics(
     segments: tuple[RuntimeContextSegment, ...],
 ) -> list[RuntimeProviderContextDiagnostic]:
     compact_sources = {
-        "continuity_summary",
+        "context_projection",
         "runtime_context_artifact_reference",
     }
     diagnostics: list[RuntimeProviderContextDiagnostic] = []
@@ -703,11 +703,11 @@ def _context_window_diagnostics(
                 code="tool_feedback_not_retained",
                 message=("Some historical tool results were dropped before provider context assembly."),
                 source="context_window",
-                suggested_fix=("Inspect continuity_state and retained tool segments for critical state coverage."),
+                suggested_fix=("Inspect context projection and retained tool segments for critical state coverage."),
                 details={"dropped_tool_result_count": dropped},
             )
         )
-    continuity = context_metadata.get("continuity_state")
+    continuity = context_metadata.get("projection")
     continuity_payload = cast(dict[str, object], continuity) if isinstance(continuity, dict) else None
     if continuity_payload is not None and not continuity_payload.get("summary_text") and dropped:
         diagnostics.append(

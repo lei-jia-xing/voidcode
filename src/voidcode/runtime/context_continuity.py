@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-_RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"continuity", "continuity_summary"})
+_RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_projection_summary"})
 _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
 
 

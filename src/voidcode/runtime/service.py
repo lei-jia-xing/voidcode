@@ -155,11 +155,11 @@ from .context_transforms import (
     validate_runtime_context_transform_refs,
 )
 from .context_window import (
+    ContextProjection,
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
-    RuntimeContinuityState,
     assemble_provider_context,
     continuity_state_from_metadata_payload,
     prepare_provider_context,
@@ -2470,7 +2470,7 @@ class VoidCodeRuntime:
         tool_results: list[ToolResult],
         approval_resolution: tuple[PendingApproval, PermissionResolution] | None = None,
         permission_policy: PermissionPolicy | None = None,
-        preserved_continuity_state: RuntimeContinuityState | None = None,
+        preserved_continuity_state: ContextProjection | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._run_loop_coordinator.execute_graph_loop(
             graph=graph,
@@ -5890,13 +5890,13 @@ class VoidCodeRuntime:
     @staticmethod
     def _continuity_state_from_session_metadata(
         session_metadata: dict[str, object],
-    ) -> RuntimeContinuityState | None:
+    ) -> ContextProjection | None:
         # Referenced via extracted collaborators.
         runtime_state = session_metadata.get("runtime_state")
         if not isinstance(runtime_state, dict):
             return None
         runtime_state_payload = cast(dict[str, object], runtime_state)
-        continuity = runtime_state_payload.get("continuity")
+        continuity = runtime_state_payload.get("context_projection")
         if not isinstance(continuity, dict):
             return None
         return continuity_state_from_metadata_payload(cast(dict[str, object], continuity))

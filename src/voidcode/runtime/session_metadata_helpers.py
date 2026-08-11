@@ -52,11 +52,13 @@ def session_with_context_window_payload_metadata(
     session: SessionState,
     context_window_payload: dict[str, object],
 ) -> SessionState:
+    if "continuity_state" in context_window_payload:
+        raise ValueError("legacy continuity_state context metadata is no longer supported")
     raw_runtime_state = session.metadata.get("runtime_state")
     if raw_runtime_state is not None and not isinstance(raw_runtime_state, dict):
         raise ValueError("persisted runtime_state must be an object")
     runtime_state = dict(cast(dict[str, object], raw_runtime_state or {}))
-    continuity_payload_raw = context_window_payload.get("continuity_state")
+    continuity_payload_raw = context_window_payload.get("projection")
     continuity_payload = cast(dict[str, object], continuity_payload_raw) if isinstance(continuity_payload_raw, dict) else None
     summary_anchor = context_window_payload.get("summary_anchor")
     summary_source = context_window_payload.get("summary_source")
@@ -85,8 +87,8 @@ def session_with_context_window_payload_metadata(
             "context_window": context_window_payload,
             "runtime_state": {
                 **runtime_state,
-                **({"continuity": continuity_payload} if continuity_payload is not None else {}),
-                **({"continuity_summary": continuity_summary_payload} if continuity_summary_payload is not None else {}),
+                **({"context_projection": continuity_payload} if continuity_payload is not None else {}),
+                **({"context_projection_summary": continuity_summary_payload} if continuity_summary_payload is not None else {}),
             },
         },
     )

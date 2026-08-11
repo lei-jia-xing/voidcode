@@ -605,7 +605,7 @@ def build_prompt_assembly_plan(
     )
     append_system(
         continuity_summary,
-        source="continuity_summary",
+        source="context_projection",
         tier="recent",
         layer="project_context",
     )

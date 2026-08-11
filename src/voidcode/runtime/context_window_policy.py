@@ -18,6 +18,7 @@ def context_window_config_from_policy(
         default_tool_result_tokens=policy.default_tool_result_tokens,
         per_tool_result_tokens=dict(policy.per_tool_result_tokens),
         tokenizer_model=policy.tokenizer_model,
+        summary_strategy=policy.summary_strategy,
     )
 
 
@@ -47,6 +48,7 @@ def context_window_policy_from_config(
         default_tool_result_tokens=config.default_tool_result_tokens,
         per_tool_result_tokens=dict(config.per_tool_result_tokens),
         tokenizer_model=config.tokenizer_model,
+        summary_strategy=config.summary_strategy,
     )
 
 

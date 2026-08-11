@@ -160,6 +160,7 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
         "provider_context_diagnostics",
         "provider_context_oversized_feedback_chars",
         "context_transform_failure_policy",
+        "summary_strategy",
     }
 )
 _FORMATTER_PRESET_CONFIG_KEYS = frozenset({"command", "extensions", "root_markers", "fallback_commands", "cwd_policy"})
@@ -334,6 +335,7 @@ class RuntimeContextWindowConfig:
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
+    summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1604,6 +1606,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     provider_context_diagnostics: RuntimeProviderContextDiagnosticMode = "warn"
     provider_context_oversized_feedback_chars: int = 8_000
     context_transform_failure_policy: RuntimeContextTransformFailureMode = "warn"
+    summary_strategy: Literal["deterministic", "model_assisted"] = "deterministic"
 
     @field_validator("auto_compaction", mode="before")
     @classmethod
@@ -1702,6 +1705,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
             provider_context_diagnostics=self.provider_context_diagnostics,
             provider_context_oversized_feedback_chars=self.provider_context_oversized_feedback_chars,
             context_transform_failure_policy=self.context_transform_failure_policy,
+            summary_strategy=self.summary_strategy,
         )
 
 
@@ -2851,6 +2855,7 @@ def serialize_runtime_context_window_config(
         "provider_context_diagnostics": context_window.provider_context_diagnostics,
         "provider_context_oversized_feedback_chars": (context_window.provider_context_oversized_feedback_chars),
         "context_transform_failure_policy": context_window.context_transform_failure_policy,
+        "summary_strategy": context_window.summary_strategy,
     }
     if context_window.model_context_window_tokens is not None:
         payload["model_context_window_tokens"] = context_window.model_context_window_tokens

@@ -276,7 +276,7 @@ def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) 
             session=SessionRef(id="undo-session"),
             status="completed",
             turn=1,
-            metadata={"runtime_state": {"continuity": {"facts": ["bad context"]}, "run_id": "r1"}},
+            metadata={"runtime_state": {"context_projection": {"facts": ["bad context"]}, "run_id": "r1"}},
         ),
         events=(
             EventEnvelope(

@@ -409,6 +409,10 @@ def runtime_config_json_schema() -> dict[str, object]:
                             "blocking provider-context diagnostics."
                         ),
                     },
+                    "summary_strategy": {
+                        "type": "string",
+                        "enum": ["deterministic", "model_assisted"],
+                    },
                 },
             },
             "lspServerConfig": {
