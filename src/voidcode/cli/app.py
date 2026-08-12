@@ -107,6 +107,7 @@ from .handler_args import (
     RunArgs,
     ServerArgs,
     SessionsArgs,
+    StatsArgs,
     StorageArgs,
     TasksArgs,
     TuiArgs,
@@ -1995,6 +1996,55 @@ def _handle_storage_diagnostics_command(args: StorageArgs) -> int:
     return EXIT_SUCCESS
 
 
+def _format_rate(value: object) -> str:
+    if not isinstance(value, int | float):
+        return "-"
+    return f"{value * 100:.1f}%"
+
+
+def _handle_stats_tools_command(args: StatsArgs) -> int:
+    workspace = args.workspace
+    with _runtime_session(workspace) as runtime:
+        report = runtime.tool_effectiveness_report()
+    payload = report.to_payload()
+
+    def _print_report() -> None:
+        print(
+            "TOOL EFFECTIVENESS "
+            f"sessions={report.session_count} calls={report.tool_call_count} "
+            f"success={report.success_count} errors={report.error_count} "
+            f"success_rate={_format_rate(report.success_rate)}"
+        )
+        print(
+            "SIGNALS "
+            f"repeated_reads={report.repeated_read_count} followup_reads={report.followup_read_count} "
+            f"compactions={report.compaction_count} approvals={report.approval_request_count} "
+            f"resumed_runs={report.resumed_run_count} delegated_tasks={report.delegated_task_count}"
+        )
+        print(
+            "TOKENS "
+            f"input={report.input_tokens} output={report.output_tokens} "
+            f"cache_read={report.cache_read_tokens} cache_write={report.cache_write_tokens}"
+        )
+        if not report.tools:
+            print("No persisted tool calls for this workspace.")
+            return
+        print("TOOL                         CALLS     OK  ERRORS   RATE  RETRIES  TRUNCATED  ERROR KINDS")
+        for tool in report.tools:
+            error_kinds = ",".join(f"{kind}:{count}" for kind, count in tool.error_kinds.items()) or "-"
+            print(
+                f"{tool.tool[:28]:<28} {tool.calls:>5} {tool.successes:>6} {tool.errors:>7} "
+                f"{_format_rate(tool.success_rate):>6} {tool.retries_after_error:>8} "
+                f"{tool.truncated_results:>10}  {error_kinds}"
+            )
+
+    return _emit_output(
+        args,
+        {"workspace": str(workspace), "effectiveness": payload},
+        _print_report,
+    )
+
+
 def _handle_storage_prune_command(args: StorageArgs) -> int:
     workspace = args.workspace
     with _runtime_session(workspace) as runtime:
@@ -3252,6 +3302,23 @@ def diagnostics(workspace: Path) -> int:
         StorageArgs(
             workspace=workspace,
             json=True,
+        )
+    )
+
+
+@root_cli.group(help="Inspect local agent effectiveness metrics.")
+def stats() -> None:
+    pass
+
+
+@stats.command(name="tools", help="Summarize persisted tool success, errors, retries, and output pressure.")
+@_workspace_option("Workspace root used to select persisted runtime sessions.")
+@_json_option("Output tool effectiveness metrics as JSON.")
+def stats_tools(workspace: Path, json_output: bool) -> int:
+    return _handle_stats_tools_command(
+        StatsArgs(
+            workspace=workspace,
+            json=json_output,
         )
     )
 

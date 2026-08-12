@@ -103,6 +103,16 @@ class StorageArgs:
 
 
 @dataclass(frozen=True, slots=True)
+class StatsArgs:
+    """Arguments for the ``stats`` command group."""
+
+    stats_command: str | None = None
+    command: str = "stats"
+    workspace: Path = field(default_factory=Path.cwd)
+    json: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ConfigArgs:
     """Arguments for the ``config`` command group."""
 

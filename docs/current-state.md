@@ -32,6 +32,7 @@
 - [x] **Delegated child execution 基线**：runtime-owned `task` / background task / child session path 已经支持受控 subagent routing、parent/child lineage、result retrieval、cancel surfaces、hook guardrails、CLI/HTTP parity 与 fake-provider/fake-MCP 测试覆盖；它仍不是任意拓扑 multi-agent 平台。
 - [x] **工具活动显示契约基线**：运行时现在为工具事件附加 backend-owned `display` 与 `tool_status` payload（包含 tool name、phase/status、label 与可用的 invocation id），Web 侧通过 `frontend/src/lib/runtime/event-parser.ts` 消费这些字段，而不是仅依赖事件名猜测工具状态。
 - [x] **Capability doctor 与 first-task readiness**：`voidcode doctor` 已经输出结构化 capability report，并包含 `first_task_readiness`，用于把 provider/model/auth、本地工具、formatter/LSP/MCP 状态转化为首次真实任务的 next step。
+- [x] **本地工具效果统计基线**：runtime 现在可以从 append-only session events 和 session metadata 生成脱敏的 aggregate-only effectiveness projection，并通过 `voidcode stats tools`（或 `--json`）展示每个工具的调用数、成功率、错误分类、错误后成功重试、重复/续读、截断结果、参数/结果大小、context compaction、approval、resume、delegation 以及 provider token/cache usage。该投影不持久化源码、工具参数或结果正文；固定真实任务 benchmark 与 commit 基线仍暂缓。
 
 ### 计划中 / 进行中
 - [x] **LangGraph 编排**：当前 deterministic reference/debug engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。

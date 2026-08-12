@@ -364,6 +364,43 @@ def test_storage_diagnostics_outputs_json() -> None:
     assert payload["storage"]["connection_policy"]["busy_timeout_ms"] == 5000
 
 
+def test_stats_tools_outputs_persisted_effectiveness_json() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        workspace = Path(tmp)
+        database_path = workspace / "sessions.sqlite3"
+        (workspace / "sample.txt").write_text("sample\n", encoding="utf-8")
+        env = with_src_pythonpath(os.environ.copy())
+        env["VOIDCODE_DB_PATH"] = str(database_path)
+        setup_result = _run_module_cli(
+            "run",
+            "read sample.txt",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "stats-session",
+            env=env,
+        )
+        result = _run_module_cli(
+            "stats",
+            "tools",
+            "--workspace",
+            str(workspace),
+            "--json",
+            env=env,
+        )
+
+    payload = json.loads(result.stdout)
+    assert setup_result.returncode == 0
+    assert result.returncode == 0
+    assert payload["workspace"] == str(workspace)
+    effectiveness = payload["effectiveness"]
+    assert effectiveness["schema_version"] == 1
+    assert effectiveness["session_count"] == 1
+    assert effectiveness["tool_call_count"] == 1
+    assert effectiveness["tools"][0]["tool"] == "read_file"
+    assert effectiveness["privacy"]["stores_arguments"] is False
+
+
 def test_storage_reset_removes_global_database_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)

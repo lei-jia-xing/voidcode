@@ -216,6 +216,7 @@ from .delegation_routing import (
     provider_fallback_for_agent_selection,
     provider_fallback_with_preferred_model,
 )
+from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
     ReasoningCaptureState as _ReasoningCaptureState,
 )
@@ -2953,6 +2954,9 @@ class VoidCodeRuntime:
 
     def list_sessions(self) -> tuple[StoredSessionSummary, ...]:
         return self._session_store.list_sessions(workspace=self._workspace)
+
+    def tool_effectiveness_report(self) -> ToolEffectivenessReport:
+        return self._session_store.tool_effectiveness_report(workspace=self._workspace)
 
     def _require_memory_enabled(self) -> None:
         if not self._config.memory.enabled:

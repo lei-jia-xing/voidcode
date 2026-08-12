@@ -972,6 +972,56 @@ def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> No
     ]
 
 
+def test_session_storage_projects_tool_effectiveness_from_persisted_events(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    request = RuntimeRequest(prompt="edit", session_id="effectiveness-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="effectiveness-session"),
+            status="completed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="effectiveness-session",
+                sequence=1,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "edit",
+                    "status": "error",
+                    "arguments": {"path": "sample.py"},
+                    "error": "stale",
+                    "error_kind": "stale_edit",
+                },
+            ),
+            EventEnvelope(
+                session_id="effectiveness-session",
+                sequence=2,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={
+                    "tool": "edit",
+                    "status": "ok",
+                    "arguments": {"path": "sample.py"},
+                    "content": "updated",
+                },
+            ),
+        ),
+        output="done",
+    )
+    store.save_run(workspace=tmp_path, request=request, response=response)
+
+    report = store.tool_effectiveness_report(workspace=tmp_path)
+
+    assert report.session_count == 1
+    assert report.tool_call_count == 2
+    assert report.tools[0].tool == "edit"
+    assert report.tools[0].retries_after_error == 1
+    assert report.tools[0].error_kinds == {"stale_edit": 1}
+
+
 def test_tool_results_from_events_preserves_successful_null_content() -> None:
     tool_results_from_events: Any = _private_attr(SqliteSessionStore, "_tool_results_from_events")
     tool_results = tool_results_from_events(
