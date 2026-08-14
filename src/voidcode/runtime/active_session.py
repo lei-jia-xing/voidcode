@@ -128,6 +128,12 @@ class ActiveSessionRegistry:
         with self._lock:
             return key in self._runs
 
+    def active_run_count(self, *, workspace: Path, session_id: str) -> int:
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            handles = self._runs.get(key)
+            return len(handles) if handles is not None else 0
+
     def metadata(self, *, workspace: Path, session_id: str) -> dict[str, object] | None:
         key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
         with self._lock:

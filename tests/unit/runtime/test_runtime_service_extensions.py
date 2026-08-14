@@ -2082,8 +2082,19 @@ def _wait_for_session_event(
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         try:
-            response = runtime.resume(session_id)
-        except ValueError:
+            response = runtime._session_store.load_session(
+                workspace=runtime._workspace,
+                session_id=session_id,
+            )
+        except (ValueError, RuntimeRequestError):
+            time.sleep(0.01)
+            continue
+        except Exception as exc:
+            if "unknown session:" in str(exc):
+                time.sleep(0.01)
+                continue
+            raise
+        if response.session.status == "interrupted":
             time.sleep(0.01)
             continue
         if any(event.event_type == event_type for event in response.events):
@@ -3544,6 +3555,51 @@ def test_runtime_session_debug_snapshot_reports_completed_state(tmp_path: Path) 
     assert snapshot.operator_guidance == "Session is terminal; replay or inspect transcript if needed."
 
 
+def test_runtime_session_debug_snapshot_reports_interrupted_state_as_resumable(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    session_store = runtime._session_store
+    assert isinstance(session_store, SqliteSessionStore)
+    session_id = "interrupted-debug-session"
+
+    # Harvest full session metadata (incl. agent_capability_snapshot) from a
+    # seed run, mirroring what a real run loop would persist on interrupt.
+    session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="meta-seed",
+        prompt="seed",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    seed = runtime.run(RuntimeRequest(prompt="seed", session_id="meta-seed"))
+    session_metadata = dict(seed.session.metadata)
+
+    session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=session_id,
+        prompt="interrupted probe",
+        session_metadata=session_metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+
+    snapshot = runtime.session_debug_snapshot(session_id=session_id)
+
+    assert snapshot.persisted_status == "interrupted"
+    assert snapshot.current_status == "interrupted"
+    assert snapshot.active is False
+    assert snapshot.resumable is True
+    assert snapshot.replayable is False
+    assert snapshot.terminal is False
+    assert snapshot.resume_checkpoint_kind == "interrupted"
+    assert snapshot.pending_approval is None
+    assert snapshot.pending_question is None
+
+
 def test_runtime_deterministic_config_is_not_overridden_by_agent_manifest(
     tmp_path: Path,
 ) -> None:
@@ -4581,6 +4637,17 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
 
     monkeypatch.setattr(runtime, "_resolve_permission", _fail_fresh_permission)
 
+    session_store = _private_attr(runtime, "_session_store")
+    session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="divergent-deny",
+        prompt="write danger.txt",
+        session_metadata=session_metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+
     chunks: list[Any] = list(
         execute_graph_loop(
             graph=_DivergentApprovalReplayGraph(),
@@ -5421,7 +5488,10 @@ def test_runtime_missing_delegated_force_loaded_skill_fails_without_child_result
             )
         )
 
-    assert runtime.list_sessions() == ()
+    sessions = runtime.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0].session.id == "missing-forced-child"
+    assert sessions[0].status == "interrupted"
 
 
 def test_runtime_constructs_with_builtin_agent_hook_refs(tmp_path: Path) -> None:
@@ -6639,8 +6709,9 @@ def test_runtime_uses_has_session_instead_of_missing_session_error_text(tmp_path
             request: RuntimeRequest,
             response: RuntimeResponse,
             clear_pending_approval: bool = True,
+            seal_terminal_status: bool = True,
         ) -> None:
-            _ = workspace, request, clear_pending_approval
+            _ = workspace, request, clear_pending_approval, seal_terminal_status
             self.saved_response = response
 
         def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
@@ -6650,6 +6721,41 @@ def test_runtime_uses_has_session_instead_of_missing_session_error_text(tmp_path
         def has_session(self, *, workspace: Path, session_id: str) -> bool:
             _ = workspace, session_id
             return False
+
+        def save_interrupted_checkpoint(
+            self,
+            *,
+            workspace: Path,
+            session_id: str,
+            prompt: str,
+            session_metadata: dict[str, object],
+            tool_results: tuple[dict[str, object], ...],
+            last_event_sequence: int,
+            output: str | None = None,
+            create_if_missing: bool = True,
+            turn: int = 1,
+        ) -> None:
+            _ = workspace, session_id, prompt, session_metadata, tool_results, last_event_sequence, output, create_if_missing, turn
+
+        def append_session_events(
+            self,
+            *,
+            workspace: Path,
+            session_id: str,
+            events: tuple[tuple[str, object, dict[str, object], str | None], ...],
+            interrupted_checkpoint: dict[str, object] | None = None,
+        ) -> tuple[EventEnvelope, ...]:
+            _ = workspace, interrupted_checkpoint
+            return tuple(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=index + 1,
+                    event_type=event_type,
+                    source=cast(Any, source),
+                    payload=payload,
+                )
+                for index, (event_type, source, payload, _dedupe_key) in enumerate(events)
+            )
 
         def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponse:
             _ = workspace, session_id
@@ -10363,7 +10469,7 @@ def test_runtime_resume_stream_replay_keeps_failed_status_on_trailing_acp_discon
     replay_chunks = list(runtime.resume_stream("acp-failed-replay-status"))
 
     assert replay_chunks[-1].event is not None
-    assert replay_chunks[-1].event.event_type == "runtime.failed"
+    assert replay_chunks[-1].event.event_type == "runtime.acp_disconnected"
     assert replay_chunks[-1].session.status == "failed"
     assert any(chunk.event is not None and chunk.event.event_type == "runtime.acp_disconnected" for chunk in replay_chunks)
 
@@ -10373,6 +10479,29 @@ def test_runtime_resume_stream_replay_keeps_running_for_midrun_mcp_stop_event(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     store = _private_attr(runtime, "_session_store")
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="mcp-stop-replay",
+        prompt="mcp replay",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id="mcp-stop-replay",
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "mcp replay"}, None),
+            (
+                "runtime.mcp_server_stopped",
+                "runtime",
+                {"server": "demo", "scope": "runtime", "workspace_root": str(tmp_path)},
+                None,
+            ),
+            ("graph.response_ready", "graph", {}, None),
+        ),
+    )
     store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(prompt="mcp replay", session_id="mcp-stop-replay"),
@@ -10382,33 +10511,7 @@ def test_runtime_resume_stream_replay_keeps_running_for_midrun_mcp_stop_event(
                 status="completed",
                 turn=1,
             ),
-            events=(
-                EventEnvelope(
-                    session_id="mcp-stop-replay",
-                    sequence=1,
-                    event_type="runtime.request_received",
-                    source="runtime",
-                    payload={"prompt": "mcp replay"},
-                ),
-                EventEnvelope(
-                    session_id="mcp-stop-replay",
-                    sequence=2,
-                    event_type="runtime.mcp_server_stopped",
-                    source="runtime",
-                    payload={
-                        "server": "demo",
-                        "scope": "runtime",
-                        "workspace_root": str(tmp_path),
-                    },
-                ),
-                EventEnvelope(
-                    session_id="mcp-stop-replay",
-                    sequence=3,
-                    event_type="graph.response_ready",
-                    source="graph",
-                    payload={},
-                ),
-            ),
+            events=(),
             output="done",
         ),
     )
@@ -10434,6 +10537,30 @@ def test_runtime_resume_stream_replay_keeps_running_for_session_end_hook_event(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     store = _private_attr(runtime, "_session_store")
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="session-end-replay",
+        prompt="session-end replay",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id="session-end-replay",
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "session-end replay"}, None),
+            ("runtime.session_ended", "runtime", {"session_status": "completed"}, None),
+            (
+                "runtime.mcp_server_stopped",
+                "runtime",
+                {"server": "demo", "scope": "runtime", "workspace_root": str(tmp_path)},
+                None,
+            ),
+            ("graph.response_ready", "graph", {}, None),
+        ),
+    )
     store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(prompt="session-end replay", session_id="session-end-replay"),
@@ -10443,40 +10570,7 @@ def test_runtime_resume_stream_replay_keeps_running_for_session_end_hook_event(
                 status="completed",
                 turn=1,
             ),
-            events=(
-                EventEnvelope(
-                    session_id="session-end-replay",
-                    sequence=1,
-                    event_type="runtime.request_received",
-                    source="runtime",
-                    payload={"prompt": "session-end replay"},
-                ),
-                EventEnvelope(
-                    session_id="session-end-replay",
-                    sequence=2,
-                    event_type="runtime.session_ended",
-                    source="runtime",
-                    payload={"session_status": "completed"},
-                ),
-                EventEnvelope(
-                    session_id="session-end-replay",
-                    sequence=3,
-                    event_type="runtime.mcp_server_stopped",
-                    source="runtime",
-                    payload={
-                        "server": "demo",
-                        "scope": "runtime",
-                        "workspace_root": str(tmp_path),
-                    },
-                ),
-                EventEnvelope(
-                    session_id="session-end-replay",
-                    sequence=4,
-                    event_type="graph.response_ready",
-                    source="graph",
-                    payload={},
-                ),
-            ),
+            events=(),
             output="done",
         ),
     )
@@ -12374,6 +12468,16 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
         _unexpected_prepare_provider_context_window,
     )
 
+    runtime._session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="resume-distillation-dedupe",
+        prompt=prompt,
+        session_metadata=session.metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+
     chunks = list(
         runtime._execute_graph_loop(
             graph=_SingleStepGraph(),
@@ -12455,6 +12559,16 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
         _counting_prepare_provider_context_window,
     )
     tool_results = [ToolResult(tool_name="read_file", status="ok", content="alpha")]
+
+    runtime._session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="resume-distillation-stale-window",
+        prompt=prompt,
+        session_metadata=session.metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
 
     list(
         runtime._execute_graph_loop(
@@ -13429,6 +13543,20 @@ def test_rehydrated_tool_results_for_existing_child_session_allow_omitted_parent
             ),
         ),
         output="done",
+    )
+    runtime._session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="child-session",
+        prompt="child task",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    runtime._session_store.append_session_events(
+        workspace=tmp_path,
+        session_id="child-session",
+        events=(("runtime.tool_completed", "tool", response.events[0].payload, None),),
     )
     runtime._session_store.save_run(
         workspace=tmp_path,
@@ -15792,7 +15920,8 @@ def test_runtime_notifications_generate_distinct_terminal_ids_per_run(tmp_path: 
 
     assert first.session.session.id == "local-cli-session"
     assert second.session.session.id == "local-cli-session"
-    assert first.events[-1].sequence == second.events[-1].sequence
+    assert first.events[-1].event_type == second.events[-1].event_type
+    assert second.events[-1].sequence > first.events[-1].sequence
     assert len(notifications) == 2
     assert [notification.kind for notification in notifications] == ["completion", "completion"]
     assert notifications[0].id != notifications[1].id
@@ -15811,7 +15940,8 @@ def test_runtime_notifications_generate_distinct_failure_ids_per_run(tmp_path: P
     assert second.session.session.id == "local-cli-session"
     assert first.session.status == "failed"
     assert second.session.status == "failed"
-    assert first.events[-1].sequence == second.events[-1].sequence
+    assert first.events[-1].event_type == second.events[-1].event_type
+    assert second.events[-1].sequence > first.events[-1].sequence
     assert len(notifications) == 2
     assert [notification.kind for notification in notifications] == ["failure", "failure"]
     assert notifications[0].id != notifications[1].id
@@ -17458,6 +17588,12 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
             turn=resumed_session.turn,
             metadata=resumed_session.metadata,
         )
+        payload: dict[str, object] = {"error": "resume loop crashed after failure"}
+        session_store.append_session_events(
+            workspace=tmp_path,
+            session_id=failed_session.session.id,
+            events=(("runtime.failed", "runtime", payload, None),),
+        )
         yield RuntimeStreamChunk(
             kind="event",
             session=failed_session,
@@ -17466,7 +17602,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
                 sequence=sequence + 1,
                 event_type="runtime.failed",
                 source="runtime",
-                payload={"error": "resume loop crashed after failure"},
+                payload=payload,
             ),
         )
         raise RuntimeError("graph loop raised after failed chunk")
@@ -17487,6 +17623,80 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
     terminal_task = runtime.load_background_task(task_id)
     assert terminal_task.status == "failed"
     assert terminal_task.error == "resume loop crashed after failure"
+
+
+def test_runtime_interrupted_resume_truncates_orphaned_tail_and_completes(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    session_store = runtime._session_store
+    assert isinstance(session_store, SqliteSessionStore)
+    session_id = "interrupted-resume-session"
+
+    # Harvest a full session metadata snapshot from a seed run so the resumed
+    # interrupted checkpoint carries the same skill/capability snapshots a real
+    # run loop would persist.
+    session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="meta-seed",
+        prompt="seed",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    seed = runtime.run(RuntimeRequest(prompt="seed", session_id="meta-seed"))
+    session_metadata = dict(seed.session.metadata)
+
+    # Seed the interrupted session row (checkpoint boundary 0, no events yet).
+    session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=session_id,
+        prompt="interrupted probe",
+        session_metadata=session_metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    # Legitimate pre-checkpoint events land at sequences 1 and 2.
+    session_store.append_session_events(
+        workspace=tmp_path,
+        session_id=session_id,
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "interrupted probe"}, None),
+            ("graph.loop_step", "graph", {"step": 1}, None),
+        ),
+    )
+    # Re-capture the checkpoint at the safe boundary (sequence 2).
+    session_store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=session_id,
+        prompt="interrupted probe",
+        session_metadata=session_metadata,
+        tool_results=(),
+        last_event_sequence=2,
+        create_if_missing=False,
+    )
+    # Orphaned events appended past the checkpoint boundary (sequences 3 and 4).
+    session_store.append_session_events(
+        workspace=tmp_path,
+        session_id=session_id,
+        events=(
+            ("graph.loop_step", "graph", {"step": "orphan"}, None),
+            ("runtime.tool_started", "tool", {"tool": "orphan_tool"}, None),
+        ),
+    )
+
+    resumed = runtime.resume(session_id)
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "interrupted probe"
+
+    stored = session_store.load_session(workspace=tmp_path, session_id=session_id)
+    event_types = [event.event_type for event in stored.events]
+    assert "runtime.tool_started" not in event_types
+    assert all(event.payload.get("step") != "orphan" for event in stored.events)
+    assert [event.sequence for event in stored.events] == [1, 2]
 
 
 def test_runtime_fallback_event_preserves_provider_error_details(tmp_path: Path) -> None:

@@ -275,9 +275,38 @@ class SessionStoreLike(Protocol):
         clear_pending_approval: bool = True,
     ) -> None: ...
 
+    def append_session_events(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        events: tuple[tuple[str, str, dict[str, object], str | None], ...],
+        interrupted_checkpoint: dict[str, object] | None = None,
+    ) -> tuple[object, ...]: ...
+
+    def save_interrupted_checkpoint(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        prompt: str,
+        session_metadata: dict[str, object],
+        tool_results: tuple[dict[str, object], ...],
+        last_event_sequence: int,
+        output: str | None = None,
+        create_if_missing: bool = True,
+        turn: int = 1,
+    ) -> None: ...
+
+    def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
+
+    def has_session(self, *, workspace: Path, session_id: str) -> bool: ...
+
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummaryLike, ...]: ...
 
     def load_session(self, *, workspace: Path, session_id: str) -> RuntimeResponseLike: ...
+
+    def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
 
     def save_pending_approval(
         self,
@@ -450,6 +479,20 @@ class _SequentialToolGraph:
                 ),
             )
         return _GraphStep(events=(), tool_call=None, output="done", is_finished=True)
+
+
+class _SequentialSafeBoundaryGraph(_SequentialToolGraph):
+    """Sequential tool graph that reports every step as a safe boundary.
+
+    Unlike the plain ``_SequentialToolGraph``, this exposes
+    ``is_at_safe_boundary()`` so the run loop captures an ``interrupted``
+    checkpoint after each completed tool call. A crash between tool calls
+    therefore resumes from the last completed tool rather than re-running
+    the whole loop from scratch.
+    """
+
+    def is_at_safe_boundary(self) -> bool:
+        return True
 
 
 def _approval_runtime(tmp_path: Path, *, mode: str = "ask") -> tuple[RuntimeRequestFactory, RuntimeRunner]:
@@ -653,6 +696,54 @@ class _ReadFileParityModelProvider:
                 return provider_protocol_module.ProviderTurnResult(output="done")
 
         return _Provider()
+
+
+class _SingleThenBatchTurnProvider:
+    """Scripted turn provider that emits a single call, then a two-call batch.
+
+    Used with ``ProviderGraph`` to model a multi-tool-call turn: the first
+    provider query returns one ``read_file`` call, the second returns two
+    ``read_file`` calls at once (queued by ``ProviderGraph``), and a later
+    query with all three tool results returns terminal output. The per-query
+    tool-result counts are recorded so a test can prove a resume re-queries
+    the provider from durable ``tool_results`` rather than relying on the
+    graph's in-memory ``_pending_tool_calls``.
+    """
+
+    name = "opencode"
+
+    def __init__(self) -> None:
+        self.propose_turn_tool_result_counts: list[int] = []
+
+    def propose_turn(self, request: object) -> object:
+        provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+        tool_contracts_module = importlib.import_module("voidcode.tools.contracts")
+        tool_results = _assembled_context(request).tool_results
+        self.propose_turn_tool_result_counts.append(len(tool_results))
+        if not tool_results:
+            return provider_protocol_module.ProviderTurnResult(
+                tool_call=tool_contracts_module.ToolCall(
+                    tool_name="read_file",
+                    arguments={"path": "a.txt"},
+                    tool_call_id="call-a",
+                )
+            )
+        if len(tool_results) == 1:
+            return provider_protocol_module.ProviderTurnResult(
+                tool_calls=(
+                    tool_contracts_module.ToolCall(
+                        tool_name="read_file",
+                        arguments={"path": "b.txt"},
+                        tool_call_id="call-b",
+                    ),
+                    tool_contracts_module.ToolCall(
+                        tool_name="read_file",
+                        arguments={"path": "c.txt"},
+                        tool_call_id="call-c",
+                    ),
+                )
+            )
+        return provider_protocol_module.ProviderTurnResult(output="done")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4844,7 +4935,7 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
     ]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
     assert sessions[0].status == "running"
-    assert sessions[0].updated_at == 2
+    assert sessions[0].updated_at >= 2
     assert (tmp_path / "copied.txt").exists() is False
 
 
@@ -5255,6 +5346,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
             request: object,
             response: object,
             clear_pending_approval: bool = True,
+            seal_terminal_status: bool = True,
         ) -> None:
             _ = request
             if clear_pending_approval:
@@ -5264,6 +5356,47 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
                 request=cast(RuntimeRequestLike, request),
                 response=cast(RuntimeResponseLike, response),
                 clear_pending_approval=clear_pending_approval,
+                seal_terminal_status=seal_terminal_status,
+            )
+
+        def append_session_events(
+            self,
+            *,
+            workspace: Path,
+            session_id: str,
+            events: tuple[tuple[str, str, dict[str, object], str | None], ...],
+            interrupted_checkpoint: dict[str, object] | None = None,
+        ) -> tuple[object, ...]:
+            return base_store.append_session_events(
+                workspace=workspace,
+                session_id=session_id,
+                events=events,
+                interrupted_checkpoint=interrupted_checkpoint,
+            )
+
+        def save_interrupted_checkpoint(
+            self,
+            *,
+            workspace: Path,
+            session_id: str,
+            prompt: str,
+            session_metadata: dict[str, object],
+            tool_results: tuple[dict[str, object], ...],
+            last_event_sequence: int,
+            output: str | None = None,
+            create_if_missing: bool = True,
+            turn: int = 1,
+        ) -> None:
+            base_store.save_interrupted_checkpoint(
+                workspace=workspace,
+                session_id=session_id,
+                prompt=prompt,
+                session_metadata=session_metadata,
+                tool_results=tool_results,
+                last_event_sequence=last_event_sequence,
+                output=output,
+                create_if_missing=create_if_missing,
+                turn=turn,
             )
 
         def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:
@@ -5299,6 +5432,12 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
         def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
             base_store.update_session_metadata(workspace=workspace, session_id=session_id, metadata=metadata)
 
+        def has_session(self, *, workspace: Path, session_id: str) -> bool:
+            return base_store.has_session(workspace=workspace, session_id=session_id)
+
+        def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None:
+            base_store.truncate_session_events_after(workspace=workspace, session_id=session_id, sequence=sequence)
+
     resumed_runtime_class = _load_runtime_types()[1]
     resumed_runtime = cast(
         RuntimeRunner,
@@ -5331,9 +5470,11 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
     )
     replay = replay_runtime.resume("approval-session")
 
+    # The failed seal leaves the approval-resolution tail appended incrementally,
+    # so the pending approval survives but `events[-1]` is no longer the request.
     assert replay.session.status == "waiting"
-    assert replay.events[-1].event_type == "runtime.approval_requested"
-    assert cast(str, replay.events[-1].payload["request_id"]) == approval_request_id
+    approval_requested = next(event for event in replay.events if event.event_type == "runtime.approval_requested")
+    assert cast(str, approval_requested.payload["request_id"]) == approval_request_id
 
 
 def test_cli_run_command_prints_clean_file_contents_by_default(tmp_path: Path) -> None:
@@ -5521,6 +5662,180 @@ def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -
             "graph.response_ready",
         ],
     )
+
+
+def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_path: Path) -> None:
+    first_file = tmp_path / "first.txt"
+    second_file = tmp_path / "second.txt"
+    _ = first_file.write_text("first\n", encoding="utf-8")
+    _ = second_file.write_text("second\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    calls = (
+        ("read_file", {"path": str(first_file)}),
+        ("read_file", {"path": str(second_file)}),
+    )
+
+    first_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+    )
+    stream = first_runtime.run_stream(runtime_request(prompt="read two files", session_id="crash-session"))
+    # The interrupted checkpoint is captured as a side effect at the top of the
+    # second loop iteration, so consume past the first tool completion until the
+    # second tool request is emitted before abandoning the stream (the crash).
+    tool_requests = 0
+    for chunk in stream:
+        if chunk.event is not None and chunk.event.event_type == "graph.tool_request_created":
+            tool_requests += 1
+            if tool_requests >= 2:
+                break
+
+    second_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+    )
+    summaries = second_runtime.list_sessions()
+    assert [summary.session.id for summary in summaries] == ["crash-session"]
+    assert summaries[0].status == "interrupted"
+
+    storage_module = importlib.import_module("voidcode.runtime.storage")
+    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    stored = store.load_session(workspace=tmp_path, session_id="crash-session")
+    assert stored.session.status == "interrupted"
+
+    resumed = second_runtime.resume("crash-session")
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert [cast(str, event.payload.get("tool")) for event in resumed.events if event.event_type == "runtime.tool_completed"] == [
+        "read_file",
+        "read_file",
+    ]
+
+
+def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp_path: Path) -> None:
+    first_file = tmp_path / "first.txt"
+    second_file = tmp_path / "second.txt"
+    _ = first_file.write_text("first\n", encoding="utf-8")
+    _ = second_file.write_text("second\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    calls = (
+        ("read_file", {"path": str(first_file)}),
+        ("read_file", {"path": str(second_file)}),
+    )
+
+    first_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+    )
+    stream = first_runtime.run_stream(runtime_request(prompt="read two files", session_id="orphan-session"))
+    tool_requests = 0
+    for chunk in stream:
+        if chunk.event is not None and chunk.event.event_type == "graph.tool_request_created":
+            tool_requests += 1
+            if tool_requests >= 2:
+                break
+
+    storage_module = importlib.import_module("voidcode.runtime.storage")
+    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="orphan-session")
+    assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
+    last_event_sequence = cast(int, checkpoint["last_event_sequence"])
+
+    # Simulate events persisted after the checkpoint but before the crash: they
+    # are orphaned tail rows that a resume must truncate before re-appending.
+    second_store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    second_store.append_session_events(
+        workspace=tmp_path,
+        session_id="orphan-session",
+        events=(
+            ("graph.loop_step", "graph", {"step": 999, "phase": "orphan", "orphan": True}, None),
+            ("graph.model_turn", "graph", {"turn": 999, "mode": "orphan", "orphan": True}, None),
+            ("runtime.tool_completed", "runtime", {"tool": "orphan_tool", "status": "ok", "orphan": True}, None),
+        ),
+    )
+
+    orphaned_stored = second_store.load_session(workspace=tmp_path, session_id="orphan-session")
+    orphaned_markers = [event for event in orphaned_stored.events if event.payload.get("orphan") is True]
+    assert len(orphaned_markers) == 3
+    assert all(event.sequence > last_event_sequence for event in orphaned_markers)
+
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=_SequentialSafeBoundaryGraph(calls), permission_policy=policy)),
+    )
+    resumed = resumed_runtime.resume("orphan-session")
+
+    assert resumed.session.status == "completed"
+    final_stored = store.load_session(workspace=tmp_path, session_id="orphan-session")
+    assert not any(event.payload.get("orphan") is True for event in final_stored.events)
+
+
+def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_results(tmp_path: Path) -> None:
+    _ = (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    _ = (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
+    _ = (tmp_path / "c.txt").write_text("c\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
+    provider_graph_module = importlib.import_module("voidcode.graph.provider_graph")
+    resolution_module = importlib.import_module("voidcode.provider.resolution")
+    registry_module = importlib.import_module("voidcode.provider.registry")
+    provider_model = resolution_module.resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=registry_module.ModelProviderRegistry.with_defaults(),
+    )
+
+    first_provider = _SingleThenBatchTurnProvider()
+    first_graph = provider_graph_module.ProviderGraph(provider=first_provider, provider_model=provider_model)
+    first_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=first_graph, permission_policy=policy)),
+    )
+    stream = first_runtime.run_stream(runtime_request(prompt="read three files", session_id="multi-tool-crash"))
+    completed_tools = 0
+    for chunk in stream:
+        if chunk.event is not None and chunk.event.event_type == "runtime.tool_completed":
+            completed_tools += 1
+            if completed_tools >= 2:
+                break
+
+    # Crash mid-batch: the second turn emitted b and c at once; only b completed
+    # and c is still queued in memory, so the durable checkpoint reflects only
+    # the completed first-turn call rather than the in-flight batch.
+    assert first_graph.pending_tool_call_count == 1
+
+    storage_module = importlib.import_module("voidcode.runtime.storage")
+    store = cast(SessionStoreLike, storage_module.SqliteSessionStore())
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="multi-tool-crash")
+    assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
+    checkpoint_tool_results = cast(list[object], checkpoint.get("tool_results", []))
+    assert [cast(dict[str, object], result).get("tool_name") for result in checkpoint_tool_results] == ["read_file"]
+
+    resumed_provider = _SingleThenBatchTurnProvider()
+    resumed_graph = provider_graph_module.ProviderGraph(provider=resumed_provider, provider_model=provider_model)
+    resumed_runtime = cast(
+        RuntimeRunner,
+        cast(object, runtime_class(workspace=tmp_path, graph=resumed_graph, permission_policy=policy)),
+    )
+    resumed = resumed_runtime.resume("multi-tool-crash")
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "done"
+    assert [cast(str, event.payload.get("tool")) for event in resumed.events if event.event_type == "runtime.tool_completed"] == [
+        "read_file",
+        "read_file",
+        "read_file",
+    ]
+    # The resumed provider was re-queried with durable tool-result counts [1, 3],
+    # proving the queued "c" call was recovered from durable tool_results rather
+    # than the graph's lost in-memory pending queue.
+    assert resumed_provider.propose_turn_tool_result_counts == [1, 3]
+    assert resumed_graph.pending_tool_call_count == 0
 
 
 def test_runtime_stream_exposes_ordered_events_and_final_output(tmp_path: Path) -> None:

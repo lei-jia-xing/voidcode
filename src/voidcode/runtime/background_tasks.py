@@ -880,6 +880,11 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 cancelled_metadata = dict(child_response.session.metadata)
                 cancelled_metadata["abort_requested"] = True
+                cancelled_failure_payload: dict[str, object] = {
+                    "error": "cancelled by parent while child session was waiting",
+                    "cancelled": True,
+                    "delegated_task_id": task.task.id,
+                }
                 cancelled_response = RuntimeResponse(
                     session=SessionState(
                         session=child_response.session.session,
@@ -894,14 +899,18 @@ class RuntimeBackgroundTaskSupervisor:
                             sequence=(child_response.events[-1].sequence if child_response.events else 0) + 1,
                             event_type=RUNTIME_FAILED,
                             source="runtime",
-                            payload={
-                                "error": "cancelled by parent while child session was waiting",
-                                "cancelled": True,
-                                "delegated_task_id": task.task.id,
-                            },
+                            payload=cancelled_failure_payload,
                         ),
                     ),
                     output=child_response.output,
+                )
+                # ``save_run`` is a terminal seal-writer and does not write
+                # events; persist the synthetic cancellation failure so a later
+                # replay sees it before sealing the failed row.
+                runtime._session_store.append_session_events(
+                    workspace=runtime._workspace,
+                    session_id=task.session_id,
+                    events=((RUNTIME_FAILED, "runtime", cancelled_failure_payload, None),),
                 )
                 runtime._session_store.save_run(
                     workspace=runtime._workspace,
@@ -1807,6 +1816,11 @@ class RuntimeBackgroundTaskSupervisor:
                     if current_task_state.cancel_requested_at is not None:
                         cancel_metadata = dict(final_session.metadata)
                         cancel_metadata["abort_requested"] = True
+                        cancel_failure_payload: dict[str, object] = {
+                            "error": "cancelled by parent during delegated execution",
+                            "cancelled": True,
+                            "delegated_task_id": task_id,
+                        }
                         cancelled_response = RuntimeResponse(
                             session=SessionState(
                                 session=final_session.session,
@@ -1821,14 +1835,15 @@ class RuntimeBackgroundTaskSupervisor:
                                     sequence=(events[-1].sequence if events else 0) + 1,
                                     event_type=RUNTIME_FAILED,
                                     source="runtime",
-                                    payload={
-                                        "error": "cancelled by parent during delegated execution",
-                                        "cancelled": True,
-                                        "delegated_task_id": task_id,
-                                    },
+                                    payload=cancel_failure_payload,
                                 ),
                             ),
                             output=output,
+                        )
+                        runtime._session_store.append_session_events(
+                            workspace=runtime._workspace,
+                            session_id=session_id,
+                            events=((RUNTIME_FAILED, "runtime", cancel_failure_payload, None),),
                         )
                         runtime._session_store.save_run(
                             workspace=runtime._workspace,

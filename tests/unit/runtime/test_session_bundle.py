@@ -31,6 +31,31 @@ from voidcode.runtime.workflow_snapshot import workflow_snapshot_from_metadata
 from voidcode.tools import ToolResult, cap_tool_result_output
 
 
+def _seed_session(
+    store: SqliteSessionStore,
+    workspace: Path,
+    request: RuntimeRequest,
+    response: RuntimeResponse,
+) -> None:
+    """Seed a session the way the run loop does: row, events, terminal seal."""
+    store.save_interrupted_checkpoint(
+        workspace=workspace,
+        session_id=response.session.session.id,
+        prompt=request.prompt,
+        session_metadata=response.session.metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+        turn=response.session.turn,
+    )
+    store.append_session_events(
+        workspace=workspace,
+        session_id=response.session.session.id,
+        events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
+    )
+    store.save_run(workspace=workspace, request=request, response=response)
+
+
 def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") -> None:
     store = SqliteSessionStore()
     request = RuntimeRequest(
@@ -92,7 +117,7 @@ def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") 
         ),
         output="done with sk-output-secret",
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    _seed_session(store, tmp_path, request, response)
 
 
 def _save_background_task_with_secrets(tmp_path: Path) -> None:
@@ -165,10 +190,11 @@ def _save_session_with_tool_artifact(tmp_path: Path) -> dict[str, object]:
         ),
         output="done",
     )
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(prompt="artifact", session_id="artifact-session"),
-        response=response,
+    _seed_session(
+        store,
+        tmp_path,
+        RuntimeRequest(prompt="artifact", session_id="artifact-session"),
+        response,
     )
     return payload
 
@@ -408,27 +434,25 @@ def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Pa
             "source": "workflow_mode",
         },
     }
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(prompt="bundle workflow", session_id="workflow-bundle-session"),
-        response=RuntimeResponse(
-            session=SessionState(
-                session=SessionRef(id="workflow-bundle-session"),
-                status="completed",
-                turn=1,
-                metadata=metadata,
-            ),
-            events=(
-                EventEnvelope(
-                    session_id="workflow-bundle-session",
-                    sequence=1,
-                    event_type="graph.response_ready",
-                    source="graph",
-                ),
-            ),
-            output="done",
+    request = RuntimeRequest(prompt="bundle workflow", session_id="workflow-bundle-session")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="workflow-bundle-session"),
+            status="completed",
+            turn=1,
+            metadata=metadata,
         ),
+        events=(
+            EventEnvelope(
+                session_id="workflow-bundle-session",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+            ),
+        ),
+        output="done",
     )
+    _seed_session(store, tmp_path, request, response)
 
     bundle = build_session_bundle(
         session_store=store,
@@ -507,39 +531,37 @@ def test_session_bundle_export_import_preserves_redacted_policy_observations(
         },
         "runtime_state": {"injected_env": {"NPM_CONFIG_YES": "true"}},
     }
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(
-            prompt="bundle policy token=promptsecret",
-            session_id="policy-bundle",
+    request = RuntimeRequest(
+        prompt="bundle policy token=promptsecret",
+        session_id="policy-bundle",
+    )
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="policy-bundle"),
+            status="failed",
+            turn=1,
+            metadata=metadata,
         ),
-        response=RuntimeResponse(
-            session=SessionState(
-                session=SessionRef(id="policy-bundle"),
-                status="failed",
-                turn=1,
-                metadata=metadata,
-            ),
-            events=(
-                EventEnvelope(
-                    session_id="policy-bundle",
-                    sequence=1,
-                    event_type="runtime.failed",
-                    source="runtime",
-                    payload={
-                        "kind": "runtime_tool_policy_denied",
+        events=(
+            EventEnvelope(
+                session_id="policy-bundle",
+                sequence=1,
+                event_type="runtime.failed",
+                source="runtime",
+                payload={
+                    "kind": "runtime_tool_policy_denied",
+                    "tool": "write_file",
+                    "tool_policy": {
                         "tool": "write_file",
-                        "tool_policy": {
-                            "tool": "write_file",
-                            "mode": "plan",
-                            "read_only": True,
-                            "decision": "deny",
-                        },
+                        "mode": "plan",
+                        "read_only": True,
+                        "decision": "deny",
                     },
-                ),
+                },
             ),
         ),
     )
+    _seed_session(store, tmp_path, request, response)
 
     built = build_session_bundle(
         session_store=store,
@@ -606,27 +628,25 @@ def test_session_bundle_preserves_prompt_activation_records_without_raw_guidance
             "read_only": True,
         },
     }
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(prompt="activation bundle", session_id="activation-bundle"),
-        response=RuntimeResponse(
-            session=SessionState(
-                session=SessionRef(id="activation-bundle"),
-                status="completed",
-                turn=1,
-                metadata=metadata,
-            ),
-            events=(
-                EventEnvelope(
-                    session_id="activation-bundle",
-                    sequence=1,
-                    event_type="graph.response_ready",
-                    source="graph",
-                    payload={"summary": "done"},
-                ),
+    request = RuntimeRequest(prompt="activation bundle", session_id="activation-bundle")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="activation-bundle"),
+            status="completed",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id="activation-bundle",
+                sequence=1,
+                event_type="graph.response_ready",
+                source="graph",
+                payload={"summary": "done"},
             ),
         ),
     )
+    _seed_session(store, tmp_path, request, response)
 
     built = build_session_bundle(
         session_store=store,
@@ -779,10 +799,11 @@ def test_session_bundle_skips_forged_artifact_paths(tmp_path: Path) -> None:
         output="done",
     )
     store = SqliteSessionStore()
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(prompt="forged", session_id="forged-artifact-session"),
-        response=response,
+    _seed_session(
+        store,
+        tmp_path,
+        RuntimeRequest(prompt="forged", session_id="forged-artifact-session"),
+        response,
     )
 
     bundle = build_session_bundle(
@@ -832,10 +853,11 @@ def test_session_bundle_skips_short_id_forged_temp_artifact_path(tmp_path: Path)
         output="done",
     )
     store = SqliteSessionStore()
-    store.save_run(
-        workspace=tmp_path,
-        request=RuntimeRequest(prompt="forged", session_id="forged-temp-artifact-session"),
-        response=response,
+    _seed_session(
+        store,
+        tmp_path,
+        RuntimeRequest(prompt="forged", session_id="forged-temp-artifact-session"),
+        response,
     )
 
     bundle = build_session_bundle(
@@ -884,7 +906,7 @@ def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
         "original_session_id": "bundle-session",
         "imported_at_session_id": "bundle-session-imported",
     }
-    assert loaded.events[-1].sequence == 3
+    assert loaded.events[-1].sequence == 2
 
 
 def test_session_bundle_import_rejects_unsupported_runtime_policy_snapshot_version(

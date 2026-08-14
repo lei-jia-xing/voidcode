@@ -12,7 +12,7 @@ from voidcode.runtime.contracts import (
     RuntimeRequest,
     RuntimeResponse,
 )
-from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS, EventEnvelope
+from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
@@ -553,6 +553,39 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
         config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False), execution_engine="deterministic"),
         session_store=store,
     )
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=session_id,
+        prompt="go",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id=session_id,
+        events=(
+            (
+                "runtime.tool_completed",
+                "tool",
+                {
+                    "tool": "large_output_tool",
+                    "tool_call_id": tool_call_id,
+                    "status": "ok",
+                    "content": "forged",
+                    "artifact": forged_artifact,
+                },
+                None,
+            ),
+            (
+                "runtime.tool_completed",
+                "tool",
+                {**completed_event.payload, "tool_call_id": tool_call_id},
+                None,
+            ),
+        ),
+    )
     store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(prompt="go", session_id=session_id),
@@ -563,35 +596,10 @@ def test_runtime_artifact_resolver_skips_invalid_candidate_for_same_tool_call(
                 turn=1,
                 metadata={},
             ),
-            events=(
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=1,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        "tool": "large_output_tool",
-                        "tool_call_id": tool_call_id,
-                        "status": "ok",
-                        "content": "forged",
-                        "artifact": forged_artifact,
-                    },
-                ),
-                EventEnvelope(
-                    session_id=session_id,
-                    sequence=2,
-                    event_type="runtime.tool_completed",
-                    source="tool",
-                    payload={
-                        **completed_event.payload,
-                        "tool_call_id": tool_call_id,
-                    },
-                ),
-            ),
+            events=(),
             output="done",
         ),
     )
-
     metadata = runtime.resolve_tool_output_artifact(
         session_id=session_id,
         tool_call_id=tool_call_id,

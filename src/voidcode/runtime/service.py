@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import subprocess
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
@@ -240,6 +240,7 @@ from .events import (
     RUNTIME_SKILLS_APPLIED,
     RUNTIME_SKILLS_LOADED,
     EventEnvelope,
+    EventSource,
     runtime_policy_observability_payload,
 )
 from .execution_seams import (
@@ -1954,6 +1955,67 @@ class VoidCodeRuntime:
             },
         )
 
+    def _persist_emitted_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        source: EventSource,
+        payload: dict[str, object],
+        dedupe_key: str | None = None,
+    ) -> EventEnvelope:
+        """Persist one service-emitted event; return its DB-assigned envelope.
+
+        Startup/tail events that service.py emits outside the graph loop are no
+        longer bulk-written by ``save_run`` (now a terminal seal-writer), so each
+        is appended incrementally here. The store assigns the authoritative
+        sequence, which the caller adopts for downstream ACP/hook/MCP arithmetic.
+        """
+        return self._session_store.append_session_events(
+            workspace=self._workspace,
+            session_id=session_id,
+            events=((event_type, source, payload, dedupe_key),),
+        )[0]
+
+    def _persist_emitted_chunk(self, chunk: RuntimeStreamChunk) -> RuntimeStreamChunk:
+        event = chunk.event
+        if event is None:
+            return chunk
+        envelope = self._persist_emitted_event(
+            session_id=event.session_id,
+            event_type=event.event_type,
+            source=event.source,
+            payload=event.payload,
+        )
+        return RuntimeStreamChunk(kind="event", session=chunk.session, event=envelope)
+
+    def _persist_emitted_chunks(
+        self,
+        chunks: Iterable[RuntimeStreamChunk],
+        *,
+        fallback_sequence: int,
+    ) -> Generator[RuntimeStreamChunk, None, int]:
+        """Persist a batch of service-emitted chunks, yielding DB-sequenced copies.
+
+        The final DB-assigned sequence is returned via ``yield from`` so callers
+        can keep their local ``sequence`` bookkeeping aligned with the store.
+        """
+        sequence = fallback_sequence
+        for chunk in chunks:
+            event = chunk.event
+            if event is None:
+                yield chunk
+                continue
+            envelope = self._persist_emitted_event(
+                session_id=event.session_id,
+                event_type=event.event_type,
+                source=event.source,
+                payload=event.payload,
+            )
+            sequence = envelope.sequence
+            yield RuntimeStreamChunk(kind="event", session=chunk.session, event=envelope)
+        return sequence
+
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         if "provider_stream" in request.metadata:
             return self._run_with_persistence(request)
@@ -2106,9 +2168,26 @@ class VoidCodeRuntime:
                 "runtime_state": self._runtime_state_metadata(run_id=run_id),
             },
         )
-        sequence = self._next_sequence_for_existing_session(
-            stored=existing_session,
-            parent_session_id=request.parent_session_id,
+        # Every fresh run must start from a writable row, ALWAYS. ``status`` in
+        # {completed, failed} is per-TURN, not per-session: follow-up messages
+        # re-enter the same session_id, so a previously sealed row would reject
+        # this turn's first ``append_session_events`` with ``SessionSealedError``.
+        # ``save_interrupted_checkpoint`` INSERTs a new row (first run) or
+        # UPDATEs an existing one to ``status='interrupted'`` (un-sealing
+        # completed/failed), and ``create_if_missing=True`` guarantees the row
+        # exists before the first append. Resume / approval / question paths
+        # enter through ``_resume_coordinator``, not this method, so their
+        # checkpoints are untouched.
+        self._session_store.save_interrupted_checkpoint(
+            workspace=self._workspace,
+            session_id=resolved_session_id,
+            prompt=request.prompt,
+            session_metadata=session.metadata,
+            tool_results=(),
+            last_event_sequence=0,
+            output=None,
+            create_if_missing=True,
+            turn=session.turn,
         )
 
         runtime_policy_snapshot = session.metadata.get("runtime_policy")
@@ -2118,66 +2197,67 @@ class VoidCodeRuntime:
         }
         if isinstance(runtime_policy_snapshot, dict):
             request_received_payload["runtime_policy"] = runtime_policy_observability_payload(cast(dict[str, object], runtime_policy_snapshot))
+        request_received_envelope = self._persist_emitted_event(
+            session_id=session.session.id,
+            event_type="runtime.request_received",
+            source="runtime",
+            payload=request_received_payload,
+        )
+        sequence = request_received_envelope.sequence
         yield RuntimeStreamChunk(
             kind="event",
             session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type="runtime.request_received",
-                source="runtime",
-                payload=request_received_payload,
-            ),
+            event=request_received_envelope,
         )
 
         for diagnostic in self._category_model_diagnostics(
             request_metadata=request_metadata,
             effective_config=effective_config,
         ):
-            sequence += 1
+            envelope = self._persist_emitted_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
+                source="runtime",
+                payload=diagnostic,
+            )
+            sequence = envelope.sequence
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
-                    source="runtime",
-                    payload=diagnostic,
-                ),
+                event=envelope,
             )
 
         reasoning_diagnostic = self._reasoning_controls_diagnostic_for_config(effective_config)
         if reasoning_diagnostic is not None:
-            sequence += 1
+            envelope = self._persist_emitted_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_REASONING_DIAGNOSTIC,
+                source="runtime",
+                payload=reasoning_diagnostic,
+            )
+            sequence = envelope.sequence
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=RUNTIME_REASONING_DIAGNOSTIC,
-                    source="runtime",
-                    payload=reasoning_diagnostic,
-                ),
+                event=envelope,
             )
 
         command_metadata = request_metadata.get("command")
         if isinstance(command_metadata, dict):
-            sequence += 1
+            envelope = self._persist_emitted_event(
+                session_id=session.session.id,
+                event_type=COMMAND_RESOLVED,
+                source="runtime",
+                payload={
+                    **cast(dict[str, object], command_metadata),
+                    "rendered_prompt": request.prompt,
+                },
+            )
+            sequence = envelope.sequence
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=COMMAND_RESOLVED,
-                    source="runtime",
-                    payload={
-                        **cast(dict[str, object], command_metadata),
-                        "rendered_prompt": request.prompt,
-                    },
-                ),
+                event=envelope,
             )
 
         if self._should_skip_mcp_startup_for_request(
@@ -2202,10 +2282,11 @@ class VoidCodeRuntime:
                 failure_kind="mcp_startup_failed",
             )
             for chunk in mcp_startup_chunks:
-                sequence = cast(EventEnvelope, chunk.event).sequence
-                yield chunk
+                persisted_chunk = self._persist_emitted_chunk(chunk)
+                sequence = cast(EventEnvelope, persisted_chunk.event).sequence
+                yield persisted_chunk
             if mcp_failed_chunk is not None:
-                yield mcp_failed_chunk
+                yield self._persist_emitted_chunk(mcp_failed_chunk)
                 return
 
         tool_materialization = self._tool_materialization_for_effective_config(
@@ -2229,8 +2310,10 @@ class VoidCodeRuntime:
             surface="session_start",
             payload={"prompt": request.prompt},
         )
-        yield from start_hook_outcome.chunks
-        sequence = start_hook_outcome.last_sequence
+        sequence = yield from self._persist_emitted_chunks(
+            start_hook_outcome.chunks,
+            fallback_sequence=start_hook_outcome.last_sequence,
+        )
         if start_hook_outcome.failed_error is not None:
             failed_chunk = self._lifecycle_hook_failure_chunk(
                 session=session,
@@ -2239,7 +2322,7 @@ class VoidCodeRuntime:
                 error=start_hook_outcome.failed_error,
             )
             if failed_chunk is not None:
-                yield failed_chunk
+                yield self._persist_emitted_chunk(failed_chunk)
                 return
 
         loaded_skill_names = self._loaded_skill_names(skill_registry)
@@ -2248,10 +2331,12 @@ class VoidCodeRuntime:
             session=session,
             sequence=sequence,
         )
-        for chunk in startup_chunks:
-            yield chunk
+        sequence = yield from self._persist_emitted_chunks(
+            startup_chunks,
+            fallback_sequence=sequence,
+        )
         if startup_failed_chunk is not None:
-            yield startup_failed_chunk
+            yield self._persist_emitted_chunk(startup_failed_chunk)
             return
 
         skill_snapshot = self._build_skill_snapshot(
@@ -2278,55 +2363,55 @@ class VoidCodeRuntime:
                 **self._snapshot_to_session_metadata(skill_snapshot),
             },
         )
-        sequence += 1
+        skills_loaded_envelope = self._persist_emitted_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_SKILLS_LOADED,
+            source="runtime",
+            payload={
+                "skills": loaded_skill_names,
+                "selected_skills": list(skill_snapshot.selected_skill_names),
+                "catalog_context_length": len(catalog_skill_context),
+            },
+        )
+        sequence = skills_loaded_envelope.sequence
         yield RuntimeStreamChunk(
             kind="event",
             session=session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type=RUNTIME_SKILLS_LOADED,
-                source="runtime",
-                payload={
-                    "skills": loaded_skill_names,
-                    "selected_skills": list(skill_snapshot.selected_skill_names),
-                    "catalog_context_length": len(catalog_skill_context),
-                },
-            ),
+            event=skills_loaded_envelope,
         )
 
         if skill_snapshot.applied_skill_payloads:
-            sequence += 1
+            skills_applied_envelope = self._persist_emitted_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_SKILLS_APPLIED,
+                source="runtime",
+                payload={
+                    "skills": list(skill_snapshot.selected_skill_names),
+                    "count": len(skill_snapshot.applied_skill_payloads),
+                    "prompt_context_built": bool(skill_prompt_context),
+                    "prompt_context_length": len(skill_prompt_context),
+                },
+            )
+            sequence = skills_applied_envelope.sequence
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=RUNTIME_SKILLS_APPLIED,
-                    source="runtime",
-                    payload={
-                        "skills": list(skill_snapshot.selected_skill_names),
-                        "count": len(skill_snapshot.applied_skill_payloads),
-                        "prompt_context_built": bool(skill_prompt_context),
-                        "prompt_context_length": len(skill_prompt_context),
-                    },
-                ),
+                event=skills_applied_envelope,
             )
 
         hook_preset_snapshot = self._hook_preset_event_payload_from_session_metadata(session.metadata)
         if hook_preset_snapshot is not None:
-            sequence += 1
+            hook_presets_envelope = self._persist_emitted_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_HOOK_PRESETS_LOADED,
+                source="runtime",
+                payload=hook_preset_snapshot,
+            )
+            sequence = hook_presets_envelope.sequence
             yield RuntimeStreamChunk(
                 kind="event",
                 session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=sequence,
-                    event_type=RUNTIME_HOOK_PRESETS_LOADED,
-                    source="runtime",
-                    payload=hook_preset_snapshot,
-                ),
+                event=hook_presets_envelope,
             )
 
         assembled_context = self._assemble_provider_context(
@@ -2407,16 +2492,20 @@ class VoidCodeRuntime:
                 session=deferred_failed_chunk.session,
                 sequence=cleanup_sequence,
             )
-            for chunk in final_chunks:
-                yield chunk
+            final_sequence = yield from self._persist_emitted_chunks(
+                final_chunks,
+                fallback_sequence=final_sequence,
+            )
             end_hook_outcome = self._run_lifecycle_hooks(
                 session=finalized_session,
                 sequence=final_sequence,
                 surface="session_end",
                 payload={"session_status": finalized_session.status},
             )
-            yield from end_hook_outcome.chunks
-            release_sequence = end_hook_outcome.last_sequence
+            release_sequence = yield from self._persist_emitted_chunks(
+                end_hook_outcome.chunks,
+                fallback_sequence=end_hook_outcome.last_sequence,
+            )
             if end_hook_outcome.failed_error is not None:
                 hook_failed_chunk = self._lifecycle_hook_failure_chunk(
                     session=finalized_session,
@@ -2425,17 +2514,24 @@ class VoidCodeRuntime:
                     error=end_hook_outcome.failed_error,
                 )
                 if hook_failed_chunk is not None:
-                    yield hook_failed_chunk
-                    release_sequence = hook_failed_chunk.event.sequence if hook_failed_chunk.event is not None else release_sequence
+                    persisted_hook_failed = self._persist_emitted_chunk(hook_failed_chunk)
+                    yield persisted_hook_failed
+                    release_sequence = persisted_hook_failed.event.sequence if persisted_hook_failed.event is not None else release_sequence
             for release_event in self._release_mcp_session_events(
                 session_id=finalized_session.session.id,
                 start_sequence=release_sequence + 1,
             ):
-                release_sequence = release_event.sequence
+                envelope = self._persist_emitted_event(
+                    session_id=release_event.session_id,
+                    event_type=release_event.event_type,
+                    source=release_event.source,
+                    payload=release_event.payload,
+                )
+                release_sequence = envelope.sequence
                 yield RuntimeStreamChunk(
                     kind="event",
                     session=finalized_session,
-                    event=release_event,
+                    event=envelope,
                 )
             yield RuntimeStreamChunk(
                 kind="event",
@@ -2463,7 +2559,10 @@ class VoidCodeRuntime:
                 surface="session_idle",
                 payload={"reason": self._waiting_reason_from_session(last_chunk.session)},
             )
-            yield from idle_hook_outcome.chunks
+            yield from self._persist_emitted_chunks(
+                idle_hook_outcome.chunks,
+                fallback_sequence=idle_hook_outcome.last_sequence,
+            )
             if idle_hook_outcome.failed_error is not None:
                 failed_chunk = self._lifecycle_hook_failure_chunk(
                     session=self._disconnect_acp_for_session_state(last_chunk.session),
@@ -2472,23 +2571,27 @@ class VoidCodeRuntime:
                     error=idle_hook_outcome.failed_error,
                 )
                 if failed_chunk is not None:
-                    yield failed_chunk
+                    yield self._persist_emitted_chunk(failed_chunk)
             return
 
         final_chunks, finalized_session, final_sequence = self._finalize_run_acp(
             session=last_chunk.session,
             sequence=last_sequence,
         )
-        for chunk in final_chunks:
-            yield chunk
+        final_sequence = yield from self._persist_emitted_chunks(
+            final_chunks,
+            fallback_sequence=final_sequence,
+        )
         end_hook_outcome = self._run_lifecycle_hooks(
             session=finalized_session,
             sequence=final_sequence,
             surface="session_end",
             payload={"session_status": finalized_session.status},
         )
-        yield from end_hook_outcome.chunks
-        release_sequence = end_hook_outcome.last_sequence
+        release_sequence = yield from self._persist_emitted_chunks(
+            end_hook_outcome.chunks,
+            fallback_sequence=end_hook_outcome.last_sequence,
+        )
         if end_hook_outcome.failed_error is not None:
             failed_chunk = self._lifecycle_hook_failure_chunk(
                 session=finalized_session,
@@ -2497,13 +2600,20 @@ class VoidCodeRuntime:
                 error=end_hook_outcome.failed_error,
             )
             if failed_chunk is not None:
-                yield failed_chunk
-                release_sequence = failed_chunk.event.sequence if failed_chunk.event is not None else release_sequence
+                persisted_failed_chunk = self._persist_emitted_chunk(failed_chunk)
+                yield persisted_failed_chunk
+                release_sequence = persisted_failed_chunk.event.sequence if persisted_failed_chunk.event is not None else release_sequence
         for event in self._release_mcp_session_events(
             session_id=finalized_session.session.id,
             start_sequence=release_sequence + 1,
         ):
-            yield RuntimeStreamChunk(kind="event", session=finalized_session, event=event)
+            envelope = self._persist_emitted_event(
+                session_id=event.session_id,
+                event_type=event.event_type,
+                source=event.source,
+                payload=event.payload,
+            )
+            yield RuntimeStreamChunk(kind="event", session=finalized_session, event=envelope)
 
     def _execute_graph_loop(
         self,
@@ -2753,7 +2863,24 @@ class VoidCodeRuntime:
                 pending_approval=pending_approval,
             )
             return
-        self._session_store.save_run(workspace=self._workspace, request=request, response=response)
+        # ``completed``/``failed`` is per-TURN, not per-session: overlapping
+        # runs can share a session_id (follow-ups, background tasks reusing the
+        # default session, explicit same-session streams). Only the last active
+        # run may seal the terminal status; an older-finishing run must leave
+        # the row ``interrupted`` so the still-active newer run keeps appending.
+        seal_terminal_status = (
+            ACTIVE_SESSION_REGISTRY.active_run_count(
+                workspace=self._workspace,
+                session_id=response.session.session.id,
+            )
+            <= 1
+        )
+        self._session_store.save_run(
+            workspace=self._workspace,
+            request=request,
+            response=response,
+            seal_terminal_status=seal_terminal_status,
+        )
 
     def _resolve_permission(
         self,
@@ -3433,7 +3560,7 @@ class VoidCodeRuntime:
         active_metadata = self._active_session_metadata(session_id) if active else None
         try:
             result = self._load_session_result(session_id=session_id)
-        except (AttributeError, UnknownSessionError):
+        except (AttributeError, UnknownSessionError, ValueError):
             if not active:
                 raise
             return self._active_only_session_debug_snapshot(session_id=session_id)
@@ -3473,7 +3600,11 @@ class VoidCodeRuntime:
             else None
         )
         terminal = result.session.status in {"completed", "failed"}
-        resumable = result.session.status == "waiting" or (result.session.status == "failed" and checkpoint_kind == "provider_failure_retryable")
+        resumable = (
+            result.session.status == "waiting"
+            or result.session.status == "interrupted"
+            or (result.session.status == "failed" and checkpoint_kind == "provider_failure_retryable")
+        )
         replayable = bool(result.transcript) or result.output is not None or terminal
         last_relevant_event = self._debug_event(
             next(
@@ -4900,6 +5031,13 @@ class VoidCodeRuntime:
                     checkpoint=checkpoint,
                     finalize_background_task=True,
                 )
+            if checkpoint is not None and checkpoint.get("kind") == "interrupted":
+                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
+                return self._resume_interrupted_response(
+                    session_id=session_id,
+                    checkpoint=checkpoint,
+                    finalize_background_task=True,
+                )
             self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
             return self._load_replay_response(session_id=session_id)
         if approval_request_id is None or approval_decision is None:
@@ -4940,6 +5078,29 @@ class VoidCodeRuntime:
                 )
                 try:
                     yield from self._resume_provider_failure_stream(
+                        session_id=session_id,
+                        checkpoint=checkpoint,
+                        run_id=run_id,
+                        abort_signal=abort_signal,
+                        finalize_background_task=True,
+                    )
+                finally:
+                    self._unregister_active_session_id(session_id, run_id=run_id)
+                return
+            if checkpoint is not None and checkpoint.get("kind") == "interrupted":
+                self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
+                run_id = os.urandom(8).hex()
+                abort_signal = self._register_active_session_id(
+                    session_id,
+                    run_id=run_id,
+                    metadata={
+                        "resume": True,
+                        "resume_kind": "interrupted",
+                        "run_id": run_id,
+                    },
+                )
+                try:
+                    yield from self._resume_interrupted_stream(
                         session_id=session_id,
                         checkpoint=checkpoint,
                         run_id=run_id,
@@ -5430,6 +5591,19 @@ class VoidCodeRuntime:
             finalize_background_task=finalize_background_task,
         )
 
+    def _resume_interrupted_response(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        finalize_background_task: bool = False,
+    ) -> RuntimeResponse:
+        return self._resume_coordinator.resume_interrupted_response(
+            session_id=session_id,
+            checkpoint=checkpoint,
+            finalize_background_task=finalize_background_task,
+        )
+
     def _resume_provider_failure_stream(
         self,
         *,
@@ -5440,6 +5614,23 @@ class VoidCodeRuntime:
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
         yield from self._resume_coordinator.resume_provider_failure_stream(
+            session_id=session_id,
+            checkpoint=checkpoint,
+            run_id=run_id,
+            abort_signal=abort_signal,
+            finalize_background_task=finalize_background_task,
+        )
+
+    def _resume_interrupted_stream(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
+        finalize_background_task: bool = False,
+    ) -> Iterator[RuntimeStreamChunk]:
+        yield from self._resume_coordinator.resume_interrupted_stream(
             session_id=session_id,
             checkpoint=checkpoint,
             run_id=run_id,

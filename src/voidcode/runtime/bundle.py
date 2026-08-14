@@ -1254,7 +1254,35 @@ def apply_session_bundle(
             rebound_id=target_id,
             workspace=workspace,
         )
-        session_store.save_run(workspace=workspace, request=request, response=response)
+        # ``save_run`` is a terminal seal-writer and no longer writes events;
+        # persist the imported event log incrementally before sealing so the
+        # round-tripped session keeps its full transcript.
+        session_store.save_interrupted_checkpoint(
+            workspace=workspace,
+            session_id=target_id,
+            prompt=session.prompt,
+            session_metadata=response.session.metadata,
+            tool_results=(),
+            last_event_sequence=0,
+            create_if_missing=True,
+            turn=session.turn,
+        )
+        assigned_events = session_store.append_session_events(
+            workspace=workspace,
+            session_id=target_id,
+            events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
+        )
+        # Seal with the store-assigned envelopes so the row's
+        # ``last_event_sequence`` matches the actual stored event log.
+        session_store.save_run(
+            workspace=workspace,
+            request=request,
+            response=RuntimeResponse(
+                session=response.session,
+                events=assigned_events,
+                output=response.output,
+            ),
+        )
     skipped_tasks = sum(1 for task in bundle.background_tasks if task.child_session_id is not None and task.child_session_id not in rebound_id_for)
     return SessionBundleImportResult(
         schema=SESSION_BUNDLE_SCHEMA_NAME,

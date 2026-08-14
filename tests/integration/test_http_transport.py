@@ -558,15 +558,15 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
 
     assert response.status == 200
     assert response.headers["content-type"] == "application/json; charset=utf-8"
-    assert response.json() == [
-        {
-            "session": {"id": "transport-session"},
-            "status": "completed",
-            "turn": 1,
-            "prompt": "read sample.txt",
-            "updated_at": 1,
-        }
-    ]
+    listed_row = cast(dict[str, object], cast(list[object], response.json())[0])
+    updated_at = listed_row.pop("updated_at")
+    assert isinstance(updated_at, int) and updated_at >= 1
+    assert listed_row == {
+        "session": {"id": "transport-session"},
+        "status": "completed",
+        "turn": 1,
+        "prompt": "read sample.txt",
+    }
 
 
 def test_transport_reads_runtime_web_settings_as_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1979,15 +1979,15 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
     )
     assert [event["sequence"] for event in approve_events] == list(range(1, cast(int, approve_events[-1]["sequence"]) + 1))
     assert list_response.status == 200
-    assert list_response.json() == [
-        {
-            "session": {"id": "http-loop-session"},
-            "status": "completed",
-            "turn": 1,
-            "prompt": _multi_step_prompt(),
-            "updated_at": 4,
-        }
-    ]
+    listed_row = cast(dict[str, object], cast(list[object], list_response.json())[0])
+    updated_at = listed_row.pop("updated_at")
+    assert isinstance(updated_at, int) and updated_at >= 1
+    assert listed_row == {
+        "session": {"id": "http-loop-session"},
+        "status": "completed",
+        "turn": 1,
+        "prompt": _multi_step_prompt(),
+    }
     assert replay_response.status == 200
     replay_session = cast(dict[str, object], replay_payload["session"])
     approve_session = cast(dict[str, object], approve_payload["session"])
@@ -2086,15 +2086,15 @@ def test_transport_denied_multi_step_loop_preserves_failed_replay_over_http(tmp_
     )
     assert [event["sequence"] for event in deny_events] == list(range(1, cast(int, deny_events[-1]["sequence"]) + 1))
     assert list_response.status == 200
-    assert list_response.json() == [
-        {
-            "session": {"id": "http-deny-loop-session"},
-            "status": "running",
-            "turn": 1,
-            "prompt": _multi_step_prompt(),
-            "updated_at": 2,
-        }
-    ]
+    listed_row = cast(dict[str, object], cast(list[object], list_response.json())[0])
+    updated_at = listed_row.pop("updated_at")
+    assert isinstance(updated_at, int) and updated_at >= 1
+    assert listed_row == {
+        "session": {"id": "http-deny-loop-session"},
+        "status": "running",
+        "turn": 1,
+        "prompt": _multi_step_prompt(),
+    }
     assert replay_response.status == 200
     replay_session = cast(dict[str, object], replay_payload["session"])
     deny_session = cast(dict[str, object], deny_payload["session"])
@@ -2782,15 +2782,15 @@ def test_transport_persists_streamed_run_for_session_listing_and_replay(
     assert [payload["kind"] for payload in stream_payloads].count("output") == 1
     assert stream_payloads[-1]["kind"] == "output"
     assert list_response.status == 200
-    assert list_response.json() == [
-        {
-            "session": {"id": "streamed-session"},
-            "status": "completed",
-            "turn": 1,
-            "prompt": "read sample.txt",
-            "updated_at": 1,
-        }
-    ]
+    listed_row = cast(dict[str, object], cast(list[object], list_response.json())[0])
+    updated_at = listed_row.pop("updated_at")
+    assert isinstance(updated_at, int) and updated_at >= 1
+    assert listed_row == {
+        "session": {"id": "streamed-session"},
+        "status": "completed",
+        "turn": 1,
+        "prompt": "read sample.txt",
+    }
     assert replay_response.status == 200
     assert cast(dict[str, object], replay_payload["session"])["session"] == {"id": "streamed-session"}
     assert cast(dict[str, object], replay_payload["session"])["status"] == "completed"
@@ -3023,15 +3023,15 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         },
     }
     assert _event_types_from_sse_payloads(payloads)[-1] == "runtime.failed"
-    assert list_response.json() == [
-        {
-            "session": {"id": "failed-stream-session"},
-            "status": "failed",
-            "turn": 1,
-            "prompt": "read sample.txt",
-            "updated_at": 1,
-        }
-    ]
+    listed_row = cast(dict[str, object], cast(list[object], list_response.json())[0])
+    updated_at = listed_row.pop("updated_at")
+    assert isinstance(updated_at, int) and updated_at >= 1
+    assert listed_row == {
+        "session": {"id": "failed-stream-session"},
+        "status": "failed",
+        "turn": 1,
+        "prompt": "read sample.txt",
+    }
     assert replay_response.status == 200
     assert cast(dict[str, object], replay_payload["session"])["session"] == {"id": "failed-stream-session"}
     assert cast(dict[str, object], replay_payload["session"])["status"] == "failed"

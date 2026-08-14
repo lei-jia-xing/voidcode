@@ -24,6 +24,7 @@ from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, 
 from .permission import PendingApproval, PermissionResolution
 from .question import PendingQuestion, QuestionResponse
 from .session import SessionState, session_metadata_for_persistence
+from .storage import SqliteSessionStore
 
 if TYPE_CHECKING:
     from .service import VoidCodeRuntime
@@ -1103,6 +1104,35 @@ class RuntimeResumeCoordinator:
             self._runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
         return response
 
+    def resume_interrupted_response(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        finalize_background_task: bool = False,
+    ) -> RuntimeResponse:
+        output: str | None = None
+        final_session: SessionState | None = None
+        for chunk in self.resume_interrupted_stream(
+            session_id=session_id,
+            checkpoint=checkpoint,
+        ):
+            final_session = chunk.session
+            if chunk.kind == "output":
+                output = chunk.output
+        stored = self._runtime._session_store.load_session(
+            workspace=self._runtime._workspace,
+            session_id=session_id,
+        )
+        response = RuntimeResponse(
+            session=final_session or stored.session,
+            events=stored.events,
+            output=output if output is not None else stored.output,
+        )
+        if finalize_background_task:
+            self._runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
+        return response
+
     def resume_provider_failure_stream(
         self,
         *,
@@ -1112,28 +1142,82 @@ class RuntimeResumeCoordinator:
         abort_signal: ProviderAbortSignal | None = None,
         finalize_background_task: bool = False,
     ) -> Iterator[RuntimeStreamChunk]:
+        yield from self._resume_checkpoint_stream(
+            session_id=session_id,
+            checkpoint=checkpoint,
+            expected_kind="provider_failure_retryable",
+            resume_kind=None,
+            provider_failure_resume=True,
+            run_id=run_id,
+            abort_signal=abort_signal,
+            finalize_background_task=finalize_background_task,
+        )
+
+    def resume_interrupted_stream(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
+        finalize_background_task: bool = False,
+    ) -> Iterator[RuntimeStreamChunk]:
+        yield from self._resume_checkpoint_stream(
+            session_id=session_id,
+            checkpoint=checkpoint,
+            expected_kind="interrupted",
+            resume_kind="interrupted",
+            provider_failure_resume=False,
+            truncate_tail=True,
+            run_id=run_id,
+            abort_signal=abort_signal,
+            finalize_background_task=finalize_background_task,
+        )
+
+    def _resume_checkpoint_stream(
+        self,
+        *,
+        session_id: str,
+        checkpoint: dict[str, object],
+        expected_kind: str,
+        resume_kind: str | None,
+        provider_failure_resume: bool,
+        truncate_tail: bool = False,
+        run_id: str | None = None,
+        abort_signal: ProviderAbortSignal | None = None,
+        finalize_background_task: bool = False,
+    ) -> Iterator[RuntimeStreamChunk]:
         runtime = self._runtime
         checkpoint_envelope = self.validated_resume_checkpoint_envelope(
             checkpoint=checkpoint,
-            expected_kind="provider_failure_retryable",
+            expected_kind=expected_kind,
         )
-        if checkpoint_envelope is None:
-            raise ValueError("provider failure resume checkpoint is missing")
-        stored = runtime._session_store.load_session(
-            workspace=runtime._workspace,
-            session_id=session_id,
-        )
-        runtime._validate_session_workspace(stored.session, session_id=session_id)
         payload = checkpoint_envelope.payload
         prompt = payload.get("prompt")
         session_metadata = payload.get("session_metadata")
         raw_tool_results = payload.get("tool_results")
         if not isinstance(prompt, str):
-            raise ValueError("persisted provider failure checkpoint prompt must be a string")
+            raise ValueError("persisted resume checkpoint prompt must be a string")
         if not isinstance(session_metadata, dict):
-            raise ValueError("persisted provider failure checkpoint session_metadata must be an object")
+            raise ValueError("persisted resume checkpoint session_metadata must be an object")
         if not isinstance(raw_tool_results, list):
-            raise ValueError("persisted provider failure checkpoint tool_results must be a list")
+            raise ValueError("persisted resume checkpoint tool_results must be a list")
+        checkpoint_last_sequence: int | None = None
+        if truncate_tail:
+            raw_last_sequence = payload.get("last_event_sequence")
+            if not isinstance(raw_last_sequence, int):
+                raise ValueError("persisted interrupted resume checkpoint last_event_sequence must be an integer")
+            checkpoint_last_sequence = raw_last_sequence
+            cast(SqliteSessionStore, runtime._session_store).truncate_session_events_after(
+                workspace=runtime._workspace,
+                session_id=session_id,
+                sequence=checkpoint_last_sequence,
+            )
+        stored = runtime._session_store.load_session(
+            workspace=runtime._workspace,
+            session_id=session_id,
+        )
+        runtime._validate_session_workspace(stored.session, session_id=session_id)
         tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
         session = SessionState(
             session=stored.session.session,
@@ -1182,11 +1266,12 @@ class RuntimeResumeCoordinator:
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                **({"resume_kind": resume_kind} if resume_kind is not None else {}),
                 "provider_attempt": (
                     session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
                 ),
                 "provider_stream": True,
-                "provider_failure_resume": True,
+                **({"provider_failure_resume": True} if provider_failure_resume else {}),
                 **(
                     {"reasoning_effort": effective_config.reasoning_effort}
                     if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
@@ -1196,17 +1281,35 @@ class RuntimeResumeCoordinator:
             abort_signal=abort_signal,
         )
         graph = runtime._graph_for_session_metadata(session.metadata)
-        provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
-        if provider_attempt > 0:
-            graph = runtime._graph_selection_for_effective_config(
-                effective_config,
-                provider_attempt=provider_attempt,
-            ).graph
-        max_stored_sequence = stored.events[-1].sequence if stored.events else 0
+        if provider_failure_resume:
+            provider_attempt = runtime._provider_attempt_from_metadata(graph_request.metadata)
+            if provider_attempt > 0:
+                graph = runtime._graph_selection_for_effective_config(
+                    effective_config,
+                    provider_attempt=provider_attempt,
+                ).graph
+        max_stored_sequence = (
+            checkpoint_last_sequence if checkpoint_last_sequence is not None else (stored.events[-1].sequence if stored.events else 0)
+        )
         loop_events: list[EventEnvelope] = []
         output: str | None = None
         final_session = session
         last_sequence = max_stored_sequence
+        # The stored row was sealed terminal (completed/failed) by the terminal
+        # seal-writer ``save_run``; the run loop appends events incrementally
+        # via ``append_session_events``, which rejects non-lifecycle events on a
+        # sealed row. Transition it back to ``interrupted`` (the same un-seal the
+        # fresh-run path performs) so the resumed loop can append.
+        runtime._session_store.save_interrupted_checkpoint(
+            workspace=runtime._workspace,
+            session_id=session_id,
+            prompt=prompt,
+            session_metadata=cast(dict[str, object], session_metadata),
+            tool_results=tuple(cast(dict[str, object], result) for result in raw_tool_results),
+            last_event_sequence=max_stored_sequence,
+            output=None,
+            create_if_missing=False,
+        )
         try:
             for chunk in runtime._execute_graph_loop(
                 graph=graph,
