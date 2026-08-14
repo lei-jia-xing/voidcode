@@ -36,6 +36,7 @@ def test_project_tool_effectiveness_aggregates_errors_retries_and_pressure() -> 
                         "output_tokens": 20,
                         "cache_read_tokens": 30,
                         "cache_write_tokens": 4,
+                        "uncached_input_tokens": 70,
                     }
                 }
             }
@@ -131,6 +132,8 @@ def test_project_tool_effectiveness_aggregates_errors_retries_and_pressure() -> 
     assert report.output_tokens == 20
     assert report.cache_read_tokens == 30
     assert report.cache_write_tokens == 4
+    assert report.uncached_input_tokens == 70
+    assert report.cache_hit_rate == 0.3
 
     payload = report.to_payload()
     assert payload["privacy"] == {

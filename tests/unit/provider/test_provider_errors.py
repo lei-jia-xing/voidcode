@@ -56,6 +56,13 @@ def test_parse_provider_api_error_maps_429_to_rate_limit() -> None:
     assert parsed.fallback_allowed is True
 
 
+def test_parse_provider_api_error_maps_insufficient_balance_without_retry() -> None:
+    parsed = parse_provider_api_error({"status_code": 400, "message": "DeepseekException - Insufficient Balance"})
+
+    assert parsed.kind == "invalid_model"
+    assert parsed.retryable is False
+
+
 def test_parse_provider_api_error_maps_401_to_missing_auth() -> None:
     parsed = parse_provider_api_error({"status_code": 401, "message": "Unauthorized"})
 

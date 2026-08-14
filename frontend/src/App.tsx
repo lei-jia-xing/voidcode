@@ -7,11 +7,14 @@ import { Composer, type SessionContextUsage } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { OpenProjectModal } from "./components/OpenProjectModal";
 import { ReviewPanel } from "./components/ReviewPanel";
+import { ContextPanel } from "./components/ContextPanel";
 import { TodoPanel } from "./components/TodoPanel";
 import { deriveLatestTodoSnapshot } from "./components/todoPanelModel";
 import { ControlButton } from "./components/ui";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
+import { RuntimeClient } from "./lib/runtime/client";
 import {
+  FileCode2,
   FolderTree,
   GitCompare,
   Loader2,
@@ -162,6 +165,10 @@ function App() {
     settingsError,
     loadSettings,
     updateSettings,
+    sessionDebug,
+    sessionDebugStatus,
+    sessionDebugError,
+    loadSessionDebug,
   } = useAppStore();
   const { t, i18n } = useTranslation();
 
@@ -169,11 +176,13 @@ function App() {
   const [showProjects, setShowProjects] = useState(false);
   const [showFileTree, setShowFileTree] = useState(false);
   const [showCodeReview, setShowCodeReview] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   const [isSessionSidebarExpanded, setIsSessionSidebarExpanded] =
     useState(true);
   const hydratedInitialSessionRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
+  const sessionEventCursorRef = useRef(0);
 
   const isRunning = runStatus === "running" || runStatus === "cancelling";
   const isReplayLoading = replayStatus === "loading";
@@ -260,6 +269,10 @@ function App() {
     if (!selectedBackgroundTaskOutputId) return -1;
     return childSessionTaskIds.indexOf(selectedBackgroundTaskOutputId);
   }, [childSessionTaskIds, selectedBackgroundTaskOutputId]);
+  useEffect(() => {
+    sessionEventCursorRef.current =
+      currentSessionEvents[currentSessionEvents.length - 1]?.sequence ?? 0;
+  }, [currentSessionEvents]);
 
   useEffect(() => {
     i18n.changeLanguage(language);
@@ -335,37 +348,42 @@ function App() {
 
   useEffect(() => {
     if (!currentSessionId) return;
-    const hasActiveChildTask = backgroundTasks.some(
-      (task) => task.status === "queued" || task.status === "running",
-    );
-    if (!isRunning && !hasActiveChildTask) return;
-    const timer = window.setInterval(() => {
-      void loadBackgroundTasks();
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [backgroundTasks, currentSessionId, isRunning, loadBackgroundTasks]);
-
-  // Refresh selected background-task output every 2s while it's still running.
-  useEffect(() => {
-    if (!selectedBackgroundTaskOutputId) return;
-    const selectedSummary = backgroundTasks.find(
-      (task) => task.task.id === selectedBackgroundTaskOutputId,
-    );
-    if (!selectedSummary) return;
-    if (
-      selectedSummary.status !== "queued" &&
-      selectedSummary.status !== "running"
-    )
-      return;
-    const timer = window.setInterval(() => {
-      void loadBackgroundTaskOutput(selectedBackgroundTaskOutputId);
-    }, 2000);
-    return () => window.clearInterval(timer);
+    const controller = new AbortController();
+    const afterSequence = sessionEventCursorRef.current;
+    void (async () => {
+      try {
+        for await (const chunk of RuntimeClient.sessionEvents(
+          currentSessionId,
+          afterSequence,
+          controller.signal,
+        )) {
+          if (chunk.event?.event_type.startsWith("runtime.background_task_")) {
+            await loadBackgroundTasks();
+            if (selectedBackgroundTaskOutputId) {
+              await loadBackgroundTaskOutput(selectedBackgroundTaskOutputId);
+            }
+          }
+        }
+        await selectSession(currentSessionId);
+      } catch (error) {
+        if (!controller.signal.aborted)
+          console.warn("Session event stream failed", error);
+      }
+    })();
+    return () => controller.abort();
   }, [
-    backgroundTasks,
+    currentSessionId,
     loadBackgroundTaskOutput,
+    loadBackgroundTasks,
     selectedBackgroundTaskOutputId,
+    selectSession,
   ]);
+
+  useEffect(() => {
+    if (showContext && currentSessionId) {
+      void loadSessionDebug(currentSessionId);
+    }
+  }, [showContext, currentSessionId, loadSessionDebug]);
 
   useEffect(() => {
     void loadWorkspaces?.();
@@ -592,6 +610,18 @@ function App() {
                   <GitCompare className="w-4 h-4" />
                   <span>{t("review.codeReview")}</span>
                 </ControlButton>
+
+                <ControlButton
+                  compact
+                  variant={showContext ? "secondary" : "ghost"}
+                  onClick={() => setShowContext((value) => !value)}
+                  aria-label={t("context.title")}
+                  aria-expanded={showContext}
+                  aria-pressed={showContext}
+                >
+                  <FileCode2 className="w-4 h-4" />
+                  <span>{t("context.title")}</span>
+                </ControlButton>
               </div>
             </header>
             {isRunning && (
@@ -746,6 +776,17 @@ function App() {
         }}
       />
 
+      <ContextPanel
+        isOpen={showContext}
+        debug={sessionDebug}
+        status={sessionDebugStatus}
+        error={sessionDebugError}
+        onClose={() => setShowContext(false)}
+        onRefresh={() => {
+          if (currentSessionId) void loadSessionDebug(currentSessionId);
+        }}
+      />
+
       <SettingsPanel
         isOpen={showSettings}
         settings={settings}
@@ -796,6 +837,7 @@ function sessionContextUsageFromMetadata(
   return {
     usedTokens: providerTokens ?? estimatedTokens,
     totalTokens: providerTotalTokens(metadata),
+    cacheHitRate: providerCacheHitRate(metadata),
     estimated: providerTokens === null && estimatedTokens !== null,
     contextWindow:
       selectedModelContextWindow(providerModel, providerModels) ??
@@ -814,9 +856,24 @@ function providerContextTokens(
   }
   const total =
     numericValue(latest, "input_tokens") +
-    numericValue(latest, "cache_creation_tokens") +
+    numericValue(latest, "cache_write_tokens") +
     numericValue(latest, "cache_read_tokens");
   return total > 0 ? total : null;
+}
+
+function providerCacheHitRate(
+  metadata: Record<string, unknown> | undefined,
+): number | null {
+  const providerUsage = objectValue(metadata, "provider_usage");
+  const cumulative = objectValue(providerUsage, "cumulative");
+  if (cumulative && typeof cumulative.cache_hit_rate === "number") {
+    return cumulative.cache_hit_rate;
+  }
+  const latest = objectValue(providerUsage, "latest");
+  if (latest && typeof latest.cache_hit_rate === "number") {
+    return latest.cache_hit_rate;
+  }
+  return null;
 }
 
 function providerTotalTokens(
@@ -830,7 +887,7 @@ function providerTotalTokens(
   const total =
     numericValue(cumulative, "input_tokens") +
     numericValue(cumulative, "output_tokens") +
-    numericValue(cumulative, "cache_creation_tokens") +
+    numericValue(cumulative, "cache_write_tokens") +
     numericValue(cumulative, "cache_read_tokens");
   return total > 0 ? total : null;
 }

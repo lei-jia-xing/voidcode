@@ -70,15 +70,16 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
     usage = cast(dict[str, object], raw_usage)
     details = usage.get("prompt_tokens_details")
     details_dict = cast(dict[str, object], details) if isinstance(details, dict) else {}
+    input_tokens = _usage_int(usage.get("prompt_tokens")) or _usage_int(usage.get("input_tokens"))
+    cache_read_tokens = (
+        _usage_int(usage.get("cache_read_input_tokens")) or _usage_int(usage.get("cached_tokens")) or _usage_int(details_dict.get("cached_tokens"))
+    )
     parsed = ProviderTokenUsage(
-        input_tokens=_usage_int(usage.get("prompt_tokens")) or _usage_int(usage.get("input_tokens")),
+        input_tokens=input_tokens,
         output_tokens=_usage_int(usage.get("completion_tokens")) or _usage_int(usage.get("output_tokens")),
-        cache_read_tokens=(
-            _usage_int(usage.get("cache_read_input_tokens"))
-            or _usage_int(usage.get("cached_tokens"))
-            or _usage_int(details_dict.get("cached_tokens"))
-        ),
+        cache_read_tokens=cache_read_tokens,
         cache_write_tokens=(_usage_int(usage.get("cache_creation_input_tokens")) or _usage_int(details_dict.get("cache_creation_input_tokens"))),
+        uncached_input_tokens=max(0, input_tokens - cache_read_tokens),
     )
     return parsed if parsed.total_tokens > 0 or parsed.cache_read_tokens > 0 or parsed.cache_write_tokens > 0 else None
 

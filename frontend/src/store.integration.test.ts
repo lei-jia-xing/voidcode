@@ -637,19 +637,11 @@ describe("useAppStore integration flow", () => {
     );
     expect(state.approvalStatus).toBe("submitting");
     expect(state.approvalError).toBeNull();
-    expect(state.runStatus).toBe("running");
-    expect(state.currentSessionState?.status).toBe("running");
+    expect(state.runStatus).toBe("success");
+    expect(state.currentSessionState?.status).toBe("waiting");
     expect(state.currentSessionEvents.map((event) => event.event_type)).toEqual(
-      [
-        "runtime.request_received",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-      ],
+      ["runtime.request_received", "runtime.approval_requested"],
     );
-    expect(state.currentSessionEvents[2]?.payload).toEqual({
-      request_id: requestId,
-      decision: "allow",
-    });
 
     slowApproval.resolve(completedResponse);
     await approvalPromise;
@@ -733,19 +725,11 @@ describe("useAppStore integration flow", () => {
     );
     expect(state.approvalStatus).toBe("submitting");
     expect(state.approvalError).toBeNull();
-    expect(state.runStatus).toBe("idle");
-    expect(state.currentSessionState?.status).toBe("failed");
+    expect(state.runStatus).toBe("success");
+    expect(state.currentSessionState?.status).toBe("waiting");
     expect(state.currentSessionEvents.map((event) => event.event_type)).toEqual(
-      [
-        "runtime.request_received",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-      ],
+      ["runtime.request_received", "runtime.approval_requested"],
     );
-    expect(state.currentSessionEvents[2]?.payload).toEqual({
-      request_id: requestId,
-      decision: "deny",
-    });
 
     slowApproval.resolve(failedResponse);
     await approvalPromise;

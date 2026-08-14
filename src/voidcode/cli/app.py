@@ -2024,7 +2024,8 @@ def _handle_stats_tools_command(args: StatsArgs) -> int:
         print(
             "TOKENS "
             f"input={report.input_tokens} output={report.output_tokens} "
-            f"cache_read={report.cache_read_tokens} cache_write={report.cache_write_tokens}"
+            f"cache_read={report.cache_read_tokens} cache_write={report.cache_write_tokens} "
+            f"uncached_input={report.uncached_input_tokens} cache_hit_rate={_format_rate(report.cache_hit_rate)}"
         )
         if not report.tools:
             print("No persisted tool calls for this workspace.")

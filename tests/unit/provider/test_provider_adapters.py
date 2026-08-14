@@ -753,6 +753,7 @@ def test_provider_adapter_propose_turn_returns_token_usage(
     assert result.usage == ProviderTokenUsage(
         input_tokens=12,
         output_tokens=4,
+        uncached_input_tokens=12,
     )
 
 
@@ -779,7 +780,7 @@ def test_provider_adapter_stream_turn_returns_final_token_usage(
         ProviderStreamEvent(
             kind="done",
             done_reason="completed",
-            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2),
+            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2, uncached_input_tokens=10),
         )
     ]
 
@@ -804,7 +805,7 @@ def test_provider_adapter_stream_turn_consumes_trailing_usage_chunk(
         ProviderStreamEvent(
             kind="done",
             done_reason="completed",
-            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2),
+            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2, uncached_input_tokens=10),
         )
     ]
 

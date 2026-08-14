@@ -198,6 +198,7 @@ class ProviderTokenUsage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    uncached_input_tokens: int = 0
 
     def metadata_payload(self) -> dict[str, int]:
         return {
@@ -205,11 +206,19 @@ class ProviderTokenUsage:
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_write_tokens": self.cache_write_tokens,
+            "uncached_input_tokens": self.uncached_input_tokens,
         }
 
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+    @property
+    def cache_hit_rate(self) -> float | None:
+        denominator = self.cache_read_tokens + self.uncached_input_tokens
+        if denominator <= 0:
+            return None
+        return self.cache_read_tokens / denominator
 
 
 @dataclass(frozen=True, slots=True)

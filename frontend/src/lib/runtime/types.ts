@@ -64,6 +64,18 @@ export interface ProviderModelsResult {
       supports_reasoning?: boolean | null;
       supports_reasoning_effort?: boolean | null;
       default_reasoning_effort?: string | null;
+      supports_tools?: boolean | null;
+      supports_vision?: boolean | null;
+      supports_streaming?: boolean | null;
+      supports_json_mode?: boolean | null;
+      supports_reasoning_summary?: boolean | null;
+      supports_thinking_budget?: boolean | null;
+      supports_interleaved_reasoning?: boolean | null;
+      reasoning_visibility?: string | null;
+      model_status?: string | null;
+      tool_feedback_mode?: string | null;
+      modalities_input?: string[] | null;
+      modalities_output?: string[] | null;
     }
   >;
   source?: string | null;
@@ -95,6 +107,9 @@ export interface AgentSummary {
   model_label?: string | null;
   model_source?: string | null;
   provider?: string | null;
+  fallback_chain?: string[];
+  source_scope?: string | null;
+  source_path?: string | null;
 }
 
 export interface SkillSummary {
@@ -248,7 +263,15 @@ export interface RuntimeRequest {
   session_id?: string | null;
   parent_session_id?: string | null;
   metadata?: {
+    agent?: Record<string, unknown>;
+    mode?: "normal" | "analyze" | "plan";
+    read_only?: boolean;
+    max_steps?: number;
     skills?: string[];
+    force_load_skills?: string[];
+    context_transform_refs?: string[];
+    workflow_mode?: string;
+    delegation?: Record<string, unknown>;
     provider_stream?: boolean;
     reasoning_effort?: string;
     [key: string]: unknown;
@@ -333,6 +356,7 @@ export interface BackgroundTaskSummary {
   error?: string | null;
   created_at: number;
   updated_at: number;
+  created_at_unix_ms?: number | null;
 }
 
 export interface BackgroundTaskState {
@@ -457,13 +481,38 @@ export interface RuntimeSessionDebugSnapshot {
   } | null;
   suggested_operator_action?: string | null;
   operator_guidance?: string | null;
+  provider_context?: ProviderContextSnapshot | null;
 }
 
-export type RuntimeStreamChunkKind = "event" | "output";
+export interface ProviderContextSegmentSnapshot {
+  index: number;
+  role: string;
+  source: string;
+  content: string | null;
+  content_truncated: boolean;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_arguments?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ProviderContextSnapshot {
+  provider: string;
+  model: string;
+  segment_count: number;
+  message_count: number;
+  context_window: Record<string, unknown>;
+  segments: ProviderContextSegmentSnapshot[];
+  provider_messages: Record<string, unknown>[];
+  policy_decision: Record<string, unknown> | null;
+  diagnostics: Record<string, unknown>[];
+}
+
+export type RuntimeStreamChunkKind = "session" | "event" | "output";
 
 export interface RuntimeStreamChunk {
   kind: RuntimeStreamChunkKind;
-  session: SessionState;
+  session: SessionState | null;
   event: EventEnvelope | null;
   output: string | null;
 }

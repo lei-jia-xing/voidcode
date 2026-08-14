@@ -71,6 +71,8 @@ from .workspace import SingleWorkspaceRuntimeCoordinator, WorkspaceOpenError
 
 logger = logging.getLogger(__name__)
 
+_SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
 
 class RuntimeTransport(Protocol):
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]: ...
@@ -134,6 +136,8 @@ class RuntimeTransport(Protocol):
     def review_diff(self, path: str) -> ReviewFileDiff: ...
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
+
+    def replay_session(self, *, session_id: str) -> RuntimeResponse: ...
 
     def session_debug_snapshot(self, *, session_id: str) -> RuntimeSessionDebugSnapshot: ...
 
@@ -702,6 +706,7 @@ class RuntimeTransportApp:
         session_prefix = "/api/sessions/"
         if path.startswith(session_prefix):
             session_path = path.removeprefix(session_prefix)
+            is_events_route = session_path.endswith("/events")
             is_task_list_route = session_path.endswith("/tasks")
             is_approval_route = session_path.endswith("/approval")
             is_question_route = session_path.endswith("/question")
@@ -713,7 +718,9 @@ class RuntimeTransportApp:
             is_unrevert_route = session_path.endswith("/unrevert")
             is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
             session_id = (
-                session_path.removesuffix("/tasks")
+                session_path.removesuffix("/events")
+                if is_events_route
+                else session_path.removesuffix("/tasks")
                 if is_task_list_route
                 else session_path.removesuffix("/approval")
                 if is_approval_route
@@ -774,7 +781,9 @@ class RuntimeTransportApp:
                 )
                 return
             session_id = (
-                session_path.removesuffix("/approval")
+                session_path.removesuffix("/events")
+                if is_events_route
+                else session_path.removesuffix("/approval")
                 if is_approval_route
                 else session_path.removesuffix("/question")
                 if is_question_route
@@ -803,6 +812,32 @@ class RuntimeTransportApp:
                     )
                     return
                 await self._handle_cancel_session(session_id=session_id, receive=receive, send=send)
+                return
+            if is_events_route:
+                if method != "GET":
+                    await self._json_response(send, status=405, payload={"error": "method not allowed"})
+                    return
+                raw_query = scope.get("query_string", b"")
+                query_string = raw_query.decode("utf-8") if isinstance(raw_query, bytes) else str(raw_query)
+                query = parse_qs(query_string)
+                raw_after = query.get("after_sequence", ["0"])[0]
+                try:
+                    after_sequence = int(raw_after)
+                except ValueError:
+                    await self._json_response(send, status=400, payload={"error": "after_sequence must be an integer"})
+                    return
+                if after_sequence < 0:
+                    await self._json_response(send, status=400, payload={"error": "after_sequence must be non-negative"})
+                    return
+                follow = query.get("follow", ["false"])[0].lower() == "true"
+                await self._handle_session_events(
+                    session_id=session_id,
+                    after_sequence=after_sequence,
+                    follow=follow,
+                    receive=receive,
+                    send=send,
+                    show_thinking=show_thinking,
+                )
                 return
             if is_approval_route:
                 if method != "POST":
@@ -1057,6 +1092,13 @@ class RuntimeTransportApp:
                 return
             raise RuntimeError(f"unsupported lifespan message type: {message_type!r}")
 
+    @staticmethod
+    async def _await_client_disconnect(receive: Receive) -> None:
+        while True:
+            message = await receive()
+            if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
+                return
+
     async def _handle_run_stream(
         self,
         receive: Receive,
@@ -1102,8 +1144,27 @@ class RuntimeTransportApp:
                     first_chunk,
                     show_thinking=show_thinking,
                 )
+
+                session_id = first_chunk.session.session.id
+                disconnect_task = asyncio.ensure_future(self._await_client_disconnect(receive))
                 try:
-                    async for chunk in stream:
+                    while True:
+                        next_chunk_task = asyncio.ensure_future(anext(stream))
+                        done, _ = await asyncio.wait(
+                            (next_chunk_task, disconnect_task),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if disconnect_task in done:
+                            next_chunk_task.cancel()
+                            try:
+                                runtime.cancel_session(session_id, reason="client_disconnected")
+                            except Exception:
+                                logger.exception("failed to cancel run after client disconnect")
+                            break
+                        try:
+                            chunk = next_chunk_task.result()
+                        except StopAsyncIteration:
+                            break
                         chunk_failed = await self._send_runtime_stream_chunk(
                             send,
                             chunk,
@@ -1113,13 +1174,77 @@ class RuntimeTransportApp:
                 except Exception:
                     if not emitted_failed_chunk:
                         logger.exception("unexpected transport streaming failure")
-                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    try:
+                        await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                        pass
                     return
+                finally:
+                    if not disconnect_task.done():
+                        disconnect_task.cancel()
 
-                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                try:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                    pass
         finally:
             if runtime is not None:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+
+    async def _handle_session_events(
+        self,
+        *,
+        session_id: str,
+        after_sequence: int,
+        follow: bool,
+        receive: Receive,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
+        runtime = self._runtime_factory()
+        try:
+            replay = runtime.replay_session(session_id=session_id)
+        except ValueError as exc:
+            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+            await self._json_response(send, status=404, payload={"error": str(exc)})
+            return
+        except Exception as exc:
+            logger.exception("session event replay failed for %s", session_id)
+            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+            await self._json_response(
+                send,
+                status=500,
+                payload={"error": "session event replay failed", "detail": str(exc)},
+            )
+            return
+        await self._send_stream_start(send)
+        await self._send_session_snapshot_chunk(send, replay.session)
+
+        cursor = after_sequence
+        try:
+            while True:
+                for event in replay.events:
+                    if event.sequence <= cursor:
+                        continue
+                    await self._send_session_event_chunk(send, event, show_thinking=show_thinking)
+                    cursor = event.sequence
+                if not follow or replay.session.status in _SESSION_TERMINAL_STATUSES:
+                    break
+                try:
+                    message = await asyncio.wait_for(receive(), timeout=1.0)
+                except TimeoutError:
+                    replay = runtime.replay_session(session_id=session_id)
+                    continue
+                if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
+                    return
+        except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+            return
+        finally:
+            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        try:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+            return
 
     async def _send_stream_start(self, send: Send) -> None:
         await send(
@@ -1150,6 +1275,44 @@ class RuntimeTransportApp:
             }
         )
         return chunk.event is not None and chunk.event.event_type == "runtime.failed"
+
+    async def _send_session_snapshot_chunk(self, send: Send, session: SessionState) -> None:
+        payload = {
+            "kind": "session",
+            "session": self._serialize_session_state(session),
+            "event": None,
+            "output": None,
+        }
+        data = json.dumps(payload, sort_keys=True).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"data: " + data + b"\n\n",
+                "more_body": True,
+            }
+        )
+
+    async def _send_session_event_chunk(
+        self,
+        send: Send,
+        event: EventEnvelope,
+        *,
+        show_thinking: bool = False,
+    ) -> None:
+        payload = {
+            "kind": "event",
+            "session": None,
+            "event": self._serialize_event(event, show_thinking=show_thinking),
+            "output": None,
+        }
+        data = json.dumps(payload, sort_keys=True).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"data: " + data + b"\n\n",
+                "more_body": True,
+            }
+        )
 
     async def _handle_list_sessions(self, send: Send) -> None:
         with self._active_request_scope():

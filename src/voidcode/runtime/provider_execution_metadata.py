@@ -33,6 +33,13 @@ def run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
     return run_id if isinstance(run_id, str) and run_id else None
 
 
+def _cache_hit_rate(cache_read_tokens: int, uncached_input_tokens: int) -> float | None:
+    denominator = cache_read_tokens + uncached_input_tokens
+    if denominator <= 0:
+        return None
+    return cache_read_tokens / denominator
+
+
 def session_with_provider_usage_metadata(
     session: SessionState,
     usage: ProviderTokenUsage | None,
@@ -56,6 +63,14 @@ def session_with_provider_usage_metadata(
         raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
 
     cumulative_payload = {key: _int_value(key) + value for key, value in usage_payload.items()}
+    latest_payload = {
+        **usage_payload,
+        "cache_hit_rate": usage.cache_hit_rate,
+    }
+    cumulative_payload_with_rate = {
+        **cumulative_payload,
+        "cache_hit_rate": _cache_hit_rate(cumulative_payload["cache_read_tokens"], cumulative_payload["uncached_input_tokens"]),
+    }
     raw_turn_count = provider_usage.get("turn_count", 0)
     turn_count = 0
     if isinstance(raw_turn_count, int) and not isinstance(raw_turn_count, bool):
@@ -71,10 +86,10 @@ def session_with_provider_usage_metadata(
         metadata={
             **session.metadata,
             "provider_usage": {
-                "latest": usage_payload,
+                "latest": latest_payload,
                 "latest_run_id": current_run_id,
                 "latest_provider_attempt": current_provider_attempt,
-                "cumulative": cumulative_payload,
+                "cumulative": cumulative_payload_with_rate,
                 "turn_count": turn_count + 1,
             },
         },

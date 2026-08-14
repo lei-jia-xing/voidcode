@@ -3265,6 +3265,25 @@ class VoidCodeRuntime:
         self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
         return self._load_session_result(session_id=session_id)
 
+    def replay_session(self, *, session_id: str) -> RuntimeResponse:
+        """Read the persisted session transcript without resume semantics."""
+        validate_session_id(session_id)
+        response = self._load_stored_response(session_id=session_id)
+        projected_metadata = session_metadata_for_replay(response.session.metadata)
+        return RuntimeResponse(
+            session=SessionState(
+                session=response.session.session,
+                status=response.session.status,
+                turn=response.session.turn,
+                metadata=projected_metadata,
+            ),
+            events=self._events_with_runtime_policy_projection(
+                response.events,
+                metadata=projected_metadata,
+            ),
+            output=response.output,
+        )
+
     def revert_session(self, *, session_id: str, sequence: int) -> RuntimeSessionRevertMarker:
         validate_session_id(session_id)
         marker = self._session_store.revert_session(

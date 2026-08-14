@@ -36,6 +36,7 @@ export interface SessionContextUsage {
   usedTokens: number | null;
   contextWindow: number | null;
   totalTokens: number | null;
+  cacheHitRate: number | null;
   estimated: boolean;
 }
 
@@ -641,14 +642,28 @@ function formatTotalUsage(
   usage: SessionContextUsage | undefined,
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
-  if (
-    !usage ||
-    typeof usage.totalTokens !== "number" ||
-    usage.totalTokens <= 0
-  ) {
-    return t("chat.totalUsageUnavailable");
+  const parts: string[] = [];
+  if (usage && typeof usage.totalTokens === "number" && usage.totalTokens > 0) {
+    parts.push(
+      t("chat.totalUsage", { total: formatTokenCount(usage.totalTokens) }),
+    );
+  } else {
+    parts.push(t("chat.totalUsageUnavailable"));
   }
-  return t("chat.totalUsage", { total: formatTokenCount(usage.totalTokens) });
+  if (usage && typeof usage.cacheHitRate === "number") {
+    parts.push(
+      t("chat.cacheHitRate", { rate: formatCachePercent(usage.cacheHitRate) }),
+    );
+  }
+  return parts.join(" · ");
+}
+
+function formatCachePercent(value: number): string {
+  const percent = value * 100;
+  if (percent >= 10) return String(Math.round(percent));
+  if (percent >= 1) return String(Math.round(percent * 10) / 10);
+  if (percent > 0) return "<1";
+  return "0";
 }
 
 function formatContextPercent(value: number): string {

@@ -284,6 +284,7 @@ def _run_app(
     async def _receive() -> dict[str, object]:
         if messages:
             return messages.pop(0)
+        await asyncio.Event().wait()
         return {"type": "http.disconnect"}
 
     async def _send(message: dict[str, object]) -> None:
@@ -997,6 +998,33 @@ def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     assert [event["event_type"] for event in cast(list[dict[str, object]], payload["transcript"])] == [
         cast(Any, event).event_type for event in stored.events
     ]
+
+
+def test_transport_streams_session_events_after_sequence(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("events payload\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="events-session"))
+
+    response = _run_app(
+        create_runtime_app(workspace=tmp_path),
+        method="GET",
+        path="/api/sessions/events-session/events",
+        query_string=b"after_sequence=1",
+    )
+
+    assert response.status == 200
+    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
+    chunks = [json.loads(part.removeprefix(b"data: ").strip()) for part in response.body_parts if part.startswith(b"data: ")]
+    assert chunks[0]["kind"] == "session"
+    assert chunks[0]["session"]["session"]["id"] == "events-session"
+    event_chunks = [chunk for chunk in chunks if chunk["kind"] == "event"]
+    assert [chunk["event"]["sequence"] for chunk in event_chunks] == [
+        cast(Any, event).sequence for event in stored.events if cast(Any, event).sequence > 1
+    ]
+    assert all(chunk["session"] is None for chunk in event_chunks)
 
 
 def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None:
@@ -2437,6 +2465,96 @@ def test_transport_streams_runtime_chunks_in_sse_order() -> None:
         "graph.response_ready",
     ]
     assert payloads[-1]["output"] == "transported"
+
+
+def test_transport_run_stream_cancels_run_on_client_disconnect() -> None:
+    create_runtime_app = _load_transport_app_factory()
+    runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()
+    session = session_state(
+        session=session_ref(id="disconnect-session"),
+        status="running",
+        turn=1,
+        metadata={"workspace": "/tmp/workspace"},
+    )
+
+    cancelled: list[tuple[str, str | None]] = []
+
+    class StubRuntime:
+        def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
+            for sequence in range(1, 30):
+                yield runtime_stream_chunk(
+                    kind="event",
+                    session=session,
+                    event=event_envelope(
+                        session_id="disconnect-session",
+                        sequence=sequence,
+                        event_type="runtime.request_received",
+                        source="runtime",
+                        payload={"sequence": sequence},
+                    ),
+                )
+
+        def cancel_session(
+            self,
+            session_id: str,
+            *,
+            run_id: str | None = None,
+            reason: str | None = None,
+        ) -> object:
+            cancelled.append((session_id, reason))
+            return SimpleNamespace(interrupted=False, as_payload=lambda: {})
+
+        def list_sessions(self) -> tuple[StoredSessionSummaryLike, ...]:
+            raise AssertionError("list_sessions should not be called")
+
+        def web_settings(self) -> dict[str, object]:
+            raise AssertionError("web_settings should not be called")
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            raise AssertionError("update_web_settings should not be called")
+
+        def resume(self, session_id: str) -> RuntimeResponseLike:
+            raise AssertionError(f"resume should not be called: {session_id}")
+
+    app = create_runtime_app(workspace=Path("/tmp/workspace"), runtime_factory=lambda: StubRuntime())
+
+    sent: list[dict[str, object]] = []
+    messages: list[dict[str, object]] = [
+        {
+            "type": "http.request",
+            "body": json.dumps(
+                {
+                    "prompt": "disconnect me",
+                    "session_id": "disconnect-session",
+                    "metadata": {"provider_stream": True},
+                }
+            ).encode("utf-8"),
+            "more_body": False,
+        }
+    ]
+
+    async def _receive() -> dict[str, object]:
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
+
+    async def _send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/runtime/run/stream",
+        "query_string": b"",
+    }
+    asyncio.run(app(scope, _receive, _send))
+
+    start_message = next(message for message in sent if cast(str, message["type"]) == "http.response.start")
+    assert cast(int, start_message["status"]) == 200
+    body_parts = [cast(bytes, message.get("body", b"")) for message in sent if cast(str, message["type"]) == "http.response.body"]
+    data_parts = [part for part in body_parts if part.startswith(b"data: ")]
+    assert len(data_parts) < 30
+    assert cancelled == [("disconnect-session", "client_disconnected")]
 
 
 def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_steps() -> None:

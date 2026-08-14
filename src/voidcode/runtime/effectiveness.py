@@ -90,6 +90,7 @@ class ToolEffectivenessReport:
     output_tokens: int
     cache_read_tokens: int
     cache_write_tokens: int
+    uncached_input_tokens: int
     tools: tuple[ToolEffectivenessStats, ...]
 
     @property
@@ -97,6 +98,13 @@ class ToolEffectivenessReport:
         if self.tool_call_count == 0:
             return None
         return self.success_count / self.tool_call_count
+
+    @property
+    def cache_hit_rate(self) -> float | None:
+        denominator = self.cache_read_tokens + self.uncached_input_tokens
+        if denominator <= 0:
+            return None
+        return self.cache_read_tokens / denominator
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -118,6 +126,8 @@ class ToolEffectivenessReport:
                 "output_tokens": self.output_tokens,
                 "cache_read_tokens": self.cache_read_tokens,
                 "cache_write_tokens": self.cache_write_tokens,
+                "uncached_input_tokens": self.uncached_input_tokens,
+                "cache_hit_rate": self.cache_hit_rate,
             },
             "tools": [tool.to_payload() for tool in self.tools],
             "privacy": {
@@ -248,7 +258,7 @@ def project_tool_effectiveness(
         if not isinstance(cumulative, Mapping):
             continue
         typed_cumulative = cast(Mapping[str, object], cumulative)
-        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "uncached_input_tokens"):
             value = typed_cumulative.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 usage_totals[key] += value
@@ -269,5 +279,6 @@ def project_tool_effectiveness(
         output_tokens=usage_totals["output_tokens"],
         cache_read_tokens=usage_totals["cache_read_tokens"],
         cache_write_tokens=usage_totals["cache_write_tokens"],
+        uncached_input_tokens=usage_totals["uncached_input_tokens"],
         tools=tools,
     )

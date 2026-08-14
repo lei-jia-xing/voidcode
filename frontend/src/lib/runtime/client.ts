@@ -67,7 +67,82 @@ function withShowThinking(path: string): string {
     : `${path}?show_thinking=true`;
 }
 
+function parseRuntimeStreamChunk(value: unknown): RuntimeStreamChunk {
+  if (!value || typeof value !== "object") {
+    throw new Error("runtime stream chunk must be an object");
+  }
+  const chunk = value as Partial<RuntimeStreamChunk>;
+  if (
+    chunk.kind !== "session" &&
+    chunk.kind !== "event" &&
+    chunk.kind !== "output"
+  ) {
+    throw new Error("runtime stream chunk has invalid kind");
+  }
+  if (
+    chunk.session !== null &&
+    (chunk.session === undefined || typeof chunk.session !== "object")
+  ) {
+    throw new Error("runtime stream chunk has invalid session");
+  }
+  if (chunk.event !== null && chunk.event !== undefined) {
+    if (
+      typeof chunk.event !== "object" ||
+      typeof chunk.event.sequence !== "number"
+    ) {
+      throw new Error("runtime stream event has invalid sequence");
+    }
+  }
+  if (
+    chunk.output !== null &&
+    chunk.output !== undefined &&
+    typeof chunk.output !== "string"
+  ) {
+    throw new Error("runtime stream output must be a string or null");
+  }
+  return chunk as RuntimeStreamChunk;
+}
+
 export class RuntimeClient {
+  static async *sessionEvents(
+    sessionId: string,
+    afterSequence = 0,
+    signal?: AbortSignal,
+  ): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
+    const res = await fetch(
+      withShowThinking(
+        `/api/sessions/${encodeURIComponent(sessionId)}/events?after_sequence=${afterSequence}&follow=true`,
+      ),
+      { signal },
+    );
+    await expectOk(res, "Session event stream failed");
+    if (!res.body) throw new Error("No response body for session event stream");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = frame
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).replace(/^ /, ""))
+          .join("\n");
+        if (data) {
+          const chunk = parseRuntimeStreamChunk(JSON.parse(data));
+          if (chunk.event) chunk.event.received_at = Date.now();
+          yield chunk;
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+      if (done) break;
+    }
+  }
+
   static async listWorkspaces(): Promise<WorkspaceRegistrySnapshot> {
     const res = await fetch(`/api/workspaces`);
     await expectOk(res, "Failed to load workspaces");
@@ -302,6 +377,16 @@ export class RuntimeClient {
     return res.json();
   }
 
+  static async retryBackgroundTask(
+    taskId: string,
+  ): Promise<{ retry_of_task_id: string; task: BackgroundTaskState }> {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
+      method: "POST",
+    });
+    await expectOk(res, "Failed to retry background task");
+    return res.json();
+  }
+
   static async getBackgroundTaskOutput(
     taskId: string,
   ): Promise<BackgroundTaskOutput> {
@@ -376,9 +461,9 @@ export class RuntimeClient {
           // Empty line indicates end of an SSE event
           if (dataLines.length > 0) {
             try {
-              const chunk = JSON.parse(
-                dataLines.join("\n"),
-              ) as RuntimeStreamChunk;
+              const chunk = parseRuntimeStreamChunk(
+                JSON.parse(dataLines.join("\n")),
+              );
               if (chunk.event) chunk.event.received_at = Date.now();
               yield chunk;
             } catch (e) {
@@ -410,9 +495,9 @@ export class RuntimeClient {
       if (trimmedLine === "") {
         if (dataLines.length > 0) {
           try {
-            const chunk = JSON.parse(
-              dataLines.join("\n"),
-            ) as RuntimeStreamChunk;
+            const chunk = parseRuntimeStreamChunk(
+              JSON.parse(dataLines.join("\n")),
+            );
             if (chunk.event) chunk.event.received_at = Date.now();
             yield chunk;
           } catch (e) {
@@ -443,7 +528,7 @@ export class RuntimeClient {
     // Process any remaining buffered data after stream closes
     if (dataLines.length > 0) {
       try {
-        const chunk = JSON.parse(dataLines.join("\n")) as RuntimeStreamChunk;
+        const chunk = parseRuntimeStreamChunk(JSON.parse(dataLines.join("\n")));
         if (chunk.event) chunk.event.received_at = Date.now();
         yield chunk;
       } catch (e) {

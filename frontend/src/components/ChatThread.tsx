@@ -1235,8 +1235,10 @@ function TaskToolActivity({
   const summaryStatus = summary?.status ?? null;
   const isActive = summaryStatus === "queued" || summaryStatus === "running";
   const elapsed = useLiveElapsed(
-    summary?.created_at ?? null,
-    summary?.updated_at ?? null,
+    summary?.created_at_unix_ms != null
+      ? summary.created_at_unix_ms / 1000
+      : null,
+    null,
     isActive,
   );
   const isSelectedOutput =

@@ -219,6 +219,17 @@ def _classify_api_error_kind(
     if any(
         marker in lowered_message
         for marker in (
+            "insufficient balance",
+            "insufficient quota",
+            "quota exceeded",
+            "billing balance",
+            "payment required",
+        )
+    ):
+        return "invalid_model"
+    if any(
+        marker in lowered_message
+        for marker in (
             "api key is missing",
             "missing api key",
             "invalid api key",

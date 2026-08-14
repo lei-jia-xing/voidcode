@@ -124,6 +124,7 @@ describe("Composer", () => {
           usedTokens: 12_400,
           contextWindow: 198_000,
           totalTokens: 18_900,
+          cacheHitRate: null,
           estimated: false,
         }}
         onReasoningEffortChange={onReasoningEffortChange}
@@ -216,6 +217,7 @@ describe("Composer", () => {
           usedTokens: 2048,
           contextWindow: null,
           totalTokens: 4096,
+          cacheHitRate: null,
           estimated: false,
         }}
       />,
@@ -234,6 +236,7 @@ describe("Composer", () => {
           usedTokens: null,
           contextWindow: 1_000_000,
           totalTokens: 6200,
+          cacheHitRate: null,
           estimated: false,
         }}
       />,
@@ -252,6 +255,7 @@ describe("Composer", () => {
           usedTokens: 12_400,
           contextWindow: 1_000_000,
           totalTokens: 30_000,
+          cacheHitRate: null,
           estimated: true,
         }}
       />,
@@ -260,6 +264,40 @@ describe("Composer", () => {
     expect(
       screen.getByText("≈12.4K ctx · 1.2% · 30K total"),
     ).toBeInTheDocument();
+  });
+
+  it("shows cache hit rate when available", () => {
+    render(
+      <Composer
+        {...baseProps}
+        sessionContextUsage={{
+          usedTokens: 12_400,
+          contextWindow: 198_000,
+          totalTokens: 18_900,
+          cacheHitRate: 0.85,
+          estimated: false,
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/cache 85%/)).toBeInTheDocument();
+  });
+
+  it("omits cache hit rate when unavailable", () => {
+    render(
+      <Composer
+        {...baseProps}
+        sessionContextUsage={{
+          usedTokens: 12_400,
+          contextWindow: 198_000,
+          totalTokens: 18_900,
+          cacheHitRate: null,
+          estimated: false,
+        }}
+      />,
+    );
+
+    expect(screen.queryByText(/cache \d/)).not.toBeInTheDocument();
   });
 
   it("canonicalizes bare grouped model aliases before storing selection", () => {
