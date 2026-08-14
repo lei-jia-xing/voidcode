@@ -2,7 +2,8 @@
 
 > 调研日期：2026-08-11<br>
 > VoidCode：`42fda7441e656918cff3f786bd6492372619c927`<br>
-> Oh My Pi：`45e12e5bb758198a920c6070e7e64cb33b21beac`，版本 `17.2.12`
+> Oh My Pi：`45e12e5bb758198a920c6070e7e64cb33b21beac`，版本 `17.2.12`<br>
+> 补充调研：OMP HEAD `ad318c7572abaeebd5cf8a7a16d350ff1d32a738`（约 `17.3.3`），复核确认原始结论，并新增 reasoning-effort 缺口（该缺口现已在 VoidCode 侧关闭）
 
 ## 目的与证据边界
 
@@ -28,6 +29,8 @@ VoidCode 已不再只是一个有会话持久化和审批的运行时骨架。�
 - CLI、TUI、Web 对同一 runtime truth 的消费。
 
 因此，旧文档把“hash 防陈旧编辑”“结构化 compaction”“结构化子任务结果”整体列为尚未引入，已经过时。
+
+需要补充的是，原始调研之后又识别并关闭了一个缺口：reasoning-effort / thinking level 语义。该语义现已是 runtime-owned 的规范枚举 `off | minimal | low | medium | high | xhigh | max`，在 4 个边界严格校验（`config.py`、`contracts.py`、`config_materializer.py`、JSON schema，不做向后兼容），并走 `normalize → clamp → map` 管线按 provider 映射：GLM 映射为 `extra_body.thinking.type=enabled|disabled` 二元开关；OpenAI/Anthropic/Google/Grok 映射为 `reasoning_effort` kwarg，其中 off→none、max 折叠。依据 `docs/reasoning-effort-decision.md` 与 `src/voidcode/provider/reasoning_effort.py`，提交 `e60af0b2` 与 `ecc504f4`。该缺口不在原始文档视野内（“当前不建议引入”一节未提及它）。
 
 OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优势不是单纯拥有更多工具，而是把工具协议、真实会话统计、专项 benchmark、模型适配、终端产品和发布反馈连接成了持续优化循环。
 
@@ -125,6 +128,22 @@ VoidCode 刚完成 tool recovery 与 interaction queue 持久化，下一步应�
 - 进程退出时后台结果、事件序号和 checkpoint 是否完整。
 
 这类机制与 VoidCode 的 runtime 治理优势高度一致，优先级高于新增工具。
+
+### 5. reasoning effort / thinking level 语义
+
+OMP 的 thinking-level 模型：`Effort` 枚举 `minimal|low|medium|high|xhigh|max`，另加 `off`/`inherit`/`auto`，默认 `high`。按 provider 映射：OpenAI 为 `reasoning_effort` identity passthrough；Anthropic 走 adaptive 的 `output_config.effort`，旧模型回退 `thinking.budget_tokens`；Google 走 `thinkingLevel`，xhigh/max 折叠为 HIGH。模型不支持时 clamp 到最近的受支持值，并在收到 400/422 时以调整后的 effort 自动重试。来源：`packages/catalog/src/effort.ts`、`packages/catalog/src/model-thinking.ts`、`packages/ai/src/providers/openai-shared.ts`、`packages/ai/src/providers/anthropic.ts`、`packages/ai/src/providers/openai-reasoning-fallback.ts`（OMP HEAD `ad318c7572abaeebd5cf8a7a16d350ff1d32a738`）。
+
+对 VoidCode 的 provider 层可直接复用的是 LiteLLM 各 provider 的 `reasoning_effort` 行为表：
+
+| Provider | `reasoning_effort` 行为 |
+|---|---|
+| OpenAI | 原生支持，取值 none/minimal/low/medium/high/xhigh |
+| Anthropic | 原生支持，映射到 thinking `budget_tokens`；Claude 4.6+ 走 adaptive 与 `output_config.effort` |
+| Google / Gemini | 原生支持，映射到 thinking budget/level |
+| xAI/Grok、Groq、Fireworks | 原生 passthrough，受 supports_reasoning 开关约束 |
+| DeepSeek | 原生 `thinking`，none→disabled，其余→enabled |
+| GLM / zai | 静默丢弃：不在 supported params，只接受 `thinking={"type":"enabled"}`，需走 `extra_body` |
+| Kimi / moonshot、Qwen | 静默丢弃：不在 supported params |
 
 ## 当前最值得引入的机制：Agent Effectiveness Loop
 
