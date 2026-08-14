@@ -298,6 +298,74 @@ def test_deepseek_reasoning_effort_metadata_is_internally_consistent() -> None:
 
 
 @pytest.mark.parametrize(
+    ("provider", "model", "context_window"),
+    [
+        ("deepseek", "deepseek-v3", 128_000),
+        ("deepseek", "deepseek-coder", 128_000),
+        ("qwen", "qwq-plus", 128_000),
+        ("qwen", "qwq-max", 128_000),
+        ("qwen", "qwen-plus", 128_000),
+        ("glm", "glm-4-flash", 128_000),
+        ("glm", "glm-4-plus", 128_000),
+        ("glm", "glm-4", 128_000),
+        ("kimi", "kimi-k2", 128_000),
+        ("kimi", "kimi-latest", 128_000),
+        ("minimax", "mimo-v2-omni", 192_000),
+        ("minimax", "mimo-v2-pro", 192_000),
+        ("grok", "grok-3", 128_000),
+        ("grok", "grok-4", 128_000),
+    ],
+)
+def test_infer_model_metadata_family_catch_all_resolves_non_none(
+    provider: str,
+    model: str,
+    context_window: int,
+) -> None:
+    metadata = infer_model_metadata(provider, model)
+
+    assert metadata is not None, f"{provider}/{model} should infer metadata"
+    assert metadata.context_window == context_window
+    assert metadata.cost_per_input_token is not None
+    assert metadata.cost_per_output_token is not None
+
+
+def test_infer_model_metadata_family_catch_all_exposes_expected_flags() -> None:
+    qwq = infer_model_metadata("qwen", "qwq-plus")
+    assert qwq is not None
+    assert qwq.supports_reasoning is True
+    assert qwq.supports_reasoning_effort is False
+    assert qwq.reasoning_visibility == "full"
+
+    glm_flash = infer_model_metadata("glm", "glm-4-flash")
+    assert glm_flash is not None
+    assert glm_flash.supports_reasoning is False
+    assert glm_flash.supports_reasoning_effort is False
+
+    deepseek_v3 = infer_model_metadata("deepseek", "deepseek-v3")
+    assert deepseek_v3 is not None
+    assert deepseek_v3.supports_reasoning is False
+
+    grok3 = infer_model_metadata("grok", "grok-3")
+    assert grok3 is not None
+    assert grok3.supports_reasoning is False
+    assert grok3.supports_reasoning_effort is False
+
+    grok4 = infer_model_metadata("grok", "grok-4")
+    assert grok4 is not None
+    assert grok4.supports_reasoning is True
+    assert grok4.supports_reasoning_effort is True
+
+    mimo_omni = infer_model_metadata("minimax", "mimo-v2-omni")
+    assert mimo_omni is not None
+    assert mimo_omni.supports_vision is True
+    assert mimo_omni.supports_reasoning is False
+
+    kimi_k2 = infer_model_metadata("kimi", "kimi-k2")
+    assert kimi_k2 is not None
+    assert kimi_k2.supports_reasoning is False
+
+
+@pytest.mark.parametrize(
     ("provider", "model", "context_window", "max_output_tokens"),
     [
         ("openai", "gpt-5.5", 1_000_000, 128_000),

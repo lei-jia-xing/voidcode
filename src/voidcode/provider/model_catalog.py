@@ -558,6 +558,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             return _metadata(context_window=1_000_000, max_output_tokens=384_000, values=common_deepseek)
         if model in {"deepseek-chat", "deepseek-reasoner"}:
             return _metadata(context_window=1_000_000, max_output_tokens=384_000, values=common_deepseek)
+        return _metadata(context_window=128_000, values=common_deepseek)
     if provider in {"qwen", "opencode-go"} or model.startswith(("qwen", "qwq", "qvq")):
         common_qwen = {
             "supports_tools": True,
@@ -587,6 +588,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             return _metadata(context_window=256_000, max_output_tokens=64_000, values=common_qwen)
         if model in {"qwen-plus-us", "qwen-flash-us"}:
             return _metadata(context_window=1_000_000, values=common_qwen)
+        if model.startswith(("qwen", "qwq", "qvq")):
+            return _metadata(context_window=128_000, values=common_qwen)
     if provider in {"glm", "opencode-go"} or model.startswith("glm-"):
         common_glm = {
             "supports_tools": True,
@@ -609,6 +612,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             return _metadata(context_window=198_000, max_output_tokens=128_000, values=common_glm)
         if model.startswith("glm-5"):
             return _metadata(context_window=200_000, values=common_glm)
+        if model.startswith("glm-"):
+            return _metadata(context_window=128_000, values=common_glm)
     if provider in {"kimi", "opencode-go"} or model.startswith(("kimi-", "moonshot-")):
         common_kimi = {
             "supports_tools": True,
@@ -639,6 +644,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             return _metadata(context_window=32_000, values=common_kimi)
         if model.startswith("moonshot-v1-8k"):
             return _metadata(context_window=8_000, values=common_kimi)
+        if model.startswith(("kimi-", "moonshot-")):
+            return _metadata(context_window=128_000, values=common_kimi)
     if provider in {"minimax", "opencode-go"} or model.startswith(("minimax-", "mimo-")):
         common_minimax = {
             "supports_tools": True,
@@ -664,6 +671,8 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             return _metadata(context_window=204_800, values=common_minimax)
         if model.startswith("mimo-v2.5"):
             return _metadata(context_window=256_000, values=common_minimax)
+        if model.startswith(("minimax-", "mimo-")):
+            return _metadata(context_window=192_000, values=common_minimax)
     if provider == "grok" or model.startswith("grok-"):
         common_grok = {
             "supports_tools": True,
@@ -684,6 +693,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
         }
         if model.startswith(("grok-4-1-fast", "grok-4-fast")):
             return _metadata(context_window=2_000_000, max_output_tokens=30_000, values=common_grok)
+        return _metadata(context_window=128_000, values=common_grok)
     return None
 
 

@@ -71,20 +71,15 @@ def clamp_effort_to_supported(effort: str, supported: tuple[str, ...] | None) ->
     return min(supported_canonical, key=canonical_by_name.__getitem__)
 
 
-def _is_glm_binary(provider_name: str, model_name: str) -> bool:
-    """GLM models only support binary thinking via extra_body, not effort levels."""
-    return provider_name == "glm" or model_name.startswith(("glm-5", "glm-z1"))
-
-
-def map_effort_for_provider(*, provider_name: str, model_name: str, effort: str) -> dict[str, object]:
+def map_effort_for_provider(*, provider_name: str, effort: str) -> dict[str, object]:
     """Map a canonical effort to the request kwargs a provider expects.
 
-    GLM (and GLM-prefixed models) take a binary `extra_body.thinking.type`
-    of "enabled"/"disabled". Everything else receives a `reasoning_effort`
-    kwarg, with "off" mapped to "none" and "max" collapsed to the highest
-    level the provider actually accepts.
+    The GLM provider takes a binary `extra_body.thinking.type` of
+    "enabled"/"disabled" (keyed on the exact provider name). Everything else
+    receives a `reasoning_effort` kwarg, with "off" mapped to "none" and
+    "max" collapsed to the highest level the provider actually accepts.
     """
-    if _is_glm_binary(provider_name, model_name):
+    if provider_name == "glm":
         thinking_type = "disabled" if effort == REASONING_EFFORT_OFF else "enabled"
         return {"extra_body": {"thinking": {"type": thinking_type}}}
 

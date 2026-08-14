@@ -2732,16 +2732,8 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     assert payload["api_key"] == "opencode-go-key"
     assert payload["timeout"] == 300.0
     assert "thinking" not in payload
-    if model_name == "glm-5.1":
-        extra_body_obj = payload.get("extra_body")
-        assert isinstance(extra_body_obj, dict)
-        thinking_obj = cast(dict[str, object], extra_body_obj).get("thinking")
-        assert isinstance(thinking_obj, dict)
-        assert cast(dict[str, object], thinking_obj)["type"] == "enabled"
-        assert "reasoning_effort" not in payload
-    else:
-        assert payload["reasoning_effort"] == "high"
-        assert "extra_body" not in payload
+    assert payload["reasoning_effort"] == "high"
+    assert "extra_body" not in payload
     if model_name in {"minimax-m2.7", "minimax-m2.5"}:
         assert payload["extra_headers"] == {
             "anthropic-version": "2023-06-01",

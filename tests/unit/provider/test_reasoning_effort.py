@@ -86,60 +86,61 @@ def test_clamp_effort_to_supported_snaps_up_when_below_all_supported() -> None:
 
 
 def test_map_effort_for_provider_maps_openai_off_to_none() -> None:
-    assert map_effort_for_provider(provider_name="openai", model_name="gpt-5", effort="off") == {
+    assert map_effort_for_provider(provider_name="openai", effort="off") == {
         "reasoning_effort": "none",
     }
 
 
 def test_map_effort_for_provider_maps_openai_max_to_xhigh() -> None:
-    assert map_effort_for_provider(provider_name="openai", model_name="gpt-5", effort="max") == {
+    assert map_effort_for_provider(provider_name="openai", effort="max") == {
         "reasoning_effort": "xhigh",
     }
 
 
 def test_map_effort_for_provider_maps_anthropic_max_to_max() -> None:
-    assert map_effort_for_provider(provider_name="anthropic", model_name="claude-sonnet", effort="max") == {
+    assert map_effort_for_provider(provider_name="anthropic", effort="max") == {
         "reasoning_effort": "max",
     }
 
 
 def test_map_effort_for_provider_maps_google_max_to_high() -> None:
-    assert map_effort_for_provider(provider_name="google", model_name="gemini-3", effort="max") == {
+    assert map_effort_for_provider(provider_name="google", effort="max") == {
         "reasoning_effort": "high",
     }
 
 
 def test_map_effort_for_provider_passes_other_values_through() -> None:
-    assert map_effort_for_provider(provider_name="openai", model_name="gpt-5", effort="medium") == {
+    assert map_effort_for_provider(provider_name="openai", effort="medium") == {
         "reasoning_effort": "medium",
     }
 
 
 def test_map_effort_for_provider_uses_glm_binary_for_glm_provider_off() -> None:
-    assert map_effort_for_provider(provider_name="glm", model_name="glm-5", effort="off") == {
+    assert map_effort_for_provider(provider_name="glm", effort="off") == {
         "extra_body": {"thinking": {"type": "disabled"}},
     }
 
 
 def test_map_effort_for_provider_uses_glm_binary_for_glm_provider_high() -> None:
-    assert map_effort_for_provider(provider_name="glm", model_name="glm-5", effort="high") == {
+    assert map_effort_for_provider(provider_name="glm", effort="high") == {
         "extra_body": {"thinking": {"type": "enabled"}},
     }
 
 
-def test_map_effort_for_provider_detects_glm_via_model_prefix() -> None:
-    assert map_effort_for_provider(provider_name="custom", model_name="glm-z1", effort="low") == {
-        "extra_body": {"thinking": {"type": "enabled"}},
-    }
-
-
-def test_map_effort_for_provider_detects_glm_via_glm_5_prefix() -> None:
-    assert map_effort_for_provider(provider_name="custom", model_name="glm-5-turbo", effort="off") == {
-        "extra_body": {"thinking": {"type": "disabled"}},
-    }
-
-
-def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_non_glm() -> None:
-    assert map_effort_for_provider(provider_name="custom", model_name="some-model", effort="high") == {
-        "reasoning_effort": "high",
+@pytest.mark.parametrize(
+    ("provider_name", "effort", "expected"),
+    [
+        ("custom", "low", "low"),
+        ("custom", "off", "none"),
+        ("custom", "max", "xhigh"),
+        ("opencode-go", "high", "high"),
+    ],
+)
+def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_non_glm(
+    provider_name: str,
+    effort: str,
+    expected: str,
+) -> None:
+    assert map_effort_for_provider(provider_name=provider_name, effort=effort) == {
+        "reasoning_effort": expected,
     }

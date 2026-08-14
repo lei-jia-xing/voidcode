@@ -333,7 +333,6 @@ class LiteLLMBackendSingleAgentProvider:
         effort = clamp_effort_to_supported(effort, supported)
         mapped = map_effort_for_provider(
             provider_name=self.name,
-            model_name=self._mapped_model_name_for_request(request),
             effort=effort,
         )
         extra_body = mapped.get("extra_body")
