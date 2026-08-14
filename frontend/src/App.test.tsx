@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
 import { useAppStore } from "./store";
+import { RuntimeClient } from "./lib/runtime/client";
 import type { RuntimeStatusSnapshot } from "./lib/runtime/types";
 import "./i18n";
 
@@ -276,6 +277,24 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop generation" }));
 
     expect(cancelCurrentRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open the session event follow stream while a run is active", () => {
+    const sessionEventsSpy = vi
+      .spyOn(RuntimeClient, "sessionEvents")
+      .mockImplementation(async function* () {});
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      currentSessionId: "session-running",
+      currentSessionEvents: [],
+      runStatus: "running",
+    });
+
+    render(<App />);
+
+    expect(sessionEventsSpy).not.toHaveBeenCalled();
+    sessionEventsSpy.mockRestore();
   });
 
   it("renders independent sessions, file tree, and code review toggles in the workspace header", () => {

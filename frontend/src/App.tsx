@@ -347,7 +347,7 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!currentSessionId) return;
+    if (!currentSessionId || isRunning) return;
     const controller = new AbortController();
     const afterSequence = sessionEventCursorRef.current;
     void (async () => {
@@ -373,6 +373,7 @@ function App() {
     return () => controller.abort();
   }, [
     currentSessionId,
+    isRunning,
     loadBackgroundTaskOutput,
     loadBackgroundTasks,
     selectedBackgroundTaskOutputId,
