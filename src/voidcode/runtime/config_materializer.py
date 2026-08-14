@@ -6,6 +6,7 @@ from typing import cast
 
 from ..provider.errors import format_invalid_provider_config_error
 from ..provider.models import ResolvedProviderConfig
+from ..provider.reasoning_effort import normalize_reasoning_effort
 from .config import (
     ExecutionEngineName,
     ExternalDirectoryPermissionConfig,
@@ -197,10 +198,8 @@ def parse_persisted_runtime_config(
         persisted_reasoning_effort = runtime_config.get("reasoning_effort")
         if persisted_reasoning_effort is None:
             reasoning_effort = None
-        elif isinstance(persisted_reasoning_effort, str) and persisted_reasoning_effort:
-            reasoning_effort = persisted_reasoning_effort
         else:
-            raise ValueError("persisted runtime_config reasoning_effort must be a non-empty string")
+            reasoning_effort = normalize_reasoning_effort(persisted_reasoning_effort)
 
     providers = None
     if "providers" in runtime_config:

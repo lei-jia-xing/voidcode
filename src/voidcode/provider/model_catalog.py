@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .config import LiteLLMProviderConfig
+from .reasoning_effort import CANONICAL_EFFORTS
 
 type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
 type ModelMetadataValue = bool | int | float | str | None | tuple[str, ...]
@@ -33,6 +34,7 @@ class ProviderModelMetadata:
     cost_per_cache_write_token: float | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
+    supported_effort_levels: tuple[str, ...] | None = None
     supports_reasoning_summary: bool | None = None
     supports_thinking_budget: bool | None = None
     supports_interleaved_reasoning: bool | None = None
@@ -44,6 +46,8 @@ class ProviderModelMetadata:
     derived_max_input_tokens: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self.default_reasoning_effort is not None and self.default_reasoning_effort not in CANONICAL_EFFORTS:
+            raise ValueError(f"default_reasoning_effort must be one of {CANONICAL_EFFORTS}; got {self.default_reasoning_effort!r}")
         if self.max_input_tokens is not None or self.context_window is None:
             return
         if self.max_output_tokens is None:
@@ -87,6 +91,8 @@ class ProviderModelMetadata:
             payload["supports_reasoning_effort"] = self.supports_reasoning_effort
         if self.default_reasoning_effort is not None:
             payload["default_reasoning_effort"] = self.default_reasoning_effort
+        if self.supported_effort_levels is not None:
+            payload["supported_effort_levels"] = list(self.supported_effort_levels)
         if self.supports_reasoning_summary is not None:
             payload["supports_reasoning_summary"] = self.supports_reasoning_summary
         if self.supports_thinking_budget is not None:
@@ -190,6 +196,7 @@ class _OpenAICompatibleModelItem(_DiscoveryPayloadModel):
     supports_json_mode: bool | None = None
     supports_reasoning_effort: bool | None = None
     default_reasoning_effort: str | None = None
+    supported_effort_levels: list[str] | None = None
     supports_reasoning_summary: bool | None = None
     supports_thinking_budget: bool | None = None
     supports_interleaved_reasoning: bool | None = None
@@ -323,6 +330,7 @@ def _metadata(
         cost_per_cache_write_token=_non_negative_float(values.get("cost_per_cache_write_token")),
         supports_reasoning_effort=_optional_bool(values.get("supports_reasoning_effort")),
         default_reasoning_effort=_optional_str(values.get("default_reasoning_effort")),
+        supported_effort_levels=_effort_levels_tuple(values.get("supported_effort_levels")),
         supports_reasoning_summary=_optional_bool(values.get("supports_reasoning_summary")),
         supports_thinking_budget=_optional_bool(values.get("supports_thinking_budget")),
         supports_interleaved_reasoning=_optional_bool(values.get("supports_interleaved_reasoning")),
@@ -340,6 +348,14 @@ def _modalities_tuple(value: object) -> tuple[str, ...] | None:
     raw_items = cast(Iterable[object], value)
     modalities = tuple(item for item in raw_items if isinstance(item, str) and item)
     return modalities or None
+
+
+def _effort_levels_tuple(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list | tuple):
+        return None
+    raw_items = cast(Iterable[object], value)
+    levels = tuple(item for item in raw_items if isinstance(item, str) and item)
+    return levels or None
 
 
 def _tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
@@ -397,6 +413,7 @@ def merge_model_metadata(
         cost_per_cache_write_token=_override_value(inferred.cost_per_cache_write_token, override.cost_per_cache_write_token),
         supports_reasoning_effort=_override_value(inferred.supports_reasoning_effort, override.supports_reasoning_effort),
         default_reasoning_effort=_override_value(inferred.default_reasoning_effort, override.default_reasoning_effort),
+        supported_effort_levels=_override_value(inferred.supported_effort_levels, override.supported_effort_levels),
         supports_reasoning_summary=_override_value(inferred.supports_reasoning_summary, override.supports_reasoning_summary),
         supports_thinking_budget=_override_value(inferred.supports_thinking_budget, override.supports_thinking_budget),
         supports_interleaved_reasoning=_override_value(
@@ -428,6 +445,7 @@ def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMe
             "supports_json_mode": True,
             "supports_reasoning_effort": model.startswith(("gpt-5", "o1", "o3", "o4")),
             "default_reasoning_effort": "medium" if model.startswith(("gpt-5", "o1", "o3", "o4")) else None,
+            "supported_effort_levels": ("minimal", "low", "medium", "high", "xhigh"),
             "supports_reasoning_summary": model.startswith(("gpt-5", "o1", "o3", "o4")),
             "supports_thinking_budget": False,
             "supports_interleaved_reasoning": model.startswith(("gpt-5", "o3", "o4")),
@@ -783,6 +801,13 @@ def _modalities(value: object) -> tuple[str, ...] | None:
     return modalities or None
 
 
+def _canonical_effort(value: object) -> str | None:
+    effort = _optional_str(value)
+    if effort is None or effort not in CANONICAL_EFFORTS:
+        return None
+    return effort
+
+
 def _metadata_from_discovery_item(
     item: _OpenAICompatibleModelItem,
 ) -> ProviderModelMetadata | None:
@@ -806,7 +831,8 @@ def _metadata_from_discovery_item(
         cost_per_cache_read_token=_non_negative_float(raw.get("cache_read_input_token_cost")),
         cost_per_cache_write_token=_non_negative_float(raw.get("cache_creation_input_token_cost")),
         supports_reasoning_effort=_optional_bool(raw.get("supports_reasoning_effort")),
-        default_reasoning_effort=_optional_str(raw.get("default_reasoning_effort")),
+        default_reasoning_effort=_canonical_effort(raw.get("default_reasoning_effort")),
+        supported_effort_levels=_modalities(raw.get("supported_effort_levels")),
         supports_interleaved_reasoning=_optional_bool(raw.get("supports_interleaved_reasoning")),
         modalities_input=input_modalities,
         modalities_output=output_modalities,

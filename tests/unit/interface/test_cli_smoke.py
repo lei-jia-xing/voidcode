@@ -298,6 +298,16 @@ def test_serve_command_help_works() -> None:
     assert "transport" in result.stdout.lower()
 
 
+def test_run_help_lists_canonical_reasoning_effort_levels() -> None:
+    result = _run_module_cli("run", "--help")
+
+    assert result.returncode == 0
+    help_text = result.stdout.lower()
+    assert "--reasoning-effort" in help_text
+    for level in ("off", "minimal", "low", "medium", "high", "xhigh", "max"):
+        assert level in help_text
+
+
 def test_top_level_help_includes_examples() -> None:
     result = _run_module_cli("--help")
 

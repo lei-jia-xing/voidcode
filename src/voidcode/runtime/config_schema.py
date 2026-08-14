@@ -89,7 +89,7 @@ def runtime_config_json_schema() -> dict[str, object]:
             },
             "reasoning_effort": {
                 "type": "string",
-                "minLength": 1,
+                "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
                 "description": (
                     "Optional runtime-owned reasoning-effort hint forwarded to the active "
                     "provider when supported (for example, 'low', 'medium', 'high'). Runtime "

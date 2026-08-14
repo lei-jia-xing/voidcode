@@ -7,6 +7,7 @@ import type {
   ProviderModelsResult,
   ProviderSummary,
 } from "../lib/runtime/types";
+import { REASONING_EFFORT_LEVELS } from "../lib/reasoningEffort";
 
 interface ComposerProps {
   disabled: boolean;
@@ -486,11 +487,11 @@ export function Composer({
                     disabled={disabled}
                     className="rounded-md bg-transparent px-1 py-1 text-[var(--vc-text-muted)] disabled:opacity-50 hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vc-focus-ring)]"
                   >
-                    <option value="minimal">minimal</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="xhigh">xhigh</option>
+                    {REASONING_EFFORT_LEVELS.map((level) => (
+                      <option key={level} value={level}>
+                        {level}
+                      </option>
+                    ))}
                   </select>
                 </label>
               )}

@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
+from ..provider.reasoning_effort import normalize_reasoning_effort
 from . import mode as runtime_mode
 from .events import (
     DelegatedExecutionPayload,
@@ -528,10 +529,7 @@ def validate_runtime_request_metadata(
         normalized["provider_stream"] = provider_stream
 
     if "reasoning_effort" in metadata:
-        normalized["reasoning_effort"] = _validate_optional_runtime_metadata_string(
-            metadata["reasoning_effort"],
-            field_name="reasoning_effort",
-        )
+        normalized["reasoning_effort"] = normalize_reasoning_effort(metadata["reasoning_effort"])
 
     if "show_thinking" in metadata:
         show_thinking = metadata["show_thinking"]

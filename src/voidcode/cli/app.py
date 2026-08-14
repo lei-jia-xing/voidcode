@@ -2722,7 +2722,7 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 @click.option("--max-steps", type=int, help="Optional max graph steps override for this run.")
 @click.option(
     "--reasoning-effort",
-    help="Optional runtime-owned reasoning-effort hint forwarded to the active provider.",
+    help="Reasoning-effort level: off, minimal, low, medium, high, xhigh, max.",
 )
 @_show_thinking_option("Show persisted reasoning/thinking text; hidden by default.")
 @_json_option("Output a structured JSON payload with session, events, and final output.")

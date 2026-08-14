@@ -465,8 +465,75 @@ def test_runtime_config_rejects_empty_reasoning_effort_in_repo_file(tmp_path: Pa
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="reasoning_effort"):
+    with pytest.raises(
+        ValueError,
+        match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
+    ):
         load_runtime_config(tmp_path, env={})
+
+
+@pytest.mark.parametrize("invalid_value", ["none", "banana", "High", "", 42, True])
+def test_runtime_config_rejects_non_canonical_reasoning_effort_in_repo_file(
+    tmp_path: Path,
+    invalid_value: object,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"reasoning_effort": invalid_value}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
+    ):
+        load_runtime_config(tmp_path, env={})
+
+
+@pytest.mark.parametrize("invalid_value", ["none", "banana", "High"])
+def test_runtime_config_rejects_non_canonical_reasoning_effort_environment(
+    tmp_path: Path,
+    invalid_value: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
+    ):
+        load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: invalid_value})
+
+
+def test_runtime_config_rejects_non_canonical_explicit_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
+    ):
+        load_runtime_config(tmp_path, reasoning_effort="none", env={})
+
+
+@pytest.mark.parametrize("valid_value", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_runtime_config_accepts_canonical_reasoning_effort_in_repo_file(
+    tmp_path: Path,
+    valid_value: str,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"reasoning_effort": valid_value}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.reasoning_effort == valid_value
+
+
+@pytest.mark.parametrize("valid_value", ["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_runtime_config_accepts_canonical_reasoning_effort_environment(
+    tmp_path: Path,
+    valid_value: str,
+) -> None:
+    config = load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: valid_value})
+
+    assert config.reasoning_effort == valid_value
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:

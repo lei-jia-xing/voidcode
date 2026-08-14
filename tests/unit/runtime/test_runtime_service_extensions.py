@@ -11316,13 +11316,29 @@ def test_runtime_accepts_reasoning_effort_request_metadata(tmp_path: Path) -> No
     assert _SkillCapturingStubGraph.last_request.metadata["reasoning_effort"] == "high"
 
 
-@pytest.mark.parametrize("invalid_value", ["", 1, True, None])
+@pytest.mark.parametrize(
+    "valid_value",
+    ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+)
+def test_runtime_accepts_canonical_reasoning_effort_request_metadata(
+    tmp_path: Path,
+    valid_value: str,
+) -> None:
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
+
+    _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"reasoning_effort": valid_value}))
+
+    assert _SkillCapturingStubGraph.last_request is not None
+    assert _SkillCapturingStubGraph.last_request.metadata["reasoning_effort"] == valid_value
+
+
+@pytest.mark.parametrize("invalid_value", ["none", "banana", "High", "", 1, True, None])
 def test_runtime_rejects_invalid_reasoning_effort_request_metadata(tmp_path: Path, invalid_value: object) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_SkillCapturingStubGraph())
 
     with pytest.raises(
         ValueError,
-        match="request metadata 'reasoning_effort' must be a non-empty string",
+        match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
     ):
         _ = runtime.run(
             RuntimeRequest(
@@ -12245,6 +12261,55 @@ def test_runtime_effective_runtime_config_rejects_invalid_persisted_max_steps(
         match="persisted runtime_config max_steps must be a non-negative integer",
     ):
         _ = resumed_runtime.effective_runtime_config(session_id="invalid-max-steps")
+
+
+def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_invalid(
+    tmp_path: Path,
+) -> None:
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("config session\n", encoding="utf-8")
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            approval_mode="allow",
+            model="session/model",
+            reasoning_effort="high",
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="invalid-reasoning-effort"))
+
+    database_path = sessions_db_path()
+    connection = sqlite3.connect(database_path)
+    try:
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            ("invalid-reasoning-effort",),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(str(row[0]))
+        assert isinstance(metadata, dict)
+        metadata_dict = cast(dict[str, object], metadata)
+        runtime_config = cast(dict[str, object], metadata_dict["runtime_config"])
+        runtime_config["reasoning_effort"] = "none"
+        _ = connection.execute(
+            "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+            (json.dumps(metadata_dict, sort_keys=True), "invalid-reasoning-effort"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    resumed_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(reasoning_effort="low"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"reasoning_effort must be one of: off, minimal, low, medium, high, xhigh, max",
+    ):
+        _ = resumed_runtime.effective_runtime_config(session_id="invalid-reasoning-effort")
 
 
 def test_runtime_effective_runtime_config_keeps_persisted_non_agent_sessions_clear_of_fresh_agent_defaults(  # noqa: E501

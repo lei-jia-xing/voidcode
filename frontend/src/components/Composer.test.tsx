@@ -154,6 +154,19 @@ describe("Composer", () => {
     });
     expect(effortSelect).toHaveValue("high");
 
+    const options = Array.from(effortSelect.querySelectorAll("option")).map(
+      (option) => option.value,
+    );
+    expect(options).toEqual([
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+
     fireEvent.change(effortSelect, { target: { value: "low" } });
 
     expect(onReasoningEffortChange).toHaveBeenCalledWith("low");

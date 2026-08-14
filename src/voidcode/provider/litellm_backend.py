@@ -41,6 +41,7 @@ from .protocol import (
     ProviderTurnRequest,
     ProviderTurnResult,
 )
+from .reasoning_effort import clamp_effort_to_supported, map_effort_for_provider, normalize_reasoning_effort
 from .trace import write_provider_trace
 
 _DEFAULT_COMPLETION_TIMEOUT_SECONDS = 300.0
@@ -327,11 +328,19 @@ class LiteLLMBackendSingleAgentProvider:
         if not request.reasoning_effort:
             return kwargs
 
-        effort = request.reasoning_effort.strip()
-        if not effort:
-            return kwargs
-
-        kwargs["reasoning_effort"] = request.reasoning_effort
+        effort = normalize_reasoning_effort(request.reasoning_effort)
+        supported = request.model_metadata.supported_effort_levels if request.model_metadata is not None else None
+        effort = clamp_effort_to_supported(effort, supported)
+        mapped = map_effort_for_provider(
+            provider_name=self.name,
+            model_name=self._mapped_model_name_for_request(request),
+            effort=effort,
+        )
+        extra_body = mapped.get("extra_body")
+        if isinstance(extra_body, dict):
+            _merge_extra_body(kwargs, cast(dict[str, object], extra_body))
+        else:
+            kwargs.update(mapped)
         return kwargs
 
     def _stream_completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:

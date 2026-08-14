@@ -16,6 +16,7 @@ from voidcode.provider.model_catalog import (
     discover_available_models,
     infer_model_metadata,
 )
+from voidcode.provider.reasoning_effort import CANONICAL_EFFORTS
 
 
 def test_discover_available_models_combines_alias_discovery_and_targets() -> None:
@@ -811,3 +812,131 @@ def test_discover_available_models_custom_provider_uses_token_auth_header_withou
     headers = {str(k).lower(): str(v) for k, v in dict(cast(dict[str, str], captured["headers"])).items()}
     assert headers.get("x-api-key") == "token-raw"
     assert result.discovery_mode == "configured_base_url"
+
+
+def test_payload_serializes_supported_effort_levels_as_json_list() -> None:
+    payload = ProviderModelMetadata(
+        supported_effort_levels=("low", "high"),
+    ).payload()
+
+    assert payload["supported_effort_levels"] == ["low", "high"]
+
+
+def test_payload_omits_supported_effort_levels_when_none() -> None:
+    payload = ProviderModelMetadata(
+        supports_reasoning_effort=True,
+        default_reasoning_effort="medium",
+    ).payload()
+
+    assert "supported_effort_levels" not in payload
+
+
+def test_metadata_values_parse_supported_effort_levels_list_to_tuple() -> None:
+    metadata = model_catalog._metadata(
+        context_window=100,
+        values={"supported_effort_levels": ["low", "high"]},
+    )
+
+    assert metadata.supported_effort_levels == ("low", "high")
+
+
+def test_metadata_values_accept_supported_effort_levels_tuple() -> None:
+    metadata = model_catalog._metadata(
+        context_window=100,
+        values={"supported_effort_levels": ("minimal", "medium")},
+    )
+
+    assert metadata.supported_effort_levels == ("minimal", "medium")
+
+
+def test_metadata_values_tolerate_malformed_supported_effort_levels() -> None:
+    metadata = model_catalog._metadata(
+        context_window=100,
+        values={"supported_effort_levels": ["low", "banana", 42, ""]},
+    )
+
+    assert metadata.supported_effort_levels == ("low", "banana")
+
+
+def test_merge_model_metadata_override_replaces_supported_effort_levels() -> None:
+    inferred = ProviderModelMetadata(
+        supported_effort_levels=("minimal", "low", "medium", "high", "xhigh"),
+    )
+    override = ProviderModelMetadata(supported_effort_levels=("low",))
+
+    merged = model_catalog.merge_model_metadata(inferred=inferred, override=override)
+
+    assert merged is not None
+    assert merged.supported_effort_levels == ("low",)
+
+
+def test_merge_model_metadata_keeps_inferred_supported_effort_levels_without_override() -> None:
+    inferred = ProviderModelMetadata(
+        supported_effort_levels=("minimal", "low", "medium", "high", "xhigh"),
+    )
+
+    merged = model_catalog.merge_model_metadata(inferred=inferred, override=None)
+
+    assert merged is not None
+    assert merged.supported_effort_levels == ("minimal", "low", "medium", "high", "xhigh")
+
+
+def test_infer_model_metadata_openai_exposes_explicit_effort_ladder() -> None:
+    metadata = infer_model_metadata("openai", "gpt-5")
+
+    assert metadata is not None
+    assert metadata.supported_effort_levels == ("minimal", "low", "medium", "high", "xhigh")
+    assert "max" not in metadata.supported_effort_levels
+    assert "off" not in metadata.supported_effort_levels
+
+
+def test_infer_model_metadata_other_families_leave_effort_ladder_unset() -> None:
+    anthropic_metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
+    google_metadata = infer_model_metadata("google", "gemini-2.5-pro")
+    deepseek_metadata = infer_model_metadata("deepseek", "deepseek-reasoner")
+
+    assert anthropic_metadata is not None
+    assert google_metadata is not None
+    assert deepseek_metadata is not None
+    assert anthropic_metadata.supported_effort_levels is None
+    assert google_metadata.supported_effort_levels is None
+    assert deepseek_metadata.supported_effort_levels is None
+
+
+def test_infer_model_metadata_default_effort_is_canonical_across_families() -> None:
+    cases = [
+        ("openai", "gpt-5"),
+        ("openai", "gpt-4o"),
+        ("anthropic", "claude-sonnet-4-6"),
+        ("google", "gemini-2.5-pro"),
+        ("deepseek", "deepseek-reasoner"),
+        ("qwen", "qwen3.5-plus"),
+        ("glm", "glm-5"),
+        ("kimi", "kimi-k2-thinking"),
+        ("minimax", "minimax-m2"),
+        ("grok", "grok-4-1-fast-reasoning"),
+    ]
+
+    for provider, model in cases:
+        metadata = infer_model_metadata(provider, model)
+        assert metadata is not None, f"{provider}/{model} should infer metadata"
+        assert metadata.default_reasoning_effort is None or metadata.default_reasoning_effort in CANONICAL_EFFORTS, (
+            f"{provider}/{model} default_reasoning_effort must be canonical"
+        )
+
+
+def test_provider_model_metadata_rejects_non_canonical_default_effort() -> None:
+    with pytest.raises(ValueError):
+        ProviderModelMetadata(default_reasoning_effort="banana")
+
+
+def test_discovery_item_preserves_supported_effort_levels() -> None:
+    item = model_catalog._OpenAICompatibleModelItem(
+        id="gpt-5",
+        supported_effort_levels=["low", "high"],
+    )
+
+    metadata = model_catalog._metadata_from_discovery_item(item)
+
+    assert metadata is not None
+    assert metadata.supported_effort_levels == ("low", "high")

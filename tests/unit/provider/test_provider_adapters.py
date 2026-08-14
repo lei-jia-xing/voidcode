@@ -2589,7 +2589,7 @@ def test_provider_adapter_passes_reasoning_effort_for_direct_litellm_provider(
     assert payload["reasoning_effort"] == "high"
 
 
-def test_glm_provider_passes_reasoning_effort_through_without_translation(
+def test_glm_provider_maps_reasoning_effort_to_binary_thinking_extra_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
@@ -2605,9 +2605,74 @@ def test_glm_provider_passes_reasoning_effort_through_without_translation(
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
-    assert payload["reasoning_effort"] == "high"
-    assert "extra_body" not in payload
-    assert "allowed_openai_params" not in payload
+    extra_body_obj = payload.get("extra_body")
+    assert isinstance(extra_body_obj, dict)
+    thinking_obj = cast(dict[str, object], extra_body_obj).get("thinking")
+    assert isinstance(thinking_obj, dict)
+    assert cast(dict[str, object], thinking_obj)["type"] == "enabled"
+    assert "reasoning_effort" not in payload
+
+    _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="off"))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    extra_body_obj = payload.get("extra_body")
+    assert isinstance(extra_body_obj, dict)
+    thinking_obj = cast(dict[str, object], extra_body_obj).get("thinking")
+    assert isinstance(thinking_obj, dict)
+    assert cast(dict[str, object], thinking_obj)["type"] == "disabled"
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "effort", "expected"),
+    [
+        ("openai", "off", "none"),
+        ("openai", "max", "xhigh"),
+        ("anthropic", "max", "max"),
+        ("google", "max", "high"),
+    ],
+)
+def test_provider_adapter_maps_reasoning_effort_for_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    effort: str,
+    expected: str,
+) -> None:
+    provider = {
+        "openai": OpenAIModelProvider(),
+        "anthropic": AnthropicModelProvider(),
+        "google": GoogleModelProvider(),
+    }[provider_name].turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort=effort))
+
+    payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
+    assert isinstance(payload_obj, dict)
+    payload = cast(dict[str, object], payload_obj)
+    assert payload["reasoning_effort"] == expected
+
+
+def test_provider_adapter_rejects_invalid_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
+
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="ok",
+    )
+
+    with pytest.raises(ValueError):
+        _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="insane"))
 
 
 @pytest.mark.parametrize(
@@ -2667,8 +2732,16 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     assert payload["api_key"] == "opencode-go-key"
     assert payload["timeout"] == 300.0
     assert "thinking" not in payload
-    assert payload["reasoning_effort"] == "high"
-    assert "extra_body" not in payload
+    if model_name == "glm-5.1":
+        extra_body_obj = payload.get("extra_body")
+        assert isinstance(extra_body_obj, dict)
+        thinking_obj = cast(dict[str, object], extra_body_obj).get("thinking")
+        assert isinstance(thinking_obj, dict)
+        assert cast(dict[str, object], thinking_obj)["type"] == "enabled"
+        assert "reasoning_effort" not in payload
+    else:
+        assert payload["reasoning_effort"] == "high"
+        assert "extra_body" not in payload
     if model_name in {"minimax-m2.7", "minimax-m2.5"}:
         assert payload["extra_headers"] == {
             "anthropic-version": "2023-06-01",
