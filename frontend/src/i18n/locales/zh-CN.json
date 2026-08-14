@@ -138,6 +138,7 @@
   "tool.process.start": "启动后台进程",
   "tool.process.stop": "停止后台进程",
   "tool.process.logs": "查看进程日志",
+  "tool.process.send": "发送输入",
   "tool.process.output": "输出",
   "task.elapsed": "已运行 {{value}}",
   "task.duration": "{{value}}",

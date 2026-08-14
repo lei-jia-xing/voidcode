@@ -67,7 +67,10 @@ from ..provider.snapshot import (
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
-from ..tools.background_process_start import BackgroundProcessManager
+from ..tools.background_process_logs import BackgroundProcessLogsTool
+from ..tools.background_process_send import BackgroundProcessSendTool
+from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
+from ..tools.background_process_stop import BackgroundProcessStopTool
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -706,6 +709,10 @@ class VoidCodeRuntime:
             question_tool=QuestionTool(),
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
+            background_process_start_tool=BackgroundProcessStartTool(runtime=self),
+            background_process_logs_tool=BackgroundProcessLogsTool(runtime=self),
+            background_process_stop_tool=BackgroundProcessStopTool(runtime=self),
+            background_process_send_tool=BackgroundProcessSendTool(runtime=self),
         )
 
     @property

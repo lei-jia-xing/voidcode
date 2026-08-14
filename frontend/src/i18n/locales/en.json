@@ -138,6 +138,7 @@
   "tool.process.start": "Start process",
   "tool.process.stop": "Stop process",
   "tool.process.logs": "Process logs",
+  "tool.process.send": "Send input",
   "tool.process.output": "Output",
   "task.elapsed": "{{value}} elapsed",
   "task.duration": "{{value}}",

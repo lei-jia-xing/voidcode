@@ -28,6 +28,10 @@ BUILTIN_TOOL_NAMES = frozenset(
         "ast_grep",
         "background_cancel",
         "background_output",
+        "background_process_logs",
+        "background_process_send",
+        "background_process_start",
+        "background_process_stop",
         "edit",
         "format_file",
         "glob",
@@ -191,6 +195,10 @@ class BuiltinToolProvider:
     _question_tool: Tool | None
     _background_output_tool: Tool | None
     _background_cancel_tool: Tool | None
+    _background_process_start_tool: Tool | None
+    _background_process_logs_tool: Tool | None
+    _background_process_stop_tool: Tool | None
+    _background_process_send_tool: Tool | None
 
     def __init__(
         self,
@@ -204,6 +212,10 @@ class BuiltinToolProvider:
         question_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
+        background_process_start_tool: Tool | None = None,
+        background_process_logs_tool: Tool | None = None,
+        background_process_stop_tool: Tool | None = None,
+        background_process_send_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
         self._format_tool = format_tool
@@ -214,6 +226,10 @@ class BuiltinToolProvider:
         self._question_tool = question_tool
         self._background_output_tool = background_output_tool
         self._background_cancel_tool = background_cancel_tool
+        self._background_process_start_tool = background_process_start_tool
+        self._background_process_logs_tool = background_process_logs_tool
+        self._background_process_stop_tool = background_process_stop_tool
+        self._background_process_send_tool = background_process_send_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
         edit_tool = EditTool(hooks_config=self._hooks_config)
@@ -253,6 +269,18 @@ class BuiltinToolProvider:
 
         if self._background_cancel_tool is not None:
             tools.append(self._background_cancel_tool)
+
+        if self._background_process_start_tool is not None:
+            tools.append(self._background_process_start_tool)
+
+        if self._background_process_logs_tool is not None:
+            tools.append(self._background_process_logs_tool)
+
+        if self._background_process_stop_tool is not None:
+            tools.append(self._background_process_stop_tool)
+
+        if self._background_process_send_tool is not None:
+            tools.append(self._background_process_send_tool)
 
         tools.extend(self._mcp_tools)
 

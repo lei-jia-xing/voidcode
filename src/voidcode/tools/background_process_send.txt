@@ -1,0 +1,8 @@
+Write interactive input to a long-running background process's stdin.
+
+Usage:
+- Pass a process_id previously returned by `background_process_start`.
+- Use this tool to interact with a process that reads from stdin, such as a REPL, interactive watcher, or a server with a control prompt.
+- `input` is the text to write; `newline` (default true) appends a newline so the process treats it as a completed line.
+- For non-interactive background processes (dev servers that only log to stdout), prefer reading `background_process_logs` over sending input.
+- If the process has exited, this tool fails; check `background_process_logs` for the terminal state.

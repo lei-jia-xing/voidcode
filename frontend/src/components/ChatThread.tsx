@@ -178,6 +178,7 @@ function toolDisplayTitleFallback(tool: ChatTool): string {
     background_process_start: "background_process_start",
     background_process_stop: "background_process_stop",
     background_process_logs: "background_process_logs",
+    background_process_send: "background_process_send",
     background_output: "background_output",
     background_cancel: "background_cancel",
     background_retry: "background_retry",
@@ -708,6 +709,7 @@ function toolIcon(tool: ChatTool) {
     tool.name === "background_process_start" ||
     tool.name === "background_process_stop" ||
     tool.name === "background_process_logs" ||
+    tool.name === "background_process_send" ||
     tool.name === "background_output" ||
     tool.name === "background_cancel" ||
     tool.name === "background_retry"
@@ -1644,7 +1646,9 @@ function BackgroundProcessToolActivity({ tool }: { tool: ChatTool }) {
       ? t("tool.process.start")
       : tool.name === "background_process_stop"
         ? t("tool.process.stop")
-        : t("tool.process.logs");
+        : tool.name === "background_process_send"
+          ? t("tool.process.send")
+          : t("tool.process.logs");
   const subtitle = command ?? processId ?? action;
   return (
     <ToolDisclosureRow
@@ -2012,7 +2016,8 @@ function ToolActivity({
   if (
     tool.name === "background_process_start" ||
     tool.name === "background_process_stop" ||
-    tool.name === "background_process_logs"
+    tool.name === "background_process_logs" ||
+    tool.name === "background_process_send"
   )
     return <BackgroundProcessToolActivity tool={tool} />;
   return <GenericToolActivity tool={tool} />;

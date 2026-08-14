@@ -15,6 +15,7 @@ What voidcode MUST do. Keep this surface minimal.
 | Execution | Single-agent loop with provider-backed and deterministic engines | `runtime/service.py` |
 | Persistence | Append-only event log + SQLite session store | `runtime/storage.py` |
 | Tools | Builtin registry: read, write, edit, glob, grep, web_fetch, web_search, apply_patch, code_search, multi_edit, todo_write, lsp | `tools/` |
+| Background processes | Spawn, poll logs, send stdin, and stop long-running workspace processes (dev servers, watchers) | `tools/background_process_*.py`; `shell_exec` remains the one-shot escape hatch |
 | Approval | Permission policy driven by `ToolDefinition.read_only` | `runtime/permission.py` |
 | Delegation | Runtime-owned background tasks with fixed child presets (advisor, explore, researcher, worker) | `docs/contracts/background-task-delegation.md` |
 | Resume | Session replay, approval continuation, context compaction | `runtime/service.py` |
@@ -45,7 +46,6 @@ What voidcode will NEVER implement in the runtime core.
 | **Memory tools** (save/recall/search across sessions) | Replaced by workspace files. Long-term memory is an extension point, not a runtime primitive. See [memory-strategy.md](./memory-strategy.md). |
 | **Per-file permission dialogs** | Trust model or containerization. Interactive per-file approval at the tool-call level does not scale; the current read-only/write policy split is sufficient. |
 | **Interactive shell / REPL tool** | `bash` is the escape hatch. A dedicated interactive shell tool duplicates what bash already provides and adds state-management complexity the runtime should not own. |
-| **Background process tools** | Removed. `bash` handles backgrounding. The runtime should not track arbitrary OS processes. |
 | **`todo_list` as a model-facing tool** | `todo_write` exists for structured task tracking. A separate `todo_list` model-facing tool is redundant surface area. |
 
 ### Agent Architecture
