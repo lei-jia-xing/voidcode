@@ -1549,3 +1549,37 @@ def test_provider_provider_graph_stream_error_maps_to_provider_execution_error()
             tool_results=(),
             session=_session(),
         )
+
+
+def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:
+    provider_model = resolve_provider_model(
+        "opencode/gpt-5.4",
+        registry=ModelProviderRegistry.with_defaults(),
+    )
+    graph = ProviderGraph(provider=_BatchNonStreamingTurnProvider(), provider_model=provider_model)
+    request_context = RuntimeContextWindow(prompt="read two files")
+    request = GraphRunRequest(
+        session=_session(),
+        prompt="read two files",
+        available_tools=_tool_definitions(),
+        context_window=request_context,
+        assembled_context=_assembled_from_context_window(request_context),
+    )
+
+    first_step = graph.step(request=request, tool_results=(), session=_session())
+
+    assert first_step.tool_call is not None
+    assert first_step.tool_call.tool_call_id == "call-alpha"
+    assert graph.pending_tool_call_count == 1
+    assert graph.is_at_safe_boundary() is False
+
+    second_step = graph.step(
+        request=request,
+        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        session=_session(),
+    )
+
+    assert second_step.tool_call is not None
+    assert second_step.tool_call.tool_call_id == "call-beta"
+    assert graph.pending_tool_call_count == 0
+    assert graph.is_at_safe_boundary() is True

@@ -258,6 +258,13 @@ class ProviderGraph:
             provider_usage=turn_result.usage,
         )
 
+    @property
+    def pending_tool_call_count(self) -> int:
+        return len(self._pending_tool_calls)
+
+    def is_at_safe_boundary(self) -> bool:
+        return self.pending_tool_call_count == 0
+
     def _consume_pending_tool_call(
         self,
         *,
