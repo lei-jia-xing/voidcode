@@ -9,13 +9,13 @@ from typing import Any, cast
 
 import pytest
 
-from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
+from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownSessionError
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.paths import sessions_db_path, state_home
 from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -26,6 +26,39 @@ from voidcode.runtime.workflow_snapshot import workflow_snapshot_from_metadata
 
 def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
+
+
+def _run_session(
+    store: SqliteSessionStore,
+    workspace: Path,
+    request: RuntimeRequest,
+    response: RuntimeResponse,
+) -> None:
+    """Simulate the run loop: create a running row, append the response events
+    incrementally via ``append_session_events``, then seal the terminal
+    snapshot via ``save_run``."""
+    session = response.session.session
+    store.save_run(
+        workspace=workspace,
+        request=request,
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id=session.id, parent_id=session.parent_id),
+                status="running",
+                turn=response.session.turn,
+                metadata=response.session.metadata,
+            ),
+            events=(),
+            output=None,
+        ),
+    )
+    if response.events:
+        store.append_session_events(
+            workspace=workspace,
+            session_id=session.id,
+            events=tuple((event.event_type, event.source, event.payload, None) for event in response.events),
+        )
+    store.save_run(workspace=workspace, request=request, response=response)
 
 
 def test_runtime_paths_honor_explicit_empty_env_mapping(
@@ -303,7 +336,7 @@ def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) 
         ),
         output="bad branch",
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    _run_session(store, tmp_path, request, response)
 
     marker = store.revert_session(workspace=tmp_path, session_id="undo-session", sequence=2)
     active = store.load_session(workspace=tmp_path, session_id="undo-session")
@@ -390,7 +423,7 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
         output="done",
     )
 
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    _run_session(store, tmp_path, request, response)
 
     loaded = store.load_session(workspace=tmp_path, session_id="todo-session")
 
@@ -404,7 +437,7 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
     assert isinstance(todos, list)
     assert cast(dict[str, object], todos[0])["content"] == "persist me"
 
-    store.revert_session(workspace=tmp_path, session_id="todo-session", sequence=3)
+    store.revert_session(workspace=tmp_path, session_id="todo-session", sequence=2)
     reverted = store.load_session(workspace=tmp_path, session_id="todo-session")
 
     raw_reverted_runtime_state = reverted.session.metadata["runtime_state"]
@@ -447,7 +480,7 @@ def test_session_storage_undo_uses_latest_visible_user_turn(tmp_path: Path) -> N
         ),
         output="second output",
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    _run_session(store, tmp_path, request, response)
 
     marker = store.undo_session(workspace=tmp_path, session_id="multi-turn-session")
 
@@ -459,55 +492,61 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
-    first_request = RuntimeRequest(prompt="first", session_id="continued-session")
-    first_response = RuntimeResponse(
-        session=SessionState(session=SessionRef(id="continued-session"), status="completed", turn=1),
-        events=(
-            EventEnvelope(
-                session_id="continued-session",
-                sequence=1,
-                event_type="runtime.request_received",
-                source="runtime",
-                payload={"prompt": "first"},
-            ),
-            EventEnvelope(
-                session_id="continued-session",
-                sequence=2,
-                event_type="graph.response_ready",
-                source="graph",
-                payload={"output": "first output"},
-            ),
+    session_id = "continued-session"
+    # Simulate the incremental run loop: create a running row, then append two
+    # batches of events before the terminal save_run seals the session.
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="first", session_id=session_id),
+        response=RuntimeResponse(
+            session=SessionState(session=SessionRef(id=session_id), status="running", turn=1, metadata={}),
+            events=(),
+            output=None,
         ),
-        output="first output",
     )
-    second_request = RuntimeRequest(prompt="second", session_id="continued-session")
-    second_response = RuntimeResponse(
-        session=SessionState(session=SessionRef(id="continued-session"), status="completed", turn=1),
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id=session_id,
         events=(
-            EventEnvelope(
-                session_id="continued-session",
-                sequence=3,
-                event_type="runtime.request_received",
-                source="runtime",
-                payload={"prompt": "second"},
-            ),
-            EventEnvelope(
-                session_id="continued-session",
-                sequence=4,
-                event_type="graph.response_ready",
-                source="graph",
-                payload={"output": "second output"},
-            ),
+            ("runtime.request_received", "runtime", {"prompt": "first"}, None),
+            ("graph.response_ready", "graph", {"output": "first output"}, None),
         ),
-        output="second output",
+    )
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id=session_id,
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "second"}, None),
+            ("graph.response_ready", "graph", {"output": "second output"}, None),
+        ),
+    )
+    with store._connect(tmp_path) as connection:
+        event_count_before_seal = connection.execute(
+            "SELECT COUNT(*) FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(tmp_path), session_id),
+        ).fetchone()[0]
+
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="second", session_id=session_id),
+        response=RuntimeResponse(
+            session=SessionState(session=SessionRef(id=session_id), status="completed", turn=1, metadata={}),
+            events=(),
+            output="second output",
+        ),
     )
 
-    store.save_run(workspace=tmp_path, request=first_request, response=first_response)
-    store.save_run(workspace=tmp_path, request=second_request, response=second_response)
+    with store._connect(tmp_path) as connection:
+        event_count_after_seal = connection.execute(
+            "SELECT COUNT(*) FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(tmp_path), session_id),
+        ).fetchone()[0]
 
-    replay = store.load_session(workspace=tmp_path, session_id="continued-session")
-    result = store.load_session_result(workspace=tmp_path, session_id="continued-session")
+    replay = store.load_session(workspace=tmp_path, session_id=session_id)
+    result = store.load_session_result(workspace=tmp_path, session_id=session_id)
 
+    assert event_count_before_seal == 4
+    assert event_count_after_seal == 4
     assert [event.sequence for event in replay.events] == [1, 2, 3, 4]
     request_prompts = [event.payload.get("prompt") for event in replay.events if event.event_type == "runtime.request_received"]
     assert request_prompts == [
@@ -516,6 +555,29 @@ def test_session_storage_preserves_prior_events_when_same_session_continues(
     ]
     assert result.last_event_sequence == 4
     assert result.output == "second output"
+
+
+def test_session_storage_save_run_writes_zero_session_events(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="seal only", session_id="seal-only-session"),
+        response=_completed_response("seal-only-session"),
+    )
+
+    with store._connect(tmp_path) as connection:
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(tmp_path), "seal-only-session"),
+        ).fetchone()[0]
+
+    assert event_count == 0
+    assert store.load_session(workspace=tmp_path, session_id="seal-only-session").events == ()
+
+
+def test_session_storage_removed_private_event_writers() -> None:
+    assert not hasattr(SqliteSessionStore, "_replace" + "_session_events")
+    assert not hasattr(SqliteSessionStore, "_session_events_payload")
 
 
 def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path: Path) -> None:
@@ -575,8 +637,17 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 7
+    assert schema_version == 8
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
+
+
+def test_session_storage_parses_interrupted_session_status(tmp_path: Path) -> None:
+    database_path = tmp_path / "interrupted-status.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+
+    assert store._parse_session_status("interrupted") == "interrupted"
+    with pytest.raises(ValueError):
+        store._parse_session_status("not-a-status")
 
 
 def test_session_storage_bootstraps_sequences_from_existing_timestamps(tmp_path: Path) -> None:
@@ -712,7 +783,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 7 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 8 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -1011,7 +1082,7 @@ def test_session_storage_projects_tool_effectiveness_from_persisted_events(tmp_p
         ),
         output="done",
     )
-    store.save_run(workspace=tmp_path, request=request, response=response)
+    _run_session(store, tmp_path, request, response)
 
     report = store.tool_effectiveness_report(workspace=tmp_path)
 
@@ -1180,10 +1251,11 @@ def test_session_storage_deduped_session_event_does_not_advance_session_order(
 ) -> None:
     store = SqliteSessionStore()
     for session_id in ("first-session", "second-session"):
-        store.save_run(
-            workspace=tmp_path,
-            request=RuntimeRequest(prompt=session_id, session_id=session_id),
-            response=RuntimeResponse(
+        _run_session(
+            store,
+            tmp_path,
+            RuntimeRequest(prompt=session_id, session_id=session_id),
+            RuntimeResponse(
                 session=SessionState(
                     session=SessionRef(id=session_id),
                     status="completed",
@@ -1352,10 +1424,11 @@ def test_session_storage_prunes_terminal_sessions_and_dependent_rows(tmp_path: P
         ("new-terminal", "completed"),
         ("waiting-session", "waiting"),
     ):
-        store.save_run(
-            workspace=tmp_path,
-            request=RuntimeRequest(prompt=session_id, session_id=session_id),
-            response=RuntimeResponse(
+        _run_session(
+            store,
+            tmp_path,
+            RuntimeRequest(prompt=session_id, session_id=session_id),
+            RuntimeResponse(
                 session=SessionState(
                     session=SessionRef(id=session_id),
                     status=cast(Any, status),
@@ -1832,3 +1905,301 @@ def test_list_sessions_auto_prune_cascades_to_child_tables(tmp_path: Path, monke
 
     with pytest.raises(ValueError, match=f"unknown session: {sid}"):
         _ = store.load_session_result(workspace=tmp_path, session_id=sid)
+
+
+def _seed_running_session(store: SqliteSessionStore, workspace: Path, session_id: str) -> None:
+    store.save_run(
+        workspace=workspace,
+        request=RuntimeRequest(prompt=session_id, session_id=session_id),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id=session_id),
+                status="running",
+                turn=1,
+                metadata={},
+            ),
+            events=(),
+            output=None,
+        ),
+    )
+    store.append_session_events(
+        workspace=workspace,
+        session_id=session_id,
+        events=(("graph.response_ready", "graph", {}, None),),
+    )
+
+
+def test_session_storage_bulk_append_events_assigns_contiguous_sequences(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "bulk-session")
+
+    envelopes = store.append_session_events(
+        workspace=tmp_path,
+        session_id="bulk-session",
+        events=(
+            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "bulk-1"),
+            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "bulk-2"),
+            ("runtime.acp_connected", "runtime", {}, "bulk-3"),
+        ),
+    )
+    loaded = store.load_session(workspace=tmp_path, session_id="bulk-session")
+
+    assert [envelope.sequence for envelope in envelopes] == [2, 3, 4]
+    assert [envelope.event_type for envelope in envelopes] == [
+        "runtime.mcp_server_released",
+        "runtime.mcp_server_stopped",
+        "runtime.acp_connected",
+    ]
+    assert [event.sequence for event in loaded.events] == [1, 2, 3, 4]
+    assert loaded.events[1:] == tuple(envelopes)
+
+
+def test_session_storage_bulk_append_dedupes_within_batch(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "bulk-dedupe-session")
+
+    envelopes = store.append_session_events(
+        workspace=tmp_path,
+        session_id="bulk-dedupe-session",
+        events=(
+            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "dup-key"),
+            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "dup-key"),
+            ("runtime.acp_connected", "runtime", {}, "fresh-key"),
+        ),
+    )
+    loaded = store.load_session(workspace=tmp_path, session_id="bulk-dedupe-session")
+
+    assert [envelope.sequence for envelope in envelopes] == [2, 3]
+    assert [envelope.event_type for envelope in envelopes] == [
+        "runtime.mcp_server_released",
+        "runtime.acp_connected",
+    ]
+    assert [event.sequence for event in loaded.events] == [1, 2, 3]
+
+
+def test_session_storage_bulk_append_rejects_non_lifecycle_event_on_terminal_session(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="sealed", session_id="sealed-session"),
+        response=_completed_response("sealed-session"),
+    )
+
+    with pytest.raises(SessionSealedError, match="sealed-session.*runtime.tool_started"):
+        _ = store.append_session_events(
+            workspace=tmp_path,
+            session_id="sealed-session",
+            events=(("runtime.tool_started", "runtime", {"tool": "write_file"}, None),),
+        )
+
+
+def test_session_storage_bulk_append_allows_lifecycle_event_on_terminal_session(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="sealed", session_id="sealed-session"),
+        response=_completed_response("sealed-session"),
+    )
+
+    envelopes = store.append_session_events(
+        workspace=tmp_path,
+        session_id="sealed-session",
+        events=(("runtime.background_task_completed", "runtime", {"task_id": "task-1"}, "bt-finalize-1"),),
+    )
+
+    assert [envelope.sequence for envelope in envelopes] == [2]
+    assert [envelope.event_type for envelope in envelopes] == ["runtime.background_task_completed"]
+
+
+def test_session_storage_bulk_append_seal_is_atomic_on_mixed_batch(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _run_session(
+        store,
+        tmp_path,
+        RuntimeRequest(prompt="sealed", session_id="sealed-session"),
+        _completed_response("sealed-session"),
+    )
+
+    with pytest.raises(SessionSealedError, match="sealed-session.*runtime.tool_started"):
+        _ = store.append_session_events(
+            workspace=tmp_path,
+            session_id="sealed-session",
+            events=(
+                ("runtime.background_task_completed", "runtime", {"task_id": "task-1"}, "bt-finalize-1"),
+                ("runtime.tool_started", "runtime", {"tool": "write_file"}, None),
+            ),
+        )
+
+    loaded = store.load_session(workspace=tmp_path, session_id="sealed-session")
+    assert [event.sequence for event in loaded.events] == [1]
+
+
+def test_session_storage_bulk_append_upserts_interrupted_checkpoint(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "interrupt-session")
+
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id="interrupt-session",
+        events=(("runtime.mcp_server_released", "runtime", {"server": "a"}, "interrupt-1"),),
+        interrupted_checkpoint={"kind": "interrupted", "version": 1, "prompt": "interrupted task"},
+    )
+
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="interrupt-session")
+    loaded = store.load_session(workspace=tmp_path, session_id="interrupt-session")
+
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "interrupted"
+    assert loaded.session.status == "interrupted"
+
+
+def test_session_storage_bulk_append_raises_unknown_session(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+
+    with pytest.raises(UnknownSessionError, match="unknown session: nope"):
+        _ = store.append_session_events(
+            workspace=tmp_path,
+            session_id="nope",
+            events=(("runtime.mcp_server_released", "runtime", {}, None),),
+        )
+
+
+def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    tool_results: tuple[dict[str, object], ...] = (
+        {
+            "tool_name": "read_file",
+            "status": "ok",
+            "data": {"tool": "read_file", "status": "ok", "content": "alpha\n"},
+            "content": "alpha\n",
+            "error": None,
+        },
+    )
+
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="interrupt-session",
+        prompt="interrupt me",
+        session_metadata={"mode": "analyze", "read_only": True},
+        tool_results=tool_results,
+        last_event_sequence=4,
+        output="partial output",
+    )
+
+    loaded = store.load_session(workspace=tmp_path, session_id="interrupt-session")
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="interrupt-session")
+
+    assert loaded.session.status == "interrupted"
+    assert loaded.events == ()
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "interrupted"
+    assert checkpoint["session_status"] == "interrupted"
+    assert checkpoint["prompt"] == "interrupt me"
+    assert checkpoint["session_metadata"] == {"mode": "analyze", "read_only": True}
+    assert checkpoint["tool_results"] == list(tool_results)
+    assert checkpoint["last_event_sequence"] == 4
+    assert checkpoint["output"] == "partial output"
+
+
+def test_session_storage_save_interrupted_checkpoint_updates_without_events_or_output_clobber(
+    tmp_path: Path,
+) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="interrupt-session",
+        prompt="first prompt",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=1,
+        output="first output",
+    )
+
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="interrupt-session",
+        prompt="second prompt",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=1,
+        output=None,
+    )
+
+    loaded = store.load_session(workspace=tmp_path, session_id="interrupt-session")
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="interrupt-session")
+
+    assert loaded.session.status == "interrupted"
+    assert loaded.output == "first output"
+    assert loaded.events == ()
+    assert checkpoint is not None
+    assert checkpoint["prompt"] == "second prompt"
+    assert checkpoint["output"] is None
+
+
+def test_session_storage_truncate_session_events_after_deletes_only_tail(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "truncate-session")
+    _ = store.append_session_events(
+        workspace=tmp_path,
+        session_id="truncate-session",
+        events=(
+            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "truncate-1"),
+            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "truncate-2"),
+            ("runtime.acp_connected", "runtime", {}, "truncate-3"),
+        ),
+    )
+
+    store.truncate_session_events_after(workspace=tmp_path, session_id="truncate-session", sequence=2)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="truncate-session")
+
+    assert [event.sequence for event in loaded.events] == [1, 2]
+
+
+def test_session_storage_truncate_resets_last_event_sequence_watermark(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+    _seed_running_session(store, tmp_path, "truncate-watermark-session")
+    _ = store.append_session_events(
+        workspace=tmp_path,
+        session_id="truncate-watermark-session",
+        events=(
+            ("runtime.mcp_server_released", "runtime", {"server": "a"}, "watermark-1"),
+            ("runtime.mcp_server_stopped", "runtime", {"server": "b"}, "watermark-2"),
+            ("runtime.acp_connected", "runtime", {}, "watermark-3"),
+        ),
+    )
+
+    store.truncate_session_events_after(workspace=tmp_path, session_id="truncate-watermark-session", sequence=2)
+
+    loaded = store.load_session(workspace=tmp_path, session_id="truncate-watermark-session")
+    assert [event.sequence for event in loaded.events] == [1, 2]
+
+    # The next append must continue contiguously from the truncation point (3),
+    # not from the stale pre-truncation watermark (5).
+    resumed = store.append_session_events(
+        workspace=tmp_path,
+        session_id="truncate-watermark-session",
+        events=(("runtime.tool_completed", "runtime", {"tool": "read"}, None),),
+    )
+    assert [envelope.sequence for envelope in resumed] == [3]
+
+
+def test_session_storage_list_sessions_shows_interrupted_session(tmp_path: Path) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
+
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="interrupt-session",
+        prompt="interrupt me",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+    )
+
+    listed = store.list_sessions(workspace=tmp_path)
+
+    assert [summary.session.id for summary in listed] == ["interrupt-session"]
+    assert listed[0].status == "interrupted"

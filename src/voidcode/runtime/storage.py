@@ -23,7 +23,18 @@ from .contracts import (
 from .effectiveness import ToolEffectivenessEvent, ToolEffectivenessReport, project_tool_effectiveness
 from .events import (
     DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+    RUNTIME_ACP_CONNECTED,
+    RUNTIME_ACP_DELEGATED_LIFECYCLE,
+    RUNTIME_ACP_DISCONNECTED,
+    RUNTIME_ACP_FAILED,
     RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_MCP_SERVER_ACQUIRED,
+    RUNTIME_MCP_SERVER_FAILED,
+    RUNTIME_MCP_SERVER_IDLE_CLEANED,
+    RUNTIME_MCP_SERVER_RELEASED,
+    RUNTIME_MCP_SERVER_REUSED,
+    RUNTIME_MCP_SERVER_STARTED,
+    RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_QUESTION_REQUESTED,
     EventEnvelope,
     EventSource,
@@ -64,6 +75,49 @@ from .task import (
 from .todos import runtime_todos_from_state_payload, todo_state_payload
 
 
+class SessionSealedError(Exception):
+    """Raised when appending a non-lifecycle event to a terminal session.
+
+    Once a session reaches ``completed`` or ``failed`` its event stream is
+    sealed: only lifecycle events (ACP/MCP release, background-task finalize)
+    may still be appended. Anything else would silently resurrect a terminal
+    session's ordering/sequence and is rejected instead.
+    """
+
+
+# Event types still allowed to append once a session is terminal. Each entry
+# names the source that emits it after/around terminal status so the list stays
+# auditable as call sites evolve:
+#
+# * ACP lifecycle — service._append_parent_acp_delegated_lifecycle_event
+#   (RUNTIME_ACP_DELEGATED_LIFECYCLE) plus envelopes_for_acp_events
+#   (events.py / event_envelopes.py: RUNTIME_ACP_CONNECTED/DISCONNECTED/FAILED).
+# * MCP lifecycle — service._release_mcp_session_events →
+#   envelopes_for_mcp_events (events.py / event_envelopes.py): the
+#   runtime.mcp_server_* release/stop/idle-clean/failure events.
+# * Delegated background-task lifecycle — background_tasks.py
+#   append_session_event call sites (event_type_by_status →
+#   completed/failed/cancelled; group_completed; waiting_approval;
+#   idle_reminder; delegated_result_available), enumerated by
+#   DELEGATED_BACKGROUND_TASK_EVENT_TYPES.
+_TERMINAL_ALLOWED_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        RUNTIME_ACP_CONNECTED,
+        RUNTIME_ACP_DISCONNECTED,
+        RUNTIME_ACP_FAILED,
+        RUNTIME_ACP_DELEGATED_LIFECYCLE,
+        RUNTIME_MCP_SERVER_STARTED,
+        RUNTIME_MCP_SERVER_REUSED,
+        RUNTIME_MCP_SERVER_ACQUIRED,
+        RUNTIME_MCP_SERVER_RELEASED,
+        RUNTIME_MCP_SERVER_STOPPED,
+        RUNTIME_MCP_SERVER_IDLE_CLEANED,
+        RUNTIME_MCP_SERVER_FAILED,
+        *DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+    }
+)
+
+
 def _pending_path_scope(value: object) -> PathScope | None:
     if value == "workspace":
         return "workspace"
@@ -101,6 +155,30 @@ class SessionStore(Protocol):
         request: RuntimeRequest,
         response: RuntimeResponse,
         clear_pending_approval: bool = True,
+        seal_terminal_status: bool = True,
+    ) -> None: ...
+
+    def append_session_events(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        events: tuple[tuple[str, EventSource, dict[str, object], str | None], ...],
+        interrupted_checkpoint: dict[str, object] | None = None,
+    ) -> tuple[EventEnvelope, ...]: ...
+
+    def save_interrupted_checkpoint(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        prompt: str,
+        session_metadata: dict[str, object],
+        tool_results: tuple[dict[str, object], ...],
+        last_event_sequence: int,
+        output: str | None = None,
+        create_if_missing: bool = True,
+        turn: int = 1,
     ) -> None: ...
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]: ...
@@ -322,9 +400,9 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 7
+    _SCHEMA_VERSION = 8
     _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(("project", "preference", "feedback", "reference", "decision"))
-    _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal"})
+    _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _sqlite_policy = _SQLitePolicy()
 
     _DEFAULT_MAX_SESSIONS_PER_WORKSPACE: int = 50
@@ -1072,6 +1150,8 @@ class SqliteSessionStore:
             return "completed"
         if value == "failed":
             return "failed"
+        if value == "interrupted":
+            return "interrupted"
         raise ValueError(f"invalid session status: {value}")
 
     @staticmethod
@@ -1129,44 +1209,6 @@ class SqliteSessionStore:
     @staticmethod
     def _session_last_event_sequence(events: tuple[EventEnvelope, ...]) -> int:
         return events[-1].sequence if events else 0
-
-    @staticmethod
-    def _session_events_payload(
-        events: tuple[EventEnvelope, ...],
-    ) -> list[tuple[str, int, str, str, str]]:
-        return [
-            (
-                event.session_id,
-                event.sequence,
-                event.event_type,
-                event.source,
-                json.dumps(event.payload, sort_keys=True),
-            )
-            for event in events
-        ]
-
-    def _replace_session_events(
-        self,
-        *,
-        connection: sqlite3.Connection,
-        workspace: Path,
-        session_id: str,
-        events: tuple[EventEnvelope, ...],
-    ) -> None:
-        """Idempotently insert session events — append-only, never deletes.
-
-        Boundary: uses INSERT OR IGNORE on the composite PK
-        (workspace_id, session_id, sequence) so existing events are never
-        modified or removed. No merge, no compaction, no truncation.
-        """
-        _ = connection.executemany(
-            """
-            INSERT OR IGNORE INTO session_events (
-                workspace_id, session_id, sequence, event_type, source, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ((str(workspace), *payload) for payload in self._session_events_payload(events)),
-        )
 
     @staticmethod
     def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
@@ -1290,18 +1332,27 @@ class SqliteSessionStore:
         pending_approval_json: str | None,
         pending_question_json: str | None,
         resume_checkpoint: dict[str, object],
+        seal_terminal_status: bool = True,
     ) -> int:
         """Persist session row metadata and todo state.
 
         Boundary contract (storage is append-only truth, context_window is the
         sole read-time projection layer):
 
-        - Events from ``response.events`` are stored verbatim — no merge with
-          existing events, no compaction, no truncation. Only new events are
-          inserted (idempotent via ``INSERT OR IGNORE`` on the composite PK).
+        - The event log is NOT written here. Events are appended incrementally
+          by the run loop via ``append_session_events``; this method only seals
+          the terminal session-row snapshot (status, output, metadata, turn,
+          prompt, updated_at, todos, resume checkpoint).
+        - ``last_event_sequence`` is never regressed: it is set to the maximum
+          of the row's existing value (maintained by incremental appends) and
+          the highest sequence in ``response.events``.
         - Metadata is bounded for safety via ``session_metadata_for_persistence``
           (secret scrubbing, length limits) — that is a safety bound, not
           context compaction. Context projection lives in ``context_window.py``.
+        - When ``seal_terminal_status`` is False the row is written as
+          ``interrupted`` instead of the terminal status: a newer run on the
+          same session is still active, so the terminal seal must not clobber
+          it (the incremental event log means overlapping runs can coexist).
         """
         session_id = response.session.session.id
         events = response.events
@@ -1322,6 +1373,15 @@ class SqliteSessionStore:
         if created_at_unix_ms is None:
             created_at_unix_ms = int(time() * 1000)
         updated_at = self._next_timestamp(connection=connection)
+        last_event_sequence = max(
+            self._read_last_event_sequence(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            ),
+            self._session_last_event_sequence(events),
+        )
+        status = response.session.status if seal_terminal_status else "interrupted"
         _ = connection.execute(
             """
             INSERT OR REPLACE INTO sessions (
@@ -1335,7 +1395,7 @@ class SqliteSessionStore:
                 session_id,
                 response.session.session.parent_id,
                 str(workspace),
-                response.session.status,
+                status,
                 response.session.turn,
                 request.prompt,
                 response.output,
@@ -1345,7 +1405,7 @@ class SqliteSessionStore:
                 json.dumps(resume_checkpoint, sort_keys=True),
                 created_at,
                 updated_at,
-                self._session_last_event_sequence(events),
+                last_event_sequence,
                 created_at_unix_ms,
             ),
         )
@@ -1354,12 +1414,6 @@ class SqliteSessionStore:
             workspace=workspace,
             session_id=session_id,
             metadata=persisted_metadata,
-        )
-        self._replace_session_events(
-            connection=connection,
-            workspace=workspace,
-            session_id=session_id,
-            events=events,
         )
         return updated_at
 
@@ -1600,12 +1654,21 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         clear_pending_approval: bool = True,
+        seal_terminal_status: bool = True,
     ) -> None:
-        """Persist session row (metadata, todo state, checkpoint) for a completed run.
+        """Seal the terminal session-row state for a completed run.
 
-        Boundary: this is durable storage only — no event compaction, no context
-        projection. Events are append-only via ``append_session_event``.
+        Boundary: this is a terminal seal-writer — it writes the ``sessions``
+        row snapshot (status, output, metadata, turn, prompt, updated_at,
+        todos) and the terminal ``resume_checkpoint_json``, but it does NOT
+        write ``session_events`` rows. The event log is persisted incrementally
+        by the run loop via ``append_session_events``; this method only seals
+        the terminal state and never regresses ``last_event_sequence``.
         Context assembly lives in ``context_window.py``.
+
+        ``seal_terminal_status=False`` writes the row as ``interrupted`` instead
+        of the terminal status, so an older-finishing run cannot re-seal a
+        session that a newer run is still actively appending to.
         """
         session_id = response.session.session.id
         with self._write_connect(workspace) as connection:
@@ -1628,6 +1691,7 @@ class SqliteSessionStore:
                     request=request,
                     response=response,
                 ),
+                seal_terminal_status=seal_terminal_status,
             )
             self._sync_background_task_durable_state(
                 connection=connection,
@@ -2223,8 +2287,8 @@ class SqliteSessionStore:
 
         Boundary: no compaction, no merging, no truncation. Events are append-only
         truth. Context projection (what the model sees) is handled exclusively by
-        ``context_window.py``. Both this method and ``_replace_session_events`` use
-        INSERT OR IGNORE for idempotent append-only writes.
+        ``context_window.py``. This method and ``append_session_events`` are the
+        only writers of ``session_events`` rows.
         """
         with self._write_connect(workspace) as connection:
             payload = self._enriched_background_task_event_payload(
@@ -2307,6 +2371,255 @@ class SqliteSessionStore:
             )
             connection.commit()
             return event
+
+    def append_session_events(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        events: tuple[tuple[str, EventSource, dict[str, object], str | None], ...],
+        interrupted_checkpoint: dict[str, object] | None = None,
+    ) -> tuple[EventEnvelope, ...]:
+        """Append a batch of session events in one transaction — append-only.
+
+        Mirrors ``append_session_event`` per event (dedupe slot via
+        ``session_event_deliveries``, DB-assigned sequence via the
+        ``last_event_sequence`` bump) but holds a single ``BEGIN IMMEDIATE``
+        transaction so the whole batch is atomic. Terminal sessions reject
+        non-lifecycle events via ``SessionSealedError``; an optional interrupted
+        checkpoint is upserted in the same transaction.
+        """
+        with self._write_connect(workspace) as connection:
+            status_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT status FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if status_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            status = cast(str, status_row["status"])
+            if status in {"completed", "failed"}:
+                for event_type, _source, _payload, _dedupe_key in events:
+                    if event_type not in _TERMINAL_ALLOWED_EVENT_TYPES:
+                        raise SessionSealedError(f"session {session_id!r} is {status}: refusing non-lifecycle event {event_type!r}")
+            assigned: list[EventEnvelope] = []
+            for event_type, source, payload, dedupe_key in events:
+                payload = self._enriched_background_task_event_payload(
+                    connection=connection,
+                    workspace=workspace,
+                    event_type=event_type,
+                    payload=payload,
+                )
+                if dedupe_key is not None:
+                    delivered_at = self._next_auxiliary_timestamp(connection=connection)
+                    inserted_delivery = connection.execute(
+                        """
+                        INSERT OR IGNORE INTO session_event_deliveries (
+                            workspace_id, session_id, dedupe_key, delivered_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (str(workspace), session_id, dedupe_key, delivered_at),
+                    )
+                    if inserted_delivery.rowcount == 0:
+                        continue
+                updated_at = self._next_timestamp(connection=connection)
+                sequence_row = cast(
+                    sqlite3.Row | None,
+                    connection.execute(
+                        """
+                        UPDATE sessions
+                        SET updated_at = ?, last_event_sequence = last_event_sequence + 1
+                        WHERE workspace_id = ? AND session_id = ?
+                        RETURNING last_event_sequence
+                        """,
+                        (updated_at, str(workspace), session_id),
+                    ).fetchone(),
+                )
+                if sequence_row is None:
+                    raise UnknownSessionError(f"unknown session: {session_id}")
+                sequence = cast(int, sequence_row["last_event_sequence"])
+                event = EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type=event_type,
+                    source=source,
+                    payload=payload,
+                )
+                _ = connection.execute(
+                    """
+                    INSERT INTO session_events (
+                        workspace_id, session_id, sequence, event_type, source, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(workspace),
+                        event.session_id,
+                        event.sequence,
+                        event.event_type,
+                        event.source,
+                        json.dumps(event.payload, sort_keys=True),
+                    ),
+                )
+                assigned.append(event)
+            if interrupted_checkpoint is not None:
+                checkpoint_updated_at = self._next_timestamp(connection=connection)
+                _ = connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = 'interrupted', resume_checkpoint_json = ?, updated_at = ?
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (
+                        json.dumps(interrupted_checkpoint, sort_keys=True),
+                        checkpoint_updated_at,
+                        str(workspace),
+                        session_id,
+                    ),
+                )
+            connection.commit()
+            return tuple(assigned)
+
+    def save_interrupted_checkpoint(
+        self,
+        *,
+        workspace: Path,
+        session_id: str,
+        prompt: str,
+        session_metadata: dict[str, object],
+        tool_results: tuple[dict[str, object], ...],
+        last_event_sequence: int,
+        output: str | None = None,
+        create_if_missing: bool = True,
+        turn: int = 1,
+    ) -> None:
+        """Persist a lightweight ``interrupted`` resume checkpoint to the sessions row.
+
+        This is a cheap checkpoint of an in-flight run for resume-after-interrupt.
+        Unlike ``save_run`` it does NOT write the ``session_events`` table, does
+        NOT replace ``session_todos``, and does NOT write ``output`` /
+        ``pending_approval_json`` / ``pending_question_json`` (``output`` is only
+        preserved, never overwritten with NULL on the update path). It writes
+        exactly one ``sessions`` row — creating it on first call when
+        ``create_if_missing`` is set (mandatory: ``append_session_events`` raises
+        ``UnknownSessionError`` when the row is absent, so the row must exist
+        before the first event append).
+
+        ``tool_results`` must be the serialized ``ToolResult`` form produced by
+        ``_tool_results_from_events`` and accepted by
+        ``tool_results_from_checkpoint`` in ``resume.py``: a tuple of dicts, each
+        carrying the identity keys ``tool_name`` (str), ``status`` (``"ok"`` |
+        ``"error"``), ``data`` (dict), ``content`` (str | None), ``error``
+        (str | None), plus — only when errored — the optional ``error_kind``,
+        ``error_summary``, ``error_details`` (dict) and ``retry_guidance`` (str).
+        Callers hold the durable events at this boundary and may derive these
+        via ``_tool_results_from_events``.
+        """
+        checkpoint = self._interrupted_resume_checkpoint(
+            prompt=prompt,
+            session_metadata=session_metadata,
+            tool_results=tool_results,
+            last_event_sequence=last_event_sequence,
+            output=output,
+        )
+        persisted_metadata = session_metadata_for_persistence(session_metadata)
+        checkpoint_json = json.dumps(checkpoint, sort_keys=True)
+        metadata_json = json.dumps(persisted_metadata, sort_keys=True)
+        with self._write_connect(workspace) as connection:
+            existing = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT 1 FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if existing is None:
+                if not create_if_missing:
+                    raise UnknownSessionError(f"unknown session: {session_id}")
+                created_at = self._read_created_at(
+                    connection=connection,
+                    workspace=workspace,
+                    session_id=session_id,
+                )
+                updated_at = self._next_timestamp(connection=connection)
+                _ = connection.execute(
+                    """
+                    INSERT INTO sessions (
+                        session_id, parent_session_id, workspace_id, status, turn, prompt, output,
+                        metadata_json, pending_approval_json, pending_question_json,
+                        resume_checkpoint_json, created_at, updated_at,
+                        last_event_sequence, created_at_unix_ms
+                    ) VALUES (?, NULL, ?, 'interrupted', ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        str(workspace),
+                        turn,
+                        prompt,
+                        output,
+                        metadata_json,
+                        checkpoint_json,
+                        created_at,
+                        updated_at,
+                        last_event_sequence,
+                        int(time() * 1000),
+                    ),
+                )
+            else:
+                _ = connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = 'interrupted',
+                        resume_checkpoint_json = ?,
+                        metadata_json = ?,
+                        prompt = ?,
+                        output = COALESCE(?, output),
+                        updated_at = ?,
+                        last_event_sequence = MAX(last_event_sequence, ?)
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (
+                        checkpoint_json,
+                        metadata_json,
+                        prompt,
+                        output,
+                        self._next_timestamp(connection=connection),
+                        last_event_sequence,
+                        str(workspace),
+                        session_id,
+                    ),
+                )
+            connection.commit()
+
+    def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None:
+        """Delete orphaned-tail ``session_events`` rows past a sequence for resume.
+
+        Scoped to a single (workspace, session) pair in one transaction. Rows with
+        ``sequence > sequence`` are removed so a resumed run can re-append a clean
+        tail after the checkpoint without leaving stale trailing events. Rows at
+        or below ``sequence`` are untouched. The session's ``last_event_sequence``
+        watermark is reset to the surviving max so subsequent appends continue
+        contiguously instead of skipping the freed sequence range.
+        """
+        with self._write_connect(workspace) as connection:
+            _ = connection.execute(
+                "DELETE FROM session_events WHERE workspace_id = ? AND session_id = ? AND sequence > ?",
+                (str(workspace), session_id, sequence),
+            )
+            _ = connection.execute(
+                """
+                UPDATE sessions
+                SET last_event_sequence = (
+                    SELECT COALESCE(MAX(sequence), 0)
+                    FROM session_events
+                    WHERE workspace_id = ? AND session_id = ?
+                )
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (str(workspace), session_id, str(workspace), session_id),
+            )
+            connection.commit()
 
     def _sync_background_task_durable_state(
         self,
@@ -2549,6 +2862,31 @@ class SqliteSessionStore:
             response=response,
             failure_event=failure_event,
         )
+
+    @classmethod
+    def _interrupted_resume_checkpoint(
+        cls,
+        *,
+        prompt: str,
+        session_metadata: dict[str, object],
+        tool_results: tuple[dict[str, object], ...],
+        last_event_sequence: int,
+        output: str | None,
+    ) -> dict[str, object]:
+        snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(session_metadata)
+        return {
+            "version": 1,
+            "kind": "interrupted",
+            "prompt": prompt,
+            "session_status": "interrupted",
+            "session_metadata": session_metadata_for_persistence(session_metadata),
+            "skill_snapshot_hash": snapshot_hash,
+            "skill_snapshot_version": snapshot_version,
+            "skill_binding_snapshot": binding_snapshot,
+            "tool_results": list(tool_results),
+            "last_event_sequence": last_event_sequence,
+            "output": output,
+        }
 
     @staticmethod
     def _tool_results_from_events(events: tuple[EventEnvelope, ...]) -> list[dict[str, object]]:
@@ -4990,6 +5328,19 @@ class SqliteSessionStore:
         if row is not None and row["created_at_unix_ms"] is not None:
             return cast(int, row["created_at_unix_ms"])
         return None
+
+    @staticmethod
+    def _read_last_event_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
+        row = cast(
+            sqlite3.Row | None,
+            connection.execute(
+                "SELECT last_event_sequence FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                (str(workspace), session_id),
+            ).fetchone(),
+        )
+        if row is not None:
+            return cast(int, row["last_event_sequence"])
+        return 0
 
     @staticmethod
     def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int:

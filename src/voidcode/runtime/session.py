@@ -7,7 +7,7 @@ from typing import Literal, cast
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
 
-type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed"]
+type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed", "interrupted"]
 type SessionKind = Literal["top_level", "child"]
 
 _PERSISTED_STRING_LIMIT = 1_000
