@@ -83,7 +83,7 @@ Lower-precedence inputs may narrow or annotate higher-precedence decisions, but 
 
 ### Bounded observability
 
-Runtime attaches a `runtime_policy` object to `runtime.request_received`, and additive clients may also tolerate a future standalone `runtime.policy_materialized` event. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, prompt-activation state, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the payload never includes raw prompt bodies, skill bodies, env values, credentials, or unbounded metadata.
+Runtime attaches a `runtime_policy` object to `runtime.request_received`, and additive clients may also consume the now-implemented standalone `runtime.policy_materialized` event. This payload is a bounded projection of the persisted `RuntimePolicySnapshot`, not a second policy source. It exposes schema/policy version, mode/read-only state, agent ids, neutral intent metadata, allowed/denied tool and delegation ids, hook policy actions/scopes, prompt-activation state, precedence trace, and diagnostics. Lists are capped, strings are preview-sized, and the payload never includes raw prompt bodies, skill bodies, env values, credentials, or unbounded metadata.
 
 Tool allow/deny and approval decisions remain observable through `runtime.tool_lookup_succeeded`, `runtime.permission_resolved`, `runtime.approval_requested`, `runtime.approval_resolved`, `runtime.tool_started`, `runtime.tool_completed`, and `runtime.failed` denial payloads. Delegation allow/deny remains observable through background/delegated lifecycle events and explicit runtime failure payloads for policy denials. Hook decisions remain observable through `runtime.tool_hook_pre` / `runtime.tool_hook_post` with `hook_policy.authoritative=false`. Prompt activation persists inside `RuntimePolicySnapshot.prompt_activation`; replay/resume may show historical activation records but must project run-local `activated_this_turn` as false unless the current run actually activated it.
 
@@ -91,7 +91,7 @@ Sessions must contain a stored v1 runtime policy snapshot on replay and debug su
 
 ### Product non-delegation invariant
 
-`product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, category mapping, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_retry`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
+`product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, category mapping, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
 
 ### v1 non-goals
 
