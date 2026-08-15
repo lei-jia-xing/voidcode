@@ -28,7 +28,7 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 - 插件市场支持
 - workspace-scoped MCP、MCP 生态市场式语义或动态 agent marketplace
 - peer-to-peer agent bus
-- #285 context assembly / compaction 的完整产品化语义
+- #285 context assembly / compaction 的完整产品化语义（基础上下文投影与 compaction 已落地，完整产品化语义仍属 post-MVP）
 - 高级 MCP 生态系统工作
 - 复杂的视觉工作台
 
@@ -88,7 +88,7 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 通过具有流式输出、审批交互和会话恢复的可用入口点暴露运行时。
 
-**当前状态：** 进行中。CLI 仍是最完整的客户端入口；TUI 保持初始实现状态，优先级已下调，暂不作为当前 MVP 完成的硬条件；Web 客户端已经接入极简的真实运行时路径，并承担当前 MVP 主路径的主要客户端验证工作。
+**当前状态：** 进行中。CLI 仍是最完整的客户端入口；TUI 已具备核心交互（时间线、可折叠工具块、会话管理/恢复），但优先级仍低于 CLI + Web 主路径，且 polish 与规范冒烟流程的端到端验证尚未收口，不作为当前 MVP 完成的硬条件；Web 客户端已经接入极简的真实运行时路径，并承担当前 MVP 主路径的主要客户端验证工作。
 
 ### Epic 9: MVP 集成
 
@@ -107,7 +107,7 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 ## 当前最直接的后续工作
 
-在最近几轮 runtime 配置、provider fallback、恢复语义、checkpoint groundwork 与 archive / replay 主线收口之后，当前 backlog 的优先级应以 GitHub issue 列表为准，而不再继续沿用 `#83` / `#84` 作为“当前下一步”的描述。
+在最近几轮 runtime 配置、provider fallback、恢复语义、checkpoint groundwork 与 archive / replay 主线收口之后，当前 backlog 的优先级以 `docs/mvp-todo-plan.md` 与当前代码为准（GitHub issue 已全部关闭，不再作为活跃 backlog），而不再继续沿用 `#83` / `#84` 作为“当前下一步”的描述。
 
 ### 当前产品化原则（有限时间内）
 
@@ -134,11 +134,11 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 ### 2. 再继续能力层的完善与加固
 
-- `#130`：add more llm api
+provider 能力扩展（reasoning-effort 语义、GLM/DeepSeek 等 domestic LLM 适配、model catalog 元数据）已完成一轮（`#130` 已关闭并落地）。后续 provider 层面工作应以真实任务完成率和 provider-backed 主路径可用性为判断标准，而非继续扩大 provider 数量。
 
 这一层工作的目标不应再是补前一轮已经完成的 LSP 默认配置，而是继续提高**真实任务完成率**和 provider-backed 主路径的可用性。
 
-`#130` 这类 provider 扩展工作仍应放在主路径稳定化之后，避免在核心任务链路尚未完全收口时继续扩大维护面。
+provider 扩展工作仍应放在主路径稳定化之后，避免在核心任务链路尚未完全收口时继续扩大维护面。
 
 ### 3. 当前不作为产品化第一优先级的工作
 

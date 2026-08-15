@@ -2,7 +2,7 @@
 
 本文档将当前的路线图转化为首个真实产品循环的交付清单。
 
-使用 GitHub issues 和 milestones 作为可执行的积压工作 (backlog)。本文档定义了执行形态和验收方向；`docs/contracts/` 定义了规范的面向客户端契约。
+backlog 以仓库内文档（本计划 + `docs/roadmap.md` + `docs/contracts/`）为准（GitHub issues 已全部关闭，不再作为活跃 backlog）。本文档定义了执行形态和验收方向；`docs/contracts/` 定义了规范的面向客户端契约。
 
 ## 状态
 
@@ -13,7 +13,7 @@ VoidCode 已经拥有扎实的基础：
 - 本地会话持久化与恢复
 - 已接入最小可用运行时路径的 Bun 前端外壳
 
-当前最接近 MVP 的主执行路径，已经收口到 **运行时 + CLI + Web** 这一条线上；TUI 仍保留为初始实现，但不再作为当前 MVP 完成的硬性条件。
+当前最接近 MVP 的主执行路径，已经收口到 **运行时 + CLI + Web** 这一条线上；TUI 已具备核心交互（时间线、可折叠工具块、会话管理/恢复），但优先级仍低于 CLI + Web 主路径，且规范冒烟流程步骤 8 的端到端验证与 polish 尚未收口，不作为当前 MVP 完成的硬性条件。
 
 ## 终态愿景
 
@@ -133,11 +133,11 @@ VoidCode 已经拥有扎实的基础：
 
 - [x] 在 `docs/tui-mvp-spec.md` 中定稿 TUI MVP 规范
 - [x] 实现具有明确提示词区域和活动区域的终端布局
-- [~] 将流式运行时事件渲染为可滚动、可读的时间线
-- [ ] 在活动提要中实现可折叠/可检查的工具调用和结果块
+- [x] 将流式运行时事件渲染为可滚动、可读的时间线（由 `src/voidcode/tui/timeline.py` 的 `TimelineView` 实现）
+- [x] 在活动提要中实现可折叠/可检查的工具调用和结果块（`Collapsible` 块 + `ctrl+o` / `/expand` 交互）
 - [x] 为高风险工具执行集成交互式审批提示
-- [ ] 直接在 TUI 中实现会话管理（列表、加载、恢复）
-- [ ] 为 `docs/tui-mvp-spec.md` 中定义的规范 TUI 冒烟流程添加自动化冒烟测试
+- [x] 直接在 TUI 中实现会话管理（列表、加载、恢复）（`SessionListModal` + `ctrl+n` / `ctrl+r`）
+- [~] 为 `docs/tui-mvp-spec.md` 中定义的规范 TUI 冒烟流程添加自动化冒烟测试（冒烟测试已落地，但 spec 步骤 8 的持久化重放仍需端到端断言）
 
 ### 验收标准
 
@@ -254,4 +254,4 @@ VoidCode 已经拥有扎实的基础：
 - [x] `voidcode doctor` 输出 first-task readiness summary 与 actionable next step
 - [x] 完成 issue #390：定义最小用户可见 prompt command 集（`/review`、`/fix`、`/explain`、`/plan`、`/test`、`/commit`）；当前内置命令已通过 `voidcode commands list/show` 暴露，并由 `src/voidcode/command/README.md` 记录其最小产品语义
 - [x] 为 CLI 补齐 pending question 的回答入口，使其与 HTTP/Web question answer 路径对等
-- [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作
+- [ ] 在 runtime 主线稳定之后，再重新评估 TUI 特定 epic 和剩余客户端 polish 工作（TUI 核心交互已落地，剩余为 polish 与规范冒烟流程步骤 8 的端到端验证）

@@ -1,6 +1,6 @@
 # MVP 演示指南
 
-本文档定义了 VoidCode 的规范 MVP 演示场景和端到端验证清单。它基于目前已实现的稳定确定性运行时循环、会话持久化和 CLI 内联审批行为。
+本文档定义了 VoidCode 的规范 MVP 演示场景和端到端验证清单。它基于已实现的 runtime-owned 执行循环（provider-backed 为产品默认路径，确定性 engine 保留为无凭据本地演示/测试 harness）、会话持久化和 CLI 内联审批行为。
 
 ## 前置条件
 
@@ -90,7 +90,7 @@
 规范演示流程覆盖了主链路（happy path）。当演示过程中出现异常时，参考 [故障诊断与恢复操作手册](./failure-diagnosis-runbook.md)。该手册提供：
 
 - 常见故障场景矩阵：审批阻塞、任务失败、会话未找到、后台任务卡住、数据库异常等
-- 按会话状态（`idle` / `running` / `waiting` / `completed` / `failed`）分类的恢复动作
+- 按会话状态（`idle` / `running` / `waiting` / `completed` / `failed` / `interrupted`）分类的恢复动作
 - 统一观察点：CLI EVENT/RESULT 输出、`sessions list`/`resume`、SQLite 直接查询、HTTP 端点
 - 标准恢复工作流：从工作区确认到数据库重置的有序步骤
 
@@ -99,7 +99,7 @@
 ## 边界与已知差距
 
 ### 目前可行的
-- 确定性运行时循环（支持多步、顺序执行）。
+- provider-backed 执行循环（产品默认引擎，`ProviderGraph`）+ 确定性 engine harness（无凭据本地演示/测试）。
 - 完整的 CLI TTY 内联审批（ask/allow/deny）。
 - 本地 SQLite 会话持久化与恢复。
 - 极简 HTTP/SSE 传输。
@@ -108,22 +108,23 @@
 - **Web UI 集成**：Web 前端已接入真实运行时路径，并对 run -> approval -> replay 主链路具备真实 store/client 闭环验证。
 
 ### 当前不作为 MVP 完成证明项
-- **TUI 客户端**：TUI 仍处于初始实现阶段，当前不再作为 MVP 完成的硬性证明项。
+- **TUI 客户端**：TUI 已具备核心客户端交互（时间线、可折叠工具块、会话列表/恢复），但优先级仍低于 CLI + Web，且 polish/端到端冒烟未收口，不作为 MVP 硬性证明项。
 
 ### 暂不纳入当前 MVP 演示范围
-- **真实 LLM 编排**：目前的图执行是基于确定性解析器的。
-- **钩子主动执行**：事件（Events）已在运行时发出，但挂接在特定事件上的主动逻辑（Hooks）仍待实现。
+- **更宽的 LLM 编排**：provider-backed execution 已是产品默认路径（`ProviderGraph` 直接调用 provider `propose_turn`）；确定性 engine 仅作为无凭据测试/调试 harness。
+- **更宽的钩子框架**：最小 pre/post tool hooks 与 lifecycle hooks（`session_start` / `session_end` / `session_idle`）已在运行时执行；richer hook phases 与更宽的 hook framework 不在当前 MVP 范围。
 
 ## 提供商与演示边界（第一阶段）
 
 本节定义 VoidCode 第一阶段演示的接受标准、提供商集成边界和凭证处理规则。
 
-### 主验收门：桩支撑的确定性测试
+### 主验收门：确定性与 provider-backed 双轨验证
 
-第一阶段的主验收门**始终是桩支撑的确定性测试**，而非实时提供商调用。具体而言：
+第一阶段的主验收门以**确定性测试**为核心（可重复、可离线、无外部依赖），并允许 provider-backed 实时冒烟作为补充。具体而言：
 
 - 所有核心路径（CLI 入口、运行时循环、会话持久化、审批流、HTTP/SSE 传输）必须通过确定性测试验证，不依赖外部 LLM 提供商。
-- 测试使用桩响应或确定性解析器，保证可重复、可离线、无外部依赖。
+- 测试使用桩响应或确定性 engine，保证可重复、可离线、无外部依赖。
+- 产品默认执行路径为 provider-backed（配置 model/provider 后走 `ProviderGraph`）；确定性 engine 保留为无凭据本地演示、测试和参考/debug harness。
 - `mise run check` 全绿是演示准备就绪的必要条件。
 - 如果确定性测试失败，实时提供商冒烟测试不应执行。
 

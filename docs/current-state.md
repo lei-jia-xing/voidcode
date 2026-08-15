@@ -47,7 +47,7 @@
 - [~] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件之外，仓库现在已经落地最小的 runtime skill execution model；manifest `skill_refs` 是默认选择，`force_load_skills` / delegated `load_skills` 是目标上下文的 full-body 注入。更完整的 skill context 能力绑定与产品化语义仍未完成。
 - [~] **ACP 能力面**：`acp` 已具备 runtime-managed transport / lifecycle、run / approval-resume integration 与事件基线；当前仍未进入更宽的 agent control-plane 或跨运行时协作语义。
 - [~] **当前剩余的 runtime / tooling 主线 gap**：最近已经完成 agent preset 最小接入、runtime skill execution 最小模型、session continuity memory 第一切片、`#174` background approval notification，以及 issue #289 delegated child execution E2E 基线。下一轮 backlog 应围绕这些能力的深化与产品化缺口继续推进，而不是继续沿用已完成的最小接入 issue 作为“当前剩余主线”。
-- [~] **TUI 客户端**：已具备提示词输入和审批处理的初始实现，但会话管理、恢复/重放与规范冒烟验证仍未收口，当前优先级也已下调。
+- [~] **TUI 客户端**：已具备提示词输入、审批处理、流式时间线、可折叠工具块与会话管理/恢复（`SessionListModal`、`ctrl+n`/`ctrl+r`），单元级测试已覆盖；剩余为规范冒烟流程的端到端断言与 polish，当前优先级保持低于 CLI + Web 主路径。
 - [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行、审批处理、question answer、workspace 切换、runtime status、review tree / diff 与 runtime ops 路径，并具备真实 store/client 闭环验证。
 
 ---
