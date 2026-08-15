@@ -2099,6 +2099,85 @@ def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment
     assert config.approval_mode == "allow"
 
 
+def test_runtime_config_formatter_enabled_maps_to_format_on_write_only(tmp_path: Path) -> None:
+    """formatter.enabled=false disables format-on-write but leaves other hooks running."""
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"formatter": {"enabled": False}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.format_on_write is False
+
+
+def test_runtime_config_formatter_format_on_write_is_opt_in(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"formatter": {"format_on_write": True}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.format_on_write is True
+
+
+def test_runtime_config_formatter_format_on_write_false_overrides_enabled_alias(
+    tmp_path: Path,
+) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"formatter": {"enabled": True, "format_on_write": False}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is True
+    assert config.hooks.format_on_write is False
+
+
+def test_runtime_config_hooks_disabled_still_gates_everything(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"hooks": {"enabled": False}, "formatter": {"format_on_write": True}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.hooks is not None
+    assert config.hooks.enabled is False
+    assert config.hooks.format_on_write is True
+
+
+def test_runtime_config_lsp_diagnostics_on_write_is_opt_in(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"lsp": {"enabled": True, "diagnostics_on_write": True}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp is not None
+    assert config.lsp.diagnostics_on_write is True
+
+
+def test_runtime_config_lsp_diagnostics_on_write_defaults_off(tmp_path: Path) -> None:
+    runtime_config_path(tmp_path).write_text(
+        json.dumps({"lsp": {"enabled": True}}),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.lsp is not None
+    assert config.lsp.diagnostics_on_write is False
+
+
 def test_runtime_config_explicit_approval_mode_does_not_affect_environment_execution_engine(
     tmp_path: Path,
 ) -> None:

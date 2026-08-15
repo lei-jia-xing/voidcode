@@ -10,6 +10,8 @@ def post_edit_lsp_diagnostics(*, workspace: Path, paths: list[str]) -> list[dict
     context = current_runtime_tool_context()
     if context is None:
         return []
+    if context.lsp_diagnostics_on_write is False:
+        return []
     lsp: RuntimeLspToolFacade | None = context.lsp
     if lsp is None:
         return []

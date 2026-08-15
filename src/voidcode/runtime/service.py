@@ -654,6 +654,7 @@ class VoidCodeRuntime:
                 workspace=self._workspace,
                 memory=self,
                 lsp=self,
+                lsp_diagnostics_on_write=bool(self._config.lsp is not None and self._config.lsp.diagnostics_on_write),
             ),
         )
         self._resume_coordinator = RuntimeResumeCoordinator(self)

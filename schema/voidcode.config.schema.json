@@ -144,6 +144,10 @@
         "enabled": {
           "type": "boolean"
         },
+        "format_on_write": {
+          "type": "boolean",
+          "description": "Opt-in auto-format after edit/write. Off by default. 'enabled' is kept as the existing alias and maps onto the same format-on-write switch (it no longer disables all hooks)."
+        },
         "languages": {
           "type": "object",
           "additionalProperties": {
@@ -167,6 +171,10 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "diagnostics_on_write": {
+          "type": "boolean",
+          "description": "Opt-in automatic LSP diagnostics after edit/write. Off by default. Does not gate the explicit 'lsp' tool."
         },
         "servers": {
           "type": "object",

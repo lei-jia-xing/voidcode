@@ -148,7 +148,7 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "formatter_presets",
     }
 )
-_FORMATTER_CONFIG_KEYS = frozenset({"enabled", "languages"})
+_FORMATTER_CONFIG_KEYS = frozenset({"enabled", "format_on_write", "languages"})
 _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
     {
         "version",
@@ -171,7 +171,7 @@ _TOOLS_LOCAL_CONFIG_KEYS = frozenset({"enabled", "path"})
 _SKILLS_CONFIG_KEYS = frozenset({"enabled", "paths"})
 _PERMISSION_CONFIG_KEYS = frozenset({"external_directory_read", "external_directory_write", "rules"})
 _PERMISSION_RULE_CONFIG_KEYS = frozenset({"tool", "path", "command", "decision"})
-_LSP_CONFIG_KEYS = frozenset({"enabled", "servers"})
+_LSP_CONFIG_KEYS = frozenset({"enabled", "servers", "diagnostics_on_write"})
 _LSP_SERVER_CONFIG_KEYS = frozenset({"preset", "command", "languages", "extensions", "root_markers", "settings", "init_options"})
 _BACKGROUND_TASK_CONFIG_KEYS = frozenset(
     {
@@ -312,6 +312,9 @@ class RuntimeToolsConfig:
 @dataclass(frozen=True, slots=True)
 class RuntimeFormatterConfig:
     enabled: bool | None = None
+    #: Opt-in format-on-write switch (default off). ``enabled`` remains the
+    #: existing alias; both map onto ``RuntimeHooksConfig.format_on_write``.
+    format_on_write: bool | None = None
     languages: Mapping[str, RuntimeFormatterPresetConfig] = field(default_factory=dict)
 
 
@@ -343,6 +346,9 @@ class RuntimeContextWindowConfig:
 class RuntimeLspConfig:
     enabled: bool | None = None
     servers: Mapping[str, RuntimeLspServerConfig] | None = None
+    #: Opt-in automatic LSP diagnostics after edit/write (default off).
+    #: Does not gate the explicit ``lsp`` tool.
+    diagnostics_on_write: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1079,6 +1085,10 @@ def _parse_formatter_config(raw_formatter: object) -> RuntimeFormatterConfig | N
         field_path="formatter",
     )
     enabled = _parse_optional_bool(formatter_payload.get("enabled"), field_path="formatter.enabled")
+    format_on_write = _parse_optional_bool(
+        formatter_payload.get("format_on_write"),
+        field_path="formatter.format_on_write",
+    )
     languages = (
         _parse_formatter_presets_config(
             formatter_payload.get("languages"),
@@ -1087,7 +1097,7 @@ def _parse_formatter_config(raw_formatter: object) -> RuntimeFormatterConfig | N
         if "languages" in formatter_payload
         else {}
     )
-    return RuntimeFormatterConfig(enabled=enabled, languages=languages)
+    return RuntimeFormatterConfig(enabled=enabled, format_on_write=format_on_write, languages=languages)
 
 
 def _apply_formatter_config(
@@ -1100,8 +1110,14 @@ def _apply_formatter_config(
     base_hooks = hooks or RuntimeHooksConfig()
     formatter_presets = dict(base_hooks.formatter_presets)
     formatter_presets.update(formatter.languages)
+    format_on_write = base_hooks.format_on_write
+    if formatter.enabled is not None:
+        format_on_write = formatter.enabled
+    if formatter.format_on_write is not None:
+        format_on_write = formatter.format_on_write
     return RuntimeHooksConfig(
-        enabled=formatter.enabled if formatter.enabled is not None else base_hooks.enabled,
+        enabled=base_hooks.enabled,
+        format_on_write=format_on_write,
         timeout_seconds=base_hooks.timeout_seconds,
         failure_mode=base_hooks.failure_mode,
         pre_tool=base_hooks.pre_tool,
@@ -2153,7 +2169,15 @@ def _parse_lsp_config(raw_lsp: object) -> RuntimeLspConfig | None:
     _reject_unknown_config_keys(lsp_payload, allowed_keys=_LSP_CONFIG_KEYS, field_path="lsp")
     enabled = _parse_optional_bool(lsp_payload.get("enabled"), field_path="lsp.enabled")
     servers = _parse_lsp_servers_config(lsp_payload.get("servers"), field_path="lsp.servers")
-    return RuntimeLspConfig(enabled=enabled, servers=servers)
+    diagnostics_on_write = _parse_optional_bool(
+        lsp_payload.get("diagnostics_on_write"),
+        field_path="lsp.diagnostics_on_write",
+    )
+    return RuntimeLspConfig(
+        enabled=enabled,
+        servers=servers,
+        diagnostics_on_write=diagnostics_on_write if diagnostics_on_write is not None else False,
+    )
 
 
 def _parse_lsp_servers_config(raw_value: object, *, field_path: str) -> dict[str, RuntimeLspServerConfig] | None:

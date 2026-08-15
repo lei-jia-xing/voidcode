@@ -195,6 +195,10 @@ def post_edit_syntax_diagnostics(*, workspace: Path, paths: list[str]) -> list[d
 
     Mirrors :func:`voidcode.tools._post_edit_diagnostics.post_edit_lsp_diagnostics`:
     raw path strings, deduplicated, resolved against ``workspace`` when relative.
+
+    Intentionally NOT folded into the format-on-write or post-edit-LSP-diagnostics
+    runtime switches: this separate write-path feedback stays on the dedicated
+    ``VOIDCODE_SYNTAX_VALIDATION`` env gate below.
     """
     if not syntax_validation_enabled():
         return []

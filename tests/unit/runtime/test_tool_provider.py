@@ -303,12 +303,13 @@ def test_builtin_tool_provider_injects_formatter_aware_edit_tools(tmp_path: Path
 
     tools = BuiltinToolProvider(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     ).provide_tools()
 

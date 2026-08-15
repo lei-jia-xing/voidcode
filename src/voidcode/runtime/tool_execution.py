@@ -49,6 +49,7 @@ class RuntimeToolExecutor:
     workspace: Path
     memory: RuntimeMemoryToolFacade
     lsp: RuntimeLspToolFacade
+    lsp_diagnostics_on_write: bool = False
 
     def invoke(
         self,
@@ -128,6 +129,7 @@ class RuntimeToolExecutor:
                 emit_tool_progress=emit_tool_progress,
                 memory=self.memory,
                 lsp=self.lsp,
+                lsp_diagnostics_on_write=self.lsp_diagnostics_on_write,
             )
         ):
             if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):

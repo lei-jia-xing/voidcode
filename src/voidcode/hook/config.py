@@ -35,6 +35,9 @@ type RuntimeHookFailureMode = Literal["warn", "fail"]
 @dataclass(frozen=True, slots=True)
 class RuntimeHooksConfig:
     enabled: bool | None = True
+    #: Opt-in auto-format after edit/write. Off by default; enabled via the
+    #: top-level ``formatter`` config section (``enabled`` / ``format_on_write``).
+    format_on_write: bool = False
     timeout_seconds: float | None = 30.0
     failure_mode: RuntimeHookFailureMode = "warn"
     pre_tool: tuple[tuple[str, ...], ...] = ()

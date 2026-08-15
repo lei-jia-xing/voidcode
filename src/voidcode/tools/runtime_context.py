@@ -50,6 +50,8 @@ class RuntimeToolInvocationContext:
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
     memory: RuntimeMemoryToolFacade | None = None
     lsp: RuntimeLspToolFacade | None = None
+    #: Opt-in gate for automatic post-write LSP diagnostics (default off).
+    lsp_diagnostics_on_write: bool = False
 
 
 _CURRENT_RUNTIME_TOOL_CONTEXT: ContextVar[RuntimeToolInvocationContext | None] = ContextVar(

@@ -655,12 +655,13 @@ def test_apply_patch_runs_formatter_for_structured_changed_files(tmp_path: Path)
     )
     tool = ApplyPatchTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -741,12 +742,13 @@ def test_apply_patch_keeps_write_successful_when_formatter_is_missing(
     )
     tool = ApplyPatchTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("missing-formatter-binary",),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 

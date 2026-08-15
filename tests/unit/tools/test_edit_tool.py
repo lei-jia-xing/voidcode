@@ -398,12 +398,13 @@ def test_edit_tool_skips_formatter_when_no_matching_preset(tmp_path: Path) -> No
 
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("missing-formatter",),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -474,12 +475,13 @@ def test_edit_tool_rejects_without_prior_read_before_formatter_execution(
     )
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -520,12 +522,13 @@ def test_edit_tool_runs_formatter_after_prior_read_and_write(tmp_path: Path) -> 
     read_lines = {file_path.resolve().as_posix(): frozenset({1})}
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -549,13 +552,14 @@ def test_edit_tool_surfaces_warning_when_formatter_executable_is_missing(tmp_pat
 
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("missing-formatter-binary",),
                     extensions=(".py",),
                     fallback_commands=(("also-missing",),),
                 )
-            }
+            },
         )
     )
 
@@ -608,12 +612,13 @@ def test_edit_tool_re_reads_after_successful_formatter_rewrite(tmp_path: Path) -
 
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -657,12 +662,13 @@ def test_edit_tool_keeps_edit_successful_when_formatter_returns_non_zero(tmp_pat
 
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -691,12 +697,13 @@ def test_edit_tool_keeps_edit_successful_when_formatter_times_out(tmp_path: Path
 
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("slow-formatter",),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 

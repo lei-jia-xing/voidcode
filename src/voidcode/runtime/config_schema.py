@@ -133,6 +133,14 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "description": "Formatting behavior exposed as a top-level user-facing capability.",
                 "properties": {
                     "enabled": {"type": "boolean"},
+                    "format_on_write": {
+                        "type": "boolean",
+                        "description": (
+                            "Opt-in auto-format after edit/write. Off by default. "
+                            "'enabled' is kept as the existing alias and maps onto the "
+                            "same format-on-write switch (it no longer disables all hooks)."
+                        ),
+                    },
                     "languages": {
                         "type": "object",
                         "additionalProperties": {"$ref": "#/$defs/formatterPresetConfig"},
@@ -147,6 +155,10 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": False,
                 "properties": {
                     "enabled": {"type": "boolean"},
+                    "diagnostics_on_write": {
+                        "type": "boolean",
+                        "description": ("Opt-in automatic LSP diagnostics after edit/write. Off by default. Does not gate the explicit 'lsp' tool."),
+                    },
                     "servers": {
                         "type": "object",
                         "additionalProperties": {"$ref": "#/$defs/lspServerConfig"},

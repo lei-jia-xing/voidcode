@@ -184,12 +184,13 @@ def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
     )
     tool = WriteFileTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -218,9 +219,45 @@ def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
 ) -> None:
     tool = WriteFileTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("missing-formatter-binary",),
+                    extensions=(".py",),
+                )
+            },
+        )
+    )
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "main.py", "content": "print('raw')\n"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+
+
+def test_write_file_tool_skips_formatter_by_default(tmp_path: Path) -> None:
+    formatter_marker = tmp_path / "formatter-ran.txt"
+    formatter_script = tmp_path / "formatter.py"
+    formatter_script.write_text(
+        textwrap.dedent(
+            f"""
+            import pathlib
+
+            pathlib.Path({str(formatter_marker)!r}).write_text("ran", encoding="utf-8")
+            """
+        ),
+        encoding="utf-8",
+    )
+    tool = WriteFileTool(
+        hooks_config=RuntimeHooksConfig(
+            formatter_presets={
+                "python": RuntimeFormatterPresetConfig(
+                    command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
             }
@@ -236,6 +273,9 @@ def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
     )
 
     assert result.status == "ok"
+    assert not formatter_marker.exists()
+    assert "formatter" not in result.data
+    assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
 
 
 def test_write_file_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path: Path) -> None:
@@ -267,6 +307,7 @@ def test_write_file_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path
         RuntimeToolInvocationContext(
             session_id="session-1",
             lsp=_FakeLspFacade(),
+            lsp_diagnostics_on_write=True,
         )
     ):
         result = tool.invoke(

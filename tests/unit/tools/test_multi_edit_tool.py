@@ -136,12 +136,13 @@ def test_multi_edit_formats_once_after_all_edits(tmp_path: Path) -> None:
 
     tool = MultiEditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=(sys.executable, str(formatter_script)),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
     result = tool.invoke(
@@ -216,12 +217,13 @@ def test_multi_edit_keeps_edits_successful_when_formatter_is_missing(
     target.write_text("value = 'a'\nother = 'b'\n", encoding="utf-8")
     tool = MultiEditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("missing-formatter-binary",),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 
@@ -307,12 +309,13 @@ def test_multi_edit_keeps_edits_successful_when_formatter_times_out(tmp_path: Pa
 
     tool = MultiEditTool(
         hooks_config=RuntimeHooksConfig(
+            format_on_write=True,
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
                     command=("slow-formatter",),
                     extensions=(".py",),
                 )
-            }
+            },
         )
     )
 

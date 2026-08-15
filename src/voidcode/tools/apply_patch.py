@@ -752,7 +752,19 @@ def _with_formatter_feedback(
         workspace=workspace,
         hooks_config=hooks_config,
     )
-    if not formatter_results and not diagnostics:
+    changed_paths = [cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)]
+    # Independent write-path feedback: LSP post-edit diagnostics and tree-sitter
+    # syntax validation are collected regardless of formatter feedback, so their
+    # switches stay effective even when format-on-write is off.
+    lsp_diagnostics = post_edit_lsp_diagnostics(
+        workspace=workspace,
+        paths=changed_paths,
+    )
+    syntax_diagnostics = post_edit_syntax_diagnostics(
+        workspace=workspace,
+        paths=changed_paths,
+    )
+    if not formatter_results and not diagnostics and not lsp_diagnostics and not syntax_diagnostics:
         return result
 
     data = dict(result.data)
@@ -760,19 +772,10 @@ def _with_formatter_feedback(
         data["formatters"] = formatter_results
     if diagnostics:
         data["diagnostics"] = diagnostics
-    changed_paths = [cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)]
-    lsp_diagnostics = post_edit_lsp_diagnostics(
-        workspace=workspace,
-        paths=changed_paths,
-    )
     if lsp_diagnostics:
         current_diagnostics = data.get("diagnostics")
         existing = current_diagnostics if isinstance(current_diagnostics, list) else []
         data["diagnostics"] = [*existing, *lsp_diagnostics]
-    syntax_diagnostics = post_edit_syntax_diagnostics(
-        workspace=workspace,
-        paths=changed_paths,
-    )
     if syntax_diagnostics:
         current_diagnostics = data.get("diagnostics")
         existing = current_diagnostics if isinstance(current_diagnostics, list) else []
