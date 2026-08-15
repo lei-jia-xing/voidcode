@@ -50,7 +50,7 @@ Runtime 暴露给 agent 的工具元数据遵循以下 shape：
   "name": "read_file",
   "description": "Read a file inside the current workspace.",
   "input_schema": {
-    "filePath": {"type": "string"},
+    "path": {"type": "string"},
     "offset": {"type": "integer"},
     "limit": {"type": "integer"}
   },
@@ -73,7 +73,7 @@ Agent 发起工具调用时只提交工具名与参数对象：
 {
   "tool_name": "read_file",
   "arguments": {
-    "filePath": "README.md",
+    "path": "README.md",
     "offset": 1,
     "limit": 2000
   }
@@ -157,7 +157,7 @@ CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime con
   agent；agent 应选择只读替代方案、调整计划、请求其他路径或解释无法继续的约束；
 - `ask`：非只读工具暂停等待客户端 / 操作员决策。
 
-只读工具不应触发 approval。非只读工具包括写文件、编辑、patch、shell、格式化、todo 写入、AST rewrite，以及动态 MCP 工具。
+只读工具不应触发 approval。非只读工具包括写文件、编辑、patch、shell、格式化，以及动态 MCP 工具。
 
 ### Approval request shape
 
@@ -201,12 +201,12 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 - 文本文件工具默认使用 UTF-8；不支持二进制文件编辑。
 - 搜索 / glob 会忽略常见生成目录，如 `.git`、`node_modules`、`__pycache__`、`dist`、`build`、`.venv` 等。
 - `web_fetch` 只允许 `http://` 与 `https://`，并阻止 localhost、private、loopback、link-local、reserved、multicast、metadata host 等目标。
-- `shell_exec` 不通过 shell 执行命令；它会用 shell-like split 解析 command，默认 30 秒超时，最大 120 秒。
+- `shell_exec` 不通过 shell 执行命令；它会用 shell-like split 解析 command，默认 120 秒超时，最大 600 秒。
 - runtime hooks 可能在工具执行前后发出额外事件；agent 不应假设 tool call 与 tool result 之间只有一个事件，也不应把 `runtime.tool_lookup_succeeded` 误认为真实执行已经开始。
 
 ## 当前可用工具目录
 
-默认内置 registry 当前包含下列工具。`lsp`、`format_file` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中。
+默认内置 registry 当前包含下列工具。`lsp`、`format_file` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。
 
 ### Workspace 读取与搜索工具
 
@@ -218,16 +218,16 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 - 参数：
 
 ```json
-{"filePath": "relative/path.txt", "offset": 1, "limit": 2000}
+{"path": "relative/path.txt", "offset": 1, "limit": 2000}
 ```
 
-`filePath` 为必填；`offset` 与 `limit` 可省略，默认分别为 1 和 2000。其他路径字段名无效。
+`path` 为必填；`offset` 与 `limit` 可省略，默认分别为 1 和 2000。其他路径字段名无效。
 
 - 成功返回：
 
 ```json
 {
-  "content": "<path>relative/path.txt</path>\n<type>file</type>\n<content>\n1: first line\n...</content>",
+  "content": "Read 10 line(s) from relative/path.txt.",
   "data": {
     "path": "relative/path.txt",
     "type": "file",
@@ -237,10 +237,15 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
     "next_offset": null,
     "truncated": false,
     "partial": false,
-    "byte_count": 123
+    "byte_count": 123,
+    "content_hash": "sha256 hex digest",
+    "lines": [{"line": 1, "text": "first line"}],
+    "raw_content": "first line\n..."
   }
 }
 ```
+
+`content` 是人类可读摘要（"Read N line(s) from ..."），行内容通过 `data.lines` / `data.raw_content` 获取；超出 `limit` 或字节上限时 `truncated` / `partial` 为 `true`，`next_offset` 给出续读位置。`content_hash` 是文件内容 sha256。
 
 图片或 PDF 会把 `data.type` 设为 `attachment`，并通过 `data.attachment` / `attachment` 返回 base64 data URI。目录路径会失败；目录探索应使用 `glob`。
 
@@ -323,7 +328,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 }
 ```
 
-- 选择原则：已知目标路径并需要文本搜索时使用；literal 搜索默认开启，regex 搜索显式设置 `regex=true`。结构化代码搜索仍优先 `ast_grep_search`。
+- 选择原则：已知目标路径并需要文本搜索时使用；literal 搜索默认开启，regex 搜索显式设置 `regex=true`。结构化代码搜索仍优先 `ast_grep`。
 
 ### Workspace 写入与编辑工具
 
@@ -449,6 +454,15 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 - 选择原则：需要表达跨文件 diff、rename、delete 或较大改动时使用；简单单点替换优先 `edit`。
 
+#### `apply_workspace_edit`
+
+- 分组：workspace edit（已批准 edit 的原子应用入口）
+- 只读：否，默认触发 approval
+- 用途：把一组已验证的 LSP text edits 在 workspace 内原子应用。
+- 参数与返回：见 `src/voidcode/tools/apply_workspace_edit.py` 与工具维护规则；本文档不重复展开。
+
+- 选择原则：用于承载 LSP 侧（rename / codeAction 等）生成的编辑结果；手写小范围替换仍优先 `edit` / `multi_edit`。
+
 ### 命令、格式化与任务状态工具
 
 #### `shell_exec`
@@ -482,6 +496,15 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 - 选择原则：用于测试、构建、诊断或无法通过内置读写工具完成的本地操作；能用更窄工具时不要首选 shell。
 
+#### `interactive_shell`
+
+- 分组：command execution（交互式）
+- 只读：否
+- 可用性：工具实现存在于 `src/voidcode/tools/interactive_shell.py`，但当前默认内置 registry 不注册该工具（`runtime/tool_provider.py` 的 `BuiltinToolProvider` 未包含）；需 tmux 环境。详见 `docs/deliberate-omissions.md`。
+- 用途：通过 tmux 提供交互式 shell 会话（受限 tmux 子命令白名单）。
+
+- 选择原则：需要保持长驻交互进程时使用；一次性命令仍优先 `shell_exec`。
+
 #### `format_file`
 
 - 分组：formatting
@@ -513,7 +536,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 #### `todo_write`
 
 - 分组：agent work state
-- 只读：否，默认触发 approval
+- 只读：是（`ToolDefinition.read_only=true`，见 `src/voidcode/tools/todo_write.py`；todo 状态视为 runtime work state，不进入 approval）
 - 用途：把 agent 当前 todo list 写入 `.voidcode/todos.json`。
 - 参数：
 
@@ -541,22 +564,79 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 - 选择原则：用于 runtime-visible work state；不要把它当成项目文档或长期 memory。
 
+### 委托、提问与工作流状态工具
+
+以下工具属于默认内置 registry 中的 runtime-owned 协作 / 委托 / 状态工具，参数与返回 shape 见各自契约文档与 `src/voidcode/tools/` 实现：
+
+#### `skill`
+
+- 分组：agent work state
+- 只读：是
+- 用途：按名称加载可用 skill 的说明文本到当前上下文。
+- 参数：`name`（必填）、`user_message`（可选）。
+
+#### `task`
+
+- 分组：delegated execution
+- 只读：是
+- 用途：委托工作给子 runtime session；需提供 `prompt`、`run_in_background`、`load_skills`，并给出 `category` 或 `subagent_type` 之一。
+- 详见 `docs/contracts/background-task-delegation.md`。
+
+#### `question`
+
+- 分组：agent work state
+- 只读：是
+- 用途：向用户提出澄清问题并等待回答。
+- 参数：`questions`（`{question, header, options, multiple}` 数组）。
+
+#### `submit_result`
+
+- 分组：delegated execution
+- 只读：是
+- 用途：提交委托工作的最终结构化 handoff；子 agent 在工具完成后必须调用，父 agent 才能消费结果。
+- 详见 `docs/contracts/background-task-delegation.md`。
+
+#### `background_output`
+
+- 分组：delegated execution
+- 只读：是
+- 用途：读取后台任务状态，并可选择读取子 session 结果。
+- 参数：`task_id`、`block`、`timeout`、`full_session`、`message_limit`。
+- 详见 `docs/contracts/background-task-delegation.md`。
+
+#### `background_cancel`
+
+- 分组：delegated execution
+- 只读：是
+- 用途：按 id 取消运行中的后台任务。
+- 参数：`taskId`、`all`。
+- 详见 `docs/contracts/background-task-delegation.md`。
+
 ### 结构化代码搜索与代码智能工具
 
-#### `ast_grep_search`
+#### `ast_grep`
 
-- 分组：structural code search
-- 只读：是
-- 用途：用 ast-grep pattern 做结构化代码匹配。
+- 分组：structural code search & rewrite
+- 只读：是（`ToolDefinition.read_only=true`，见 `src/voidcode/tools/ast_grep.py`；注意 `replace` 模式在 `apply=true` 时会实际改写文件，但 permission 策略仍按只读自动 allow，不会触发 approval）
+- 用途：用 ast-grep 做结构化代码匹配与改写；`search` / `preview` / `replace` 三种模式统一由一个工具表达。
 - 参数：
 
 ```json
-{"path": "src", "pattern": "class $NAME", "lang": "python"}
+{
+  "mode": "search",
+  "pattern": "class $NAME",
+  "path": "src",
+  "lang": "python"
+}
 ```
 
-`lang` 可省略。
+`mode`、`pattern`、`path` 必填；`mode` 取值 `search` / `preview` / `replace`；`lang`、`rewrite`、`apply` 可省略。
 
-- 成功返回：
+- `search`：只做结构化匹配，不修改文件。
+- `preview`：预览 rewrite 影响范围，需要 `rewrite`，不修改文件。
+- `replace`：实际应用 rewrite；必须同时提供 `rewrite` 且 `apply=true`，否则工具会拒绝执行。
+
+- 成功返回（`search`）：
 
 ```json
 {
@@ -566,79 +646,49 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
     "pattern": "class $NAME",
     "lang": "python",
     "match_count": 3,
-    "matches": []
+    "matches": [],
+    "mode": "search"
   }
 }
 ```
 
-- 选择原则：代码结构匹配优先于 text grep；普通文字或单文件 literal 搜索用 `grep`。
-
-#### `ast_grep_preview`
-
-- 分组：structural code rewrite preview
-- 只读：是
-- 用途：预览 ast-grep rewrite，不修改文件。
-- 参数：
-
-```json
-{
-  "path": "src/example.py",
-  "pattern": "foo($A)",
-  "rewrite": "bar($A)",
-  "lang": "python"
-}
-```
-
-- 成功返回：
+- 成功返回（`preview`）：
 
 ```json
 {
   "content": "Previewed 2 AST replacement(s) in src/example.py",
   "data": {
     "path": "src/example.py",
+    "pattern": "foo($A)",
+    "rewrite": "bar($A)",
+    "lang": "python",
     "replacement_count": 2,
     "matches": [],
-    "applied": false
+    "applied": false,
+    "mode": "preview"
   }
 }
 ```
 
-- 选择原则：执行结构化 rewrite 前先用它验证影响范围。
-
-#### `ast_grep_replace`
-
-- 分组：structural code rewrite
-- 只读：否，默认触发 approval
-- 用途：应用 ast-grep rewrite。
-- 参数：
-
-```json
-{
-  "path": "src/example.py",
-  "pattern": "foo($A)",
-  "rewrite": "bar($A)",
-  "lang": "python",
-  "apply": true
-}
-```
-
-`apply` 必须为 `true`；否则工具会拒绝执行。
-
-- 成功返回：
+- 成功返回（`replace`）：
 
 ```json
 {
   "content": "Applied 2 AST replacement(s) in src/example.py",
   "data": {
     "path": "src/example.py",
+    "pattern": "foo($A)",
+    "rewrite": "bar($A)",
+    "lang": "python",
     "replacement_count": 2,
     "matches": [],
-    "applied": true
+    "applied": true,
+    "mode": "replace"
   }
 }
 ```
 
-- 选择原则：只在 `ast_grep_preview` 结果清楚且 rewrite 适合结构化批量修改时使用。
+- 选择原则：代码结构匹配优先于 text grep；执行结构化 rewrite 前先用 `mode=preview` 验证影响范围；普通文字或单文件 literal 搜索用 `grep`。
 
 #### `lsp`
 
@@ -646,13 +696,13 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 - 只读：是
 - 可用性：仅当 runtime-managed LSP subsystem 启用并注入该工具时暴露。
 - 用途：执行基础 LSP 查询，并额外支持文档级 diagnostics。
-- 使用模式：分为两类。位置型操作要求精确的 `filePath` + `line` + `character`；符号/搜索型操作只需要 `filePath`，其中 `workspaceSymbol` 额外接受 `query`。
+- 使用模式：分为两类。位置型操作要求精确的 `path` + `line` + `character`；符号/搜索型操作只需要 `path`，其中 `workspaceSymbol` 额外接受 `query`。
 - 参数：
 
 ```json
 {
   "operation": "textDocument/definition",
-  "filePath": "src/example.py",
+  "path": "src/example.py",
   "line": 10,
   "character": 5,
   "server": "pyright"
@@ -789,7 +839,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 | 找文件名 / 扩展名 | `glob` | 不要读取整个仓库 |
 | 读取已知文件 | `read_file` | 不要用 `shell_exec cat` |
 | 文本搜索（文件或目录范围） | `grep` | 不要用 LSP 或 AST 搜索 |
-| 结构化代码搜索 | `ast_grep_search` | 不要用 brittle text grep 匹配语法结构 |
+| 结构化代码搜索 | `ast_grep`（`mode=search`） | 不要用 brittle text grep 匹配语法结构 |
 | 代码定义 / 引用 / hover / diagnostics | `lsp` | 不要猜测调用链 |
 | 小范围文本替换 | `edit` | 不要完整重写文件 |
 | 同一文件多个替换 | `multi_edit` | 不要多次独立调用造成中间状态漂移 |
@@ -803,7 +853,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ## Agent 调用准则
 
-1. **优先只读上下文收集。** 在没有足够上下文前，使用 `glob` / `read_file` / `grep` / `ast_grep_search` / `lsp` 收敛事实。
+1. **优先只读上下文收集。** 在没有足够上下文前，使用 `glob` / `read_file` / `grep` / `ast_grep` / `lsp` 收敛事实。
 2. **选择最窄工具。** 能用 `read_file` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write_file`。
 3. **预期 approval pause。** 所有 `read_only=false` 的调用都可能让 session 进入 `waiting`，agent 不应假设调用立即执行。
 4. **把外部资料与本地事实分开。** `web_search` / `web_fetch` 给的是外部证据；本仓库状态仍以 workspace 工具和 runtime events 为准。
