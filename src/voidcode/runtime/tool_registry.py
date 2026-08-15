@@ -7,6 +7,7 @@ from fnmatch import fnmatchcase
 from ..tools.contracts import Tool, ToolDefinition
 from ..tools.guidance import definition_with_guidance
 from .config import RuntimeHooksConfig
+from .edit_schema_policy import EditSchemaResolver
 from .tool_provider import BuiltinToolProvider
 
 
@@ -52,9 +53,9 @@ class ToolRegistry:
         cls,
         *,
         lsp_tool: Tool | None = None,
-        format_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
         hooks_config: RuntimeHooksConfig | None = None,
+        edit_schema_resolver: EditSchemaResolver | None = None,
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
         question_tool: Tool | None = None,
@@ -68,9 +69,9 @@ class ToolRegistry:
         return cls.from_tools(
             BuiltinToolProvider(
                 lsp_tool=lsp_tool,
-                format_tool=format_tool,
                 mcp_tools=mcp_tools,
                 hooks_config=hooks_config,
+                edit_schema_resolver=edit_schema_resolver,
                 skill_tool=skill_tool,
                 task_tool=task_tool,
                 question_tool=question_tool,

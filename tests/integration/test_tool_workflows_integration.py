@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,10 @@ from voidcode.tools import (
     WebFetchTool,
 )
 from voidcode.tools.web_search import WebSearchTool
+
+
+def _content_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _run_git(args: list[str], *, cwd: Path) -> None:
@@ -57,7 +62,10 @@ def test_apply_patch_tool_applies_diff_in_real_git_workspace(tmp_path: Path) -> 
 
     tool = ApplyPatchTool()
     result = tool.invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch, "expectedHashes": {"hello.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -92,7 +100,12 @@ def test_edit_tool_multiple_match_guard_and_replace_all(tmp_path: Path) -> None:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
-                arguments={"path": "edit.txt", "oldString": "foo", "newString": "bar"},
+                arguments={
+                    "path": "edit.txt",
+                    "oldString": "foo",
+                    "newString": "bar",
+                    "expectedHash": _content_hash(target),
+                },
             ),
             workspace=tmp_path,
         )
@@ -107,6 +120,7 @@ def test_edit_tool_multiple_match_guard_and_replace_all(tmp_path: Path) -> None:
                 "oldString": "foo",
                 "newString": "bar",
                 "replaceAll": True,
+                "expectedHash": _content_hash(target),
             },
         ),
         workspace=tmp_path,
@@ -141,6 +155,7 @@ def test_multi_edit_tool_applies_ordered_edits_integration(tmp_path: Path) -> No
             tool_name="multi_edit",
             arguments={
                 "path": "multi.txt",
+                "expectedHash": _content_hash(target),
                 "edits": [
                     {"oldString": "a1", "newString": "A1", "replaceAll": True},
                     {"oldString": "a2", "newString": "A2"},

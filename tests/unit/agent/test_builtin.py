@@ -31,7 +31,6 @@ _MUTATING_TOOL_PATTERNS = frozenset(
         "multi_edit",
         "apply_patch",
         "shell_exec",
-        "format_file",
         "ast_grep_replace",
         "task",
     }

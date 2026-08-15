@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
@@ -27,9 +28,13 @@ def _invoke_multi_edit(*, content: str, edits: list[dict[str, object]]) -> tuple
         workspace = Path(temp_dir)
         sample_file = workspace / "sample.txt"
         sample_file.write_text(content, encoding="utf-8")
+        expected_hash = hashlib.sha256(sample_file.read_bytes()).hexdigest()
 
         result = MultiEditTool().invoke(
-            ToolCall(tool_name="multi_edit", arguments={"path": "sample.txt", "edits": edits}),
+            ToolCall(
+                tool_name="multi_edit",
+                arguments={"path": "sample.txt", "expectedHash": expected_hash, "edits": edits},
+            ),
             workspace=workspace,
         )
 

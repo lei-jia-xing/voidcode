@@ -18,7 +18,6 @@ _TOOL_GUIDANCE_FILES = {
     "background_process_start": "background_process_start.txt",
     "background_process_stop": "background_process_stop.txt",
     "edit": "edit.txt",
-    "format_file": "format_file.txt",
     "glob": "glob.txt",
     "grep": "grep.txt",
     "interactive_shell": "interactive_shell.txt",

@@ -53,6 +53,7 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
         tool=tool,
         tool_call=ToolCall(tool_name=tool.definition.name, arguments={}),
         read_paths=frozenset(),
+        read_lines={},
         tool_timeout=None,
         session_id="tool-abort",
         abort_signal=abort_signal,

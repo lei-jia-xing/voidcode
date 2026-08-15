@@ -24,6 +24,7 @@ from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, 
 from .permission import PendingApproval, PermissionResolution
 from .question import PendingQuestion, QuestionResponse
 from .session import SessionState, session_metadata_for_persistence
+from .session_metadata_helpers import session_model_identity
 from .storage import SqliteSessionStore
 
 if TYPE_CHECKING:
@@ -265,12 +266,19 @@ class RuntimeResumeCoordinator:
         yield RuntimeStreamChunk(kind="event", session=session, event=answered_event)
         sequence += 1
         loop_events = [answered_event]
+        model, provider = session_model_identity(session.metadata)
+        identity_payload: dict[str, str] = {}
+        if model is not None:
+            identity_payload["model"] = model
+        if provider is not None:
+            identity_payload["provider"] = provider
         tool_completed_event = EventEnvelope(
             session_id=session.session.id,
             sequence=sequence,
             event_type="runtime.tool_completed",
             source="tool",
             payload={
+                **identity_payload,
                 "tool": question_answer_result.tool_name,
                 "status": question_answer_result.status,
                 "content": question_answer_result.content,

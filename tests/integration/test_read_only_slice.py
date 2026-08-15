@@ -1153,6 +1153,8 @@ def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuat
     assert response.output == "parent continued after child final"
     assert task_completed.payload == {
         "tool": "task",
+        "model": "opencode/gpt-5.4",
+        "provider": "opencode",
         "tool_call_id": ANY,
         "arguments": {
             "prompt": "return the child final",

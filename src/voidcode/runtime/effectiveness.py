@@ -33,6 +33,17 @@ class _MutableToolStats:
     error_kinds: Counter[str] = field(default_factory=Counter)
 
 
+@dataclass(slots=True)
+class _MutableModelEditStats:
+    """Mutable per-model edit-tool counters (internal projection state)."""
+
+    calls: int = 0
+    successes: int = 0
+    errors: int = 0
+    ambiguous_match_count: int = 0
+    error_kinds: Counter[str] = field(default_factory=Counter)
+
+
 @dataclass(frozen=True, slots=True)
 class ToolEffectivenessStats:
     tool: str
@@ -73,6 +84,40 @@ class ToolEffectivenessStats:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelEditEffectivenessStats:
+    """Per-model edit-tool outcomes, consumed by edit-schema policy selection.
+
+    ``model`` is the model reference carried by ``runtime.tool_completed``
+    events (additive metadata; events without a model are not attributable and
+    are excluded from this breakdown).
+    """
+
+    model: str
+    edit_calls: int
+    edit_successes: int
+    edit_errors: int
+    edit_ambiguous_match_count: int
+    edit_error_kinds: Mapping[str, int]
+
+    @property
+    def edit_ambiguous_match_rate(self) -> float | None:
+        if self.edit_calls == 0:
+            return None
+        return self.edit_ambiguous_match_count / self.edit_calls
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "model": self.model,
+            "edit_calls": self.edit_calls,
+            "edit_successes": self.edit_successes,
+            "edit_errors": self.edit_errors,
+            "edit_ambiguous_match_count": self.edit_ambiguous_match_count,
+            "edit_ambiguous_match_rate": self.edit_ambiguous_match_rate,
+            "edit_error_kinds": dict(self.edit_error_kinds),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ToolEffectivenessReport:
     schema_version: int
     workspace_id: str
@@ -92,6 +137,7 @@ class ToolEffectivenessReport:
     cache_write_tokens: int
     uncached_input_tokens: int
     tools: tuple[ToolEffectivenessStats, ...]
+    models: tuple[ModelEditEffectivenessStats, ...] = ()
 
     @property
     def success_rate(self) -> float | None:
@@ -105,6 +151,12 @@ class ToolEffectivenessReport:
         if denominator <= 0:
             return None
         return self.cache_read_tokens / denominator
+
+    def edit_stats_for_model(self, model: str) -> ModelEditEffectivenessStats | None:
+        for stats in self.models:
+            if stats.model == model:
+                return stats
+        return None
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -130,6 +182,7 @@ class ToolEffectivenessReport:
                 "cache_hit_rate": self.cache_hit_rate,
             },
             "tools": [tool.to_payload() for tool in self.tools],
+            "models": [model.to_payload() for model in self.models],
             "privacy": {
                 "source": "persisted_runtime_events",
                 "stores_source_content": False,
@@ -160,6 +213,7 @@ def project_tool_effectiveness(
 
     session_id_set = set(session_ids)
     mutable: dict[str, _MutableToolStats] = {}
+    model_edit_mutable: dict[str, _MutableModelEditStats] = {}
     pending_errors: set[tuple[str, str]] = set()
     read_paths_by_session: dict[str, set[str]] = {}
     pending_partial_reads: set[tuple[str, str]] = set()
@@ -188,6 +242,13 @@ def project_tool_effectiveness(
         stats = mutable.setdefault(tool, _MutableToolStats())
         stats.calls += 1
 
+        raw_model = payload.get("model")
+        model = raw_model if isinstance(raw_model, str) and raw_model else None
+        model_stats: _MutableModelEditStats | None = None
+        if tool == "edit" and model is not None:
+            model_stats = model_edit_mutable.setdefault(model, _MutableModelEditStats())
+            model_stats.calls += 1
+
         arguments = payload.get("arguments")
         if isinstance(arguments, Mapping):
             stats.argument_bytes += _json_size(arguments)
@@ -207,10 +268,17 @@ def project_tool_effectiveness(
             raw_error_kind = payload.get("error_kind")
             error_kind = raw_error_kind if isinstance(raw_error_kind, str) and raw_error_kind else "unspecified"
             stats.error_kinds[error_kind] += 1
+            if model_stats is not None:
+                model_stats.errors += 1
+                model_stats.error_kinds[error_kind] += 1
+                if error_kind == "ambiguous_match":
+                    model_stats.ambiguous_match_count += 1
             pending_errors.add(retry_key)
             continue
 
         stats.successes += 1
+        if model_stats is not None:
+            model_stats.successes += 1
         if tool == "read_file" and isinstance(arguments, Mapping):
             typed_arguments = cast(Mapping[str, object], arguments)
             raw_path = typed_arguments.get("path")
@@ -247,6 +315,17 @@ def project_tool_effectiveness(
     )
     success_count = sum(tool.successes for tool in tools)
     error_count = sum(tool.errors for tool in tools)
+    models = tuple(
+        ModelEditEffectivenessStats(
+            model=model,
+            edit_calls=stats.calls,
+            edit_successes=stats.successes,
+            edit_errors=stats.errors,
+            edit_ambiguous_match_count=stats.ambiguous_match_count,
+            edit_error_kinds=dict(sorted(stats.error_kinds.items())),
+        )
+        for model, stats in sorted(model_edit_mutable.items())
+    )
     metadata_by_session = session_metadata or {}
     usage_totals = Counter[str]()
     for metadata in metadata_by_session.values():
@@ -281,4 +360,5 @@ def project_tool_effectiveness(
         cache_write_tokens=usage_totals["cache_write_tokens"],
         uncached_input_tokens=usage_totals["uncached_input_tokens"],
         tools=tools,
+        models=models,
     )

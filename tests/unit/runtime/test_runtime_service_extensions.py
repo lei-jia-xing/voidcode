@@ -1445,10 +1445,14 @@ class _UnreadWriteThenReadTurnProvider:
         if error_details.get("reason") == "write_without_read":
             return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "safe.txt"}))
         if last_result.tool_name == "read_file" and last_result.status == "ok":
+            content_hash = last_result.data.get("content_hash")
+            write_arguments: dict[str, object] = {"path": "safe.txt", "content": "updated"}
+            if isinstance(content_hash, str):
+                write_arguments["expectedHash"] = content_hash
             return ProviderTurnResult(
                 tool_call=ToolCall(
                     tool_name="write_file",
-                    arguments={"path": "safe.txt", "content": "updated"},
+                    arguments=write_arguments,
                 )
             )
         return ProviderTurnResult(output="recovered from unread write")

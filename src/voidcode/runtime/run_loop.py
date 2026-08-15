@@ -29,7 +29,7 @@ from ..tools.contracts import (
     ToolErrorDetails,
     ToolResult,
 )
-from ..tools.guards import read_paths_for_tool_results
+from ..tools.guards import read_tracking_for_tool_results
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
@@ -66,7 +66,7 @@ from .provider_fallback import (
 )
 from .question import PendingQuestion
 from .session import SessionState
-from .session_metadata_helpers import todo_state_matches_payload
+from .session_metadata_helpers import session_model_identity, todo_state_matches_payload
 from .tool_display import build_tool_display, build_tool_status
 from .tool_execution import RuntimeToolExecutor
 from .tool_replay import ToolExecutionIntent
@@ -105,6 +105,22 @@ def _hook_failure_chunk(
         logger.warning("%s hook failed for %s: %s", surface, session.session.id, error)
         return None
     return runtime._failed_chunk(session=session, sequence=sequence + 1, error=error)
+
+
+def _tool_completed_identity_payload(session: SessionState) -> dict[str, str]:
+    """Additive model/provider identity for ``runtime.tool_completed`` payloads.
+
+    Merged into the payload before the existing keys so it never overrides
+    result data; omitted entirely when the session metadata does not carry a
+    model/provider.
+    """
+    model, provider = session_model_identity(session.metadata)
+    identity: dict[str, str] = {}
+    if model is not None:
+        identity["model"] = model
+    if provider is not None:
+        identity["provider"] = provider
+    return identity
 
 
 def _serialized_tool_results(tool_results: list[ToolResult]) -> tuple[dict[str, object], ...]:
@@ -567,6 +583,7 @@ class RuntimeRunLoopCoordinator:
                     event_type="runtime.tool_completed",
                     source="tool",
                     payload={
+                        **_tool_completed_identity_payload(session),
                         "tool": tool_call.tool_name,
                         "tool_call_id": tool_call_id,
                         "arguments": sanitized_args,
@@ -597,6 +614,7 @@ class RuntimeRunLoopCoordinator:
         tool: Any,
         tool_call: ToolCall,
         read_paths: frozenset[str],
+        read_lines: Mapping[str, frozenset[int]],
         tool_timeout: int | None,
         session: SessionState,
         start_sequence: int,
@@ -605,18 +623,21 @@ class RuntimeRunLoopCoordinator:
         parent_session_id: str | None,
         delegation_depth: int,
         remaining_spawn_budget: int | None,
+        model: str | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult | Exception, int]]:
         sequence = start_sequence - 1
         execution = self._tool_executor.invoke(
             tool=tool,
             tool_call=tool_call,
             read_paths=read_paths,
+            read_lines=read_lines,
             tool_timeout=tool_timeout,
             session_id=session.session.id,
             parent_session_id=parent_session_id,
             delegation_depth=delegation_depth,
             remaining_spawn_budget=remaining_spawn_budget,
             abort_signal=abort_signal,
+            model=model,
         )
         while True:
             try:
@@ -772,13 +793,15 @@ class RuntimeRunLoopCoordinator:
 
         tool_exception_recovery_enabled = runtime._effective_runtime_config_from_metadata(session.metadata).execution_engine == "provider"
         try:
+            read_tracking = read_tracking_for_tool_results(
+                tool_results=tuple(tool_results),
+                workspace=runtime._workspace,
+            )
             tool_outcome, sequence = yield from self._invoke_tool(
                 tool=tool,
                 tool_call=tool_call,
-                read_paths=read_paths_for_tool_results(
-                    tool_results=tuple(tool_results),
-                    workspace=runtime._workspace,
-                ),
+                read_paths=read_tracking.read_paths,
+                read_lines=read_tracking.read_lines,
                 tool_timeout=tool_timeout,
                 session=session,
                 start_sequence=sequence + 1,
@@ -787,6 +810,7 @@ class RuntimeRunLoopCoordinator:
                 parent_session_id=session.session.parent_id,
                 delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
                 remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(session.metadata),
+                model=session_model_identity(session.metadata)[0],
             )
             if isinstance(tool_outcome, Exception):
                 raise tool_outcome
@@ -839,6 +863,7 @@ class RuntimeRunLoopCoordinator:
                     event_type="runtime.tool_completed",
                     source="tool",
                     payload={
+                        **_tool_completed_identity_payload(session),
                         **partial_timeout_payload,
                         "tool": tool_call.tool_name,
                         "tool_call_id": tool_call_id,
@@ -878,6 +903,7 @@ class RuntimeRunLoopCoordinator:
                     event_type="runtime.tool_completed",
                     source="tool",
                     payload={
+                        **_tool_completed_identity_payload(session),
                         "tool": tool_call.tool_name,
                         "tool_call_id": tool_call_id,
                         "arguments": error_sanitized_args,
@@ -942,7 +968,26 @@ class RuntimeRunLoopCoordinator:
         )
         yield from drained_chunks
 
+        # Terminal-seal guard for tool-result delivery on the approval-resume
+        # path: once the resume run is interrupted, the in-flight tool result
+        # is a late event and must be dropped rather than persisted.
+        if _is_abort_signal_requested(abort_signal):
+            failed_chunk, _ = self._persist_chunk(
+                runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error="run interrupted",
+                    payload=_user_interrupted_payload(
+                        run_id=runtime._run_id_from_session_metadata(session.metadata),
+                        reason=_abort_signal_reason(abort_signal),
+                    ),
+                )
+            )
+            yield failed_chunk
+            return
+
         completed_payload = {
+            **_tool_completed_identity_payload(session),
             **tool_result.data,
             "tool_call_id": tool_call_id,
             "arguments": sanitized_arguments,
@@ -1413,6 +1458,18 @@ class RuntimeRunLoopCoordinator:
                         tuple(tool_results),
                         session=session,
                     ):
+                        if _is_abort_requested(active_graph_request):
+                            # Terminal-seal guard for provider deltas: once this
+                            # run is interrupted, every remaining stream delta is
+                            # a late event — drop it instead of streaming it to
+                            # the client. Keep consuming the generator so a
+                            # graph-raised provider error (e.g. an abort-aware
+                            # provider surfacing a ``cancelled`` failure) still
+                            # propagates through the normal exception handler
+                            # instead of being masked by the interrupt.
+                            if not isinstance(streamed_item, GraphEvent):
+                                graph_step = streamed_item
+                            continue
                         if isinstance(streamed_item, GraphEvent):
                             # Live client-only stream deltas are NOT persisted, so
                             # they must not advance the persisted-sequence cursor.
@@ -1943,13 +2000,15 @@ class RuntimeRunLoopCoordinator:
                 )
                 return
             try:
+                read_tracking = read_tracking_for_tool_results(
+                    tool_results=tuple(tool_results),
+                    workspace=runtime._workspace,
+                )
                 tool_outcome, sequence = yield from self._invoke_tool(
                     tool=tool,
                     tool_call=plan_tool_call,
-                    read_paths=read_paths_for_tool_results(
-                        tool_results=tuple(tool_results),
-                        workspace=runtime._workspace,
-                    ),
+                    read_paths=read_tracking.read_paths,
+                    read_lines=read_tracking.read_lines,
                     tool_timeout=tool_timeout,
                     session=session,
                     start_sequence=sequence + 1,
@@ -1958,6 +2017,7 @@ class RuntimeRunLoopCoordinator:
                     parent_session_id=session.session.parent_id,
                     delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
                     remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(session.metadata),
+                    model=session_model_identity(session.metadata)[0],
                 )
                 if isinstance(tool_outcome, Exception):
                     raise tool_outcome
@@ -2010,6 +2070,7 @@ class RuntimeRunLoopCoordinator:
                         event_type="runtime.tool_completed",
                         source="tool",
                         payload={
+                            **_tool_completed_identity_payload(session),
                             **partial_timeout_payload,
                             "tool": plan_tool_call.tool_name,
                             "tool_call_id": tool_call_id,
@@ -2049,6 +2110,7 @@ class RuntimeRunLoopCoordinator:
                         event_type="runtime.tool_completed",
                         source="tool",
                         payload={
+                            **_tool_completed_identity_payload(session),
                             "tool": plan_tool_call.tool_name,
                             "tool_call_id": tool_call_id,
                             "arguments": error_sanitized_args,
@@ -2134,6 +2196,29 @@ class RuntimeRunLoopCoordinator:
             )
             yield from drained_chunks
 
+            # Terminal-seal guard for tool-result delivery: if the run was
+            # interrupted while the tool was in flight, this result arrived
+            # after the run was sealed and is a late event — drop it instead of
+            # persisting ``runtime.tool_completed``. The failure chunk below
+            # records the interruption as the terminal truth. (The
+            # ``_started_tool_abort_chunks`` path still synthesizes a terminal
+            # ``runtime.tool_completed`` for tools that never ran — that is the
+            # loop's own bookkeeping, not a late delivery.)
+            if _is_abort_requested(active_graph_request):
+                failed_chunk, _ = self._persist_chunk(
+                    runtime._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error="run interrupted",
+                        payload=_user_interrupted_payload(
+                            run_id=runtime._run_id_from_session_metadata(session.metadata),
+                            reason=_abort_reason(active_graph_request),
+                        ),
+                    )
+                )
+                yield failed_chunk
+                return
+
             if plan_tool_call.tool_name == QuestionTool.definition.name and tool_result.status == "ok":
                 pending_question = PendingQuestion(
                     request_id=f"question-{uuid4().hex}",
@@ -2180,6 +2265,7 @@ class RuntimeRunLoopCoordinator:
                 return
 
             completed_payload = {
+                **_tool_completed_identity_payload(session),
                 **tool_result.data,
                 "tool_call_id": tool_call_id,
                 "arguments": sanitized_arguments,
@@ -2401,6 +2487,7 @@ class RuntimeRunLoopCoordinator:
             event_type="runtime.tool_completed",
             source="tool",
             payload={
+                **_tool_completed_identity_payload(session),
                 **tool_result.data,
                 "tool": tool_result.tool_name,
                 "tool_call_id": tool_feedback_id,

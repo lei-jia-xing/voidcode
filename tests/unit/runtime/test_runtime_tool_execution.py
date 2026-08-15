@@ -35,6 +35,8 @@ class _ContextProbeTool:
         assert context.delegation_depth == 2
         assert context.remaining_spawn_budget == 3
         assert context.read_paths == frozenset({"README.md"})
+        assert context.read_lines == {"README.md": frozenset({1, 2, 3})}
+        assert context.model == "model-1"
         assert context.memory is not None
         assert context.lsp is not None
         return ToolResult(tool_name=call.tool_name, status="ok", content=str(workspace))
@@ -69,12 +71,14 @@ def test_runtime_tool_executor_binds_context_without_runtime_kernel(tmp_path: Pa
             tool=_ContextProbeTool(),
             tool_call=ToolCall(tool_name="probe", arguments={}),
             read_paths=frozenset({"README.md"}),
+            read_lines={"README.md": frozenset({1, 2, 3})},
             tool_timeout=None,
             session_id="session-1",
             parent_session_id="parent-1",
             delegation_depth=2,
             remaining_spawn_budget=3,
             abort_signal=None,
+            model="model-1",
         )
     )
 
@@ -91,12 +95,14 @@ def test_runtime_tool_executor_streams_progress_without_runtime_kernel(tmp_path:
             tool=_ProgressTool(),
             tool_call=ToolCall(tool_name="shell_exec", arguments={}),
             read_paths=frozenset(),
+            read_lines={},
             tool_timeout=None,
             session_id="session-1",
             parent_session_id=None,
             delegation_depth=0,
             remaining_spawn_budget=None,
             abort_signal=None,
+            model=None,
         )
     )
 

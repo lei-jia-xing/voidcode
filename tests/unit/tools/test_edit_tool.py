@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 import textwrap
@@ -11,9 +12,15 @@ import pytest
 
 from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.runtime.edit_schema_policy import EditSchema
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import EditTool, ToolCall
+from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+
+
+def _content_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_edit_tool_replaces_exact_text(tmp_path: Path) -> None:
@@ -29,6 +36,7 @@ def test_edit_tool_replaces_exact_text(tmp_path: Path) -> None:
                 "path": "test.txt",
                 "oldString": "world",
                 "newString": "voidcode",
+                "expectedHash": _content_hash(file_path),
             },
         ),
         workspace=tmp_path,
@@ -56,6 +64,7 @@ def test_edit_tool_replaces_all_occurrences(tmp_path: Path) -> None:
                 "oldString": "foo",
                 "newString": "qux",
                 "replaceAll": True,
+                "expectedHash": _content_hash(file_path),
             },
         ),
         workspace=tmp_path,
@@ -72,7 +81,7 @@ def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: 
 
     tool = EditTool()
 
-    with pytest.raises(ValueError, match="Multiple matches found"):
+    with pytest.raises(ToolDiagnosticError, match="Multiple matches found") as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
@@ -80,10 +89,22 @@ def test_edit_tool_rejects_multiple_exact_matches_without_replace_all(tmp_path: 
                     "path": "test.txt",
                     "oldString": "foo",
                     "newString": "qux",
+                    "expectedHash": _content_hash(file_path),
                 },
             ),
             workspace=tmp_path,
         )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "ambiguous_match"
+    assert diagnostic.error_details["reason"] == "ambiguous_match"
+    assert diagnostic.error_details["match_count"] == 2
+    matches = cast(list[dict[str, object]], diagnostic.error_details["matches"])
+    assert matches[0]["line_numbers"] == [1, 1]
+    assert "foo" in str(matches[0]["preview"])
+    assert isinstance(diagnostic.retry_guidance, str)
+    assert diagnostic.retry_guidance
+    assert "replaceAll" in diagnostic.retry_guidance
 
 
 def test_edit_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
@@ -116,7 +137,12 @@ def test_edit_tool_allows_path_outside_workspace(tmp_path: Path) -> None:
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": str(outside), "oldString": "alpha", "newString": "beta"},
+            arguments={
+                "path": str(outside),
+                "oldString": "alpha",
+                "newString": "beta",
+                "expectedHash": _content_hash(outside),
+            },
         ),
         workspace=tmp_path,
     )
@@ -137,7 +163,12 @@ def test_edit_tool_allows_symlink_escape_when_runtime_permission_allows(tmp_path
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "link.txt", "oldString": "alpha", "newString": "beta"},
+            arguments={
+                "path": "link.txt",
+                "oldString": "alpha",
+                "newString": "beta",
+                "expectedHash": _content_hash(outside),
+            },
         ),
         workspace=tmp_path,
     )
@@ -164,14 +195,27 @@ def test_edit_tool_rejects_identical_old_and_new(tmp_path: Path) -> None:
 
     tool = EditTool()
 
-    with pytest.raises(ValueError, match="identical"):
+    with pytest.raises(ToolDiagnosticError, match="identical") as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
-                arguments={"path": "test.txt", "oldString": "hello", "newString": "hello"},
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "hello",
+                    "newString": "hello",
+                    "expectedHash": _content_hash(file_path),
+                },
             ),
             workspace=tmp_path,
         )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "no_op"
+    assert diagnostic.error_details["reason"] == "identical_old_and_new"
+    assert diagnostic.error_details["old_string"] == "hello"
+    assert diagnostic.error_details["new_string"] == "hello"
+    assert isinstance(diagnostic.retry_guidance, str)
+    assert diagnostic.retry_guidance
 
 
 def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
@@ -180,20 +224,32 @@ def test_edit_tool_rejects_when_old_string_not_found(tmp_path: Path) -> None:
 
     tool = EditTool()
 
-    with pytest.raises(ValueError, match="Could not find oldString") as exc_info:
+    with pytest.raises(ToolDiagnosticError, match="Could not find oldString") as exc_info:
         tool.invoke(
             ToolCall(
                 tool_name="edit",
-                arguments={"path": "test.txt", "oldString": "missing", "newString": "b"},
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "missing",
+                    "newString": "b",
+                    "expectedHash": _content_hash(file_path),
+                },
             ),
             workspace=tmp_path,
         )
 
-    message = str(exc_info.value)
-    assert "Replacers attempted:" in message
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "old_string_not_found"
+    assert "Replacers attempted:" in str(diagnostic)
+    message = str(diagnostic)
     assert "SimpleReplacer" in message
     assert "ContextAwareReplacer" in message
     assert "No nearby text match found" in message
+    assert "attempted_replacers" in diagnostic.error_details
+    assert diagnostic.error_details["line_number_prefix_suspected"] is False
+    assert isinstance(diagnostic.retry_guidance, str)
+    assert diagnostic.retry_guidance
 
 
 def test_edit_tool_no_match_with_unindented_old_string_keeps_diagnostics(
@@ -208,7 +264,12 @@ def test_edit_tool_no_match_with_unindented_old_string_keeps_diagnostics(
         tool.invoke(
             ToolCall(
                 tool_name="edit",
-                arguments={"path": "test.txt", "oldString": "missing", "newString": "b"},
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "missing",
+                    "newString": "b",
+                    "expectedHash": _content_hash(file_path),
+                },
             ),
             workspace=tmp_path,
         )
@@ -235,6 +296,7 @@ def test_edit_tool_reports_near_match_context_when_old_string_is_stale(
                     "path": "test.py",
                     "oldString": "def greet():\n    message = 'hullo'\n    return value",
                     "newString": "def greet():\n    message = 'hi'\n    return message",
+                    "expectedHash": _content_hash(file_path),
                 },
             ),
             workspace=tmp_path,
@@ -270,6 +332,7 @@ def test_edit_tool_warns_when_old_string_includes_read_line_prefixes(
                     "path": "test.py",
                     "oldString": "1: alpha\n2: beta",
                     "newString": "alpha\nupdated",
+                    "expectedHash": _content_hash(file_path),
                 },
             ),
             workspace=tmp_path,
@@ -289,7 +352,12 @@ def test_edit_tool_preserves_line_endings(tmp_path: Path) -> None:
     tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "test.txt", "oldString": "line2", "newString": "modified"},
+            arguments={
+                "path": "test.txt",
+                "oldString": "line2",
+                "newString": "modified",
+                "expectedHash": _content_hash(file_path),
+            },
         ),
         workspace=tmp_path,
     )
@@ -314,6 +382,7 @@ def test_edit_tool_matches_block_anchors_with_small_typos(tmp_path: Path) -> Non
                 "path": "test.txt",
                 "oldString": "start blok\nkeep middle\nend block",
                 "newString": "start block\nupdated middle\nend block",
+                "expectedHash": _content_hash(file_path),
             },
         ),
         workspace=tmp_path,
@@ -341,7 +410,7 @@ def test_edit_tool_skips_formatter_when_no_matching_preset(tmp_path: Path) -> No
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "note.txt", "oldString": "world", "newString": "voidcode"},
+            arguments={"path": "note.txt", "oldString": "world", "newString": "voidcode", "expectedHash": _content_hash(file_path)},
         ),
         workspace=tmp_path,
     )
@@ -372,7 +441,7 @@ def test_edit_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> No
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
         ),
         workspace=tmp_path,
     )
@@ -419,7 +488,7 @@ def test_edit_tool_rejects_without_prior_read_before_formatter_execution(
             tool.invoke(
                 ToolCall(
                     tool_name="edit",
-                    arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+                    arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
                 ),
                 workspace=tmp_path,
             )
@@ -448,6 +517,7 @@ def test_edit_tool_runs_formatter_after_prior_read_and_write(tmp_path: Path) -> 
         encoding="utf-8",
     )
     read_paths = frozenset({file_path.resolve().as_posix()})
+    read_lines = {file_path.resolve().as_posix(): frozenset({1})}
     tool = EditTool(
         hooks_config=RuntimeHooksConfig(
             formatter_presets={
@@ -459,11 +529,11 @@ def test_edit_tool_runs_formatter_after_prior_read_and_write(tmp_path: Path) -> 
         )
     )
 
-    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test", read_paths=read_paths)):
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test", read_paths=read_paths, read_lines=read_lines)):
         result = tool.invoke(
             ToolCall(
                 tool_name="edit",
-                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
             ),
             workspace=tmp_path,
         )
@@ -492,7 +562,7 @@ def test_edit_tool_surfaces_warning_when_formatter_executable_is_missing(tmp_pat
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
         ),
         workspace=tmp_path,
     )
@@ -550,7 +620,7 @@ def test_edit_tool_re_reads_after_successful_formatter_rewrite(tmp_path: Path) -
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
         ),
         workspace=tmp_path,
     )
@@ -599,7 +669,7 @@ def test_edit_tool_keeps_edit_successful_when_formatter_returns_non_zero(tmp_pat
     result = tool.invoke(
         ToolCall(
             tool_name="edit",
-            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+            arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
         ),
         workspace=tmp_path,
     )
@@ -637,7 +707,7 @@ def test_edit_tool_keeps_edit_successful_when_formatter_times_out(tmp_path: Path
         result = tool.invoke(
             ToolCall(
                 tool_name="edit",
-                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'"},
+                arguments={"path": "main.py", "oldString": "'hi'", "newString": "'bye'", "expectedHash": _content_hash(file_path)},
             ),
             workspace=tmp_path,
         )
@@ -651,9 +721,322 @@ def test_edit_tool_keeps_edit_successful_when_formatter_times_out(tmp_path: Path
     assert file_path.read_text(encoding="utf-8") == "print('bye')\n"
 
 
+def test_edit_tool_rejects_missing_expected_hash_with_structured_diagnostic(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool()
+
+    with pytest.raises(ToolDiagnosticError, match="expectedHash") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "test.txt", "oldString": "world", "newString": "voidcode"},
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "missing_expected_hash"
+    assert diagnostic.error_details["path"] == "test.txt"
+    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert file_path.read_text(encoding="utf-8") == "hello world"
+
+
+def test_edit_tool_rejects_stale_expected_hash_with_structured_diagnostic(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool()
+
+    with pytest.raises(ToolDiagnosticError, match="stale edit") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "world",
+                    "newString": "voidcode",
+                    "expectedHash": "0" * 64,
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "stale_edit"
+    assert diagnostic.error_details["reason"] == "content_hash_mismatch"
+    assert diagnostic.error_details["expected_hash"] == "0" * 64
+    assert diagnostic.error_details["actual_hash"] == _content_hash(file_path)
+    assert diagnostic.error_details["path"] == "test.txt"
+    assert "data.content_hash" in (diagnostic.retry_guidance or "")
+    assert file_path.read_text(encoding="utf-8") == "hello world"
+
+
+def test_edit_tool_schema_requires_expected_hash() -> None:
+    schema = EditTool.definition.input_schema
+    assert "expectedHash" in schema
+    assert schema["required"] == ["path", "oldString", "newString", "expectedHash"]
+    assert "data.content_hash" in str(schema["expectedHash"]["description"])
+
+
 def test_tools_package_and_default_registry_export_edit_tool() -> None:
     registry = ToolRegistry.with_defaults()
 
     assert "EditTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("edit").definition.name == "edit"
     assert registry.resolve("edit").definition.read_only is False
+
+
+def _read_lines_context(path: Path, lines: set[int]) -> RuntimeToolInvocationContext:
+    resolved = path.resolve().as_posix()
+    return RuntimeToolInvocationContext(
+        session_id="test",
+        read_paths=frozenset({resolved}),
+        read_lines={resolved: frozenset(lines)},
+    )
+
+
+def _read_model_context(path: Path, model: str) -> RuntimeToolInvocationContext:
+    resolved = path.resolve().as_posix()
+    return RuntimeToolInvocationContext(
+        session_id="test",
+        model=model,
+        read_paths=frozenset({resolved}),
+        read_lines={resolved: frozenset({1})},
+    )
+
+
+def test_edit_tool_edits_seen_line_when_read_window_covers_it(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    tool = EditTool()
+
+    with bind_runtime_tool_context(_read_lines_context(file_path, {1, 2, 3})):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "sample.txt", "oldString": "beta", "newString": "BETA", "expectedHash": _content_hash(file_path)},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
+def test_edit_tool_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    tool = EditTool()
+
+    with bind_runtime_tool_context(_read_lines_context(file_path, {1})):
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+            tool.invoke(
+                ToolCall(
+                    tool_name="edit",
+                    arguments={"path": "sample.txt", "oldString": "gamma", "newString": "GAMMA", "expectedHash": _content_hash(file_path)},
+                ),
+                workspace=tmp_path,
+            )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "unseen_range"
+    assert diagnostic.error_details["path"] == "sample.txt"
+    assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
+    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert file_path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_edit_tool_allows_edit_covered_by_union_of_multiple_reads(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("\n".join(f"line-{index}" for index in range(1, 7)), encoding="utf-8")
+    tool = EditTool()
+
+    with bind_runtime_tool_context(_read_lines_context(file_path, {1, 2, 3, 4, 5, 6})):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={"path": "sample.txt", "oldString": "line-5", "newString": "FIVE", "expectedHash": _content_hash(file_path)},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert "FIVE" in file_path.read_text(encoding="utf-8")
+
+
+def test_edit_tool_rejects_replace_all_when_any_occurrence_is_unseen(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("foo\nfoo\n", encoding="utf-8")
+    tool = EditTool()
+
+    with bind_runtime_tool_context(_read_lines_context(file_path, {1})):
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+            tool.invoke(
+                ToolCall(
+                    tool_name="edit",
+                    arguments={
+                        "path": "sample.txt",
+                        "oldString": "foo",
+                        "newString": "bar",
+                        "replaceAll": True,
+                        "expectedHash": _content_hash(file_path),
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "unseen_range"
+    assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 2, "end": 2}]
+    assert file_path.read_text(encoding="utf-8") == "foo\nfoo\n"
+
+
+def test_edit_tool_strict_schema_applies_exact_match(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool(edit_schema_resolver=lambda _model: EditSchema.STRICT)
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": "test.txt",
+                "oldString": "world",
+                "newString": "voidcode",
+                "expectedHash": _content_hash(file_path),
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == "hello voidcode"
+
+
+def test_edit_tool_strict_schema_rejects_non_exact_input_with_ambiguous_match(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool(edit_schema_resolver=lambda _model: EditSchema.STRICT)
+
+    with pytest.raises(ToolDiagnosticError, match="strict edit matching") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "hello   world",
+                    "newString": "goodbye",
+                    "expectedHash": _content_hash(file_path),
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "ambiguous_match"
+    assert diagnostic.error_details["reason"] == "strict_no_exact_match"
+    assert diagnostic.error_details["edit_schema"] == "strict"
+    assert diagnostic.error_details["match_count"] == 0
+    assert isinstance(diagnostic.retry_guidance, str)
+    assert diagnostic.retry_guidance
+    assert "read_file" in diagnostic.retry_guidance
+    assert file_path.read_text(encoding="utf-8") == "hello world"
+
+
+def test_edit_tool_strict_schema_rejects_multiple_exact_matches(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("foo bar foo", encoding="utf-8")
+
+    tool = EditTool(edit_schema_resolver=lambda _model: EditSchema.STRICT)
+
+    with pytest.raises(ToolDiagnosticError, match="Multiple matches found") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "foo",
+                    "newString": "qux",
+                    "expectedHash": _content_hash(file_path),
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "ambiguous_match"
+    assert diagnostic.error_details["reason"] == "ambiguous_match"
+    assert diagnostic.error_details["match_count"] == 2
+
+
+def test_edit_tool_flexible_schema_preserves_fuzzy_matching(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="edit",
+            arguments={
+                "path": "test.txt",
+                "oldString": "hello   world",
+                "newString": "goodbye",
+                "expectedHash": _content_hash(file_path),
+            },
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == "goodbye"
+
+
+def test_edit_tool_resolves_schema_from_runtime_context_model(tmp_path: Path) -> None:
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool(edit_schema_resolver=lambda model: EditSchema.STRICT if model == "strict-model" else EditSchema.FLEXIBLE)
+
+    with bind_runtime_tool_context(_read_model_context(file_path, "strict-model")):
+        with pytest.raises(ToolDiagnosticError, match="strict edit matching") as exc_info:
+            tool.invoke(
+                ToolCall(
+                    tool_name="edit",
+                    arguments={
+                        "path": "test.txt",
+                        "oldString": "hello   world",
+                        "newString": "goodbye",
+                        "expectedHash": _content_hash(file_path),
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+    assert exc_info.value.error_kind == "ambiguous_match"
+
+    with bind_runtime_tool_context(_read_model_context(file_path, "flexible-model")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="edit",
+                arguments={
+                    "path": "test.txt",
+                    "oldString": "hello   world",
+                    "newString": "goodbye",
+                    "expectedHash": _content_hash(file_path),
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert file_path.read_text(encoding="utf-8") == "goodbye"

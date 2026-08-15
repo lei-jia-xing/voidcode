@@ -2,6 +2,7 @@ Apply multiple edits to a file sequentially.
 
 Usage:
 - Use this tool when you need several ordered replacements in one existing file.
+- Read the file first: multi_edit REQUIRES the expectedHash argument, taken from the read_file result's data.content_hash. It is validated against the file before any edit is applied; a missing or stale hash rejects the whole call without changing the file.
 - The path parameter must be a workspace-relative file path.
 - The edits parameter must be a non-empty array of objects shaped like {oldString, newString, replaceAll}.
 - Do not use it for multiple files; use apply_patch for cross-file changes.

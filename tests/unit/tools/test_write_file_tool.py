@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import textwrap
@@ -13,7 +14,12 @@ from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.runtime.config import load_runtime_config
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ToolCall, WriteFileTool
+from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+
+
+def _content_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) -> None:
@@ -39,13 +45,18 @@ def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) ->
 
 
 def test_write_file_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
-    (tmp_path / "note.txt").write_text("old\n", encoding="utf-8")
+    note_path = tmp_path / "note.txt"
+    note_path.write_text("old\n", encoding="utf-8")
     tool = WriteFileTool()
 
     result = tool.invoke(
         ToolCall(
             tool_name="write_file",
-            arguments={"path": "note.txt", "content": "new\n"},
+            arguments={
+                "path": "note.txt",
+                "content": "new\n",
+                "expectedHash": _content_hash(note_path),
+            },
         ),
         workspace=tmp_path,
     )
@@ -97,11 +108,19 @@ def test_write_file_tool_allows_empty_content_for_new_file(tmp_path: Path) -> No
 
 
 def test_write_file_tool_allows_empty_content_for_existing_file(tmp_path: Path) -> None:
-    (tmp_path / "shader.frag").write_text("void main() {}\n", encoding="utf-8")
+    shader_path = tmp_path / "shader.frag"
+    shader_path.write_text("void main() {}\n", encoding="utf-8")
     tool = WriteFileTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
+        ToolCall(
+            tool_name="write_file",
+            arguments={
+                "path": "shader.frag",
+                "content": "",
+                "expectedHash": _content_hash(shader_path),
+            },
+        ),
         workspace=tmp_path,
     )
 
@@ -361,9 +380,99 @@ def test_write_file_tool_skips_formatter_when_formatter_is_disabled_in_runtime_c
     assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
 
 
+def test_write_file_tool_rejects_overwrite_without_expected_hash(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("old\n", encoding="utf-8")
+    tool = WriteFileTool()
+
+    with pytest.raises(ToolDiagnosticError, match="expectedHash") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="write_file",
+                arguments={"path": "note.txt", "content": "new\n"},
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "missing_expected_hash"
+    assert diagnostic.error_details["path"] == "note.txt"
+    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_write_file_tool_rejects_stale_hash_for_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("old\n", encoding="utf-8")
+    tool = WriteFileTool()
+
+    with pytest.raises(ToolDiagnosticError, match="stale write") as exc_info:
+        tool.invoke(
+            ToolCall(
+                tool_name="write_file",
+                arguments={
+                    "path": "note.txt",
+                    "content": "new\n",
+                    "expectedHash": "0" * 64,
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "stale_edit"
+    assert diagnostic.error_details["reason"] == "content_hash_mismatch"
+    assert diagnostic.error_details["expected_hash"] == "0" * 64
+    assert diagnostic.error_details["actual_hash"] == _content_hash(target)
+    assert diagnostic.error_details["path"] == "note.txt"
+    assert "data.content_hash" in (diagnostic.retry_guidance or "")
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_write_file_tool_new_file_does_not_require_hash(tmp_path: Path) -> None:
+    tool = WriteFileTool()
+
+    result = tool.invoke(
+        ToolCall(
+            tool_name="write_file",
+            arguments={"path": "brand-new.txt", "content": "hello"},
+        ),
+        workspace=tmp_path,
+    )
+
+    assert result.status == "ok"
+    assert (tmp_path / "brand-new.txt").read_text(encoding="utf-8") == "hello"
+
+
 def test_tools_package_and_default_registry_export_write_file_tool() -> None:
     registry = ToolRegistry.with_defaults()
 
     assert "WriteFileTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("write_file").definition.name == "write_file"
     assert registry.resolve("write_file").definition.read_only is False
+
+
+def test_write_file_tool_allows_full_overwrite_after_full_file_read(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    tool = WriteFileTool()
+    resolved = target.resolve().as_posix()
+
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="test",
+            read_paths=frozenset({resolved}),
+            read_lines={resolved: frozenset({1, 2, 3})},
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="write_file",
+                arguments={"path": "note.txt", "content": "replacement", "expectedHash": _content_hash(target)},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "replacement"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Protocol, cast
@@ -27,7 +28,15 @@ class _InvokableTool(Protocol):
     [
         (ReadFileTool(), {"path": "link.txt"}),
         (WriteFileTool(), {"path": "linkdir/out.txt", "content": "x"}),
-        (EditTool(), {"path": "link.txt", "oldString": "a", "newString": "b"}),
+        (
+            EditTool(),
+            {
+                "path": "link.txt",
+                "oldString": "a",
+                "newString": "b",
+                "expectedHash": hashlib.sha256(b"a").hexdigest(),
+            },
+        ),
     ],
 )
 def test_workspace_symlink_escape_resolves_to_external_path(

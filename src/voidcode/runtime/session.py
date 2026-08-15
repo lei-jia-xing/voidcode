@@ -10,6 +10,30 @@ from .policy import runtime_policy_snapshot_from_session_metadata
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed", "interrupted"]
 type SessionKind = Literal["top_level", "child"]
 
+# Statuses after which the session's persisted truth is sealed against late
+# events. ``completed``/``failed`` are the storage-level seal written by
+# ``save_run``; ``interrupted`` is the row status of a run that ended without a
+# terminal seal (cancel, overlap, shutdown). An ``interrupted`` row is sealed
+# against *late* events from the dead run and only re-opens through explicit
+# re-entry: a fresh run / follow-up (``save_interrupted_checkpoint`` with
+# ``create_if_missing``) or an explicit resume (``resume_stream``). The runtime
+# guard in ``VoidCodeRuntime._sealed_session_status`` couples this with the
+# active-run registry so a live run's own appends are never misclassified as
+# late events.
+SESSION_TERMINAL_STATUSES: frozenset[SessionStatus] = frozenset({"completed", "failed", "interrupted"})
+
+
+def is_session_status_terminal(status: SessionStatus) -> bool:
+    """Return whether ``status`` is a terminal status for session sealing.
+
+    Single source of truth for the runtime's terminal-seal guard. Storage-level
+    appends use the narrower ``{completed, failed}`` seal (the row status of a
+    live run is ``interrupted``); the runtime-level guard additionally treats
+    ``interrupted`` as sealed when no run is active on the session.
+    """
+    return status in SESSION_TERMINAL_STATUSES
+
+
 _PERSISTED_STRING_LIMIT = 1_000
 _PERSISTED_LIST_LIMIT = 50
 _PERSISTED_DICT_LIMIT = 100

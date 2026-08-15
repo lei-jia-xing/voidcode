@@ -56,12 +56,14 @@ class RuntimeToolExecutor:
         tool: Any,
         tool_call: ToolCall,
         read_paths: frozenset[str],
+        read_lines: Mapping[str, frozenset[int]],
         tool_timeout: int | None,
         session_id: str,
         parent_session_id: str | None,
         delegation_depth: int,
         remaining_spawn_budget: int | None,
         abort_signal: ProviderAbortSignal | None,
+        model: str | None = None,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:
         if tool_call.tool_name == "shell_exec" or (tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)):
             return (
@@ -69,12 +71,14 @@ class RuntimeToolExecutor:
                     tool=tool,
                     tool_call=tool_call,
                     read_paths=read_paths,
+                    read_lines=read_lines,
                     tool_timeout=tool_timeout,
                     session_id=session_id,
                     parent_session_id=parent_session_id,
                     delegation_depth=delegation_depth,
                     remaining_spawn_budget=remaining_spawn_budget,
                     abort_signal=abort_signal,
+                    model=model,
                 )
             )
 
@@ -83,12 +87,14 @@ class RuntimeToolExecutor:
                 tool=tool,
                 tool_call=tool_call,
                 read_paths=read_paths,
+                read_lines=read_lines,
                 tool_timeout=tool_timeout,
                 session_id=session_id,
                 parent_session_id=parent_session_id,
                 delegation_depth=delegation_depth,
                 remaining_spawn_budget=remaining_spawn_budget,
                 abort_signal=abort_signal,
+                model=model,
             )
         except Exception as exc:
             return exc
@@ -99,12 +105,14 @@ class RuntimeToolExecutor:
         tool: Any,
         tool_call: ToolCall,
         read_paths: frozenset[str],
+        read_lines: Mapping[str, frozenset[int]],
         tool_timeout: int | None,
         session_id: str,
         parent_session_id: str | None,
         delegation_depth: int,
         remaining_spawn_budget: int | None,
         abort_signal: ProviderAbortSignal | None,
+        model: str | None = None,
         emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None,
     ) -> ToolResult:
         with bind_runtime_tool_context(
@@ -114,6 +122,8 @@ class RuntimeToolExecutor:
                 delegation_depth=delegation_depth,
                 remaining_spawn_budget=remaining_spawn_budget,
                 read_paths=read_paths,
+                read_lines=read_lines,
+                model=model,
                 abort_signal=abort_signal,
                 emit_tool_progress=emit_tool_progress,
                 memory=self.memory,
@@ -134,12 +144,14 @@ class RuntimeToolExecutor:
         tool: Any,
         tool_call: ToolCall,
         read_paths: frozenset[str],
+        read_lines: Mapping[str, frozenset[int]],
         tool_timeout: int | None,
         session_id: str,
         parent_session_id: str | None,
         delegation_depth: int,
         remaining_spawn_budget: int | None,
         abort_signal: ProviderAbortSignal | None,
+        model: str | None = None,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:
         progress_queue: queue.Queue[_ToolQueueItem] = queue.Queue(maxsize=_PROGRESS_QUEUE_MAX_ITEMS)
 
@@ -159,12 +171,14 @@ class RuntimeToolExecutor:
                     tool=tool,
                     tool_call=tool_call,
                     read_paths=read_paths,
+                    read_lines=read_lines,
                     tool_timeout=tool_timeout,
                     session_id=session_id,
                     parent_session_id=parent_session_id,
                     delegation_depth=delegation_depth,
                     remaining_spawn_budget=remaining_spawn_budget,
                     abort_signal=abort_signal,
+                    model=model,
                     emit_tool_progress=emit_tool_progress,
                 )
                 progress_queue.put(_ToolResultItem(result))

@@ -65,7 +65,7 @@ runtime 当前构建出的完整可用工具注册表，包含：
 - builtins
 - optional tools
 - runtime-managed MCP tools
-- runtime-managed LSP / format tools（如存在）
+- runtime-managed LSP tools（如存在）
 
 ### Tool Visibility
 
@@ -180,7 +180,7 @@ tool allowlist enforcement 发生在 approval 之前。
 
 - MCP tools
 - optional tools
-- runtime-managed LSP / format tools
+- runtime-managed LSP tools
 
 也就是说，`tool_allowlist` 的语义不能只覆盖 builtins。
 

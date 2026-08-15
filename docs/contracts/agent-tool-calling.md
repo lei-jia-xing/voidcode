@@ -206,7 +206,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ## 当前可用工具目录
 
-默认内置 registry 当前包含下列工具。`lsp`、`format_file` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。
+默认内置 registry 当前包含下列工具。`lsp` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。文件格式化不通过独立工具暴露：`edit` / `write_file` / `multi_edit` / `apply_patch` 写后自动执行 format-on-write，由 formatter 配置（`formatter.enabled` / `hooks.enabled` / formatter presets）控制。
 
 ### Workspace 读取与搜索工具
 
@@ -504,34 +504,6 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 - 用途：通过 tmux 提供交互式 shell 会话（受限 tmux 子命令白名单）。
 
 - 选择原则：需要保持长驻交互进程时使用；一次性命令仍优先 `shell_exec`。
-
-#### `format_file`
-
-- 分组：formatting
-- 只读：否，默认触发 approval
-- 可用性：仅当 runtime 配置了 formatter capability 时暴露。
-- 用途：对单个文件执行 formatter preset / fallback command。
-- 参数：
-
-```json
-{"path": "src/example.py"}
-```
-
-- 成功返回：
-
-```json
-{
-  "content": "Successfully formatted example.py (python)",
-  "data": {
-    "path": "/absolute/workspace/src/example.py",
-    "language": "python",
-    "cwd": "/absolute/workspace",
-    "command": ["ruff", "format", "src/example.py"]
-  }
-}
-```
-
-- 选择原则：只做格式化时使用；内容修改仍应通过 `edit` / `multi_edit` / `apply_patch`。
 
 #### `todo_write`
 
@@ -846,7 +818,6 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 | 跨文件或大 diff 修改 | `apply_patch` | 不要把 patch 拆成大量不相关 edit |
 | 创建或完整重写文件 | `write_file` | 不要用 patch 表达全量新内容，除非需要 diff 审阅 |
 | 执行测试 / 构建 | `shell_exec` | 不要用 shell 做已有窄工具可完成的读取操作 |
-| 只格式化文件 | `format_file` | 不要用 edit 修改格式细节 |
 | 搜索网页 | `web_search` | 不要在已有 URL 时重复搜索 |
 | 抓取已知 URL | `web_fetch` | 不要访问内部 / localhost 目标 |
 | 调用配置的外部能力 | `mcp/<server>/<tool>` | 不要假设 MCP 工具只读或永远可用 |

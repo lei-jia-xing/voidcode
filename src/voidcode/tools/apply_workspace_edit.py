@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field, ValidationError
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import format_validation_error
+from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .guards import enforce_seen_lines
 
 
 class _TextEdit(BaseModel):
@@ -19,7 +21,7 @@ class _TextEdit(BaseModel):
     endLine: int = Field(ge=1)
     endCharacter: int = Field(ge=1)
     newText: str
-    expectedHash: str | None = None
+    expectedHash: str
 
 
 class _WorkspaceEditArgs(BaseModel):
@@ -34,8 +36,15 @@ class ApplyWorkspaceEditTool:
             "edits": {
                 "type": "array",
                 "minItems": 1,
-                "description": "Text edits with 1-based line/character ranges and optional expectedHash.",
-                "items": {"type": "object", "required": ["path", "startLine", "startCharacter", "endLine", "endCharacter", "newText"]},
+                "description": (
+                    "Text edits with 1-based line/character ranges. Every edit requires expectedHash: "
+                    "the SHA-256 hash of the current file content, taken from data.content_hash of a "
+                    "prior read_file result."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["path", "startLine", "startCharacter", "endLine", "endCharacter", "newText", "expectedHash"],
+                },
             },
             "required": ["edits"],
         },
@@ -44,6 +53,25 @@ class ApplyWorkspaceEditTool:
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        raw_edits = call.arguments.get("edits")
+        if isinstance(raw_edits, list):
+            for index, item in enumerate(raw_edits):
+                if isinstance(item, dict) and not isinstance(item.get("expectedHash"), str):
+                    raw_path = item.get("path")
+                    raise_tool_diagnostic(
+                        message=f"apply_workspace_edit edit #{index + 1} requires a string expectedHash argument.",
+                        error_kind="tool_input_mismatch",
+                        reason="missing_expected_hash",
+                        retry_guidance=(
+                            "Use read_file on each target path, copy data.content_hash from the results, "
+                            "then retry apply_workspace_edit with expectedHash on every edit."
+                        ),
+                        details={
+                            "edit_index": index + 1,
+                            "path": raw_path if isinstance(raw_path, str) else None,
+                        },
+                    )
+
         try:
             args = _WorkspaceEditArgs.model_validate(call.arguments)
         except ValidationError as exc:
@@ -62,13 +90,30 @@ class ApplyWorkspaceEditTool:
             if not path.is_file():
                 raise ValueError(f"apply_workspace_edit target does not exist: {edit.path}")
             current = originals.setdefault(path, path.read_text(encoding="utf-8"))
-            if edit.expectedHash is not None and hashlib.sha256(current.encode("utf-8")).hexdigest() != edit.expectedHash:
-                raise ValueError(f"apply_workspace_edit stale edit: {edit.path}")
+            actual_hash = hashlib.sha256(current.encode("utf-8")).hexdigest()
+            if actual_hash != edit.expectedHash:
+                raise_tool_diagnostic(
+                    message=f"apply_workspace_edit rejected because {edit.path} changed since it was read (stale edit).",
+                    error_kind="stale_edit",
+                    reason="content_hash_mismatch",
+                    retry_guidance="Read the file again, use the returned data.content_hash, then retry apply_workspace_edit.",
+                    details={"path": edit.path, "expected_hash": edit.expectedHash, "actual_hash": actual_hash},
+                )
             lines = current.splitlines(keepends=True)
             start = sum(len(line) for line in lines[: edit.startLine - 1]) + edit.startCharacter - 1
             end = sum(len(line) for line in lines[: edit.endLine - 1]) + edit.endCharacter - 1
             if start < 0 or end < start or end > len(current):
                 raise ValueError(f"apply_workspace_edit range is out of bounds: {edit.path}")
+            enforce_seen_lines(
+                tool_name=self.definition.name,
+                workspace=workspace,
+                raw_path=edit.path,
+                candidate=path,
+                display_path=resolution.relative_path,
+                is_external=resolution.is_external,
+                start_line=edit.startLine,
+                end_line=edit.endLine,
+            )
             grouped.setdefault(path, []).append((start, end, edit.newText))
             display_by_path[path] = resolution.relative_path
 

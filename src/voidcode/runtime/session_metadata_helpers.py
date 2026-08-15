@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from .session import SessionState
@@ -10,6 +11,36 @@ from .todos import (
     todo_event_payload,
     todo_state_payload,
 )
+
+
+def session_model_identity(
+    metadata: Mapping[str, object],
+) -> tuple[str | None, str | None]:
+    """Return ``(model, provider)`` resolved from session metadata, if known.
+
+    ``model`` is the configured model reference (``provider/model`` or a bare
+    model name) and ``provider`` the resolved provider id from the active
+    provider target. Both are ``None`` when the metadata does not carry them.
+    """
+    runtime_config = metadata.get("runtime_config")
+    if not isinstance(runtime_config, Mapping):
+        return None, None
+    model = runtime_config.get("model")
+    if not isinstance(model, str) or not model:
+        model = None
+    provider: str | None = None
+    resolved_provider = runtime_config.get("resolved_provider")
+    if isinstance(resolved_provider, Mapping):
+        active_target = resolved_provider.get("active_target")
+        if isinstance(active_target, Mapping):
+            raw_provider = active_target.get("provider")
+            if isinstance(raw_provider, str) and raw_provider:
+                provider = raw_provider
+            if model is None:
+                raw_model = active_target.get("raw_model")
+                if isinstance(raw_model, str) and raw_model:
+                    model = raw_model
+    return model, provider
 
 
 def plan_state_from_metadata(
@@ -142,6 +173,7 @@ def todo_state_matches_payload(
 
 __all__ = [
     "plan_state_from_metadata",
+    "session_model_identity",
     "session_with_context_window_payload_metadata",
     "session_with_todo_state",
     "todo_state_matches_payload",

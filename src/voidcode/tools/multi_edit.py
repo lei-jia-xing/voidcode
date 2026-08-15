@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import ClassVar
 
@@ -14,9 +15,10 @@ from ..formatter import (
 from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
-from ._repair import ToolDiagnosticError
+from ._repair import ToolDiagnosticError, raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .edit import EditTool, read_utf8_text, summarize_diff
+from .guards import enforce_read_before_write
 
 
 class MultiEditItemArgs(BaseModel):
@@ -50,6 +52,13 @@ class MultiEditTool:
         description="Apply multiple edits to a file sequentially.",
         input_schema={
             "path": {"type": "string", "description": "Path to file"},
+            "expectedHash": {
+                "type": "string",
+                "description": (
+                    "Required SHA-256 hash of the current file content, taken from data.content_hash "
+                    "of a prior read_file result. Rejects stale edits when the file changed since that read."
+                ),
+            },
             "edits": {
                 "type": "array",
                 "minItems": 1,
@@ -64,7 +73,7 @@ class MultiEditTool:
                     },
                 },
             },
-            "required": ["path", "edits"],
+            "required": ["path", "edits", "expectedHash"],
         },
         read_only=False,
         path_argument_keys=("path",),
@@ -126,12 +135,46 @@ class MultiEditTool:
             raise ValueError(f"multi_edit target does not exist: {args.path}")
 
         relative_target = resolution.relative_path
+        display_path = str(target.resolve()) if resolution.is_external else relative_target
+
+        enforce_read_before_write(
+            tool_name=self.definition.name,
+            workspace=workspace_root,
+            raw_path=args.path,
+            candidate=target,
+            display_path=display_path,
+            is_external=resolution.is_external,
+        )
+
+        expected_hash = call.arguments.get("expectedHash")
+        if not isinstance(expected_hash, str):
+            raise_tool_diagnostic(
+                message="multi_edit requires an expectedHash argument: the file must be read before it is edited.",
+                error_kind="tool_input_mismatch",
+                reason="missing_expected_hash",
+                retry_guidance=(
+                    "Use read_file on the target path, copy data.content_hash from the result, then retry multi_edit with that expectedHash."
+                ),
+                details={"path": display_path, "raw_path": args.path},
+            )
+
         content_before = read_utf8_text(target)
+        actual_hash = hashlib.sha256(content_before.encode("utf-8")).hexdigest()
+        if expected_hash != actual_hash:
+            raise_tool_diagnostic(
+                message="multi_edit rejected because the file changed since it was read (stale edit).",
+                error_kind="stale_edit",
+                reason="content_hash_mismatch",
+                retry_guidance="Read the file again, use the returned data.content_hash, then retry multi_edit.",
+                details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
+            )
 
         applied = 0
         details: list[dict[str, object]] = []
         for idx, item in enumerate(args.edits, start=1):
             try:
+                current_content = read_utf8_text(target)
+                current_hash = hashlib.sha256(current_content.encode("utf-8")).hexdigest()
                 result = self._edit_tool.invoke(
                     ToolCall(
                         tool_name="edit",
@@ -140,11 +183,14 @@ class MultiEditTool:
                             "oldString": item.oldString,
                             "newString": item.newString,
                             "replaceAll": item.replaceAll,
+                            "expectedHash": current_hash,
                         },
                     ),
                     workspace=workspace,
                 )
             except ValueError as exc:
+                if isinstance(exc, ToolDiagnosticError) and exc.error_details.get("reason") == "unseen_range":
+                    raise exc
                 message = (
                     "multi_edit failed at edit "
                     f"#{idx} of {len(args.edits)} for {relative_target}.\n"
@@ -189,7 +235,6 @@ class MultiEditTool:
         )
         diagnostics = formatter_diagnostics(formatter_result)
 
-        display_path = str(target.resolve()) if resolution.is_external else relative_target
         content = f"Applied {applied} edits to {display_path}"
         if diagnostics:
             content += f" Formatter warning: {diagnostics[0]['message']}"

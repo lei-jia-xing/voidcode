@@ -15,6 +15,7 @@ from ..formatter import (
     formatter_payload,
 )
 from ..hook.config import RuntimeHooksConfig
+from ..runtime.edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import (
@@ -24,12 +25,29 @@ from ._repair import (
     looks_line_number_prefixed,
     raise_tool_diagnostic,
 )
+from ._syntax_validation import post_edit_syntax_diagnostics
 from .contracts import ToolCall, ToolDefinition, ToolResult
-from .guards import enforce_read_before_write
+from .guards import enforce_read_before_write, enforce_seen_lines
+from .runtime_context import current_runtime_tool_context
 
 
 def _normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _occurrence_line_ranges(content: str, needle: str) -> list[tuple[int, int]]:
+    """1-based inclusive line ranges of every occurrence of ``needle`` in ``content``."""
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        index = content.find(needle, start)
+        if index == -1:
+            break
+        start_line = content.count("\n", 0, index) + 1
+        end_line = content.count("\n", 0, index + len(needle)) + 1
+        ranges.append((start_line, end_line))
+        start = index + 1
+    return ranges
 
 
 def _detect_line_ending(text: str) -> str:
@@ -95,6 +113,32 @@ def _near_match_hints(content: str, old_string: str, *, limit: int = 2) -> list[
             f"{bounded_candidate_diff(old_string, block).replace('expected', 'oldString')}"
         )
     return hints
+
+
+def _match_locations(content: str, matches: list[str]) -> list[dict[str, object]]:
+    """Map each distinct match to 1-based line numbers and a short preview."""
+    locations: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for match in matches:
+        if match in seen:
+            continue
+        seen.add(match)
+        line_numbers: list[int] = []
+        start = 0
+        while True:
+            index = content.find(match, start)
+            if index == -1:
+                break
+            line_numbers.append(content.count("\n", 0, index) + 1)
+            start = index + 1
+        preview_lines = match.split("\n")[:3]
+        locations.append(
+            {
+                "line_numbers": line_numbers,
+                "preview": "\n".join(preview_lines)[:200],
+            }
+        )
+    return locations
 
 
 def _edit_mismatch_message(
@@ -352,27 +396,49 @@ def _replace(
     new_string: str,
     *,
     replace_all: bool = False,
-) -> tuple[str, int]:
+    edit_schema: EditSchema = EditSchema.FLEXIBLE,
+) -> tuple[str, int, tuple[tuple[int, int], ...]]:
+    """Return (new content, replacement count, 1-based inclusive line ranges replaced)."""
     # Smart replacement pipeline using 9 replacers in order
     if old_string == new_string:
-        raise ValueError("No changes to apply: oldString and newString are identical.")
+        raise_tool_diagnostic(
+            message="No changes to apply: oldString and newString are identical.",
+            error_kind="no_op",
+            reason="identical_old_and_new",
+            retry_guidance=("Provide a newString that differs from oldString, or use read_file to confirm the file already has the desired content."),
+            details={"old_string": old_string, "new_string": new_string},
+        )
 
     if not content:
-        raise ValueError("Content is empty; nothing to edit.")
+        raise_tool_diagnostic(
+            message="Content is empty; nothing to edit.",
+            error_kind="no_op",
+            reason="empty_content",
+            retry_guidance=(
+                "The target file is empty; use write_file to create content, or read the file again and retry the edit against the current text."
+            ),
+            details={"content_empty": True},
+        )
 
     if replace_all:
         # For replaceAll we still need to verify at least one match exists via smart replacers
         pass
 
-    replacers = [
-        SimpleReplacer,
-        LineTrimmedReplacer,
-        BlockAnchorReplacer,
-        WhitespaceNormalizedReplacer,
-        IndentationFlexibleReplacer,
-        # EscapeNormalizedReplacer to be added below after class definitions
-        # MultiOccurrenceReplacer, TrimmedBoundaryReplacer, ContextAwareReplacer
-    ]
+    if edit_schema is EditSchema.STRICT:
+        # Strict profile: exact-match only. The simple replacer is the sole
+        # strategy; any non-exact input fails with the ``ambiguous_match``
+        # diagnostic below instead of falling through to fuzzy matching.
+        replacers = [SimpleReplacer]
+    else:
+        replacers = [
+            SimpleReplacer,
+            LineTrimmedReplacer,
+            BlockAnchorReplacer,
+            WhitespaceNormalizedReplacer,
+            IndentationFlexibleReplacer,
+            # EscapeNormalizedReplacer to be added below after class definitions
+            # MultiOccurrenceReplacer, TrimmedBoundaryReplacer, ContextAwareReplacer
+        ]
 
     # The actual smart replacers will be defined later in file; to avoid forward reference issues,
     # we attempt to import them lazily from globals() after their definitions. If not yet defined,
@@ -384,9 +450,10 @@ def _replace(
         "ContextAwareReplacer",
     ]
     # Build dynamic replacer list by checking their presence in globals
-    for name in smart_names:
-        if name in globals():
-            replacers.append(globals()[name])
+    if edit_schema is not EditSchema.STRICT:
+        for name in smart_names:
+            if name in globals():
+                replacers.append(globals()[name])
 
     # Helper to perform a replacement given a matched substring
     # If replace_all is requested we attempt to replace all occurrences found by any replacer
@@ -407,28 +474,65 @@ def _replace(
         # If replaceAll, replace all occurrences found by this replacer
         if replace_all:
             seen: set[str] = set()
+            match_ranges: list[tuple[int, int]] = []
             for m in matches:
                 if m in seen:
                     continue
                 seen.add(m)
                 if m:
+                    match_ranges.extend(_occurrence_line_ranges(current, m))
                     count = current.count(m)
                     if count:
                         current = current.replace(m, new_string)
                         total_replacements += count
-            return current, total_replacements
+            return current, total_replacements, tuple(match_ranges)
 
         # If not replacing all, enforce single-match constraint per problem statement
         if len(matches) > 1:
-            raise ValueError("Multiple matches found. Use replaceAll to replace all occurrences.")
+            raise_tool_diagnostic(
+                message="Multiple matches found. Use replaceAll to replace all occurrences.",
+                error_kind="ambiguous_match",
+                reason="ambiguous_match",
+                retry_guidance=(
+                    "Either set replaceAll=true to replace every occurrence, or re-read the file and "
+                    "provide a longer, more specific oldString that uniquely identifies the intended "
+                    "location."
+                ),
+                details={
+                    "match_count": len(matches),
+                    "matches": _match_locations(current, matches),
+                    "replace_all_hint": True,
+                },
+            )
         # Exactly one match; replace that exact substring in the current content
         m = matches[0]
         if m:
+            match_ranges = _occurrence_line_ranges(current, m)
             current = current.replace(m, new_string, 1)
             total_replacements += 1
-            return current, total_replacements
+            return current, total_replacements, tuple(match_ranges[:1])
 
     # If we reach here, no replacer found any match
+    if edit_schema is EditSchema.STRICT:
+        raise_tool_diagnostic(
+            message=(
+                "No exact match for oldString under strict edit matching. "
+                "Fuzzy matching is disabled for this model, so the oldString must match the "
+                "current file text exactly."
+            ),
+            error_kind="ambiguous_match",
+            reason="strict_no_exact_match",
+            retry_guidance=(
+                "Use read_file on the target path, copy exact current file text without line-number "
+                "prefixes, then retry edit with that exact oldString."
+            ),
+            details={
+                "edit_schema": "strict",
+                "match_count": 0,
+                "old_string_line_count": len(old_string.splitlines()),
+                "line_number_prefix_suspected": looks_line_number_prefixed(old_string),
+            },
+        )
     raise_tool_diagnostic(
         message=_edit_mismatch_message(content=current, old_string=old_string, attempted_replacers=attempted_replacers),
         error_kind="tool_input_mismatch",
@@ -544,16 +648,39 @@ class EditTool:
             },
             "expectedHash": {
                 "type": "string",
-                "description": "Optional SHA-256 hash from a prior read. Rejects stale edits when the file changed.",
+                "description": (
+                    "Required SHA-256 hash of the current file content, taken from data.content_hash "
+                    "of a prior read_file result. Rejects stale edits when the file changed since that read."
+                ),
             },
-            "required": ["path", "oldString", "newString"],
+            "required": ["path", "oldString", "newString", "expectedHash"],
         },
         read_only=False,
         path_argument_keys=("path",),
     )
 
-    def __init__(self, *, hooks_config: RuntimeHooksConfig | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        hooks_config: RuntimeHooksConfig | None = None,
+        edit_schema_resolver: EditSchemaResolver | None = None,
+    ) -> None:
         self._hooks_config = hooks_config
+        self._edit_schema_resolver = edit_schema_resolver
+
+    def _edit_schema_for_current_model(self) -> EditSchema:
+        """Resolve the edit matching schema for the invoking model.
+
+        The model comes from the active runtime tool invocation context. With a
+        configured resolver the profile is model-specific; otherwise the pure
+        policy is applied without effectiveness data, which defaults to
+        ``EditSchema.FLEXIBLE`` (current behavior).
+        """
+        context = current_runtime_tool_context()
+        model = context.model if context is not None else None
+        if self._edit_schema_resolver is not None:
+            return self._edit_schema_resolver(model)
+        return select_edit_schema(model, None)
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         path_value = call.arguments.get("path")
@@ -597,20 +724,28 @@ class EditTool:
             is_external=resolution.is_external,
         )
 
-        content_old = read_utf8_text(candidate)
         expected_hash = call.arguments.get("expectedHash")
-        if expected_hash is not None:
-            if not isinstance(expected_hash, str):
-                raise ValueError("edit expectedHash must be a string")
-            actual_hash = hashlib.sha256(content_old.encode("utf-8")).hexdigest()
-            if expected_hash != actual_hash:
-                raise_tool_diagnostic(
-                    message="Edit rejected because the file changed since it was read (stale edit).",
-                    error_kind="stale_edit",
-                    reason="content_hash_mismatch",
-                    retry_guidance="Read the file again, use the returned data.content_hash, then retry the edit.",
-                    details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
-                )
+        if not isinstance(expected_hash, str):
+            raise_tool_diagnostic(
+                message="edit requires an expectedHash argument: the file must be read before it is edited.",
+                error_kind="tool_input_mismatch",
+                reason="missing_expected_hash",
+                retry_guidance=(
+                    "Use read_file on the target path, copy data.content_hash from the result, then retry the edit with that expectedHash."
+                ),
+                details={"path": display_path, "raw_path": path_value},
+            )
+
+        content_old = read_utf8_text(candidate)
+        actual_hash = hashlib.sha256(content_old.encode("utf-8")).hexdigest()
+        if expected_hash != actual_hash:
+            raise_tool_diagnostic(
+                message="Edit rejected because the file changed since it was read (stale edit).",
+                error_kind="stale_edit",
+                reason="content_hash_mismatch",
+                retry_guidance="Read the file again, use the returned data.content_hash, then retry the edit.",
+                details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
+            )
 
         ending = _detect_line_ending(content_old)
         normalized_old = _normalize_line_endings(old_string)
@@ -618,14 +753,27 @@ class EditTool:
         normalized_content = _normalize_line_endings(content_old)
 
         try:
-            new_content, match_count = _replace(
+            new_content, match_count, match_ranges = _replace(
                 normalized_content,
                 normalized_old,
                 normalized_new,
                 replace_all=replace_all,
+                edit_schema=self._edit_schema_for_current_model(),
             )
         except ValueError:
             raise
+
+        for start_line, end_line in match_ranges:
+            enforce_seen_lines(
+                tool_name=self.definition.name,
+                workspace=workspace_root,
+                raw_path=path_value,
+                candidate=candidate,
+                display_path=display_path,
+                is_external=resolution.is_external,
+                start_line=start_line,
+                end_line=end_line,
+            )
 
         new_content = _convert_line_endings(new_content, ending)
 
@@ -666,6 +814,14 @@ class EditTool:
             current_diagnostics = data.get("diagnostics")
             existing = current_diagnostics if isinstance(current_diagnostics, list) else []
             data["diagnostics"] = [*existing, *lsp_diagnostics]
+        syntax_diagnostics = post_edit_syntax_diagnostics(
+            workspace=workspace_root,
+            paths=[display_path],
+        )
+        if syntax_diagnostics:
+            current_diagnostics = data.get("diagnostics")
+            existing = current_diagnostics if isinstance(current_diagnostics, list) else []
+            data["diagnostics"] = [*existing, *syntax_diagnostics]
 
         return ToolResult(
             tool_name=self.definition.name,

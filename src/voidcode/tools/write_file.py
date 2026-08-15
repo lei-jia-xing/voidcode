@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 from pathlib import Path
 from typing import ClassVar, final
 
@@ -11,8 +12,9 @@ from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._pydantic_args import format_validation_error
+from ._repair import raise_tool_diagnostic
 from .contracts import ToolCall, ToolDefinition, ToolResult
-from .guards import enforce_read_before_write
+from .guards import enforce_read_before_write, enforce_seen_whole_file
 
 
 class WriteFileArgs(BaseModel):
@@ -33,6 +35,14 @@ class WriteFileTool:
             "content": {
                 "type": "string",
                 "description": "Complete UTF-8 file contents; this replaces the existing file.",
+            },
+            "expectedHash": {
+                "type": "string",
+                "description": (
+                    "Required when the target file already exists: SHA-256 hash of the current file "
+                    "content, taken from data.content_hash of a prior read_file result. Rejects stale "
+                    "overwrites when the file changed since that read. Omit for brand-new files."
+                ),
             },
             "required": ["path", "content"],
         },
@@ -72,6 +82,36 @@ class WriteFileTool:
             display_path=display_path,
             is_external=resolution.is_external,
         )
+
+        if candidate.exists():
+            expected_hash = call.arguments.get("expectedHash")
+            if not isinstance(expected_hash, str):
+                raise_tool_diagnostic(
+                    message="write_file requires an expectedHash argument when overwriting an existing file.",
+                    error_kind="tool_input_mismatch",
+                    reason="missing_expected_hash",
+                    retry_guidance=(
+                        "Use read_file on the target path, copy data.content_hash from the result, then retry write_file with that expectedHash."
+                    ),
+                    details={"path": display_path, "raw_path": args.path},
+                )
+            actual_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            if expected_hash != actual_hash:
+                raise_tool_diagnostic(
+                    message="write_file rejected because the file changed since it was read (stale write).",
+                    error_kind="stale_edit",
+                    reason="content_hash_mismatch",
+                    retry_guidance="Read the file again, use the returned data.content_hash, then retry write_file.",
+                    details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
+                )
+            enforce_seen_whole_file(
+                tool_name=self.definition.name,
+                workspace=workspace_root,
+                raw_path=args.path,
+                candidate=candidate,
+                display_path=display_path,
+                is_external=resolution.is_external,
+            )
 
         candidate.parent.mkdir(parents=True, exist_ok=True)
         old_content = candidate.read_text(encoding="utf-8") if candidate.exists() else ""

@@ -1143,7 +1143,7 @@ def _validate_event_source(value: str) -> EventSource:
 
 
 def _validate_session_status(value: str) -> SessionStatus:
-    allowed: set[str] = {"idle", "running", "waiting", "completed", "failed"}
+    allowed: set[str] = {"idle", "running", "waiting", "completed", "failed", "interrupted"}
     if value not in allowed:
         raise SessionBundleError(f"unknown session status {value!r}; expected one of {sorted(allowed)}")
     return cast(SessionStatus, value)
@@ -1256,7 +1256,14 @@ def apply_session_bundle(
         )
         # ``save_run`` is a terminal seal-writer and no longer writes events;
         # persist the imported event log incrementally before sealing so the
-        # round-tripped session keeps its full transcript.
+        # round-tripped session keeps its full transcript. The seal writes the
+        # bundle's terminal status (``completed``/``failed``) or the resumable
+        # ``interrupted``/``waiting`` row, so seal semantics round-trip: a
+        # terminal session imported from a bundle is sealed against late events
+        # exactly like a locally-run one (``append_session_event`` /
+        # ``append_session_events`` reject non-lifecycle appends via
+        # ``_assert_terminal_session_events_allowed``), and replay/resume of a
+        # sealed imported session is read-only and cannot re-activate it.
         session_store.save_interrupted_checkpoint(
             workspace=workspace,
             session_id=target_id,

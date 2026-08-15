@@ -2,6 +2,7 @@ Writes a file to the local workspace.
 
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
+- When the target file already exists, write_file REQUIRES the expectedHash argument, taken from the read_file result's data.content_hash. A missing or stale hash rejects the overwrite before anything changes. Brand-new files do not need a hash.
 - The path parameter must stay inside the workspace.
 - A successful result returns a short write summary plus metadata such as path and byte_count; it does not return the full file content.
 - Use this tool when you already know the full intended file content and want to create a new file or completely replace an existing file in one step.

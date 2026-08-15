@@ -1,10 +1,11 @@
 Performs exact string replacements in files.
 
 Usage:
-- Read the file first when you need context to choose a safe replacement.
+- Read the file first: every edit REQUIRES the expectedHash argument, taken from the read_file result's data.content_hash. Edits without a hash are rejected, and a stale hash (the file changed since that read) is rejected with a stale_edit diagnostic.
 - The path parameter must be a workspace-relative file path.
 - oldString and newString must be strings. oldString must match the existing file content.
 - Use this tool for targeted changes to existing files; use write_file or apply_patch when creating files or replacing a complete file.
-- The edit will fail if oldString is not found in the file.
-- The edit will fail if oldString matches multiple locations and replaceAll is not true.
+- The edit will fail if oldString is not found in the file; the failure includes near-match hints with line numbers and a diff against the current content.
+- The edit will fail if oldString matches multiple locations and replaceAll is not true; the failure lists the candidate line numbers.
 - Use replaceAll for replacing every occurrence in the file, such as a local rename.
+- When a read_file result is truncated, re-read the file (or continue with data.next_offset) until you have the exact current text before editing.

@@ -21,8 +21,8 @@ from voidcode.tools.write_file import WriteFileTool
     [
         (ReadFileTool, ["path"]),
         (WriteFileTool, ["path", "content"]),
-        (EditTool, ["path", "oldString", "newString"]),
-        (MultiEditTool, ["path", "edits"]),
+        (EditTool, ["path", "oldString", "newString", "expectedHash"]),
+        (MultiEditTool, ["path", "edits", "expectedHash"]),
         (GrepTool, ["pattern", "path"]),
         (ApplyPatchTool, ["patch"]),
         (AstGrepTool, ["mode", "pattern", "path"]),

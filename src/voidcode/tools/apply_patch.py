@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import unicodedata
@@ -16,8 +17,9 @@ from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
+from ._syntax_validation import post_edit_syntax_diagnostics
 from .contracts import ToolCall, ToolDefinition, ToolResult
-from .guards import enforce_read_before_write
+from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 
 
 @dataclass(frozen=True)
@@ -232,12 +234,20 @@ def _derive_marker_update_content_from_text(
     *,
     file_path: Path,
     chunks: tuple[_MarkerChunk, ...],
-) -> str:
+) -> tuple[str, tuple[tuple[int, int], ...], int]:
+    """Return (derived content, matched 1-based line ranges, line-count delta).
+
+    ``matched_ranges`` are 1-based inclusive ranges (in the input content's
+    coordinates) of the lines each chunk anchored on: the matched old lines for
+    replacement chunks, and the context anchor line for context-anchored
+    insertions. ``delta`` is the change in line count the chunks introduce.
+    """
     original_lines = original.split("\n")
     if original_lines and original_lines[-1] == "":
         original_lines.pop()
 
     replacements: list[tuple[int, int, tuple[str, ...]]] = []
+    matched_ranges: list[tuple[int, int]] = []
     line_index = 0
     for chunk in chunks:
         if chunk.change_context is not None:
@@ -254,6 +264,8 @@ def _derive_marker_update_content_from_text(
         if not chunk.old_lines:
             insert_index = len(original_lines) if chunk.is_end_of_file else line_index
             replacements.append((insert_index, 0, chunk.new_lines))
+            if chunk.change_context is not None:
+                matched_ranges.append((context_index + 1, context_index + 1))
             line_index = insert_index
             continue
 
@@ -291,21 +303,100 @@ def _derive_marker_update_content_from_text(
                 },
             )
         replacements.append((found, len(pattern), new_slice))
+        matched_ranges.append((found + 1, found + len(pattern)))
         line_index = found + len(pattern)
 
     next_lines = list(original_lines)
     for start, old_len, new_segment in sorted(replacements, reverse=True):
         next_lines[start : start + old_len] = list(new_segment)
+    delta = len(next_lines) - len(original_lines)
     if not next_lines or next_lines[-1] != "":
         next_lines.append("")
-    return "\n".join(next_lines)
+    return "\n".join(next_lines), tuple(matched_ranges), delta
 
 
-def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
+def _resolve_patch_path(workspace: Path, raw_path: str) -> Path:
+    candidate = Path(raw_path)
+    return candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
+
+
+def _verify_patch_expected_hashes(
+    *,
+    changes: list[dict[str, object]],
+    expected_hashes: dict[str, str] | None,
+    workspace: Path,
+) -> None:
+    """Verify expected hashes for every existing file the patch modifies, before any write."""
+    normalized_hashes: dict[str, str] = {}
+    if expected_hashes:
+        for key, value in expected_hashes.items():
+            normalized_hashes[_resolve_patch_path(workspace, key).as_posix()] = value
+
+    missing_paths: list[str] = []
+    affected_paths: list[str] = []
+    for change in changes:
+        status = change.get("status")
+        if status == "A":
+            continue
+        raw_path = change.get("old_path") if status == "R" else change.get("path")
+        if not isinstance(raw_path, str):
+            continue
+        resolved = _resolve_patch_path(workspace, raw_path)
+        if not resolved.is_file():
+            continue
+        affected_paths.append(raw_path)
+        expected_hash = normalized_hashes.get(resolved.as_posix())
+        if expected_hash is None:
+            missing_paths.append(raw_path)
+            continue
+        actual_hash = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        if actual_hash != expected_hash:
+            raise_tool_diagnostic(
+                message=f"apply_patch rejected because {raw_path} changed since it was read (stale edit).",
+                error_kind="stale_edit",
+                reason="content_hash_mismatch",
+                retry_guidance=(
+                    "Read the affected file(s) again, use the returned data.content_hash values, "
+                    "then retry apply_patch with an updated expectedHashes map."
+                ),
+                details={
+                    "path": raw_path,
+                    "expected_hash": expected_hash,
+                    "actual_hash": actual_hash,
+                    "affected_paths": affected_paths,
+                },
+            )
+    if missing_paths:
+        raise_tool_diagnostic(
+            message=(
+                "apply_patch requires an expectedHashes entry for every existing file the patch "
+                f"modifies; missing: {', '.join(sorted(missing_paths))}."
+            ),
+            error_kind="tool_input_mismatch",
+            reason="missing_expected_hash",
+            retry_guidance=(
+                "Use read_file on each affected path, copy data.content_hash from the results into "
+                "expectedHashes (relative path -> hash), then retry apply_patch."
+            ),
+            details={
+                "affected_paths": affected_paths,
+                "missing_paths": sorted(missing_paths),
+            },
+        )
+
+
+def _apply_marker_patch(
+    patch_text: str,
+    *,
+    workspace: Path,
+    expected_hashes: dict[str, str] | None = None,
+) -> ToolResult:
     hunks = _parse_marker_patch(patch_text)
     prepared: list[_PreparedMarkerChange] = []
     planned_add_paths: set[str] = set()
     staged_contents: dict[str, str] = {}
+    ranges_by_source: dict[str, list[tuple[int, int]]] = {}
+    shift_by_source: dict[str, int] = {}
     for hunk in hunks:
         if hunk.move_path is not None and hunk.move_path == hunk.path:
             raise ValueError(f"Move destination must differ from source: {hunk.move_path}")
@@ -334,11 +425,15 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
                     source_content = source_file.read_text(encoding="utf-8")
                 except FileNotFoundError as exc:
                     raise ValueError(f"Failed to read file to update: {source_file}") from exc
-            content = _derive_marker_update_content_from_text(
+            content, matched_ranges, delta = _derive_marker_update_content_from_text(
                 source_content,
                 file_path=source_file,
                 chunks=hunk.chunks,
             )
+            shift = shift_by_source.get(hunk.path, 0)
+            original_ranges = [(start - shift, end - shift) for start, end in matched_ranges if end - shift >= 1]
+            ranges_by_source.setdefault(hunk.path, []).extend(original_ranges)
+            shift_by_source[hunk.path] = shift + delta
             if hunk.move_path is None:
                 staged_contents[hunk.path] = content
                 prepared.append(_PreparedMarkerChange(status="M", path=hunk.path, content=content))
@@ -373,6 +468,46 @@ def _apply_marker_patch(patch_text: str, *, workspace: Path) -> ToolResult:
             display_path=guard_path,
             is_external=False,
         )
+
+    _verify_patch_expected_hashes(
+        changes=[
+            {
+                "path": change.path,
+                "status": change.status,
+                **({"old_path": change.old_path} if change.old_path is not None else {}),
+            }
+            for change in prepared
+        ],
+        expected_hashes=expected_hashes,
+        workspace=workspace,
+    )
+
+    for change in prepared:
+        if change.status == "A":
+            continue
+        guard_path = change.old_path or change.path
+        target = workspace / guard_path
+        if change.status == "D":
+            enforce_seen_whole_file(
+                tool_name="apply_patch",
+                workspace=workspace,
+                raw_path=guard_path,
+                candidate=target,
+                display_path=guard_path,
+                is_external=False,
+            )
+            continue
+        for start_line, end_line in ranges_by_source.get(guard_path, ()):
+            enforce_seen_lines(
+                tool_name="apply_patch",
+                workspace=workspace,
+                raw_path=guard_path,
+                candidate=target,
+                display_path=guard_path,
+                is_external=False,
+                start_line=start_line,
+                end_line=end_line,
+            )
 
     for change in prepared:
         target = workspace / change.path
@@ -634,6 +769,14 @@ def _with_formatter_feedback(
         current_diagnostics = data.get("diagnostics")
         existing = current_diagnostics if isinstance(current_diagnostics, list) else []
         data["diagnostics"] = [*existing, *lsp_diagnostics]
+    syntax_diagnostics = post_edit_syntax_diagnostics(
+        workspace=workspace,
+        paths=changed_paths,
+    )
+    if syntax_diagnostics:
+        current_diagnostics = data.get("diagnostics")
+        existing = current_diagnostics if isinstance(current_diagnostics, list) else []
+        data["diagnostics"] = [*existing, *syntax_diagnostics]
 
     content = result.content
     if content is not None and diagnostics:
@@ -669,6 +812,51 @@ def _guard_changes_before_write(
             display_path=guard_path,
             is_external=False,
         )
+
+
+def _enforce_patch_seen_ranges(
+    *,
+    patch_text: str,
+    workspace: Path,
+    tool_name: str,
+) -> None:
+    """Require every source line each unified-diff hunk touches to be seen."""
+    try:
+        patch_set = PatchSet(patch_text)
+    except (UnidiffParseError, ValueError):
+        return
+
+    for patched_file in patch_set:
+        old_path = None if patched_file.source_file == "/dev/null" else _strip_diff_prefix(patched_file.source_file)
+        new_path = None if patched_file.target_file == "/dev/null" else _strip_diff_prefix(patched_file.target_file)
+
+        if old_path is not None and '"' in old_path:
+            old_path = None
+        if new_path is not None and '"' in new_path:
+            new_path = None
+
+        if old_path is None and new_path is not None:
+            continue
+        guard_path = old_path if old_path is not None else new_path
+        if guard_path is None:
+            continue
+        candidate = _resolve_patch_path(workspace, guard_path)
+        if not candidate.is_file():
+            continue
+        for hunk in patched_file:
+            length = hunk.source_length
+            if length <= 0:
+                continue
+            enforce_seen_lines(
+                tool_name=tool_name,
+                workspace=workspace,
+                raw_path=guard_path,
+                candidate=candidate,
+                display_path=guard_path,
+                is_external=False,
+                start_line=hunk.source_start,
+                end_line=hunk.source_start + length - 1,
+            )
 
 
 def _looks_like_mode_only_patch(patch_text: str) -> bool:
@@ -821,6 +1009,16 @@ class ApplyPatchTool:
                 "minLength": 1,
                 "description": "Patch text using the supported apply_patch format.",
             },
+            "expectedHashes": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": (
+                    "Map of path -> SHA-256 hash for every EXISTING file the patch modifies or deletes. "
+                    "Hashes come from data.content_hash of prior read_file results. Required whenever "
+                    "the patch touches files that already exist; omit only for patches that solely "
+                    "add new files."
+                ),
+            },
             "required": ["patch"],
         },
         read_only=False,
@@ -834,12 +1032,35 @@ class ApplyPatchTool:
         if not isinstance(patch_text, str):
             raise ValueError("apply_patch requires a string 'patch' argument")
 
+        raw_expected_hashes = call.arguments.get("expectedHashes")
+        if raw_expected_hashes is None:
+            expected_hashes: dict[str, str] | None = None
+        elif isinstance(raw_expected_hashes, dict) and all(
+            isinstance(key, str) and isinstance(value, str) for key, value in raw_expected_hashes.items()
+        ):
+            expected_hashes = cast(dict[str, str], raw_expected_hashes)
+        else:
+            raise ValueError("apply_patch expectedHashes must be an object mapping path strings to SHA-256 hash strings")
+
         stripped_patch = _strip_heredoc(patch_text).strip()
         if not stripped_patch:
-            raise ValueError(_invalid_patch_text_error(patch_text))
+            raise_tool_diagnostic(
+                message=_invalid_patch_text_error(patch_text),
+                error_kind="parse_error",
+                reason="empty_patch",
+                retry_guidance=(
+                    "Provide a non-empty patch: a structured *** Begin Patch envelope with at least "
+                    "one file operation, or a unified diff that git apply can parse."
+                ),
+                details={"patch_empty": True},
+            )
 
         if _looks_like_marker_patch(patch_text):
-            result = _apply_marker_patch(patch_text, workspace=workspace)
+            result = _apply_marker_patch(
+                patch_text,
+                workspace=workspace,
+                expected_hashes=expected_hashes,
+            )
             return _with_formatter_feedback(
                 result,
                 workspace=workspace.resolve(),
@@ -849,7 +1070,16 @@ class ApplyPatchTool:
         normalized_patch = _normalize_patch_text(patch_text)
         changes = _changes_from_patch(patch_text)
         if not changes and not _looks_like_mode_only_patch(patch_text):
-            raise ValueError(_invalid_patch_text_error(patch_text))
+            raise_tool_diagnostic(
+                message=_invalid_patch_text_error(patch_text),
+                error_kind="parse_error",
+                reason="invalid_patch_text",
+                retry_guidance=(
+                    "Provide a structured *** Begin Patch envelope with at least one file operation, "
+                    "or a valid unified diff that git apply can parse."
+                ),
+                details={"affected_paths": [], "patch_invalid": True},
+            )
         _guard_changes_before_write(
             changes,
             workspace=workspace,
@@ -869,7 +1099,34 @@ class ApplyPatchTool:
                         content=content,
                         data={"changes": changes, "count": len(changes)},
                     )
-                raise ValueError(_format_patch_error(error, normalized_patch))
+                raise_tool_diagnostic(
+                    message=_format_patch_error(error, normalized_patch),
+                    error_kind="parse_error",
+                    reason="patch_apply_failed",
+                    retry_guidance=(
+                        "Re-read the affected file(s) with read_file and rebuild the patch hunks from "
+                        "the current content, then retry apply_patch. Prefer the structured "
+                        "*** Begin Patch envelope to avoid manual hunk counts."
+                    ),
+                    details={
+                        "git_error": error,
+                        "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+                    },
+                )
+
+            # Verify expected hashes for every existing file the patch modifies, before writing.
+            _verify_patch_expected_hashes(
+                changes=changes,
+                expected_hashes=expected_hashes,
+                workspace=workspace,
+            )
+
+            # Require every source line the hunks touch to have been revealed by read_file.
+            _enforce_patch_seen_ranges(
+                patch_text=normalized_patch,
+                workspace=workspace,
+                tool_name=self.definition.name,
+            )
 
             # Apply patch
             apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
@@ -883,7 +1140,20 @@ class ApplyPatchTool:
                         content=content,
                         data={"changes": changes, "count": len(changes)},
                     )
-                raise ValueError(_format_patch_error(error, normalized_patch))
+                raise_tool_diagnostic(
+                    message=_format_patch_error(error, normalized_patch),
+                    error_kind="parse_error",
+                    reason="patch_apply_failed",
+                    retry_guidance=(
+                        "Re-read the affected file(s) with read_file and rebuild the patch hunks from "
+                        "the current content, then retry apply_patch. Prefer the structured "
+                        "*** Begin Patch envelope to avoid manual hunk counts."
+                    ),
+                    details={
+                        "git_error": error,
+                        "affected_paths": [c.get("path") for c in changes if isinstance(c.get("path"), str)],
+                    },
+                )
 
             summary_lines: list[str] = []
             for c in changes:

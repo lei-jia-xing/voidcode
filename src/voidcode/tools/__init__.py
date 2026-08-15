@@ -9,7 +9,6 @@ from .background_process_start import BackgroundProcessManager, BackgroundProces
 from .background_process_stop import BackgroundProcessStopTool
 from .contracts import ToolCall, ToolDefinition, ToolResult, ToolResultStatus
 from .edit import EditTool
-from .format_file import FormatTool
 from .glob import GlobTool
 from .grep import GrepTool
 from .interactive_shell import InteractiveShellTool
@@ -54,7 +53,6 @@ __all__ = [
     "BackgroundProcessStartTool",
     "BackgroundProcessStopTool",
     "EditTool",
-    "FormatTool",
     "GlobTool",
     "GrepTool",
     "InteractiveShellTool",

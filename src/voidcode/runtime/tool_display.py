@@ -28,7 +28,6 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "multi_edit": ("edit", "Edit"),
     "apply_patch": ("edit", "Edit"),
     "ast_grep": ("search", "Search"),
-    "format_file": ("edit", "Edit"),
     "grep": ("search", "Search"),
     "glob": ("context", "Context"),
     "web_search": ("search", "Search"),
@@ -216,7 +215,7 @@ def build_tool_display(
         if path:
             copyable = {"path": path}
 
-    elif tool_name in {"edit", "multi_edit", "apply_patch", "format_file"}:
+    elif tool_name in {"edit", "multi_edit", "apply_patch"}:
         path = _first_primitive(arguments, "path")
         file_path_label = _first_primitive(arguments, "path")
         edit_count = 0

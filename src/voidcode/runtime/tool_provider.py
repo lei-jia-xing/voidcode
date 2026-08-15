@@ -20,6 +20,7 @@ from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write_file import WriteFileTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
+from .edit_schema_policy import EditSchemaResolver
 
 BUILTIN_TOOL_NAMES = frozenset(
     {
@@ -33,7 +34,6 @@ BUILTIN_TOOL_NAMES = frozenset(
         "background_process_start",
         "background_process_stop",
         "edit",
-        "format_file",
         "glob",
         "grep",
         "lsp",
@@ -187,9 +187,9 @@ class LocalCustomToolProvider:
 
 class BuiltinToolProvider:
     _lsp_tool: Tool | None
-    _format_tool: Tool | None
     _mcp_tools: tuple[Tool, ...]
     _hooks_config: RuntimeHooksConfig | None
+    _edit_schema_resolver: EditSchemaResolver | None
     _skill_tool: Tool | None
     _task_tool: Tool | None
     _question_tool: Tool | None
@@ -204,9 +204,9 @@ class BuiltinToolProvider:
         self,
         *,
         lsp_tool: Tool | None = None,
-        format_tool: Tool | None = None,
         mcp_tools: tuple[Tool, ...] = (),
         hooks_config: RuntimeHooksConfig | None = None,
+        edit_schema_resolver: EditSchemaResolver | None = None,
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
         question_tool: Tool | None = None,
@@ -218,9 +218,9 @@ class BuiltinToolProvider:
         background_process_send_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
-        self._format_tool = format_tool
         self._mcp_tools = mcp_tools
         self._hooks_config = hooks_config
+        self._edit_schema_resolver = edit_schema_resolver
         self._skill_tool = skill_tool
         self._task_tool = task_tool
         self._question_tool = question_tool
@@ -232,7 +232,7 @@ class BuiltinToolProvider:
         self._background_process_send_tool = background_process_send_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
-        edit_tool = EditTool(hooks_config=self._hooks_config)
+        edit_tool = EditTool(hooks_config=self._hooks_config, edit_schema_resolver=self._edit_schema_resolver)
         tools: list[Tool] = [
             ApplyWorkspaceEditTool(),
             edit_tool,
@@ -248,8 +248,6 @@ class BuiltinToolProvider:
 
         if self._lsp_tool is not None:
             tools.append(self._lsp_tool)
-        if self._format_tool is not None:
-            tools.append(self._format_tool)
 
         if self._skill_tool is not None:
             tools.append(self._skill_tool)

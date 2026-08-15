@@ -908,6 +908,52 @@ def test_tool_completed_event_includes_tool_status_metadata(
     assert isinstance(nested_display, dict)
 
 
+def test_tool_completed_payload_carries_active_model_and_provider(
+    tmp_path: Path,
+) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([_InstantTool()]),
+        graph=_SingleToolCallGraph("instant_tool"),
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            execution_engine="deterministic",
+            model="opencode-go/glm-5.1",
+        ),
+    )
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) >= 1
+    payload = completed_events[0].payload
+
+    assert payload["model"] == "opencode-go/glm-5.1"
+    assert payload["provider"] == "opencode-go"
+    # Additive metadata: existing identity keys are preserved.
+    assert payload["tool"] == "instant_tool"
+    assert payload["status"] == "ok"
+
+
+def test_tool_completed_payload_omits_model_without_model_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = _make_runtime(tmp_path, _InstantTool(), tool_timeout_seconds=None)
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go")))
+    completed_events = [
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+
+    assert len(completed_events) >= 1
+    payload = completed_events[0].payload
+
+    assert "model" not in payload
+    assert "provider" not in payload
+
+
 def test_timeout_exit_emits_terminal_tool_status_with_error(
     tmp_path: Path,
 ) -> None:

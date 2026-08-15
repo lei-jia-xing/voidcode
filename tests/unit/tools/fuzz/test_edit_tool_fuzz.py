@@ -16,7 +16,14 @@ _trim_diff = cast(Callable[[str], str], _edit._trim_diff)
 
 
 class _ReplaceFn(Protocol):
-    def __call__(self, content: str, old_string: str, new_string: str, *, replace_all: bool = False) -> tuple[str, int]: ...
+    def __call__(
+        self,
+        content: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> tuple[str, int, tuple[tuple[int, int], ...]]: ...
 
 
 _replace = cast(_ReplaceFn, _edit._replace)
@@ -88,9 +95,10 @@ def test_replace_single_occurrence_updates_exactly_one_unique_match(prefix: str,
     if replacement == old:
         replacement = f"{replacement}_changed"
 
-    updated, count = _replace(content, old, replacement, replace_all=False)
+    updated, count, ranges = _replace(content, old, replacement, replace_all=False)
 
     assert count == 1
+    assert ranges == ((1, 1),)
     assert updated.count(old) == 0
     assert len(updated) == len(content) - len(old) + len(replacement)
     assert replacement in updated

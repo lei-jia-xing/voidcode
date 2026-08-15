@@ -34,7 +34,6 @@ import {
   Sparkles,
   Terminal,
   Timer,
-  Wand2,
   Wrench,
 } from "lucide-react";
 import { ChatMessage, MessagePart } from "../lib/runtime/event-parser";
@@ -667,9 +666,6 @@ function toolIcon(tool: ChatTool) {
   }
   if (tool.name === "apply_patch") {
     return <Diff className={className} />;
-  }
-  if (tool.name === "format_file") {
-    return <Wand2 className={className} />;
   }
   if (
     tool.name === "shell_exec" ||
@@ -1984,8 +1980,7 @@ function ToolActivity({
     tool.name === "edit" ||
     tool.name === "multi_edit" ||
     tool.name === "apply_patch" ||
-    tool.name === "ast_grep_replace" ||
-    tool.name === "format_file"
+    tool.name === "ast_grep_replace"
   ) {
     return <WriteToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   }

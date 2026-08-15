@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from voidcode.runtime.effectiveness import ToolEffectivenessEvent, project_tool_effectiveness
 from voidcode.runtime.events import EventEnvelope
 
@@ -156,3 +158,123 @@ def test_project_tool_effectiveness_handles_empty_history() -> None:
     assert report.tool_call_count == 0
     assert report.success_rate is None
     assert report.tools == ()
+    assert report.models == ()
+
+
+def test_project_tool_effectiveness_reports_per_model_edit_breakdown() -> None:
+    report = project_tool_effectiveness(
+        workspace_id="/workspace",
+        session_ids=("s1",),
+        events=(
+            _completed(
+                session_id="s1",
+                sequence=1,
+                tool="edit",
+                status="error",
+                model="model-a",
+                arguments={"path": "a.txt"},
+                content="ambiguous",
+                error="multiple matches",
+                error_kind="ambiguous_match",
+            ),
+            _completed(
+                session_id="s1",
+                sequence=2,
+                tool="edit",
+                status="error",
+                model="model-a",
+                arguments={"path": "a.txt"},
+                content="ambiguous",
+                error="multiple matches",
+                error_kind="ambiguous_match",
+            ),
+            _completed(
+                session_id="s1",
+                sequence=3,
+                tool="edit",
+                status="ok",
+                model="model-a",
+                arguments={"path": "a.txt"},
+                content="updated",
+            ),
+            _completed(
+                session_id="s1",
+                sequence=4,
+                tool="edit",
+                status="ok",
+                model="model-b",
+                arguments={"path": "b.txt"},
+                content="updated",
+            ),
+            # Edit events without model attribution are counted per-tool but
+            # excluded from the per-model breakdown.
+            _completed(
+                session_id="s1",
+                sequence=5,
+                tool="edit",
+                status="ok",
+                arguments={"path": "c.txt"},
+                content="updated",
+            ),
+            _completed(
+                session_id="s1",
+                sequence=6,
+                tool="read_file",
+                status="ok",
+                model="model-a",
+                arguments={"path": "a.txt"},
+                content="read",
+            ),
+        ),
+    )
+
+    model_a = report.edit_stats_for_model("model-a")
+    assert model_a is not None
+    assert model_a.model == "model-a"
+    assert model_a.edit_calls == 3
+    assert model_a.edit_successes == 1
+    assert model_a.edit_errors == 2
+    assert model_a.edit_ambiguous_match_count == 2
+    assert model_a.edit_error_kinds == {"ambiguous_match": 2}
+    assert model_a.edit_ambiguous_match_rate == pytest.approx(2 / 3)
+
+    model_b = report.edit_stats_for_model("model-b")
+    assert model_b is not None
+    assert model_b.edit_calls == 1
+    assert model_b.edit_successes == 1
+    assert model_b.edit_errors == 0
+    assert model_b.edit_ambiguous_match_count == 0
+    assert model_b.edit_ambiguous_match_rate == 0.0
+
+    assert report.edit_stats_for_model("model-unknown") is None
+    assert [stats.model for stats in report.models] == ["model-a", "model-b"]
+
+    # Existing per-tool aggregation is unaffected by the model dimension.
+    edit = next(tool for tool in report.tools if tool.tool == "edit")
+    assert edit.calls == 5
+    assert edit.successes == 3
+    assert edit.errors == 2
+
+    payload = report.to_payload()
+    assert payload["models"] == [
+        {
+            "model": "model-a",
+            "edit_calls": 3,
+            "edit_successes": 1,
+            "edit_errors": 2,
+            "edit_ambiguous_match_count": 2,
+            "edit_ambiguous_match_rate": pytest.approx(2 / 3),
+            "edit_error_kinds": {"ambiguous_match": 2},
+        },
+        {
+            "model": "model-b",
+            "edit_calls": 1,
+            "edit_successes": 1,
+            "edit_errors": 0,
+            "edit_ambiguous_match_count": 0,
+            "edit_ambiguous_match_rate": 0.0,
+            "edit_error_kinds": {},
+        },
+    ]
+    assert "tools" in payload
+    assert "privacy" in payload

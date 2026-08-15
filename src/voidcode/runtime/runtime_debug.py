@@ -205,6 +205,8 @@ def provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, o
         "error",
         "error_details",
         "error_summary",
+        "model",
+        "provider",
         "retry_guidance",
         "status",
         "tool",

@@ -20,8 +20,9 @@ from voidcode.runtime.bundle import (
 )
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
+from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -907,6 +908,105 @@ def test_session_bundle_import_roundtrip_never_overwrites_existing_session(
         "imported_at_session_id": "bundle-session-imported",
     }
     assert loaded.events[-1].sequence == 2
+
+
+def test_session_bundle_import_seals_terminal_session_against_late_events(
+    tmp_path: Path,
+) -> None:
+    source_workspace = tmp_path / "source"
+    target_workspace = tmp_path / "target"
+    source_workspace.mkdir()
+    target_workspace.mkdir()
+    _save_sample_session(source_workspace)
+    source_store = SqliteSessionStore()
+    bundle = build_session_bundle(
+        session_store=source_store,
+        workspace=source_workspace,
+        session_id="bundle-session",
+    )
+    target_store = SqliteSessionStore()
+    result = apply_session_bundle(
+        bundle,
+        session_store=target_store,
+        workspace=target_workspace,
+    )
+    imported_id = result.imported_session_ids[0]
+
+    imported = target_store.load_session(workspace=target_workspace, session_id=imported_id)
+    assert imported.session.status == "completed"
+    # The imported transcript is contiguous and intact.
+    assert [event.sequence for event in imported.events] == list(range(1, len(imported.events) + 1))
+
+    # The imported terminal session is sealed exactly like a locally-run one:
+    # a late replayed event cannot be applied through either append path.
+    with pytest.raises(SessionSealedError):
+        target_store.append_session_events(
+            workspace=target_workspace,
+            session_id=imported_id,
+            events=(("runtime.tool_completed", "tool", {"tool": "read_file", "status": "ok", "content": "late"}, None),),
+        )
+    with pytest.raises(SessionSealedError):
+        target_store.append_session_event(
+            workspace=target_workspace,
+            session_id=imported_id,
+            event_type="graph.response_ready",
+            source="graph",
+            payload={"summary": "late"},
+        )
+
+    # Resume/replay of the imported sealed session is read-only: it cannot be
+    # re-activated by a late replayed event.
+    runtime = VoidCodeRuntime(workspace=target_workspace, session_store=target_store)
+    replayed = runtime.resume(imported_id)
+    assert replayed.session.status == "completed"
+    assert [event.sequence for event in replayed.events] == [event.sequence for event in imported.events]
+    assert (
+        target_store.load_session_status(
+            workspace=target_workspace,
+            session_id=imported_id,
+        )
+        == "completed"
+    )
+
+
+def test_session_bundle_roundtrips_interrupted_session_status(tmp_path: Path) -> None:
+    source_workspace = tmp_path / "source"
+    source_workspace.mkdir()
+    source_store = SqliteSessionStore()
+    session_id = "interrupted-bundle-session"
+    source_store.save_interrupted_checkpoint(
+        workspace=source_workspace,
+        session_id=session_id,
+        prompt="interrupted probe",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    source_store.append_session_events(
+        workspace=source_workspace,
+        session_id=session_id,
+        events=(("runtime.request_received", "runtime", {"prompt": "interrupted probe"}, None),),
+    )
+    bundle = build_session_bundle(
+        session_store=source_store,
+        workspace=source_workspace,
+        session_id=session_id,
+    )
+    assert bundle.sessions[0].status == "interrupted"
+
+    target_workspace = tmp_path / "target"
+    target_workspace.mkdir()
+    target_store = SqliteSessionStore()
+    result = apply_session_bundle(
+        bundle,
+        session_store=target_store,
+        workspace=target_workspace,
+    )
+    imported_id = result.imported_session_ids[0]
+    imported = target_store.load_session(workspace=target_workspace, session_id=imported_id)
+    assert imported.session.status == "interrupted"
+    assert [event.event_type for event in imported.events] == ["runtime.request_received"]
 
 
 def test_session_bundle_import_rejects_unsupported_runtime_policy_snapshot_version(

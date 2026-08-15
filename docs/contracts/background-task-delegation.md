@@ -288,6 +288,21 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 3. 通知顺序反映 runtime 提交生命周期真相的顺序，而不是客户端收到事件的时机
 4. 如果某个通知同时带有 `result_available`，则该字段不得早于其所依赖的生命周期真相被持久化
 
+## 终端封印与关闭排空（terminal seal / shutdown drain）
+
+session 一旦进入终端状态（`completed` / `failed`，以及没有活跃 run 的 `interrupted`），其持久化真相即被封印：**任何随后到达的 late event（provider delta、tool result、background-task completion、steer/follow-up）如果会改写 session truth，必须被拒绝或丢弃，而不是应用**。
+
+封印由单一权威 guard 执行，分两层：
+
+- **storage 层**（`storage.py::_assert_terminal_session_events_allowed`）：`append_session_event` 与 `append_session_events` 是 `session_events` 仅有的两个写入口，两者都必须经过同一检查；对 `completed` / `failed` 行，非 lifecycle 事件一律抛 `SessionSealedError`。`interrupted` 行在 storage 层**不**封印——该行状态正是运行中 session 的在飞状态；`interrupted` 的封印由 runtime 层完成。
+- **runtime 层**（`VoidCodeRuntime._sealed_session_status`）：把封印扩展到「没有活跃 run 的 `interrupted` 行」，并 gate 交互队列（`queue_steering` / `queue_follow_up`）。活跃 run 在 `ACTIVE_SESSION_REGISTRY` 中注册期间，其自身 append 永远不算 late event；只有显式 re-entry（fresh run / follow-up / approval / question resume 通过 `save_interrupted_checkpoint` 或 `save_run` 解除封印）才能重新打开 session。
+
+对 background/delegated 子任务的具体语义：
+
+1. **child/task 真相独立于 parent 封印**：child session 行与 `background_tasks` 行是 child 自己的 truth；parent 封印不影响 child 完成结果的持久化（task 标记 terminal、child session 落盘照常进行）。
+2. **parent 通知是唯一 sanctioned 的例外**：`DELEGATED_BACKGROUND_TASK_EVENT_TYPES` 仍允许附加到已封印的 parent 行（parent 需要感知 delegated result 的完成），但它们只是通知，永远不会改变 parent 的 status / sequence 顺序 / resume checkpoint。若未来某通知类型落入封印范围，worker 侧必须捕获 `SessionSealedError` 并丢弃通知，而不是崩溃或回退 child 真相。
+3. **关闭排空顺序（enforced）**：`VoidCodeRuntime.__exit__` 必须先 `shutdown_background_tasks()`（join 每个 worker——worker 在退出前已把 task 终态、child session 真相、parent 通知与 lifecycle hooks 全部落盘；超时未完成的 worker 被标记 `failed` 以兜底），再停掉进程管理器，最后才关闭 ACP/MCP/LSP 适配器。session 封印侧：run 产生的所有事件先增量 append，`save_run` 只封存行快照且绝不回退 `last_event_sequence`，封印先于活跃 run 注销发生，从而把「封印后到达的 late event」精确地暴露给 runtime guard 并被拒绝/丢弃。
+
 ## v1 delegated/background idle reminder
 
 v1 的 delegated/background idle reminder 只能由 runtime 拥有，并且只能基于已经存在的 runtime truth 来判定是否需要轻量提醒。

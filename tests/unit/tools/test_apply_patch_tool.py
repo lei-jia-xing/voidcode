@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import sys
 import textwrap
 from pathlib import Path
@@ -11,7 +12,12 @@ import pytest
 from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.tools import ApplyPatchTool, ToolCall
+from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+
+
+def _content_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _init_git_repo(path: Path) -> None:
@@ -47,7 +53,10 @@ def test_apply_patch_updates_file_with_valid_patch(tmp_path: Path) -> None:
 
     tool = ApplyPatchTool()
     result = tool.invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -155,7 +164,10 @@ def test_apply_patch_allows_external_target_file(tmp_path: Path) -> None:
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {str(target): _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -204,7 +216,10 @@ def test_apply_patch_treats_unified_diff_marker_literals_as_unified_diff(
     patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -384,7 +399,17 @@ def test_apply_patch_accepts_structured_update_delete_and_move(tmp_path: Path) -
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={
+                "patch": patch_text,
+                "expectedHashes": {
+                    "app.py": _content_hash(target),
+                    "obsolete.txt": _content_hash(obsolete),
+                    "old.txt": _content_hash(moved),
+                },
+            },
+        ),
         workspace=tmp_path,
     )
 
@@ -421,7 +446,10 @@ def test_apply_patch_repeated_structured_updates_use_staged_content(
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"app.py": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -533,7 +561,10 @@ def test_apply_patch_structured_insert_only_update_uses_matched_context(
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -820,7 +851,10 @@ def test_apply_patch_reports_only_patch_touched_paths_in_dirty_worktree(tmp_path
     patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -847,7 +881,10 @@ def test_apply_patch_reports_pure_rename_from_patch_metadata(tmp_path: Path) -> 
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"old.txt": _content_hash(old_path)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -875,7 +912,10 @@ def test_apply_patch_reports_mode_only_change_from_patch_metadata(tmp_path: Path
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"script.sh": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -901,7 +941,10 @@ def test_apply_patch_reports_mode_only_change_for_path_with_spaces(tmp_path: Pat
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"space name.sh": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -930,7 +973,10 @@ def test_apply_patch_ignores_broken_unidiff_paths_from_quoted_diff_header(tmp_pa
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"space name.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -964,7 +1010,10 @@ def test_apply_patch_does_not_treat_mixed_mode_and_content_patch_as_mode_only(
     )
 
     result = ApplyPatchTool().invoke(
-        ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+        ToolCall(
+            tool_name="apply_patch",
+            arguments={"patch": patch_text, "expectedHashes": {"file.txt": _content_hash(target)}},
+        ),
         workspace=tmp_path,
     )
 
@@ -1024,3 +1073,347 @@ def test_apply_patch_rejects_structured_symlink_escape(tmp_path: Path) -> None:
             ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
             workspace=tmp_path,
         )
+
+
+def test_apply_patch_rejects_missing_hash_for_existing_file(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    old = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    new = ["patched-1\n", "line-2\n"]
+    patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
+
+    with pytest.raises(ToolDiagnosticError, match="expectedHashes") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "missing_expected_hash"
+    assert diagnostic.error_details["affected_paths"] == ["sample.txt"]
+    assert diagnostic.error_details["missing_paths"] == ["sample.txt"]
+    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\n"
+
+
+def test_apply_patch_rejects_stale_hash_for_existing_file(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    old = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    new = ["patched-1\n", "line-2\n"]
+    patch_text = "".join(difflib.unified_diff(old, new, fromfile="a/sample.txt", tofile="b/sample.txt"))
+
+    with pytest.raises(ToolDiagnosticError, match="stale edit") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(
+                tool_name="apply_patch",
+                arguments={"patch": patch_text, "expectedHashes": {"sample.txt": "0" * 64}},
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "stale_edit"
+    assert diagnostic.error_details["reason"] == "content_hash_mismatch"
+    assert diagnostic.error_details["expected_hash"] == "0" * 64
+    assert diagnostic.error_details["actual_hash"] == _content_hash(target)
+    assert diagnostic.error_details["path"] == "sample.txt"
+    assert "data.content_hash" in (diagnostic.retry_guidance or "")
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\n"
+
+
+def test_apply_patch_missing_hash_for_marker_update_without_any_write(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("alpha\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: app.py",
+            "@@",
+            "-alpha",
+            "+beta",
+            "*** End Patch",
+        ]
+    )
+
+    with pytest.raises(ToolDiagnosticError, match="expectedHashes") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "missing_expected_hash"
+    assert diagnostic.error_details["missing_paths"] == ["app.py"]
+    assert target.read_text(encoding="utf-8") == "alpha\n"
+
+
+def test_apply_patch_git_apply_failure_is_structured(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    # Valid unified diff format whose context does not match the file.
+    patch_text = "\n".join(
+        [
+            "diff --git a/sample.txt b/sample.txt",
+            "--- a/sample.txt",
+            "+++ b/sample.txt",
+            "@@ -1 +1 @@",
+            "-totally-different",
+            "+patched-1",
+            "",
+        ]
+    )
+
+    with pytest.raises(ToolDiagnosticError, match="Patch check failed|error") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(
+                tool_name="apply_patch",
+                arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+            ),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "parse_error"
+    assert diagnostic.error_details["reason"] == "patch_apply_failed"
+    assert isinstance(diagnostic.error_details["git_error"], str)
+    assert diagnostic.error_details["affected_paths"] == ["sample.txt"]
+    assert isinstance(diagnostic.retry_guidance, str)
+    assert diagnostic.retry_guidance
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\n"
+
+
+def test_apply_patch_schema_documents_expected_hashes() -> None:
+    schema = ApplyPatchTool.definition.input_schema
+    assert schema["required"] == ["patch"]
+    assert "expectedHashes" in schema
+    assert "data.content_hash" in str(schema["expectedHashes"]["description"])
+
+
+def _apply_patch_context(path: Path, lines: set[int]) -> RuntimeToolInvocationContext:
+    resolved = path.resolve().as_posix()
+    return RuntimeToolInvocationContext(
+        session_id="test",
+        read_paths=frozenset({resolved}),
+        read_lines={resolved: frozenset(lines)},
+    )
+
+
+def test_apply_patch_marker_update_rejects_hunk_outside_read_window(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@",
+            "-gamma",
+            "+GAMMA",
+            "*** End Patch",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1})):
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+            ApplyPatchTool().invoke(
+                ToolCall(
+                    tool_name="apply_patch",
+                    arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+                ),
+                workspace=tmp_path,
+            )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "unseen_range"
+    assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_apply_patch_marker_update_applies_when_hunk_lines_are_seen(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: sample.txt",
+            "@@",
+            "-beta",
+            "+BETA",
+            "*** End Patch",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1, 2, 3})):
+        result = ApplyPatchTool().invoke(
+            ToolCall(
+                tool_name="apply_patch",
+                arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
+
+
+def test_apply_patch_unified_diff_rejects_hunk_outside_read_window(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/sample.txt b/sample.txt",
+            "--- a/sample.txt",
+            "+++ b/sample.txt",
+            "@@ -2,2 +2,2 @@",
+            " line-2",
+            "-line-3",
+            "+line-3-changed",
+            "",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1})):
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+            ApplyPatchTool().invoke(
+                ToolCall(
+                    tool_name="apply_patch",
+                    arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+                ),
+                workspace=tmp_path,
+            )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "unseen_range"
+    assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 2, "end": 3}]
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\nline-3\n"
+
+
+def test_apply_patch_unified_diff_applies_when_hunk_lines_are_seen(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/sample.txt b/sample.txt",
+            "--- a/sample.txt",
+            "+++ b/sample.txt",
+            "@@ -2,2 +2,2 @@",
+            " line-2",
+            "-line-3",
+            "+line-3-changed",
+            "",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1, 2, 3})):
+        result = ApplyPatchTool().invoke(
+            ToolCall(
+                tool_name="apply_patch",
+                arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\nline-3-changed\n"
+
+
+def test_apply_patch_marker_delete_requires_whole_file_seen(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Delete File: sample.txt",
+            "*** End Patch",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1})):
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+            ApplyPatchTool().invoke(
+                ToolCall(
+                    tool_name="apply_patch",
+                    arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+                ),
+                workspace=tmp_path,
+            )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "unseen_range"
+    assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 2, "end": 3}]
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+
+
+def test_apply_patch_marker_delete_applies_when_whole_file_seen(tmp_path: Path) -> None:
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Delete File: sample.txt",
+            "*** End Patch",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1, 2, 3})):
+        result = ApplyPatchTool().invoke(
+            ToolCall(
+                tool_name="apply_patch",
+                arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert not target.exists()
+
+
+def test_apply_patch_unified_diff_delete_requires_whole_file_seen(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "sample.txt"
+    target.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/sample.txt b/sample.txt",
+            "deleted file mode 100644",
+            "--- a/sample.txt",
+            "+++ /dev/null",
+            "@@ -1,3 +0,0 @@",
+            "-line-1",
+            "-line-2",
+            "-line-3",
+            "",
+        ]
+    )
+
+    with bind_runtime_tool_context(_apply_patch_context(target, {1})):
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+            ApplyPatchTool().invoke(
+                ToolCall(
+                    tool_name="apply_patch",
+                    arguments={"patch": patch_text, "expectedHashes": {"sample.txt": _content_hash(target)}},
+                ),
+                workspace=tmp_path,
+            )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "tool_input_mismatch"
+    assert diagnostic.error_details["reason"] == "unseen_range"
+    assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 2, "end": 3}]
+    assert target.read_text(encoding="utf-8") == "line-1\nline-2\nline-3\n"

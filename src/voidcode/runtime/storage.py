@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -82,6 +82,16 @@ class SessionSealedError(Exception):
     sealed: only lifecycle events (ACP/MCP release, background-task finalize)
     may still be appended. Anything else would silently resurrect a terminal
     session's ordering/sequence and is rejected instead.
+
+    This is the storage-level half of the runtime's single authoritative
+    terminal-seal guard. Both event append paths (``append_session_event`` and
+    ``append_session_events``) enforce it via
+    ``_assert_terminal_session_events_allowed``, so a late event (provider
+    delta, tool result, background-task completion, steer/follow-up replay)
+    can never mutate a sealed session's truth regardless of which append path
+    it enters through. The runtime-level half is
+    ``VoidCodeRuntime._sealed_session_status``, which extends the seal to
+    ``interrupted`` rows with no active run and gates the interaction queue.
     """
 
 
@@ -116,6 +126,29 @@ _TERMINAL_ALLOWED_EVENT_TYPES: frozenset[str] = frozenset(
         *DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
     }
 )
+
+
+def _assert_terminal_session_events_allowed(
+    *,
+    session_id: str,
+    status: str,
+    events: Sequence[tuple[str, EventSource, dict[str, object], str | None]],
+) -> None:
+    """Single authoritative storage-level seal check for session event appends.
+
+    ``append_session_event`` and ``append_session_events`` are the only writers
+    of ``session_events`` rows; both MUST route through this check so a sealed
+    terminal session (``completed``/``failed``) rejects every late non-lifecycle
+    event regardless of entry path. ``interrupted`` rows are NOT sealed here:
+    that row status is the live in-flight state of a running session; the
+    runtime-level guard (``VoidCodeRuntime._sealed_session_status``) extends
+    sealing to ``interrupted`` rows once no run is active.
+    """
+    if status not in {"completed", "failed"}:
+        return
+    for event_type, _source, _payload, _dedupe_key in events:
+        if event_type not in _TERMINAL_ALLOWED_EVENT_TYPES:
+            raise SessionSealedError(f"session {session_id!r} is {status}: refusing non-lifecycle event {event_type!r}")
 
 
 def _pending_path_scope(value: object) -> PathScope | None:
@@ -2304,7 +2337,7 @@ class SqliteSessionStore:
                 sqlite3.Row | None,
                 connection.execute(
                     """
-                    SELECT 1
+                    SELECT status
                     FROM sessions
                     WHERE workspace_id = ? AND session_id = ?
                     """,
@@ -2313,6 +2346,14 @@ class SqliteSessionStore:
             )
             if existing_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
+            # Same authoritative seal as the batch path: a sealed terminal
+            # session rejects every late non-lifecycle event, no matter which
+            # append entry point delivers it.
+            _assert_terminal_session_events_allowed(
+                session_id=session_id,
+                status=cast(str, existing_row["status"]),
+                events=((event_type, source, payload, dedupe_key),),
+            )
             # Claim the dedupe slot before touching the session row. Losing the
             # race means this is a duplicate delivery, and duplicate deliveries
             # must not perturb session ordering or sequence counters.
@@ -2400,10 +2441,11 @@ class SqliteSessionStore:
             if status_row is None:
                 raise UnknownSessionError(f"unknown session: {session_id}")
             status = cast(str, status_row["status"])
-            if status in {"completed", "failed"}:
-                for event_type, _source, _payload, _dedupe_key in events:
-                    if event_type not in _TERMINAL_ALLOWED_EVENT_TYPES:
-                        raise SessionSealedError(f"session {session_id!r} is {status}: refusing non-lifecycle event {event_type!r}")
+            _assert_terminal_session_events_allowed(
+                session_id=session_id,
+                status=status,
+                events=events,
+            )
             assigned: list[EventEnvelope] = []
             for event_type, source, payload, dedupe_key in events:
                 payload = self._enriched_background_task_event_payload(
@@ -3022,6 +3064,25 @@ class SqliteSessionStore:
             session_id=session_id,
             filter_reverted=True,
         )
+
+    def load_session_status(self, *, workspace: Path, session_id: str) -> SessionStatus:
+        """Return the persisted row status for a session.
+
+        Lightweight read used by the runtime's terminal-seal guard
+        (``VoidCodeRuntime._sealed_session_status``): the guard must inspect the
+        durable status without materializing the full event log.
+        """
+        with self._connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    "SELECT status FROM sessions WHERE workspace_id = ? AND session_id = ?",
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+        if row is None:
+            raise UnknownSessionError(f"unknown session: {session_id}")
+        return self._parse_session_status(cast(str, row["status"]))
 
     def update_session_metadata(self, *, workspace: Path, session_id: str, metadata: dict[str, object]) -> None:
         """Persist bounded runtime metadata without fabricating a new response."""

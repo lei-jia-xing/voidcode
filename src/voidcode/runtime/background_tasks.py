@@ -34,7 +34,7 @@ from .events import (
     EventEnvelope,
 )
 from .session import SessionState
-from .storage import SessionEventAppender
+from .storage import SessionEventAppender, SessionSealedError
 from .task import (
     BackgroundTaskConcurrencyObservability,
     BackgroundTaskObservability,
@@ -167,6 +167,23 @@ class RuntimeBackgroundTaskSupervisor:
         self._reconciled = value
 
     def shutdown(self, *, timeout_seconds: float = 2.0) -> None:
+        """Drain background-task workers durably before teardown.
+
+        Enforced ordering (see also ``VoidCodeRuntime.__exit__``):
+
+        1. Set ``_shutdown_requested`` so the queue dispatcher stops starting
+           new workers; every already-started worker still runs to completion.
+        2. Join every live worker thread. Each worker finalizes its task
+           durably (terminal task row, child-session truth, parent-session
+           notification, lifecycle hooks) BEFORE the thread exits, so a joined
+           worker's writes are committed when this loop sees it dead.
+        3. If the timeout expires, terminalize (mark ``failed`` in storage)
+           every worker that could not finish, so no in-flight background-task
+           result is lost to teardown.
+
+        After this returns, every dispatched task row is terminal and all
+        child/background-task results are durable.
+        """
         self._shutdown_requested = True
         deadline = time.monotonic() + max(timeout_seconds, 0.0)
         while True:
@@ -1195,6 +1212,15 @@ class RuntimeBackgroundTaskSupervisor:
                 "skipping background terminal event for unavailable parent session: %s",
                 parent_session_id,
             )
+        except SessionSealedError:
+            # Terminal-seal guard: the parent session is sealed, so this
+            # notification is a late event and must be dropped, never applied.
+            # The child/task truth is already durable; only the parent-session
+            # notification is skipped.
+            logger.debug(
+                "dropping background terminal event for sealed parent session: %s",
+                parent_session_id,
+            )
 
     def _emit_parallel_group_terminal_event(self, *, task: BackgroundTaskState) -> None:
         """Notify the parent once the explicitly sized parallel group is terminal."""
@@ -1236,20 +1262,27 @@ class RuntimeBackgroundTaskSupervisor:
         if not isinstance(appender, SessionEventAppender):
             return
         counts = {status: sum(item.status == status for item in group_tasks) for status in ("completed", "failed", "cancelled", "interrupted")}
-        appender.append_session_event(
-            workspace=runtime._workspace,
-            session_id=parent_session_id,
-            event_type=RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
-            source="runtime",
-            payload={
-                "parallel_group_id": group_id,
-                "expected_task_count": group_size,
-                "terminal_task_count": len(group_tasks),
-                "counts": counts,
-                "task_ids": [item.task.id for item in group_tasks],
-            },
-            dedupe_key=f"{RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED}:{parent_session_id}:{group_id}",
-        )
+        try:
+            appender.append_session_event(
+                workspace=runtime._workspace,
+                session_id=parent_session_id,
+                event_type=RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
+                source="runtime",
+                payload={
+                    "parallel_group_id": group_id,
+                    "expected_task_count": group_size,
+                    "terminal_task_count": len(group_tasks),
+                    "counts": counts,
+                    "task_ids": [item.task.id for item in group_tasks],
+                },
+                dedupe_key=f"{RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED}:{parent_session_id}:{group_id}",
+            )
+        except SessionSealedError:
+            # Terminal-seal guard: sealed parent — drop the late notification.
+            logger.debug(
+                "dropping background group terminal event for sealed parent session: %s",
+                parent_session_id,
+            )
 
     def backfill_parent_background_task_event(self, *, task: BackgroundTaskState) -> None:
         if task.parent_session_id is None:

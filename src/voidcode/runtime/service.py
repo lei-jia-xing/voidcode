@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -216,6 +217,7 @@ from .delegation_routing import (
     provider_fallback_for_agent_selection,
     provider_fallback_with_preferred_model,
 )
+from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
     ReasoningCaptureState as _ReasoningCaptureState,
@@ -334,6 +336,7 @@ from .session import (
     SessionState,
     SessionStatus,
     StoredSessionSummary,
+    is_session_status_terminal,
     session_metadata_for_replay,
 )
 from .session_metadata_helpers import (
@@ -361,7 +364,7 @@ from .skills import (
     build_runtime_contexts,
     build_skill_execution_snapshot,
 )
-from .storage import SessionEventAppender, SessionStore, SqliteSessionStore
+from .storage import SessionEventAppender, SessionSealedError, SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskState,
     ContinuationLoopRef,
@@ -392,7 +395,6 @@ from .workflow_snapshot import (
 )
 
 if TYPE_CHECKING:
-    from ..tools.format_file import FormatTool
     from .execution_seams import RuntimeGraphSelection, RuntimeSessionRouting
 
 logger = logging.getLogger(__name__)
@@ -684,6 +686,17 @@ class VoidCodeRuntime:
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         _ = exc_type, exc, tb
+        # Shutdown drain order (must be preserved):
+        #   1. Drain background-task workers FIRST — ``shutdown_background_tasks``
+        #      joins every live worker so each child/background-task result is
+        #      durably finalized (task row terminal state, parent-session
+        #      notification events, lifecycle hooks) before anything is torn
+        #      down, and terminalizes anything that could not finish.
+        #   2. Stop spawned background processes.
+        #   3. Tear down ACP/MCP/LSP adapters LAST — their per-session release
+        #      events were already drained/persisted by the run loop at run end,
+        #      so adapter shutdown is purely a client-surface close and must not
+        #      race the durable session writes above.
         self.shutdown_background_tasks()
         self._background_process_manager.stop_all()
         _ = self.disconnect_acp()
@@ -691,13 +704,22 @@ class VoidCodeRuntime:
         _ = self.shutdown_lsp()
 
     def shutdown_background_tasks(self, *, timeout_seconds: float = 2.0) -> None:
+        """Drain background-task workers before runtime teardown.
+
+        Enforced ordering inside ``RuntimeBackgroundTaskSupervisor.shutdown``:
+        set the shutdown flag, join every live worker (each worker finalizes
+        its task durably before exiting), then terminalize (mark ``failed`` in
+        storage) any worker that could not finish within the timeout. After
+        this returns, every task row is terminal and all child/background-task
+        results are durable — no pending worker writes can be lost to teardown.
+        """
         self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
 
     def _build_base_tool_registry(self) -> ToolRegistry:
         return ToolRegistry.with_defaults(
             lsp_tool=self._build_lsp_tool(),
-            format_tool=self._build_format_tool(),
             hooks_config=self._config.hooks or RuntimeHooksConfig(),
+            edit_schema_resolver=self._edit_schema_resolver(),
             skill_tool=SkillTool(
                 list_skills=self._skill_registry.all,
                 resolve_skill=self._skill_registry.resolve,
@@ -711,6 +733,34 @@ class VoidCodeRuntime:
             background_process_stop_tool=BackgroundProcessStopTool(runtime=self),
             background_process_send_tool=BackgroundProcessSendTool(runtime=self),
         )
+
+    def _edit_schema_resolver(self) -> EditSchemaResolver:
+        """Resolve the per-model edit schema from observed edit effectiveness.
+
+        The persisted effectiveness report is cached briefly so per-edit
+        resolution does not rescan the event log on every call. Any lookup
+        failure degrades to the flexible profile: policy selection must never
+        break an edit.
+        """
+        cache: dict[str, object] = {"report": None, "expires_at": 0.0}
+        ttl_seconds = 5.0
+
+        def resolve(model: str | None) -> EditSchema:
+            if model is None:
+                return EditSchema.FLEXIBLE
+            now = time.monotonic()
+            cached_report = cast(ToolEffectivenessReport | None, cache["report"])
+            expires_at = cast(float, cache["expires_at"])
+            if cached_report is None or now >= expires_at:
+                try:
+                    cached_report = self._session_store.tool_effectiveness_report(workspace=self._workspace)
+                except Exception:
+                    return EditSchema.FLEXIBLE
+                cache["report"] = cached_report
+                cache["expires_at"] = now + ttl_seconds
+            return select_edit_schema(model, cached_report)
+
+        return resolve
 
     @property
     def background_process_manager(self) -> BackgroundProcessManager:
@@ -1246,11 +1296,6 @@ class VoidCodeRuntime:
         from ..tools.lsp import LspTool
 
         return LspTool(requester=self.request_lsp)
-
-    def _build_format_tool(self) -> FormatTool:
-        from ..tools.format_file import FormatTool
-
-        return FormatTool(self._config.hooks or RuntimeHooksConfig(), self._workspace)
 
     def _build_mcp_tools(self) -> tuple[Tool, ...]:
         if self._mcp_manager.current_state().mode != "managed":
@@ -2876,6 +2921,15 @@ class VoidCodeRuntime:
             )
             <= 1
         )
+        # Drain order at the session seal: every event this run produced was
+        # already appended incrementally (``append_session_events``), so
+        # ``save_run`` only seals the row snapshot (status, output, metadata,
+        # resume checkpoint) and never regresses ``last_event_sequence``. The
+        # seal must happen-before ``_run_with_persistence`` unregisters the
+        # active run (its ``finally``), so the guarded window — a late event
+        # arriving after the seal — is exactly the window in which
+        # ``_sealed_session_status`` returns a sealed status and the event is
+        # rejected/dropped instead of applied.
         self._session_store.save_run(
             workspace=self._workspace,
             request=request,
@@ -4903,6 +4957,14 @@ class VoidCodeRuntime:
     ) -> tuple[dict[str, object], ...]:
         validate_session_id(session_id)
         response = self._load_stored_response(session_id=session_id)
+        # Terminal-seal guard: a steer/follow-up is a late event once the
+        # session is terminal. It is accepted while a run is active (delivered
+        # before the next provider turn) or while waiting on approval/question;
+        # it is rejected once the session is sealed so the queued message can
+        # never mutate a terminal session's truth.
+        sealed_status = self._sealed_session_status(session_id=session_id)
+        if sealed_status is not None:
+            raise SessionSealedError(f"session {session_id!r} is {sealed_status}: refusing to queue {kind} message on a terminal session")
         metadata = enqueue_runtime_message(response.session.metadata, content=content, kind=kind)
         self._session_store.update_session_metadata(
             workspace=self._workspace,
@@ -7560,6 +7622,50 @@ class VoidCodeRuntime:
                 )
             )
         return tuple(projected)
+
+    def _sealed_session_status(self, *, session_id: str) -> SessionStatus | None:
+        """Return the terminal status sealing ``session_id``, or None when mutable.
+
+        Single authoritative runtime-level terminal-seal guard for late events.
+
+        A session's truth is mutable only while:
+
+        - a run is active on it (``ACTIVE_SESSION_REGISTRY`` owns the event
+          stream and terminal bookkeeping), or
+        - the persisted status is ``waiting`` (pending approval/question —
+          resume is pending, steering is still intended), or
+        - an explicit re-entry is in progress (fresh run / follow-up /
+          approval/question resume un-seal via ``save_interrupted_checkpoint``
+          or ``save_run``).
+
+        Otherwise the persisted status decides: ``completed``/``failed`` are
+        always sealed, and ``interrupted`` is sealed too — the run that left
+        the row ``interrupted`` has ended, so any event arriving from it now is
+        late (tool result, provider delta, steer/follow-up) and must be
+        rejected or dropped, never applied. Only an explicit resume re-opens an
+        ``interrupted`` session.
+
+        Every late-event entry point (interaction queue, background-task
+        completion finalization, replay) consults this guard before mutating
+        session truth; the storage-level check in ``append_session_event`` /
+        ``append_session_events`` remains the last line of defense.
+        """
+        if ACTIVE_SESSION_REGISTRY.contains(workspace=self._workspace, session_id=session_id):
+            return None
+        load_status = getattr(self._session_store, "load_session_status", None)
+        if callable(load_status):
+            try:
+                status = load_status(workspace=self._workspace, session_id=session_id)
+            except UnknownSessionError:
+                return None
+        else:
+            try:
+                status = self._load_stored_response(session_id=session_id).session.status
+            except UnknownSessionError:
+                return None
+        if is_session_status_terminal(status):
+            return status
+        return None
 
     def _is_active_session_id(self, session_id: str) -> bool:
         return ACTIVE_SESSION_REGISTRY.contains(workspace=self._workspace, session_id=session_id)
