@@ -14,7 +14,7 @@
 2. **项目级持久上下文**：如何在新 session 开始时，为 agent 提供稳定的项目约定、用户偏好和长期有效的事实。
 3. **长期可检索记忆**：如何在多次会话之后，从历史中检索少量真正值得复用的知识，而不是把所有历史噪音重新塞回上下文。
 
-目前 VoidCode 已经有早期的 context window groundwork，但还没有成熟的 memory subsystem。因此在进入更真实的 agent runtime 演进之前，必须先明确：**什么才是现在最重要的 memory 问题。**
+目前 VoidCode 已经有早期的 context window compaction groundwork，并已具备 workspace-scoped 的关键词 memory 基线（SQLite 存储 + `voidcode memory *` CLI + config 治理），但长期 memory 管线还没有成熟。因此在进入更真实的 agent runtime 演进之前，必须先明确：**什么才是现在最重要的 memory 问题。**
 
 本文档给出的结论是：
 
@@ -47,8 +47,8 @@ VoidCode 当前的 memory 优先级应当是：
 - runtime 是系统控制平面
 - session persistence / replay / resume 已经是核心语义
 - approval continuity 属于 runtime-owned
-- 当前只有早期 context window compaction groundwork
-- 还没有完整的长期 memory 存储、检索和治理体系
+- 已具备 workspace-scoped 关键词 memory 基线（SQLite `memories` 存储 + 关键词检索 + config 治理，648261ef #481）
+- 还没有完整的跨 workspace 长期 memory 存储、检索和治理体系
 
 这意味着 VoidCode 现在最贴近的问题不是“长期知识记忆”，而是“长会话执行与恢复”。
 
@@ -293,17 +293,16 @@ VoidCode 当前更应该学习的是：
 - approval resume checkpoint
 - background task truth 与 parent/child linkage 基线
 - provider-backed execution 中的最小 context window compaction
-- `runtime.memory_refreshed` 事件词汇
+- `runtime.context_compacted` 事件词汇
 
 但当前缺失同样明确：
 
-- 语义化 compaction（现在只是 last-N tool results 截断）
-- compaction 后的 distilled memory 注入
-- leader-facing background result retrieval / notification 真相
-- 可执行的 skill-based memory distillation 机制
-- cross-session long-term memory store / retrieval / governance
+- 语义化 compaction 已以结构化 ContextProjection + continuity summary 落地；model_assisted 策略已具备机制但未接线 projector（恒 fallback 到确定性投影）
+- compaction 后的 distilled summary 已通过 `Runtime continuity summary:` 前缀注入 provider context（litellm_backend.py）
+- 已具备 workspace-scoped memory store / retrieval（SQLite + 关键词）
+- 仍缺：跨 workspace 的长期 memory store / retrieval / governance、可执行的 skill-based memory distillation 机制
 
-这意味着今天的“memory”不能被理解成一个已经存在的 subsystem；它更像是若干 runtime truth 的空缺交叉点。
+这意味着今天的“memory”不能被理解成一个统一的长期记忆 subsystem；它由已落地的 workspace memory 基线与若干仍空缺的 runtime truth 交叉点组成。
 
 ## Layer 1：Session Continuity Memory 设计要求
 
@@ -353,9 +352,9 @@ VoidCode 当前更应该学习的是：
 今天最接近这个入口的是：
 
 - `src/voidcode/runtime/context_window.py`
-- `src/voidcode/runtime/service.py` 中对 `RUNTIME_MEMORY_REFRESHED` 的触发
+- `src/voidcode/runtime/run_loop.py` 中对 `RUNTIME_CONTEXT_COMPACTED` 的触发（`_should_emit_context_compacted` / `_build_context_compacted_payload`）
 
-但它们当前只表达“发生了截断”，还没有表达“保留了什么 distilled state”。
+现在 compaction 已经通过 ContextProjection（结构化字段 + summary anchor）表达“保留了什么 distilled state”，只是投影仍以确定性截断为主，model_assisted 尚未接线 projector。
 
 因此这一层未来最小实现切片的方向应是：
 
@@ -409,16 +408,16 @@ Layer 1 已经拥有部分 substrate：
 
 - session persistence / replay / resume
 - approval resume checkpoint
-- `runtime.memory_refreshed` 事件词汇
+- `runtime.context_compacted` 事件词汇
 - provider-backed execution 中的最小 context window compaction
 
-但当前 `RuntimeContextWindow` 仍只是 last-N tool result retention。只在这之上谈“memory refreshed”还不够，因为它还没有 distinguished summary shape，也没有 durable injection semantics。
+当前 `RuntimeContextWindow` 已经携带 continuity_state（ContextProjection）与 summary anchor，并在 compaction 时把 distilled summary 注入 provider context；但投影仍以确定性 last-N 截断为主，model_assisted 策略尚未接线 projector，durable reinjection semantics 也还未完整收口。
 
 因此，Layer 1 当前真正缺的不是长期 memory store，而是：
 
-- 更语义化的 compaction output
-- 可恢复的 distilled summary shape
-- replay / resume 的 reinjection boundary
+- model_assisted 蒸馏 projector 的接线（当前恒 fallback 到确定性投影）
+- 投影内容的进一步语义化（当前仍是确定性文本为主）
+- replay / resume 的 reinjection boundary 完整收口
 
 ### Layer 2 的主要前置条件：Leader-facing background result truth
 

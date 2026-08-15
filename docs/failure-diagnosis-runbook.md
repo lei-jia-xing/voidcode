@@ -9,9 +9,9 @@
 - CLI：`voidcode run`、`voidcode sessions list`、`voidcode sessions resume`、`voidcode sessions answer`、`voidcode serve`、`voidcode tasks` 子命令、`voidcode config show`、`voidcode doctor`
 - HTTP 传输：`voidcode serve` 暴露的 `/api/sessions`、`/api/tasks`、`/api/runtime/run/stream` 等端点
 - SQLite 持久化：`$XDG_STATE_HOME/voidcode/sessions.sqlite3`（POSIX 默认 `~/.local/state/voidcode/sessions.sqlite3`，可被 `VOIDCODE_DB_PATH` 覆盖）中面向操作员排障最重要的 `sessions`、`session_events`、`background_tasks`、`session_notifications` 表（另有用于事件投递去重的 `session_event_deliveries` 表）。该数据库使用 SQLite `PRAGMA user_version` 做 runtime schema 版本门禁，工作区作用域列使用 `workspace_id`。
-- 会话状态字面量：`idle`、`running`、`waiting`、`completed`、`failed`
+- 会话状态字面量：`idle`、`running`、`waiting`、`completed`、`failed`、`interrupted`
 - 审批决策：`allow`、`deny`、`ask`
-- 恢复检查点类型：`approval_wait`、`question_wait`、`terminal`
+- 恢复检查点类型：`approval_wait`、`question_wait`、`provider_failure_retryable`、`terminal`、`interrupted`
 
 不在此范围内的内容（TUI、真实 LLM 编排、多代理拓扑、云端协作）不在本手册的恢复步骤中涉及。
 
@@ -52,7 +52,7 @@
   - SQLite：`SELECT status, turn, last_event_sequence FROM sessions WHERE session_id = ?`。
 - **恢复**：
   - 如果进程仍在运行，等待其自然完成。
-  - 如果进程已异常退出但状态仍为 `running`，这是持久化快照与进程生命周期不同步的表现。当前 MVP 没有针对该状态的受支持“继续执行”入口；应先检查最近事件和相关后台任务，再基于现有上下文重新发起新会话。
+  - 如果进程已异常退出，运行时会把会话持久化为 `interrupted`（见 [2.6 节](#26-interrupted)），而不是停留在 `running`；若状态仍为 `running` 而进程已退出，这是持久化快照与进程生命周期不同步的表现，应先检查最近事件和相关后台任务，再基于现有上下文重新发起新会话。
 
 ### 2.3 `waiting`
 
@@ -115,6 +115,13 @@
   - 失败会话本身不可继续执行（终态检查点）。
   - 分析失败原因后，使用新的 `voidcode run` 命令发起新会话。
   - 如果失败由审批拒绝（`deny`）引起，这是预期行为，不是故障。
+
+### 2.6 `interrupted`
+
+会话因执行中断（进程被终止、显式中断等）而处于可恢复的中断状态。异常退出时，运行时不再让会话停留在 `running`，而是持久化为 `interrupted` 并记录中断检查点。
+
+- **诊断**：`sessions list` 显示 `interrupted`；`resume_checkpoint_json` 的 `kind` 为 `interrupted`。
+- **恢复**：`interrupted` 不是终态检查点。使用 `voidcode sessions resume <session-id> --workspace .` 可从中断检查点继续执行；runtime 会按 checkpoint 的 `kind == "interrupted"` 路由到 interrupted resume 路径，恢复后会话继续执行，直到完成或再次中断。
 
 ---
 
@@ -210,7 +217,7 @@ sqlite3 "$(uv run voidcode storage diagnostics --workspace . | jq -r .storage.da
   "SELECT workspace, session_id, dedupe_key, delivered_at FROM session_event_deliveries ORDER BY delivered_at DESC LIMIT 20;"
 ```
 
-`resume_checkpoint_json` 列包含 JSON 对象，其 `kind` 字段为 `approval_wait`、`question_wait` 或 `terminal` 之一。
+`resume_checkpoint_json` 列包含 JSON 对象，其 `kind` 字段为 `approval_wait`、`question_wait`、`provider_failure_retryable`、`terminal` 或 `interrupted` 之一。
 
 ### 3.4 HTTP / API 表面
 
@@ -263,6 +270,7 @@ uv run voidcode sessions list --workspace .
 - **`waiting`**：按 [2.3 节](#23-waiting) 的恢复步骤提供审批或回答问题。
 - **`failed`**：查看事件时间线定位失败原因，然后发起新会话。
 - **`running`**：检查进程是否仍在运行。如果进程已退出但状态仍为 `running`，参考 [2.2 节](#22-running)。
+- **`interrupted`**：按 [2.6 节](#26-interrupted) 使用 `sessions resume` 从中断检查点继续执行。
 - **`completed`**：无需恢复，必要时只做 replay 审查。
 - **`idle`**：把它视为“当前无活动执行”的词汇级状态；若确实看到该状态，通常不需要恢复，直接重新发起任务即可。
 

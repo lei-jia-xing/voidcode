@@ -35,7 +35,7 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 ### LangGraph 负责（仅 deterministic/read-only slice）
 
-- `DeterministicReadOnlyGraph` 中的步骤编排
+- `DeterministicGraph` 中的步骤编排
 - 该 slice 的图状态与检查点
 - 该 slice 的中断与恢复
 
@@ -78,7 +78,7 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 graph 是执行引擎和编排层，当前包含两条并行路径：
 
-- `DeterministicReadOnlyGraph`：LangGraph-backed 确定性参考/debug 切片，通过正则匹配执行只读命令（read、grep、run、write），不调用外部模型，并继续用于无凭据 smoke test 与确定性回归测试。
+- `DeterministicGraph`：LangGraph-backed 确定性参考/debug 切片，通过正则匹配执行只读命令（read、grep、run、write），不调用外部模型，并继续用于无凭据 smoke test 与确定性回归测试。
 - `ProviderSingleAgentGraph`：provider-backed 执行引擎路径，由 runtime 直接驱动，调用 `SingleAgentProvider.propose_turn()` 实现模型推理。
 
 两条路径都由 runtime 统一选择和驱动，共享工具注册表、权限检查、钩子和检查点机制。后续 multi-agent workflow 扩展可以引入更复杂的编排拓扑，但不改变 runtime 作为控制面的前提。
@@ -97,7 +97,7 @@ provider-backed foreground loop 支持同一模型 turn 返回多个 tool calls�
 
 ### 能力层目录
 
-`lsp/`、`skills/`、`provider/`、`acp/` 与 `mcp/` 当前主要承担能力边界与后续抽离方向的定义。其中部分实现仍位于 `runtime/` 下，但目录边界已经存在，不应再被文档忽略。
+`provider/` 已是完整实现：provider/model 解析与 registry、模型 fallback 解析、reasoning_effort、model catalog 与各后端 adapter（openai/anthropic/google/litellm/glm/kimi/qwen 等）都位于该目录。`skills/`（manifest/registry/discovery/builtin）、`mcp/`（config/contract/types/lifecycle）与 `lsp/`（contracts/presets/registry/roots）也都有各自的独立实现；`acp/` 目前仍是 runtime-managed 的受管能力边界。这些目录已经是真实的能力层实现，而不再只是"能力边界与后续抽离方向"的定义。
 
 ### `agent/`
 
@@ -131,7 +131,7 @@ provider-backed foreground loop 支持同一模型 turn 返回多个 tool calls�
 
 ### `tui/`
 
-`tui/` 是当前较早期的终端客户端层，用于消费 runtime 暴露的 session / event / approval 语义。
+`tui/` 是终端客户端层，已实现提示词输入、时间线视图（`TimelineView`）、审批弹窗（`ApprovalModal`）与会话恢复（`session.resume`）等核心交互，用于消费 runtime 暴露的 session / event / approval 语义。
 
 ## 设计原则
 

@@ -9,9 +9,9 @@
 | P0 | guidance 注入曾丢失 `path_argument_keys` | `src/voidcode/tools/guidance.py:66-82`；字段定义见 `src/voidcode/tools/contracts.py:18-25`，权限读取见 `src/voidcode/runtime/permission_context.py:87` | agent-visible definition 与运行时权限/路径上下文不一致；涉及 `read_file`、`grep`、`glob`、写入类工具 | 已保留字段并添加回归测试 | 已修复 |
 | P1 | `read_file` 在 `content` 中输出 XML-like 包装，而不是结构化 XML | `src/voidcode/tools/read_file.py`；契约文档 `docs/contracts/agent-tool-calling.md` | 包装与正文混杂，导致 UI 泄漏和解析负担 | 已移除 XML-like wrapper；正文由 `data.lines`/`data.raw_content` 提供结构化真源 | 已修复 |
 | P1 | `grep` 支持正则，但只有显式 `regex=true` 才启用 | 实现 `src/voidcode/tools/grep.py:194-207`；说明 `src/voidcode/tools/grep.txt:1-5`；测试 `tests/unit/tools/test_grep_tool.py:58,293+` | 原生工具调用必须显式设置开关；schema 现已补充字段描述，shorthand 现支持 `grep --regex <pattern> <path>` | 已修复入口/schema 不一致；默认仍为字面匹配 |
-| P1 | `ToolResult.content` 的语义不统一 | `read_file` 将完整行号化正文放入 `content`；`grep` 将人类摘要放入 `content`，匹配详情放入 `data.matches` | UI 必须按工具名称分支处理；通用渲染器容易显示错误层级或泄漏内部格式 | 约定 `content` 为摘要，正文/匹配项统一放入结构化 `data`；增加通用 presentation contract | 约定不一致 |
-| P2 | 路径参数命名不统一：`read_file.filePath` vs 其他工具的 `path` | `docs/contracts/agent-tool-calling.md:224`；TUI 特殊分支 `src/voidcode/runtime/tool_display.py` | 增加模型参数错误率和客户端 special-case；新工具难以遵循单一约定 | 下一版统一为 `path`，旧字段提供兼容迁移；短期在 schema description 中显式说明 | 有意但成本高 |
-| P2 | `read_file` 行号前缀使输出不可直接复用 | `src/voidcode/tools/read_file.py:177`；`data.copy_guidance` 要求剥离 `<line>: `；`edit` guidance 也要求忽略前缀 | 从读取结果复制到编辑参数时容易把行号带入，XML wrapper 又增加一层解析负担 | 提供 `data.lines`（行号与原文分离）及 `data.raw_content`；保留 line-numbered presentation 仅用于展示 | 脆弱但有文档说明 |
+| P1 | `ToolResult.content` 的语义不统一 | `read_file` 将完整行号化正文放入 `content`；`grep` 将人类摘要放入 `content`，匹配详情放入 `data.matches` | UI 必须按工具名称分支处理；通用渲染器容易显示错误层级或泄漏内部格式 | 约定 `content` 为摘要，正文/匹配项统一放入结构化 `data`；增加通用 presentation contract | 已修复 |
+| P2 | 路径参数命名不统一：`read_file.filePath` vs 其他工具的 `path` | `docs/contracts/agent-tool-calling.md:224`；TUI 特殊分支 `src/voidcode/runtime/tool_display.py` | 增加模型参数错误率和客户端 special-case；新工具难以遵循单一约定 | 下一版统一为 `path`，旧字段提供兼容迁移；短期在 schema description 中显式说明 | 已修复（统一为 `path`） |
+| P2 | `read_file` 行号前缀使输出不可直接复用 | `src/voidcode/tools/read_file.py:177`；`data.copy_guidance` 要求剥离 `<line>: `；`edit` guidance 也要求忽略前缀 | 从读取结果复制到编辑参数时容易把行号带入，XML wrapper 又增加一层解析负担 | 提供 `data.lines`（行号与原文分离）及 `data.raw_content`；保留 line-numbered presentation 仅用于展示 | 已修复 |
 
 ## 已核对、未发现实现缺陷
 

@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：partially implemented
+- 状态：部分实现（第一切片已落地）
 - 范围：design + initial runtime slice
 - 目标仓库：`voidcode`
 
@@ -25,13 +25,13 @@
 - session persistence / replay / resume truth
 - approval resume checkpoint
 - provider-backed execution 中的最小 context window compaction
-- `runtime.memory_refreshed` 事件词汇
+- `runtime.context_compacted` 事件词汇
 
 但今天的“memory”仍然仍处于早期阶段：
 
 - `RuntimeContextWindow` 已经具备最小 continuity state 字段，并在 compaction 时生成第一版 runtime-owned continuity summary
-- compaction 触发时会发出带 continuity payload 的 `runtime.memory_refreshed`
-- continuity state 已经进入 `session.metadata["runtime_state"]["continuity"]` 与 provider-backed `context_window`
+- compaction 触发时会发出带 projection payload 的 `runtime.context_compacted`
+- continuity state 已经进入 `session.metadata["runtime_state"]["context_projection"]` 与 provider-backed `context_window`（旧 `continuity` key 已被 context_window.py 显式拒绝）
 - 但 continuity shape 仍然非常克制，仍未扩展成更完整的 distilled summary / reinjection 设计
 
 因此，当前最合理的下一步不是 long-term memory，而是先定义：
@@ -84,18 +84,19 @@ Session Continuity Memory 必须继续由 **runtime** 拥有。
 今天最接近这层能力的代码是：
 
 - `src/voidcode/runtime/context_window.py`
-- `src/voidcode/runtime/service.py`
+- `src/voidcode/runtime/run_loop.py`（compaction 事件发射）
+- `src/voidcode/runtime/service.py`（metadata 恢复）
 
 当前行为可概括为：
 
 1. 当前 runtime 的 provider context-window preparation path 会接收 prompt 与全部 tool results。
 2. 它根据 `ContextWindowPolicy.max_tool_results`、总 token budget 与默认/按工具 token cap 收缩 provider-facing tool feedback。
-3. 如果发生截断，则 `RuntimeContextWindow.compacted == True`。
-4. `runtime/service.py` 在图执行前发出 `runtime.memory_refreshed`。
+3. 如果发生截断，则 `RuntimeContextWindow.compacted == True`，并生成 continuity_state（ContextProjection）与 summary anchor。
+4. `runtime/run_loop.py` 在 compaction 发生时发出 `runtime.context_compacted`（payload 含 projection）。
 
 这里的关键现实是：
 
-> `runtime.memory_refreshed` 目前只是 compaction 发生的信号，不是 memory retrieval 成功的信号。
+> `runtime.context_compacted` 目前只是 compaction 发生的信号（携带 projection），不是 memory retrieval 成功的信号。
 
 ## 设计对象
 
@@ -116,6 +117,8 @@ class SessionContinuityState:
     distilled_tool_result_summary: str | None
     source_event_sequence: int | None
 ```
+
+> 注：实际实现以 `ContextProjection` 为准（`src/voidcode/runtime/context_window.py`），字段为 `objective` / `current_goal` / `verbatim_user_constraints` / `progress_completed` / `blockers_open_questions` / `key_decisions` / `relevant_files_commands_errors` / `verification_state` / `delegated_task_summaries` / `recent_tail` / `dropped_tool_result_count` / `retained_tool_result_count` / `source`，另附 `summary_text`、token 统计与 `version`。上表的建议形状是第一版草案，已被 ContextProjection 取代。
 
 ### 字段意图
 

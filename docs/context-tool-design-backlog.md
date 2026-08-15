@@ -6,12 +6,14 @@ considered complete until implementation and focused tests provide evidence.
 
 ## Context Assembly And Caching
 
-- [ ] Define a production cache-key contract (stable-prefix hash, dynamic-suffix
+- [x] Define a production cache-key contract (stable-prefix hash, dynamic-suffix
   hash, tool materialization generation, provider/model identity) and expose hit
   metadata from provider execution. Prompt hashes and a provider request
-  `prompt_cache_identity` are now available; actual provider cache hit reporting
-  remains. LiteLLM diagnostics now log the non-content hash dimensions.
-- [ ] Move session/config-stable instruction sections before the dynamic boundary;
+  `prompt_cache_identity` are now available; LiteLLM request diagnostics now log
+  the non-content hash dimensions (`stable_prefix_hash` / `tool_generation` /
+  provider/model identity) from the provider request layer. Actual provider
+  cache hit/miss reporting remains.
+- [x] Move session/config-stable instruction sections before the dynamic boundary;
   keep date, git status, touched-file rules, README context, task state,
   continuity, tool results, and the current user request dynamic.
 - [ ] Cache git/environment observations and refresh them on meaningful workspace
@@ -30,8 +32,10 @@ considered complete until implementation and focused tests provide evidence.
   and search filters; the broader tool surface remains.
 - [x] Reconcile `grep`'s regex description with its actual explicit-switch
   behavior and retry guidance.
-- [ ] Converge on `content` as a short human summary and put machine-readable
-  payloads in `data`.
+- [x] Converge on `content` as a short human summary and put machine-readable
+  payloads in `data`. `read_file` returns a short summary in `content` with
+  structured `data.lines` / `data.raw_content` / `data.content_hash`; `grep`
+  returns a summary in `content` with matching details in `data.matches`.
 - [x] Switch `read_file` to the canonical `path` field without a legacy alias.
 - [x] Provide structured file lines/raw content so edit calls do not need to
   strip presentation line prefixes.
@@ -44,5 +48,6 @@ considered complete until implementation and focused tests provide evidence.
 - `tests/unit/runtime/test_prompt_stable_prefix.py` hashes a prefix for tests,
   but no provider cache reuse contract is implemented there.
 - Runtime context metadata now exposes deterministic stable-prefix and
-  dynamic-suffix hashes; provider cache hit reporting and tool-generation/model
-  dimensions remain to be wired into the provider request layer.
+  dynamic-suffix hashes; LiteLLM request diagnostics log the provider/model
+  identity, `stable_prefix_hash`, and `tool_generation` dimensions from the
+  provider request layer; provider cache hit reporting remains to be wired.

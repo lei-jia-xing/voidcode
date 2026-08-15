@@ -44,7 +44,7 @@
 
 这些内容应当保持为**声明式配置或类型化定义**，供 runtime 解析与消费。
 
-当前仓库里已经存在的 `src/voidcode/agent/README.md` 与 `src/voidcode/agent/<role>/README.md`，应被理解为这层声明边界的文档化外壳，而不是独立 agent runtime 的证据。`preset_hook_refs` 现在由 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog 校验，表达的是角色 guidance / guard / continuation intent，不是 runtime lifecycle hook command。`mcp_binding` 也同样只是 profile/server 绑定意图，不包含 MCP command/env，也不能绕过 runtime-owned MCP lifecycle。
+当前仓库里已经存在的 `src/voidcode/agent/README.md` 与 `src/voidcode/agent/<role>/base.txt`（各角色目录下的基础 prompt 文件），应被理解为这层声明边界的文档化外壳，而不是独立 agent runtime 的证据。`preset_hook_refs` 现在由 `src/voidcode/hook/presets.py` 中的 builtin hook preset catalog 校验，表达的是角色 guidance / guard / continuation intent，不是 runtime lifecycle hook command。`mcp_binding` 也同样只是 profile/server 绑定意图，不包含 MCP command/env，也不能绕过 runtime-owned MCP lifecycle。
 
 ## 哪些东西必须继续留在 `runtime/`
 
@@ -107,7 +107,7 @@
 文档与声明可以优先落在：
 
 - `src/voidcode/agent/README.md`
-- `src/voidcode/agent/<role>/README.md`
+- `src/voidcode/agent/<role>/base.txt`
 
 这些文件用于描述角色 preset、本地权限倾向、建议 skills / hooks / MCP profile 以及与 runtime 的边界，但不代表这些角色当前已经拥有独立 runtime 实现。
 

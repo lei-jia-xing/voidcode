@@ -21,7 +21,7 @@
 - `runtime/` 仍是产品级控制面；
 - `graph/` 仍负责执行步骤推进与编排，而不是产品治理；
 - provider-backed 的顶层 `leader` 执行路径已经存在，且 `product` 可显式选择为顶层规划路径；
-- `src/voidcode/agent/` 目录现在已经存在，但当前只是文档化的声明层；
+- `src/voidcode/agent/` 目录现在已经存在，承载代码化声明层（typed models、preset manifest 与 `<role>/base.txt` 角色 prompt 文件），并由 runtime 实际解析消费（`runtime/service.py` / `agent_capability.py`）；它仍是声明层，而不是独立 runtime；
 - ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍然不是当前可用的 agent-to-agent 控制面；
 - runtime-owned delegation path 已可执行 `advisor`、`explore`、`researcher`、`worker` 这些 child presets，但真正任意拓扑的 multi-agent delegation、handoff、shared execution topology 仍未实现。
 
@@ -185,9 +185,9 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 当前建议的文档化落点是：
 
 - `src/voidcode/agent/README.md`：角色层总览
-- `src/voidcode/agent/<role>/README.md`：每个角色自己的职责、权限、建议 skills / hooks 与当前状态
+- `src/voidcode/agent/<role>/base.txt`：每个角色的基础 prompt 文件（职责、权限、建议 skills / hooks 与当前状态）
 
-这里还要明确一个边界：这些 README 里写的“建议 hook / 建议能力”是 preset intent，不代表 runtime 今天已经支持对应 lifecycle phase。
+这里还要明确一个边界：这些角色 prompt（`base.txt`）里写的“建议 hook / 建议能力”是 preset intent，不代表 runtime 今天已经支持对应 lifecycle phase。
 
 ## 哪些能力必须继续留在 `runtime/`
 
