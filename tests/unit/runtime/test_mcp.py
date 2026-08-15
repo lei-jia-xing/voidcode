@@ -1539,7 +1539,10 @@ for raw_line in sys.stdin:
     assert cleanup_events[0].payload["reason"] == "abandoned"
 
 
-def test_mcp_manager_marks_malformed_tool_schema_as_disabled(tmp_path: Path) -> None:
+def test_mcp_manager_reports_protocol_invalid_tool_schema_list(tmp_path: Path) -> None:
+    # mcp 2.x validates the tools/list wire payload itself: a tool whose
+    # inputSchema root type is not "object" is a protocol violation, so the
+    # whole list is rejected before per-tool validation can run.
     server_script = tmp_path / "invalid_schema_mcp_server.py"
     server_script.write_text(
         r"""
@@ -1618,10 +1621,56 @@ for raw_line in sys.stdin:
         diagnostics_collector=collector,
     )
 
-    tools = manager.list_tools(workspace=tmp_path)
-    assert len(tools) == 2
-    bad = next(tool for tool in tools if tool.tool_name == "bad_schema")
-    good = next(tool for tool in tools if tool.tool_name == "good_schema")
+    with pytest.raises(ValueError, match="tools/list failed"):
+        manager.list_tools(workspace=tmp_path)
+
+    diagnostics = collector.get_diagnostics()
+    assert diagnostics
+    assert diagnostics[-1].category == "communication"
+    assert "MCP server returned unexpected response" in diagnostics[-1].message
+
+    failure_events = manager.drain_events()
+    failed_event = next(event for event in failure_events if event.event_type == "runtime.mcp_server_failed")
+    assert failed_event.payload["stage"] == "discovery"
+    assert failed_event.payload["method"] == "tools/list"
+
+
+def test_mcp_manager_marks_malformed_tool_schema_as_disabled(tmp_path: Path) -> None:
+    # mcp 2.x negotiates 2025-11-25 by default, whose wire models reject
+    # malformed input schemas outright. The runtime still guards per-tool
+    # schemas that pass the wire layer (e.g. with the 2026-07-28 model, whose
+    # input_schema only constrains the root "type"), disabling such tools.
+    collector = InMemoryMcpDiagnosticsCollector()
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "invalid": RuntimeMcpServerConfig(
+                    transport="stdio",
+                    command=(sys.executable, "true"),
+                )
+            },
+        ),
+        diagnostics_collector=collector,
+    )
+
+    bad = manager._descriptor_from_sdk_tool(
+        server_name="invalid",
+        tool=Tool(
+            name="bad_schema",
+            description="Bad schema tool",
+            inputSchema={"type": "object", "properties": "not-a-dict"},
+        ),
+    )
+    good = manager._descriptor_from_sdk_tool(
+        server_name="invalid",
+        tool=Tool(
+            name="good_schema",
+            description="Good schema tool",
+            inputSchema={"type": "object", "properties": {"text": {"type": "string"}}},
+        ),
+    )
+
     assert bad.enabled is False
     assert bad.disabled_reason is not None
     assert good.enabled is True

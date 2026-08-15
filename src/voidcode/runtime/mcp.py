@@ -17,7 +17,6 @@ import threading
 import time
 from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import IO, Any, Literal, cast
 
@@ -25,7 +24,7 @@ from anyio.from_thread import BlockingPortal, start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, Implementation, InitializeResult, ListToolsResult, Tool
 
 from ..mcp import (
@@ -382,13 +381,13 @@ class ManagedMcpManager:
             operation=lambda session=running.session: session.call_tool(
                 tool_name,
                 dict(arguments),
-                read_timeout_seconds=self._request_timeout,
+                read_timeout_seconds=self._request_timeout_seconds,
             ),
         )
         call_result = cast(CallToolResult, result)
         return McpToolCallResult(
             content=[item.model_dump(by_alias=True, exclude_none=True) for item in call_result.content],
-            is_error=bool(call_result.isError),
+            is_error=bool(call_result.is_error),
         )
 
     def shutdown(self) -> tuple[McpRuntimeEvent, ...]:
@@ -443,10 +442,6 @@ class ManagedMcpManager:
                     )
                     self._stop_running_server(key)
         return self.drain_events()
-
-    @property
-    def _request_timeout(self) -> timedelta:
-        return timedelta(seconds=self._request_timeout_seconds)
 
     def _ensure_running(
         self,
@@ -565,7 +560,7 @@ class ManagedMcpManager:
                     ClientSession(
                         cast(Any, read_stream),
                         cast(Any, write_stream),
-                        read_timeout_seconds=self._request_timeout,
+                        read_timeout_seconds=self._request_timeout_seconds,
                         client_info=Implementation(
                             name=MCP_CLIENT_NAME,
                             version=MCP_CLIENT_VERSION,
@@ -735,7 +730,7 @@ class ManagedMcpManager:
         return not self._is_recoverable_call_error(exc, stage=stage)
 
     def _is_recoverable_call_error(self, exc: Exception, *, stage: str) -> bool:
-        if stage != "call" or not isinstance(exc, McpError) or self._is_timeout_error(exc):
+        if stage != "call" or not isinstance(exc, MCPError) or self._is_timeout_error(exc):
             return False
         code = getattr(exc.error, "code", None)
         return code in _RECOVERABLE_MCP_CALL_ERROR_CODES
@@ -757,16 +752,16 @@ class ManagedMcpManager:
         annotations = tool.annotations
         safety = (
             McpToolSafety.from_hints(
-                read_only_hint=annotations.readOnlyHint,
-                destructive_hint=annotations.destructiveHint,
-                idempotent_hint=annotations.idempotentHint,
-                open_world_hint=annotations.openWorldHint,
+                read_only_hint=annotations.read_only_hint,
+                destructive_hint=annotations.destructive_hint,
+                idempotent_hint=annotations.idempotent_hint,
+                open_world_hint=annotations.open_world_hint,
             )
             if annotations is not None
             else McpToolSafety()
         )
         try:
-            input_schema = _validate_input_schema(tool.inputSchema)
+            input_schema = _validate_input_schema(tool.input_schema)
             return McpToolDescriptor(
                 server_name=server_name,
                 tool_name=tool.name,
@@ -1097,7 +1092,7 @@ class ManagedMcpManager:
                 method=method,
                 timeout_seconds=self._request_timeout_seconds,
             )
-        if isinstance(exc, McpError):
+        if isinstance(exc, MCPError):
             return create_diagnostic(
                 severity=McpDiagnosticSeverity.ERROR,
                 category="communication",
@@ -1122,7 +1117,7 @@ class ManagedMcpManager:
     def _message_for_exception(self, exc: Exception, *, fallback: str) -> str:
         if self._is_timeout_error(exc):
             return f"MCP server timed out after {self._request_timeout_seconds:.1f}s. The server may be unresponsive."
-        if isinstance(exc, McpError):
+        if isinstance(exc, MCPError):
             return f"MCP server error: {exc}"
         return f"{fallback}: {exc}"
 
@@ -1130,7 +1125,7 @@ class ManagedMcpManager:
     def _is_timeout_error(exc: Exception) -> bool:
         if isinstance(exc, TimeoutError):
             return True
-        if isinstance(exc, McpError):
+        if isinstance(exc, MCPError):
             code = getattr(exc.error, "code", None)
             return code == 408 or "timed out" in str(exc).lower()
         return False

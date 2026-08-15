@@ -136,13 +136,13 @@ class TimelineView(VerticalScroll):
         """Compatibility snapshot for callers that inspect plain transcript text."""
         result: list[list[Segment]] = []
         for child in self._entries:
-            renderable = getattr(child, "renderable", None)
+            renderable = getattr(child, "content", None)
             if renderable is not None:
                 result.extend(self._render_lines(renderable))
             elif isinstance(child, Collapsible):
                 result.append([Segment(str(child.title))])
                 body = child.query_one(".timeline-block-content", Static)
-                result.extend(self._render_lines(body.renderable))
+                result.extend(self._render_lines(body.content))
         return result
 
     def _prune_entries(self) -> None:

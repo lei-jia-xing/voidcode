@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from mcp.types import LATEST_PROTOCOL_VERSION
+from mcp.types.version import LATEST_HANDSHAKE_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +160,6 @@ class McpManager(Protocol):
 
 # Constants
 
-MCP_PROTOCOL_VERSION = LATEST_PROTOCOL_VERSION
+MCP_PROTOCOL_VERSION = LATEST_HANDSHAKE_VERSION
 MCP_CLIENT_NAME = "voidcode-runtime"
 MCP_CLIENT_VERSION = "0.1.0"

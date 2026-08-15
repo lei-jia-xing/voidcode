@@ -33,7 +33,7 @@ dependencies = [
   "pydantic",
   "pydantic-settings",
   "typing-extensions",
-  "textual>=1.0.0,<2.0.0",
+  "textual>=1.0.0,<8.2.9",
   "httpx",
   "litellm>=1.82.6",
   "uvicorn",
@@ -51,6 +51,7 @@ dev = [
   "pytest-xdist>=3.8.0",
   "ruff",
   "ty>=0.0.33",
+  "zstandard",
 ]
 
 [project.scripts]

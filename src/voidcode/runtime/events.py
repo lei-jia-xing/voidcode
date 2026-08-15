@@ -739,7 +739,7 @@ class DelegatedLifecycleEventPayload:
             RUNTIME_ACP_DELEGATED_LIFECYCLE,
         ):
             return None
-        default_status = _DELEGATED_EVENT_STATUS_BY_TYPE.get(cast(DelegatedBackgroundTaskEventType | CoreEventType, event.event_type))
+        default_status = _DELEGATED_EVENT_STATUS_BY_TYPE.get(event.event_type)
         payload = event.payload
         delegation_payload = _mapping_or_none(payload.get("delegation")) or {}
         message_payload = _delegated_lifecycle_message_payload(payload)

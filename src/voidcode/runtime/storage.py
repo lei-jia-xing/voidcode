@@ -1195,7 +1195,7 @@ class SqliteSessionStore:
     @classmethod
     def _parse_memory_kind(cls, value: str) -> MemoryKind:
         if value in cls._MEMORY_KINDS:
-            return cast(MemoryKind, value)
+            return value
         raise ValueError(f"invalid memory kind: {value}")
 
     @staticmethod
@@ -1753,7 +1753,7 @@ class SqliteSessionStore:
     def _validate_memory_kind(cls, kind: str) -> MemoryKind:
         if kind not in cls._MEMORY_KINDS:
             raise ValueError(f"invalid memory kind: {kind}")
-        return cast(MemoryKind, kind)
+        return kind
 
     @staticmethod
     def _validate_memory_tags(tags: tuple[str, ...]) -> tuple[str, ...]:

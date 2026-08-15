@@ -1548,11 +1548,25 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     config_module = importlib.import_module("voidcode.runtime.config")
     context_window_module = importlib.import_module("voidcode.runtime.context_window")
     model_provider_module = importlib.import_module("voidcode.provider.registry")
+    model_catalog_module = importlib.import_module("voidcode.provider.model_catalog")
     permission_module = importlib.import_module("voidcode.runtime.permission")
     service_module = importlib.import_module("voidcode.runtime.service")
     runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
     requests: list[object] = []
     _ = (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+
+    model_catalog = {
+        "opencode-go": model_catalog_module.ProviderModelCatalog(
+            provider="opencode-go",
+            models=("minimax-m2.7",),
+            refreshed=True,
+            model_metadata={
+                "minimax-m2.7": model_catalog_module.ProviderModelMetadata(
+                    tool_feedback_mode="synthetic_user_message",
+                )
+            },
+        )
+    }
 
     runtime_config = config_module.RuntimeConfig(
         approval_mode="allow",
@@ -1573,7 +1587,8 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
                     name="opencode-go",
                     requests=requests,
                 )
-            }
+            },
+            model_catalog=model_catalog,
         ),
     )
 
@@ -1589,7 +1604,8 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
                     name="opencode-go",
                     requests=[],
                 )
-            }
+            },
+            model_catalog=model_catalog,
         ),
     )
     replay = replay_runtime.resume("provider-context-parity")

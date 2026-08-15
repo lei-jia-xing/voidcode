@@ -6,7 +6,8 @@ from typing import Protocol, cast
 
 
 class _ToolResultLike(Protocol):
-    data: dict[str, object]
+    @property
+    def data(self) -> dict[str, object]: ...
 
 
 README_FILE_NAME = "README.md"

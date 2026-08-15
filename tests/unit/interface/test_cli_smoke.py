@@ -2647,6 +2647,7 @@ def test_config_show_outputs_workspace_effective_config() -> None:
                 "reasoning_effort": "medium",
                 "status": "forwarded",
                 "forwarded": True,
+                "supports_reasoning_effort": None,
                 "provider_parameter": "reasoning_effort",
             },
         },
@@ -2712,12 +2713,37 @@ def test_config_show_outputs_effective_category_models_without_secrets() -> None
 def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
+        cache_root = Path(tmp) / "xdg-cache"
+        (cache_root / "voidcode").mkdir(parents=True)
+        (cache_root / "voidcode" / "provider-model-catalog.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "providers": {
+                        "opencode-go": {
+                            "provider": "opencode-go",
+                            "models": ["glm-5"],
+                            "model_metadata": {
+                                "glm-5": {"context_window": 200_000},
+                            },
+                            "refreshed": True,
+                            "source": "fallback",
+                            "last_refresh_status": "skipped",
+                            "last_error": None,
+                            "discovery_mode": "unavailable",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
         env = with_src_pythonpath(os.environ.copy())
         env.update(
             {
                 "VOIDCODE_MODEL": "opencode-go/glm-5",
                 "VOIDCODE_EXECUTION_ENGINE": "provider",
                 "OPENCODE_API_KEY": "opencode-go-secret",
+                "XDG_CACHE_HOME": str(cache_root),
             }
         )
 
@@ -2876,6 +2902,7 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 "reasoning_effort": "high",
                 "status": "forwarded",
                 "forwarded": True,
+                "supports_reasoning_effort": None,
                 "provider_parameter": "reasoning_effort",
             },
         },

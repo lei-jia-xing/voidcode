@@ -138,15 +138,16 @@ def _trim_diff(diff: str) -> str:
     if not content_lines:
         return diff
 
-    min_indent = float("inf")
+    min_indent: int | None = None
     for line in content_lines:
         content = line[1:]
         if content.strip():
             match = re.match(r"^(\s*)", content)
             if match and match.group(1):
-                min_indent = min(min_indent, len(match.group(1)))
+                indent = len(match.group(1))
+                min_indent = indent if min_indent is None else min(min_indent, indent)
 
-    if min_indent == float("inf") or min_indent == 0:
+    if min_indent is None or min_indent == 0:
         return diff
 
     trimmed_lines: list[str] = []
@@ -315,13 +316,14 @@ class IndentationFlexibleReplacer:
         if not non_empty:
             return text
 
-        min_indent = float("inf")
+        min_indent: int | None = None
         for line in non_empty:
             match = re.match(r"^(\s*)", line)
             if match and match.group(1):
-                min_indent = min(min_indent, len(match.group(1)))
+                indent = len(match.group(1))
+                min_indent = indent if min_indent is None else min(min_indent, indent)
 
-        if min_indent == float("inf"):
+        if min_indent is None:
             return text
 
         dedented = [line[min_indent:] if len(line) >= min_indent else line for line in lines]

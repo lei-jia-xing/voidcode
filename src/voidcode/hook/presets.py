@@ -89,7 +89,7 @@ def validate_hook_preset_event_scopes(
         if scope not in valid_scopes:
             allowed = ", ".join(_VALID_HOOK_PRESET_EVENT_SCOPES)
             raise ValueError(f"{field_path} contains invalid event scope: {scope}; valid scopes are: {allowed}")
-        parsed.append(cast(HookPresetEventScope, scope))
+        parsed.append(scope)
     return tuple(parsed)
 
 
@@ -110,7 +110,7 @@ def validate_hook_preset_actions(
         if action not in valid_actions:
             allowed = ", ".join(_VALID_HOOK_PRESET_ACTIONS)
             raise ValueError(f"{field_path} contains invalid action: {action}; valid actions are: {allowed}")
-        parsed.append(cast(HookPresetAction, action))
+        parsed.append(action)
     return tuple(parsed)
 
 

@@ -954,7 +954,7 @@ _MEMORY_KINDS: tuple[MemoryKind, ...] = (
 
 def _parse_memory_kind(value: str) -> MemoryKind:
     if value in _MEMORY_KINDS:
-        return cast(MemoryKind, value)
+        return value
     raise CliError(
         code=EXIT_USAGE_ERROR,
         message=f"invalid memory kind: {value}. Expected one of: {', '.join(_MEMORY_KINDS)}",

@@ -148,7 +148,7 @@ async def test_tui_waiting_stream_keeps_waiting_state(app_class: Any) -> None:
         assert app.current_state == "Waiting approval"
         assert app.pending_request_id == "req-1"
         main_screen = app.screen_stack[-2]
-        assert main_screen.query_one("#status-panel").renderable == "Waiting approval"
+        assert main_screen.query_one("#status-panel").content == "Waiting approval"
         assert main_screen.query_one("#composer-input").disabled is False
 
 
@@ -353,7 +353,7 @@ async def test_tui_failed_stream_stays_failed(app_class: Any) -> None:
         await pilot.pause()
 
         assert app.current_state == "Failed"
-        assert app.query_one("#status-panel").renderable == "Failed"
+        assert app.query_one("#status-panel").content == "Failed"
 
 
 @pytest.mark.anyio
@@ -430,8 +430,8 @@ async def test_tui_sidebar_updates_on_mount(app_class: Any) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        assert app.query_one("#workspace-panel").renderable == "workspace"
-        assert app.query_one("#lsp-panel").renderable == "Active: 1"
+        assert app.query_one("#workspace-panel").content == "workspace"
+        assert app.query_one("#lsp-panel").content == "Active: 1"
 
 
 @pytest.mark.anyio
@@ -461,7 +461,7 @@ async def test_session_new_via_keybinding(app_class: Any) -> None:
         await pilot.pause()
 
         assert app.session_id is None
-        assert app.query_one("#session-panel").renderable == "None"
+        assert app.query_one("#session-panel").content == "None"
 
 
 @pytest.mark.anyio
@@ -1124,7 +1124,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
     app = VoidCodeTUI(workspace=Path("."), runtime=mock_runtime)
 
     async with app.run_test() as pilot:
-        assert app.query_one("#context-panel").renderable == "Unknown"
+        assert app.query_one("#context-panel").content == "Unknown"
 
         mock_session = _StubSession(
             session=_StubSessionRef(id="test-session"),
@@ -1140,7 +1140,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
         app.on_stream_chunk_received(StreamChunkReceived(chunk))
         await pilot.pause()
 
-        assert app.query_one("#context-panel").renderable == "5 results\n[Budget: 120 tokens]"
+        assert app.query_one("#context-panel").content == "5 results\n[Budget: 120 tokens]"
 
         mock_session_compacted = _StubSession(
             session=_StubSessionRef(id="test-session"),
@@ -1158,7 +1158,7 @@ async def test_tui_context_panel_updates_from_metadata(app_class: Any) -> None:
         app.on_stream_chunk_received(StreamChunkReceived(chunk_compacted))
         await pilot.pause()
 
-        assert app.query_one("#context-panel").renderable == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
+        assert app.query_one("#context-panel").content == "10 results\n[Budget: 240 tokens]\n[Compacted: token limit]"
 
 
 @pytest.mark.anyio
@@ -1197,7 +1197,7 @@ async def test_tui_context_update_targets_root_screen_while_question_modal_is_op
         app.on_context_panel_updated(ContextPanelUpdated("7 results\n[Budget: 256 tokens]"))
         await pilot.pause()
 
-        assert app.screen_stack[0].query_one("#context-panel").renderable == "7 results\n[Budget: 256 tokens]"
+        assert app.screen_stack[0].query_one("#context-panel").content == "7 results\n[Budget: 256 tokens]"
 
 
 @pytest.mark.anyio
@@ -1562,7 +1562,7 @@ async def test_tui_question_wizard_handles_multi_select_pages_and_review(app_cla
         await pilot.press("enter")
         assert modal.query_one("#question-review").display is True
         review = modal.query_one("#question-review")
-        review_plain = str(review.renderable)
+        review_plain = str(review.content)
         assert "Features" in review_plain
         assert "Mode" in review_plain
 
