@@ -9,6 +9,7 @@ from typing import Protocol
 
 from ..provider.protocol import ProviderAbortSignal
 from ..runtime.memory import MemoryKind, MemoryRecord, MemorySearchResult
+from .contracts import ToolDefinition
 
 
 class RuntimeMemoryToolFacade(Protocol):
@@ -37,6 +38,12 @@ class RuntimeLspToolFacade(Protocol):
     ) -> dict[str, object]: ...
 
 
+class RuntimeToolCatalogFacade(Protocol):
+    """Read-only view of the currently materialized tool registry."""
+
+    def lookup(self, tool_name: str) -> ToolDefinition | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeToolInvocationContext:
     session_id: str
@@ -50,6 +57,8 @@ class RuntimeToolInvocationContext:
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
     memory: RuntimeMemoryToolFacade | None = None
     lsp: RuntimeLspToolFacade | None = None
+    #: Read-only registry view for on-demand tool documentation (``voidcode://tool/<name>``).
+    tool_catalog: RuntimeToolCatalogFacade | None = None
     #: Opt-in gate for automatic post-write LSP diagnostics (default off).
     lsp_diagnostics_on_write: bool = False
 

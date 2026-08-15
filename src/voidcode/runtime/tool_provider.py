@@ -12,6 +12,7 @@ from ..tools.contracts import Tool
 from ..tools.edit import EditTool
 from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
+from ..tools.invoke_tool import InvokeTool
 from ..tools.local_custom import discover_local_custom_tools
 from ..tools.read_file import ReadFileTool
 from ..tools.shell_exec import ShellExecTool
@@ -36,6 +37,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "edit",
         "glob",
         "grep",
+        "invoke_tool",
         "lsp",
         "multi_edit",
         "read_file",
@@ -238,6 +240,7 @@ class BuiltinToolProvider:
             edit_tool,
             GlobTool(),
             GrepTool(),
+            InvokeTool(),
             ReadFileTool(),
             ShellExecTool(),
             SubmitResultTool(),

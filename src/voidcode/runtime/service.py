@@ -382,7 +382,11 @@ from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializ
 from .tool_provider import (
     LocalCustomToolProvider,
 )
-from .tool_registry import ToolPolicyDecision, ToolRegistry
+from .tool_registry import (
+    ToolPolicyDecision,
+    ToolRegistry,
+    agent_required_tool_patterns,
+)
 from .tool_replay import ToolExecutionIntent, recovery_action
 from .tool_scope import RuntimeToolScopeResolver
 from .workflow import (
@@ -499,6 +503,22 @@ def _render_workspace_memory_context(
         lines.append(candidate_line)
         rendered = candidate
     return rendered
+
+
+@final
+class _RuntimeToolCatalogFacade:
+    """Adapter exposing the runtime's live registry to tools via the context.
+
+    Tools read on-demand documentation (``voidcode://tool/<name>``) through
+    this facade; it always resolves against the current materialization so MCP
+    refreshes are reflected immediately.
+    """
+
+    def __init__(self, runtime: VoidCodeRuntime) -> None:
+        self._runtime = runtime
+
+    def lookup(self, tool_name: str) -> ToolDefinition | None:
+        return self._runtime._tool_catalog_lookup(tool_name)
 
 
 @final
@@ -655,6 +675,7 @@ class VoidCodeRuntime:
                 memory=self,
                 lsp=self,
                 lsp_diagnostics_on_write=bool(self._config.lsp is not None and self._config.lsp.diagnostics_on_write),
+                tool_catalog=_RuntimeToolCatalogFacade(self),
             ),
         )
         self._resume_coordinator = RuntimeResumeCoordinator(self)
@@ -715,6 +736,16 @@ class VoidCodeRuntime:
         results are durable — no pending worker writes can be lost to teardown.
         """
         self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
+
+    def _tool_catalog_lookup(self, tool_name: str) -> ToolDefinition | None:
+        """Read-only registry lookup for on-demand tool documentation.
+
+        Resolves against the current materialization (base + MCP + local tools)
+        so doc reads stay consistent with the live registry even after MCP
+        refreshes.
+        """
+        tool = self._tool_materialization.registry.tools.get(tool_name)
+        return None if tool is None else tool.definition
 
     def _build_base_tool_registry(self) -> ToolRegistry:
         return ToolRegistry.with_defaults(
@@ -1429,6 +1460,44 @@ class VoidCodeRuntime:
             effective_config,
             metadata,
         ).registry
+
+    def _provider_tool_definitions(
+        self,
+        tool_registry: ToolRegistry,
+        effective_config: EffectiveRuntimeConfig,
+    ) -> tuple[ToolDefinition, ...]:
+        """Provider-visible tool definitions for a request.
+
+        With ``tools.essential_only`` enabled, only the essential tool set plus
+        agent-allowlist-required tools are exposed top-level; discoverable
+        tools stay registered and reachable via ``invoke_tool`` dispatch.
+        Disabled (default) keeps the historical all-tools-top-level behavior.
+        """
+        if effective_config.tools is None or effective_config.tools.essential_only is not True:
+            return tool_registry.definitions()
+        return tool_registry.provider_definitions(
+            allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
+        )
+
+    def _skill_prompt_context_for_assembly(
+        self,
+        *,
+        skill_registry: SkillRegistry,
+        applied_context: str,
+        selected_skill_names: tuple[str, ...],
+    ) -> str:
+        """System-prompt skill metadata: applied skill bodies plus the catalog.
+
+        The catalog (name + description per skill) is always included when
+        skills exist so the model can discover and lazily load skill bodies via
+        the skill tool, independent of which skills are currently applied.
+        """
+        catalog = self._catalog_skill_context(
+            skill_registry,
+            available_skill_names=tuple(self._loaded_skill_names(skill_registry)),
+            selected_skill_names=selected_skill_names,
+        )
+        return "\n\n".join(part for part in (applied_context, catalog) if part)
 
     def _tool_materialization_for_effective_config(
         self,
@@ -2397,7 +2466,11 @@ class VoidCodeRuntime:
             available_skill_names=tuple(loaded_skill_names),
             selected_skill_names=skill_snapshot.selected_skill_names,
         )
-        skill_prompt_context = skill_snapshot.skill_prompt_context or catalog_skill_context
+        skill_prompt_context = self._skill_prompt_context_for_assembly(
+            skill_registry=skill_registry,
+            applied_context=skill_snapshot.skill_prompt_context,
+            selected_skill_names=skill_snapshot.selected_skill_names,
+        )
         # Persist the resolved snapshot for every run, including runs with no
         # loaded skills. Resume/replay must have a deterministic snapshot
         # boundary even when the effective skills configuration is disabled.
@@ -2476,7 +2549,7 @@ class VoidCodeRuntime:
         graph_request = GraphRunRequest(
             session=session,
             prompt=request.prompt,
-            available_tools=tool_registry.definitions(),
+            available_tools=self._provider_tool_definitions(tool_registry, effective_config),
             context_window=self._prepare_provider_context_window(
                 prompt=request.prompt,
                 tool_results=rehydrated_tool_results,
@@ -4799,7 +4872,7 @@ class VoidCodeRuntime:
             provider=provider,
             model=model,
             execution_engine=effective_config.execution_engine,
-            available_tool_count=len(tool_registry.definitions()),
+            available_tool_count=len(self._provider_tool_definitions(tool_registry, effective_config)),
             tool_feedback_mode=self._tool_feedback_mode_for_effective_config(effective_config),
             oversized_tool_feedback_chars=(context_window_config.provider_context_oversized_feedback_chars),
             diagnostic_policy_mode=context_window_config.provider_context_diagnostics,

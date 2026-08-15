@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..provider.errors import (
     ProviderExecutionError,
@@ -21,6 +23,7 @@ from ..provider.protocol import (
     ProviderAssembledContext,
     ProviderContextSegmentLike,
 )
+from ..tools._pydantic_args import format_validation_error
 from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
     RuntimeToolTimeoutError,
@@ -30,6 +33,7 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.guards import read_tracking_for_tool_results
+from ..tools.invoke_tool import InvokeToolArgs
 from ..tools.output import (
     cap_tool_result_output,
     sanitize_tool_arguments,
@@ -1858,6 +1862,24 @@ class RuntimeRunLoopCoordinator:
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
 
+            if plan_tool_call.tool_name == "invoke_tool":
+                # On-demand dispatch: resolve the inner tool and run it through
+                # the SAME execution boundary as a provider-native tool call
+                # (policy denial -> registry resolve -> permission -> hooks ->
+                # executor). Unknown tools and denials surface as tool-level
+                # feedback; the run continues.
+                yield from self._execute_invoked_tool(
+                    tool_registry=tool_registry,
+                    session=session,
+                    sequence=sequence,
+                    outer_call=plan_tool_call,
+                    outer_call_id=tool_call_id,
+                    tool_results=tool_results,
+                    permission_policy=active_permission_policy,
+                    abort_signal=active_graph_request.abort_signal,
+                )
+                continue
+
             if approval_resolution is not None:
                 pending, decision = approval_resolution
                 if plan_tool_call.tool_name == pending.tool_name and dict(plan_tool_call.arguments) == pending.arguments:
@@ -2414,6 +2436,502 @@ class RuntimeRunLoopCoordinator:
                     graph_request=active_graph_request,
                     session=session,
                 )
+
+    def _dispatch_error_feedback_chunks(
+        self,
+        *,
+        session: SessionState,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict[str, object],
+        tool_results: list[ToolResult],
+        error: str,
+        error_kind: str,
+    ) -> Generator[RuntimeStreamChunk, None, int]:
+        """Emit a failed ``runtime.tool_completed`` and append an error result.
+
+        Tool-level feedback for dispatched tools: the run continues after an
+        unknown, denied, or hook-cancelled dispatch instead of failing the
+        session.
+        """
+        sanitized_arguments = sanitize_tool_arguments(dict(arguments))
+        tool_result = ToolResult(
+            tool_name=tool_name,
+            status="error",
+            content=_tool_error_content(tool_name, error),
+            error=error,
+            data={
+                "tool_call_id": tool_call_id,
+                "arguments": sanitized_arguments,
+            },
+            error_kind=error_kind,
+            error_summary=_tool_error_summary(error),
+            error_details=_tool_error_details(
+                tool_name=tool_name,
+                error=error,
+                error_kind=error_kind,
+            ),
+            retry_guidance="Check the tool name and arguments, then retry.",
+        )
+        completed_display = build_tool_display(
+            tool_name,
+            sanitized_arguments,
+            result_data=tool_result.data,
+        )
+        completed_status = build_tool_status(
+            tool_name,
+            tool_call_id,
+            phase="failed",
+            status="failed",
+            display=completed_display,
+        )
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="runtime.tool_completed",
+            source="tool",
+            payload={
+                **_tool_completed_identity_payload(session),
+                **tool_result.data,
+                "tool": tool_result.tool_name,
+                "tool_call_id": tool_call_id,
+                "arguments": sanitized_arguments,
+                "status": tool_result.status,
+                "content": tool_result.content,
+                "error": tool_result.error,
+                "error_kind": tool_result.error_kind,
+                "error_summary": tool_result.error_summary,
+                "error_details": tool_result.error_details,
+                "retry_guidance": tool_result.retry_guidance,
+                "display": completed_display,
+                "tool_status": completed_status,
+            },
+        )
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        tool_results.append(
+            replace(
+                tool_result,
+                data={
+                    **tool_result.data,
+                    "tool_call_id": tool_call_id,
+                    "arguments": sanitized_arguments,
+                },
+            )
+        )
+        return envelope.sequence
+
+    def _execute_invoked_tool(
+        self,
+        *,
+        tool_registry: ToolRegistry,
+        session: SessionState,
+        sequence: int,
+        outer_call: ToolCall,
+        outer_call_id: str,
+        tool_results: list[ToolResult],
+        permission_policy: PermissionPolicy | None,
+        abort_signal: ProviderAbortSignal | None,
+    ) -> Generator[RuntimeStreamChunk]:
+        """Execute an ``invoke_tool(name, arguments)`` dispatch call.
+
+        The inner tool is resolved from the runtime registry and executed
+        through the same boundary as a provider-native tool call: delegation
+        policy, runtime policy (allowlist / read-only), permission resolution
+        (approval pause for mutating tools), pre/post hooks, and the shared
+        tool executor. Tool-level failures (unknown name, denied, cancelled)
+        never terminate the run.
+        """
+        runtime = self._runtime
+        try:
+            parsed = InvokeToolArgs.model_validate(dict(outer_call.arguments))
+        except ValidationError as exc:
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name="invoke_tool",
+                tool_call_id=outer_call_id,
+                arguments=dict(outer_call.arguments),
+                tool_results=tool_results,
+                error=format_validation_error("invoke_tool", exc),
+                error_kind="invalid_arguments",
+            )
+            return
+
+        inner_name = parsed.name
+        inner_arguments = dict(parsed.arguments or {})
+
+        delegation_policy_error = runtime._delegation_tool_policy_error(
+            session=session,
+            tool_name=inner_name,
+        )
+        if delegation_policy_error is not None:
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error=delegation_policy_error,
+                error_kind="delegation_policy_denied",
+            )
+            return
+
+        tool_policy_denial = runtime._tool_policy_denial(
+            session=session,
+            tool_name=inner_name,
+        )
+        if tool_policy_denial is not None:
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error=runtime._tool_policy_error(tool_policy_denial),
+                error_kind="runtime_tool_policy_denied",
+            )
+            return
+
+        try:
+            tool = tool_registry.resolve(inner_name)
+        except Exception as exc:
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error=f"unknown tool: {inner_name} ({exc})",
+                error_kind="unknown_tool",
+            )
+            return
+
+        inner_call = ToolCall(
+            tool_name=inner_name,
+            arguments=inner_arguments,
+            tool_call_id=outer_call_id,
+        )
+
+        # Record the inner request before permission resolution: the approval
+        # resume path recovers the provider-visible tool_call_id from this
+        # event so the resumed tool result pairs with the pending invoke_tool
+        # call in the provider history.
+        tool_request_payload: dict[str, object] = {
+            "tool": inner_name,
+            "arguments": dict(inner_arguments),
+        }
+        if outer_call_id is not None:
+            tool_request_payload["tool_call_id"] = outer_call_id
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="graph.tool_request_created",
+            source="graph",
+            payload=tool_request_payload,
+        )
+        sequence = envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+
+        lookup_envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="runtime.tool_lookup_succeeded",
+            source="runtime",
+            payload={"tool": inner_name},
+        )
+        sequence = lookup_envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
+
+        permission_chunks = runtime._resolve_permission(
+            session=session,
+            tool=tool.definition,
+            tool_instance=tool,
+            tool_call=inner_call,
+            sequence=sequence + 1,
+            permission_policy=permission_policy or runtime._permission_policy,
+        )
+        if permission_chunks.chunks:
+            session = permission_chunks.chunks[-1].session
+        sequence = yield from self._persist_chunks(
+            permission_chunks.chunks,
+            fallback_sequence=permission_chunks.last_sequence,
+        )
+        if permission_chunks.pending_approval is not None:
+            # Pause for approval. The approval resume path executes the inner
+            # tool directly through execute_approved_tool_call (same governed
+            # boundary), pairing its result with the recorded tool_call_id.
+            return
+        if permission_chunks.denied:
+            yield from self._permission_denied_tool_feedback_chunks(
+                session=session,
+                tool_call=inner_call,
+                pending=permission_chunks.denied_approval,
+                tool_results=tool_results,
+                tool_call_id=outer_call_id,
+            )
+            return
+
+        pre_hook_outcome = runtime._run_tool_hooks(
+            session=session,
+            sequence=sequence,
+            tool_name=inner_name,
+            phase="pre",
+        )
+        sequence = yield from self._persist_chunks(
+            pre_hook_outcome.chunks,
+            fallback_sequence=pre_hook_outcome.last_sequence,
+        )
+        if pre_hook_outcome.failed_error is not None:
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error=pre_hook_outcome.failed_error,
+                error_kind="hook_failed",
+            )
+            return
+        if pre_hook_outcome.action == "cancel":
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error="run cancelled by pre-tool hook",
+                error_kind="hook_cancelled",
+            )
+            return
+
+        tool_timeout = runtime._effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
+        start_args = dict(inner_arguments)
+        started_display = build_tool_display(inner_name, start_args)
+        started_status = build_tool_status(
+            inner_name,
+            outer_call_id,
+            phase="running",
+            status="running",
+            display=started_display,
+        )
+        execution_intent = ToolExecutionIntent.from_call(
+            inner_call,
+            tool.definition,
+            tool_call_id=outer_call_id or f"runtime-tool-{uuid4().hex}",
+        )
+        runtime._persist_tool_execution_intent(session, execution_intent.metadata_payload())
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_TOOL_STARTED,
+            source="runtime",
+            payload={
+                "tool": inner_name,
+                "tool_call_id": outer_call_id,
+                "display": started_display,
+                "tool_status": started_status,
+            },
+        )
+        sequence = envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        if _is_abort_signal_requested(abort_signal):
+            yield from self._started_tool_abort_chunks(
+                session=session,
+                sequence=sequence,
+                tool_call=inner_call,
+                tool_call_id=outer_call_id,
+                abort_signal=abort_signal,
+            )
+            return
+
+        try:
+            read_tracking = read_tracking_for_tool_results(
+                tool_results=tuple(tool_results),
+                workspace=runtime._workspace,
+            )
+            tool_outcome, sequence = yield from self._invoke_tool(
+                tool=tool,
+                tool_call=inner_call,
+                read_paths=read_tracking.read_paths,
+                read_lines=read_tracking.read_lines,
+                tool_timeout=tool_timeout,
+                session=session,
+                start_sequence=sequence + 1,
+                tool_call_id=outer_call_id,
+                abort_signal=abort_signal,
+                parent_session_id=session.session.parent_id,
+                delegation_depth=runtime._delegation_depth_from_metadata(session.metadata),
+                remaining_spawn_budget=runtime._remaining_spawn_budget_from_metadata(session.metadata),
+                model=session_model_identity(session.metadata)[0],
+            )
+            if isinstance(tool_outcome, Exception):
+                raise tool_outcome
+            tool_result = tool_outcome
+        except RuntimeToolTimeoutError:
+            envelope = self._persist_event(
+                session_id=session.session.id,
+                event_type="runtime.tool_timeout",
+                source="runtime",
+                payload={
+                    "tool": inner_name,
+                    "timeout_seconds": tool_timeout,
+                },
+            )
+            sequence = envelope.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error=f"tool '{inner_name}' exceeded runtime timeout of {tool_timeout}s",
+                error_kind="tool_timeout",
+            )
+            return
+        except Exception as exc:
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=inner_arguments,
+                tool_results=tool_results,
+                error=str(exc),
+                error_kind="tool_error",
+            )
+            return
+
+        sanitized_arguments = sanitize_tool_arguments(dict(inner_call.arguments))
+        tool_result = cap_tool_result_output(
+            tool_result,
+            session_id=session.session.id,
+            tool_call_id=outer_call_id,
+        )
+        tool_result = replace(
+            tool_result,
+            data=sanitize_tool_result_data(tool_result.data),
+        )
+
+        drained_chunks, session, _ = self._drain_runtime_events(
+            session=session,
+            start_sequence=sequence + 1,
+        )
+        yield from drained_chunks
+
+        if _is_abort_signal_requested(abort_signal):
+            failed_chunk, _ = self._persist_chunk(
+                runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error="run interrupted",
+                    payload=_user_interrupted_payload(
+                        run_id=runtime._run_id_from_session_metadata(session.metadata),
+                        reason=_abort_signal_reason(abort_signal),
+                    ),
+                )
+            )
+            yield failed_chunk
+            return
+
+        completed_payload = {
+            **_tool_completed_identity_payload(session),
+            **tool_result.data,
+            "tool_call_id": outer_call_id,
+            "arguments": sanitized_arguments,
+            "status": tool_result.status,
+            "content": tool_result.content,
+            "error": tool_result.error,
+        }
+        if tool_result.error_kind is not None:
+            completed_payload["error_kind"] = tool_result.error_kind
+        if tool_result.error_summary is not None:
+            completed_payload["error_summary"] = tool_result.error_summary
+        if tool_result.error_details is not None:
+            completed_payload["error_details"] = tool_result.error_details
+        if tool_result.retry_guidance is not None:
+            completed_payload["retry_guidance"] = tool_result.retry_guidance
+        completed_payload.setdefault("tool", tool_result.tool_name)
+
+        completed_display = build_tool_display(
+            inner_name,
+            sanitized_arguments,
+            result_data=tool_result.data,
+        )
+        completed_status = build_tool_status(
+            inner_name,
+            outer_call_id,
+            phase="completed" if tool_result.status == "ok" else "failed",
+            status="completed" if tool_result.status == "ok" else "failed",
+            display=completed_display,
+        )
+        completed_payload["display"] = completed_display
+        completed_payload["tool_status"] = completed_status
+
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="runtime.tool_completed",
+            source="tool",
+            payload=completed_payload,
+        )
+        sequence = envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        runtime._clear_tool_execution_intent(session)
+
+        if _is_abort_signal_requested(abort_signal):
+            failed_chunk, _ = self._persist_chunk(
+                runtime._failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error="run interrupted",
+                    payload=_user_interrupted_payload(
+                        run_id=runtime._run_id_from_session_metadata(session.metadata),
+                        reason=_abort_signal_reason(abort_signal),
+                    ),
+                )
+            )
+            yield failed_chunk
+            return
+
+        if tool_result.status == "ok":
+            post_hook_outcome = runtime._run_tool_hooks(
+                session=session,
+                sequence=sequence,
+                tool_name=inner_name,
+                phase="post",
+            )
+            sequence = yield from self._persist_chunks(
+                post_hook_outcome.chunks,
+                fallback_sequence=post_hook_outcome.last_sequence,
+            )
+            if post_hook_outcome.failed_error is not None:
+                failed_chunk = _hook_failure_chunk(
+                    runtime=runtime,
+                    session=session,
+                    sequence=sequence,
+                    surface="post_tool",
+                    error=post_hook_outcome.failed_error,
+                )
+                if failed_chunk is not None:
+                    persisted_failed, _ = self._persist_chunk(failed_chunk)
+                    yield persisted_failed
+                    raise RuntimeError(post_hook_outcome.failed_error)
+            if post_hook_outcome.action == "cancel":
+                failed_chunk, _ = self._persist_chunk(
+                    runtime._failed_chunk(
+                        session=session,
+                        sequence=sequence + 1,
+                        error="run cancelled by post-tool hook",
+                        payload={"kind": "hook_cancelled", "surface": "post_tool"},
+                    )
+                )
+                yield failed_chunk
+                return
+
+        tool_results.append(
+            replace(
+                tool_result,
+                data={
+                    **tool_result.data,
+                    "tool_call_id": outer_call_id,
+                    "arguments": sanitized_arguments,
+                },
+            )
+        )
 
     def _permission_denied_tool_feedback_chunks(
         self,

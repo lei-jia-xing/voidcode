@@ -36,7 +36,8 @@ def test_skill_tool_returns_skill_body_and_metadata(tmp_path: Path) -> None:
     }
 
 
-def test_skill_tool_definition_includes_nested_skill_locations(tmp_path: Path) -> None:
+def test_skill_tool_definition_is_static_without_catalog(tmp_path: Path) -> None:
+    """The skill catalog moved out of the tool description into system-prompt metadata."""
     skill_dir = tmp_path / ".voidcode" / "skills" / "python" / "demo"
     skill_dir.mkdir(parents=True)
     entry = skill_dir / "SKILL.md"
@@ -51,7 +52,9 @@ def test_skill_tool_definition_includes_nested_skill_locations(tmp_path: Path) -
 
     tool = SkillTool(list_skills=lambda: (skill,), resolve_skill=lambda name: skill)
 
-    assert entry.as_uri() in tool.definition.description
+    assert entry.as_uri() not in tool.definition.description
+    assert "<available_skills>" not in tool.definition.description
+    assert "catalog" in tool.definition.description
 
 
 def test_skill_tool_rejects_missing_name(tmp_path: Path) -> None:

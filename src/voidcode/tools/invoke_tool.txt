@@ -1,0 +1,10 @@
+Dispatch a runtime-registered tool that is not listed top-level in your available tools.
+
+Usage:
+- Use this tool when you need a tool whose schema is not in your current tool list (the "discoverable" set).
+- Before calling, read the target tool's documentation and schema: read_file(path="voidcode://tool/<name>").
+- The `name` argument must exactly match the runtime tool name (for example "web_search", "apply_patch", "background_output", or an MCP tool like "mcp/context7/query-docs").
+- Pass the target tool's own arguments under `arguments`. Omit `arguments` when the tool takes none.
+- The runtime applies the target tool's normal permission, allowlist, and read-only policy. A write tool still requires approval and is denied in read-only mode.
+- Unknown tool names and permission denials return structured error results; the run continues.
+- Do not use invoke_tool for tools already listed top-level — call them directly.

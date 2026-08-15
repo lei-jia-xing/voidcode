@@ -6,9 +6,65 @@ from fnmatch import fnmatchcase
 
 from ..tools.contracts import Tool, ToolDefinition
 from ..tools.guidance import definition_with_guidance
-from .config import RuntimeHooksConfig
+from .config import RuntimeAgentConfig, RuntimeHooksConfig
 from .edit_schema_policy import EditSchemaResolver
 from .tool_provider import BuiltinToolProvider
+
+#: Tools always shown top-level in the provider tools array when the
+#: essential/discoverable split is enabled. Everything not in this set is
+#: discoverable: reachable on demand through ``voidcode://tool/<name>`` doc
+#: reads (via read_file) and ``invoke_tool`` dispatch. The dispatch/read
+#: mechanisms themselves MUST stay essential or discoverable tools become
+#: unreachable.
+ESSENTIAL_TOOL_NAMES = frozenset(
+    {
+        # Core workspace navigation and edit loop.
+        "read_file",
+        "edit",
+        "write_file",
+        "grep",
+        "glob",
+        "shell_exec",
+        # Delegation, clarification, and progress state.
+        "task",
+        "question",
+        "todo_write",
+        # Skill loading is a first-class runtime mechanism.
+        "skill",
+        # Terminal output contract: the graph loop completes on submit_result.
+        "submit_result",
+        # On-demand access mechanisms (dispatch + doc read).
+        "invoke_tool",
+    }
+)
+
+
+def tool_required_by_allowlist_patterns(
+    tool_name: str,
+    patterns: Iterable[str],
+) -> bool:
+    """Whether an explicit allowlist pattern forces a tool to stay top-level."""
+    return any(fnmatchcase(tool_name, pattern) for pattern in patterns if pattern)
+
+
+def agent_required_tool_patterns(agent: RuntimeAgentConfig | None) -> tuple[str, ...]:
+    """Allowlist patterns from an agent manifest / request tool config.
+
+    Tools matching these patterns were explicitly selected for the session, so
+    they must stay visible top-level even when the essential/discoverable
+    split is enabled.
+    """
+    if agent is None:
+        return ()
+    patterns: list[str] = []
+    if agent.manifest_tool_allowlist:
+        patterns.extend(agent.manifest_tool_allowlist)
+    if agent.tools is not None:
+        if agent.tools.allowlist is not None:
+            patterns.extend(agent.tools.allowlist)
+        if agent.tools.default is not None:
+            patterns.extend(agent.tools.default)
+    return tuple(patterns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +142,25 @@ class ToolRegistry:
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(definition_with_guidance(tool.definition) for tool in self.tools.values())
+
+    def provider_definitions(
+        self,
+        *,
+        allowlist_patterns: Iterable[str] = (),
+    ) -> tuple[ToolDefinition, ...]:
+        """Provider-visible definitions under the essential/discoverable split.
+
+        Only essential tools (plus any tool explicitly selected by an agent
+        allowlist pattern) are exposed top-level; the rest remain registered
+        and dispatchable via ``invoke_tool``.
+        """
+        patterns = tuple(allowlist_patterns)
+        visible = (
+            tool
+            for tool in self.tools.values()
+            if tool.definition.name in ESSENTIAL_TOOL_NAMES or tool_required_by_allowlist_patterns(tool.definition.name, patterns)
+        )
+        return tuple(definition_with_guidance(tool.definition) for tool in visible)
 
     def resolve(self, tool_name: str) -> Tool:
         try:

@@ -165,7 +165,7 @@ _CONTEXT_WINDOW_CONFIG_KEYS = frozenset(
     }
 )
 _FORMATTER_PRESET_CONFIG_KEYS = frozenset({"command", "extensions", "root_markers", "fallback_commands", "cwd_policy"})
-_TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default", "local"})
+_TOOLS_CONFIG_KEYS = frozenset({"builtin", "allowlist", "default", "local", "essential_only"})
 _TOOLS_BUILTIN_CONFIG_KEYS = frozenset({"enabled"})
 _TOOLS_LOCAL_CONFIG_KEYS = frozenset({"enabled", "path"})
 _SKILLS_CONFIG_KEYS = frozenset({"enabled", "paths"})
@@ -307,6 +307,12 @@ class RuntimeToolsConfig:
     local: RuntimeToolsLocalConfig | None = None
     allowlist: tuple[str, ...] | None = None
     default: tuple[str, ...] | None = None
+    #: Essential/discoverable tool split: when true, only the essential tool
+    #: set (plus allowlist-required tools) is sent top-level to the provider;
+    #: the rest stay registered and are reachable on demand via
+    #: ``voidcode://tool/<name>`` doc reads and ``invoke_tool`` dispatch.
+    #: Default false keeps the historical "all tools top-level" behavior.
+    essential_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1395,6 +1401,7 @@ class _RuntimeToolsValidationModel(BaseModel):
     local: _RuntimeToolsLocalValidationModel | None = None
     allowlist: tuple[str, ...] | None = None
     default: tuple[str, ...] | None = None
+    essential_only: bool | None = None
 
     @field_validator("builtin", mode="before")
     @classmethod
@@ -1433,12 +1440,20 @@ class _RuntimeToolsValidationModel(BaseModel):
             return None
         return _parse_string_list(value, field_path="tools.default")
 
+    @field_validator("essential_only", mode="before")
+    @classmethod
+    def _validate_essential_only(cls, value: object) -> bool | None:
+        if value is None:
+            return None
+        return _parse_optional_bool(value, field_path="tools.essential_only")
+
     def to_runtime_config(self) -> RuntimeToolsConfig:
         return RuntimeToolsConfig(
             builtin=self.builtin.to_runtime_config() if self.builtin is not None else None,
             local=self.local.to_runtime_config() if self.local is not None else None,
             allowlist=self.allowlist,
             default=self.default,
+            essential_only=self.essential_only is True,
         )
 
 
@@ -2919,6 +2934,8 @@ def serialize_runtime_tools_config(config: RuntimeToolsConfig | None) -> dict[st
         "allowlist": list(config.allowlist) if config.allowlist is not None else None,
         "default": list(config.default) if config.default is not None else None,
     }
+    if config.essential_only:
+        payload["essential_only"] = True
     return {key: value for key, value in payload.items() if value is not None}
 
 

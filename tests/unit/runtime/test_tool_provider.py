@@ -673,6 +673,7 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "edit",
         "glob",
         "grep",
+        "invoke_tool",
         "lsp",
         "multi_edit",
         "question",

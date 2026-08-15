@@ -36,6 +36,7 @@ _LEADER_TOOL_ALLOWLIST = (
     "skill",
     "web_search",
     "web_fetch",
+    "invoke_tool",
     "mcp/*",
 )
 
@@ -170,6 +171,7 @@ _PRODUCT_TOOL_ALLOWLIST = (
     "todo_write",
     "web_search",
     "web_fetch",
+    "invoke_tool",
 )
 
 PRODUCT_AGENT_MANIFEST = AgentManifest(

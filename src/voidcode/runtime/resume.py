@@ -306,7 +306,11 @@ class RuntimeResumeCoordinator:
             prompt=prompt,
             tool_results=tuple(tool_results),
             session_metadata=session.metadata,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+            skill_prompt_context=runtime._skill_prompt_context_for_assembly(
+                skill_registry=skill_registry,
+                applied_context=resumed_skill_snapshot.skill_prompt_context,
+                selected_skill_names=resumed_skill_snapshot.selected_skill_names,
+            ),
         )
         session = runtime._session_with_context_window_payload_metadata(
             session,
@@ -315,7 +319,7 @@ class RuntimeResumeCoordinator:
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
-            available_tools=tool_registry.definitions(),
+            available_tools=runtime._provider_tool_definitions(tool_registry, effective_config),
             context_window=runtime._prepare_provider_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),
@@ -636,7 +640,11 @@ class RuntimeResumeCoordinator:
             prompt=prompt,
             tool_results=tuple(tool_results),
             session_metadata=session.metadata,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+            skill_prompt_context=runtime._skill_prompt_context_for_assembly(
+                skill_registry=skill_registry,
+                applied_context=resumed_skill_snapshot.skill_prompt_context,
+                selected_skill_names=resumed_skill_snapshot.selected_skill_names,
+            ),
         )
         session = runtime._session_with_context_window_payload_metadata(
             session,
@@ -645,7 +653,7 @@ class RuntimeResumeCoordinator:
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
-            available_tools=tool_registry.definitions(),
+            available_tools=runtime._provider_tool_definitions(tool_registry, effective_config),
             context_window=runtime._prepare_provider_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),
@@ -1255,7 +1263,11 @@ class RuntimeResumeCoordinator:
             prompt=prompt,
             tool_results=tuple(tool_results),
             session_metadata=session.metadata,
-            skill_prompt_context=resumed_skill_snapshot.skill_prompt_context,
+            skill_prompt_context=runtime._skill_prompt_context_for_assembly(
+                skill_registry=skill_registry,
+                applied_context=resumed_skill_snapshot.skill_prompt_context,
+                selected_skill_names=resumed_skill_snapshot.selected_skill_names,
+            ),
         )
         session = runtime._session_with_context_window_payload_metadata(
             session,
@@ -1264,7 +1276,7 @@ class RuntimeResumeCoordinator:
         graph_request = GraphRunRequest(
             session=session,
             prompt=prompt,
-            available_tools=tool_registry.definitions(),
+            available_tools=runtime._provider_tool_definitions(tool_registry, effective_config),
             context_window=runtime._prepare_provider_context_window(
                 prompt=prompt,
                 tool_results=tuple(tool_results),

@@ -10,12 +10,6 @@ from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
 
 
-def _skill_entry_uri(path: Path) -> str:
-    if path.is_absolute():
-        return path.as_uri()
-    return path.resolve().as_uri()
-
-
 class _SkillArgs(BaseModel):
     name: str
     user_message: str | None = None
@@ -41,36 +35,27 @@ class SkillTool:
 
     @property
     def definition(self) -> ToolDefinition:
-        available = self._list_skills()
-        description_lines = [
-            "Load a runtime-discovered skill into the current conversation context.",
-            "",
-            "Usage:",
-            "- Use this tool when the task matches a discovered SKILL.md workflow.",
-            "- The name argument is required and must match one of the available skills below.",
-            "- The tool returns the resolved skill body and metadata so the agent can follow it in the current turn.",  # noqa: E501
-            "- This tool does not create or edit skills; it only loads already-discovered local skills.",  # noqa: E501
-            "- If the skill is unknown, the tool fails instead of guessing.",
-            "",
-            "<available_skills>",
-        ]
-        if available:
-            for skill in available:
-                description_lines.extend(
-                    (
-                        "  <skill>",
-                        f"    <name>{skill.name}</name>",
-                        f"    <description>{skill.description}</description>",
-                        f"    <location>{_skill_entry_uri(skill.entry_path)}</location>",
-                        "  </skill>",
-                    )
-                )
-        else:
-            description_lines.append("  <skill><name>(none discovered)</name></skill>")
-        description_lines.append("</available_skills>")
+        # Static description: the skill catalog (name + description per skill)
+        # lives in system-prompt metadata (see catalog_skill_context in the
+        # runtime), not in this tool's description. The SKILL.md body is served
+        # on demand by invoke(). Keeping the description static avoids shipping
+        # the catalog on every provider request.
+        _ = self._list_skills
         return ToolDefinition(
             name="skill",
-            description="\n".join(description_lines),
+            description=(
+                "Load a runtime-discovered skill into the current conversation context.\n"
+                "\n"
+                "Usage:\n"
+                "- Use this tool when the task matches a skill in the runtime skills catalog "
+                "listed in the system prompt metadata.\n"
+                "- The name argument is required and must match a catalog skill name.\n"
+                "- The tool returns the resolved SKILL.md body and metadata so the agent can "
+                "follow it in the current turn.\n"
+                "- This tool does not create or edit skills; it only loads already-discovered "
+                "local skills.\n"
+                "- If the skill is unknown, the tool fails instead of guessing."
+            ),
             input_schema={
                 "name": {"type": "string", "description": "Skill name to load."},
                 "user_message": {

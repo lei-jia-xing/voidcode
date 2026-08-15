@@ -5,3 +5,5 @@ It is best for reading UTF-8 text files directly, and it can also return images 
 If the file is large, continue reading it with a later offset instead of switching to shell commands. When you do not know the exact path yet, use `glob` first. When you need to search for text across a known file or directory target, use `grep` instead.
 
 This tool does not read directories.
+Internal documentation URLs:
+- read_file(path="voidcode://tool/<name>") returns the on-demand documentation and JSON input schema for any runtime-registered tool, including tools that are not listed top-level (the discoverable set). Read the doc first, then execute the tool with invoke_tool.

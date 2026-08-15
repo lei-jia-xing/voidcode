@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,61 @@ from ..security.path_policy import resolve_workspace_path as resolve_workspace_p
 from ._pydantic_args import format_validation_error
 from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .guidance import guidance_for_tool
+from .runtime_context import require_runtime_tool_context
+
+#: Internal URL scheme for on-demand tool documentation (essential/discoverable
+#: split): read_file(path="voidcode://tool/<name>") returns the tool's guidance
+#: text plus its JSON input schema, read from the same guidance files and the
+#: live tool registry used for execution.
+VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
+
+
+def _render_tool_documentation(path: str) -> _ReadOutcome:
+    tool_name = path[len(VOIDCODE_TOOL_DOC_PREFIX) :].strip()
+    if not tool_name:
+        raise ValueError("voidcode://tool/<name> requires a tool name")
+    context = require_runtime_tool_context("read_file")
+    catalog = context.tool_catalog
+    if catalog is None:
+        raise ValueError("read_file cannot resolve voidcode://tool URLs without a runtime tool catalog")
+    definition = catalog.lookup(tool_name)
+    if definition is None:
+        raise ValueError(f"unknown tool in runtime registry: {tool_name}")
+    guidance = guidance_for_tool(tool_name)
+    sections = [
+        f"# Tool: {definition.name}",
+        "",
+        ("Schema" if not guidance else "Agent usage guidance"),
+        "",
+    ]
+    if guidance:
+        sections.append(guidance)
+        sections.append("")
+        sections.append("JSON input schema (input_schema):")
+        sections.append("")
+    else:
+        sections.append("(no sidecar guidance file for this tool)")
+        sections.append("")
+        sections.append("JSON input schema (input_schema):")
+        sections.append("")
+    schema_text = json.dumps(definition.input_schema, indent=2)
+    sections.append(schema_text)
+    sections.append("")
+    sections.append(f"read_only: {str(definition.read_only).lower()}")
+    content = "\n".join(sections).strip()
+    return _ReadOutcome(
+        content=f"Read documentation for tool {tool_name}.",
+        data={
+            "path": path,
+            "type": "tool_documentation",
+            "tool_name": definition.name,
+            "read_only": definition.read_only,
+            "guidance": guidance,
+            "input_schema": definition.input_schema,
+            "raw_content": content,
+        },
+    )
 
 
 class ReadFileArgs(BaseModel):
@@ -248,6 +304,17 @@ class ReadFileTool:
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
+        if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
+            outcome = _render_tool_documentation(args.path)
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=outcome.content,
+                data=outcome.data,
+                truncated=bool(outcome.data.get("truncated", False)),
+                partial=bool(outcome.data.get("partial", False)),
+            )
+
         resolution = resolve_workspace_path_policy(
             workspace=workspace,
             raw_path=args.path,
@@ -255,7 +322,6 @@ class ReadFileTool:
         )
         candidate = resolution.candidate
         relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
-
         if not candidate.exists():
             raise ValueError(f"read_file target does not exist: {args.path}")
 

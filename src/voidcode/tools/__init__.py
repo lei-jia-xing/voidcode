@@ -12,6 +12,7 @@ from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
 from .interactive_shell import InteractiveShellTool
+from .invoke_tool import InvokeTool
 from .local_custom import LocalCustomTool
 from .lsp import LspTool
 from .mcp import McpTool
@@ -56,6 +57,7 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "InteractiveShellTool",
+    "InvokeTool",
     "LocalCustomTool",
     "LspTool",
     "McpTool",
