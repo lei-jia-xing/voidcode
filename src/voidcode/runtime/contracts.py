@@ -107,6 +107,8 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     remaining_spawn_budget: int
     selected_preset: str
     selected_execution_engine: str
+    parallel_group_id: str
+    parallel_group_size: int
 
 
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
@@ -145,6 +147,26 @@ def _validate_optional_runtime_metadata_string(
     if not isinstance(value, str) or not value:
         raise RuntimeRequestError(f"request metadata '{field_name}' must be a non-empty string")
     return value
+
+
+_PARALLEL_GROUP_SIZE_ERROR = "request metadata 'delegation.parallel_group_size' must be a positive integer"
+
+
+def _validate_parallel_group_size(value: object) -> int:
+    if isinstance(value, bool):
+        raise RuntimeRequestError(_PARALLEL_GROUP_SIZE_ERROR)
+    if isinstance(value, int):
+        group_size = value
+    elif isinstance(value, str):
+        try:
+            group_size = int(value)
+        except ValueError:
+            raise RuntimeRequestError(_PARALLEL_GROUP_SIZE_ERROR) from None
+    else:
+        raise RuntimeRequestError(_PARALLEL_GROUP_SIZE_ERROR)
+    if group_size < 1:
+        raise RuntimeRequestError(_PARALLEL_GROUP_SIZE_ERROR)
+    return group_size
 
 
 def parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
@@ -356,6 +378,8 @@ def validate_runtime_subagent_routing_metadata(
         "remaining_spawn_budget",
         "selected_preset",
         "selected_execution_engine",
+        "parallel_group_id",
+        "parallel_group_size",
     }
     unknown_keys = sorted(key for key in routing_metadata if key not in allowed_keys)
     if unknown_keys:
@@ -399,6 +423,15 @@ def validate_runtime_subagent_routing_metadata(
         if selected_execution_engine != "provider":
             raise RuntimeRequestError("request metadata 'delegation.selected_execution_engine' must be 'provider'")
         normalized["selected_execution_engine"] = selected_execution_engine
+    if "parallel_group_id" in routing_metadata:
+        normalized["parallel_group_id"] = _validate_optional_runtime_metadata_string(
+            routing_metadata["parallel_group_id"],
+            field_name="delegation.parallel_group_id",
+        )
+    if "parallel_group_size" in routing_metadata:
+        normalized["parallel_group_size"] = _validate_parallel_group_size(
+            routing_metadata["parallel_group_size"],
+        )
     return normalized
 
 

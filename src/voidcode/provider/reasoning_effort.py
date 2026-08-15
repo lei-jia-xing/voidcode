@@ -161,6 +161,7 @@ def map_effort_for_provider(*, provider_name: str, model_name: str = "", effort:
         mapped = effort
     return {"reasoning_effort": mapped}
 
+
 _PROVIDERS_WITHOUT_REASONING_EFFORT = frozenset({"qwen", "kimi", "minimax"})
 
 
