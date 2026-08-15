@@ -22,7 +22,6 @@ _PROFILE_OVERLAYS: dict[str, ProfileOverlay] = {
             "Use runtime tools for focused execution.",
             "Verify before claiming completion.",
         ),
-        prompt_sections=(delegation_envelope_block(),),
     ),
     "product": ProfileOverlay(
         profile_name="product",

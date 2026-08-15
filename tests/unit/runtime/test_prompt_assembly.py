@@ -29,7 +29,7 @@ BUILTIN_PROMPT_PROFILES = (
     "researcher",
 )
 
-DELEGATION_PROFILES = {"leader", "product"}
+DELEGATION_PROFILES = {"product"}
 SEARCH_PROFILES = {"explore", "researcher"}
 PROVIDER_SPECIFIC_PROMPT_TERMS = (
     "Anthropic",
@@ -205,7 +205,6 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         "agent_identity_header",
         "agent_capability_block",
         "agent_prompt",
-        "agent_profile_overlay",
         "runtime_environment_stable",
         "runtime_instruction_precedence",
         "workflow_mode_prompt",

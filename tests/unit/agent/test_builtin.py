@@ -38,39 +38,34 @@ _MUTATING_TOOL_PATTERNS = frozenset(
 _PROMPT_BOUNDARY_PHRASES = {
     "leader": (
         "primary user-facing runtime agent",
-        "Prefer direct, low-filler prose",
-        "You own the final user-facing outcome",
-        "Child agents provide bounded assistance",
-        "verify results yourself, and return one cohesive answer",
-        "Runtime tool allowlists, approval checks, and background task state remain authoritative",
+        "Deliver complete working behavior",
+        "Verify child results yourself",
+        "narrowest specialist that fits",
+        "Collect outstanding child results with background_output",
     ),
     "worker": (
         "focused delegated executor",
-        "You execute, not orchestrate",
-        "Do not redelegate",
-        "Worker is a focused executor, not an orchestrator",
-        "No filler",
+        "You execute; you do not orchestrate",
+        "do not delegate or spawn child agents",
     ),
     "advisor": (
-        "read-heavy preset for architecture, risk, and review guidance",
-        "Stay read only and advisory",
+        "read-only advisor for architecture, risk, and review",
+        "Stay read-only",
         "do not edit or write files",
-        "Do not run mutating tools",
     ),
     "explore": (
-        "workspace-bound preset for local code discovery",
-        "Address the caller's actual need",
-        "Use absolute paths for every file reference",
-        "Stay read only",
+        "workspace-bound agent for local code discovery",
+        "identify the actual information need",
+        "report relevant files with absolute paths",
+        "Stay read-only",
         "do not edit or write files",
-        "Do not mutate the workspace",
     ),
     "researcher": (
         "public docs, code examples, and external references",
-        "Stay read only and non-mutating",
+        "Stay read-only and non-mutating",
         "do not edit files",
-        "Do not claim implementation ownership",
-        "Distinguish official documentation, source examples, and incidental commentary",
+        "so the caller can make a concrete decision",
+        "distinguish official documentation, source examples, and incidental commentary",
     ),
     "product": (
         "top-level planning preset",
@@ -117,19 +112,19 @@ def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
 
     assert prompt is not None
     assert "background_retry" not in prompt
-    assert "re-dispatch through the task tool" in prompt
-    assert "reusing the child session_id where applicable" in prompt
-    assert "do not manually reconstruct child requests" in prompt
+    assert "Delegate only through the runtime's task tool" in prompt
+    assert "Collect outstanding child results with background_output" in prompt
+    assert "track the full set until every member is terminal" in prompt
 
 
 def test_leader_prompt_distinguishes_product_from_delegated_worker_roles() -> None:
     prompt = render_builtin_prompt_profile("leader")
 
     assert prompt is not None
-    assert "Use category when you know the kind of work" in prompt
-    assert "Use subagent_type when you know the exact specialist" in prompt
+    assert "narrowest specialist that fits" in prompt
+    assert "explore, advisor, worker, researcher" in prompt
     assert "Product is a separate top-level planning preset" in prompt
-    assert "do not call `task` with product" in prompt
+    assert "calling task with product" in prompt
     assert "give the user a concise product handoff" in prompt
     assert "or product for planning" not in prompt
 
@@ -287,7 +282,7 @@ def test_builtin_read_only_role_prompts_and_manifests_align() -> None:
         assert manifest.mode == "subagent"
         assert manifest.top_level_selectable is False
         assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
-        assert "read only" in prompt.lower()
+        assert "read-only" in prompt.lower()
         assert "do not edit" in prompt.lower()
 
 
@@ -300,9 +295,8 @@ def test_worker_prompt_and_manifest_forbid_redelegation() -> None:
     assert manifest.mode == "subagent"
     assert manifest.top_level_selectable is False
     assert "task" not in manifest.tool_allowlist
-    assert "Do not redelegate" in prompt
-    assert "Do not call task or create child agents" in prompt
-    assert "not an orchestrator" in prompt
+    assert "do not delegate or spawn child agents" in prompt
+    assert "you do not orchestrate" in prompt
 
 
 def test_product_prompt_and_manifest_remain_planning_only() -> None:
@@ -326,11 +320,10 @@ def test_leader_prompt_balances_low_filler_output_with_complete_delivery() -> No
     prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
 
     assert prompt is not None
-    assert "Prefer direct, low-filler prose" in prompt
-    assert "Brevity must not remove evidence" in prompt
-    assert "Be concise in wording and complete in substance" in prompt
-    assert "Do not finish while actionable in-scope work remains" in prompt
-    assert "do not minimize investigation or verification" in prompt
+    assert "Deliver complete working behavior" in prompt
+    assert "report what you changed and how you verified it" in prompt
+    assert "continue while actionable in-scope work remains" in prompt
+    assert "gather evidence before claiming anything" in prompt
     assert "Make the smallest correct change or give the direct answer" not in prompt
     assert "Keep default answers short unless the user asks for detail" not in prompt
 
@@ -431,10 +424,10 @@ def test_leader_prompt_requires_native_tool_actions_for_implementation() -> None
     prompt = render_agent_prompt({"preset": "leader", "prompt_profile": "leader"})
 
     assert prompt is not None
-    assert "act through the runtime's native tool calls" in prompt
-    assert "writing code in prose is not doing the work" in prompt
-    assert "If concrete action is required and suitable tools are available" in prompt
-    assert "Never describe a tool call, patch, command, or file change as text" in prompt
+    assert "Act through the runtime's tools" in prompt
+    assert "gather evidence before claiming anything" in prompt
+    assert "Never present an unrun command, unread file, or unverified change as done" in prompt
+    assert "report what you changed and how you verified it" in prompt
 
 
 def test_render_agent_prompt_falls_back_for_non_builtin_profiles() -> None:
