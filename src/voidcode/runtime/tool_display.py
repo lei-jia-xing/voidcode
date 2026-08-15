@@ -216,7 +216,7 @@ def build_tool_display(
         if path:
             copyable = {"path": path}
 
-    elif tool_name in {"edit", "multi_edit", "apply_patch", "ast_grep_replace", "format_file"}:
+    elif tool_name in {"edit", "multi_edit", "apply_patch", "format_file"}:
         path = _first_primitive(arguments, "path")
         file_path_label = _first_primitive(arguments, "path")
         edit_count = 0
@@ -237,11 +237,10 @@ def build_tool_display(
     elif tool_name in {
         "grep",
         "glob",
-        "ast_grep_search",
-        "ast_grep_preview",
+        "ast_grep",
     }:
         query_keys: tuple[str, ...]
-        if tool_name in {"grep", "ast_grep_search", "ast_grep_preview"}:
+        if tool_name in {"grep", "ast_grep"}:
             query_keys = ("pattern", "query")
         else:
             query_keys = ("pattern",)

@@ -6150,7 +6150,7 @@ class VoidCodeRuntime:
     ) -> list[ToolResult]:
         eligible: list[ToolResult] = []
         for result in tool_results:
-            if result.tool_name in {"read_file", "grep", "glob", "ast_grep_search"}:
+            if result.tool_name in {"read_file", "grep", "glob", "ast_grep"}:
                 eligible.append(result)
                 continue
             if result.tool_name != "shell_exec":
