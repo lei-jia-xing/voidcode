@@ -160,7 +160,7 @@ def _build_turn_request(*, model_name: str, reasoning_effort: str | None = None)
             context_window=_StubContextWindow(prompt="read sample.txt", tool_results=tool_results),
             applied_skills=(),
         ),
-        available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
+        available_tools=(ToolDefinition(name="read", description="read file", read_only=True),),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -198,7 +198,7 @@ def _build_turn_request_with_skill(*, model_name: str) -> ProviderTurnRequest:
                 },
             ),
         ),
-        available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
+        available_tools=(ToolDefinition(name="read", description="read file", read_only=True),),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -221,14 +221,14 @@ def _build_turn_request_with_continuity(*, model_name: str) -> ProviderTurnReque
                 _continuity_state=_StubContinuityState(
                     summary_text=(
                         "Compacted 2 earlier tool results:\n"
-                        '1. read_file ok path=sample.txt content_preview="old"\n'
-                        '2. read_file ok path=sample.txt content_preview="older"'
+                        '1. read ok path=sample.txt content_preview="old"\n'
+                        '2. read ok path=sample.txt content_preview="older"'
                     )
                 ),
             ),
             applied_skills=(),
         ),
-        available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
+        available_tools=(ToolDefinition(name="read", description="read file", read_only=True),),
         raw_model=f"{model_name}/demo",
         provider_name=model_name,
         model_name="demo",
@@ -934,8 +934,8 @@ def test_provider_adapter_injects_continuity_summary_into_system_messages(
             "content": (
                 "Runtime continuity summary:\n"
                 "Compacted 2 earlier tool results:\n"
-                '1. read_file ok path=sample.txt content_preview="old"\n'
-                '2. read_file ok path=sample.txt content_preview="older"'
+                '1. read ok path=sample.txt content_preview="old"\n'
+                '2. read ok path=sample.txt content_preview="older"'
             ),
         },
         {"role": "user", "content": "summarize sample.txt"},
@@ -988,7 +988,7 @@ def test_provider_adapter_includes_tool_result_context(
 ) -> None:
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
-    tool_results = (ToolResult(tool_name="read_file", status="ok", content="hello world"),)
+    tool_results = (ToolResult(tool_name="read", status="ok", content="hello world"),)
     request = ProviderTurnRequest(
         assembled_context=_assembled_context(
             prompt=request.prompt,
@@ -1029,7 +1029,7 @@ def test_provider_adapter_includes_tool_result_context(
                 "id": "voidcode_tool_1",
                 "type": "function",
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": "{}",
                 },
             }
@@ -1362,7 +1362,7 @@ def test_provider_adapter_includes_tool_result_errors(
 ) -> None:
     provider = OpenAIModelProvider().turn_provider()
     request = _build_turn_request(model_name="openai")
-    tool_results = (ToolResult(tool_name="read_file", status="error", error="sample.txt not found"),)
+    tool_results = (ToolResult(tool_name="read", status="error", error="sample.txt not found"),)
     request = ProviderTurnRequest(
         assembled_context=_assembled_context(
             prompt=request.prompt,
@@ -1924,14 +1924,14 @@ def test_provider_adapter_preserves_multiple_provider_tool_calls(
             {
                 "id": "call-alpha",
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": json.dumps({"path": "alpha.txt"}),
                 },
             },
             {
                 "id": "call-beta",
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": json.dumps({"path": "beta.txt"}),
                 },
             },
@@ -1959,13 +1959,13 @@ def test_provider_adapter_generates_unique_fallback_ids_for_batched_tool_calls(
         tool_calls=[
             {
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": json.dumps({"path": "alpha.txt"}),
                 },
             },
             {
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": json.dumps({"path": "beta.txt"}),
                 },
             },
@@ -1974,7 +1974,7 @@ def test_provider_adapter_generates_unique_fallback_ids_for_batched_tool_calls(
 
     result = provider.propose_turn(request)
 
-    assert [call.tool_call_id for call in result.tool_calls] == ["read_file_1", "read_file_2"]
+    assert [call.tool_call_id for call in result.tool_calls] == ["read_1", "read_2"]
     assert len({call.tool_call_id for call in result.tool_calls}) == 2
 
 
@@ -2723,7 +2723,7 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
                 context_window=_StubContextWindow(prompt="read sample.txt", tool_results=()),
                 applied_skills=(),
             ),
-            available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
+            available_tools=(ToolDefinition(name="read", description="read file", read_only=True),),
             raw_model=f"opencode-go/{model_name}",
             provider_name="opencode-go",
             model_name=model_name,
@@ -2781,7 +2781,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
                         "index": 0,
                         "id": "call-read",
                         "function": {
-                            "name": "read_file",
+                            "name": "read",
                             "arguments": '{"path":"README.md"}',
                         },
                     }
@@ -2801,7 +2801,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
                     context_window=_StubContextWindow(prompt="read README.md", tool_results=()),
                     applied_skills=(),
                 ),
-                available_tools=(ToolDefinition(name="read_file", description="read file", read_only=True),),
+                available_tools=(ToolDefinition(name="read", description="read file", read_only=True),),
                 raw_model="opencode-go/glm-5.1",
                 provider_name="opencode-go",
                 model_name="glm-5.1",
@@ -2825,7 +2825,7 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
     assert json.loads(tool_events[0].text) == {
         "arguments": {"path": "README.md"},
         "tool_call_id": "call-read",
-        "tool_name": "read_file",
+        "tool_name": "read",
     }
 
 
@@ -3056,9 +3056,9 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
         mode="completion",
         tool_calls=[
             {
-                "id": "read:file:1",
+                "id": "read_1",
                 "function": {
-                    "name": "read_file",
+                    "name": "read",
                     "arguments": '{"path":"sample.txt"}',
                 },
             }
@@ -3068,9 +3068,9 @@ def test_provider_adapter_propose_turn_returns_tool_call_when_model_requests_too
     result = provider.propose_turn(_build_turn_request(model_name="openai"))
 
     assert result.tool_call is not None
-    assert result.tool_call.tool_name == "read_file"
+    assert result.tool_call.tool_name == "read"
     assert result.tool_call.arguments == {"path": "sample.txt"}
-    assert result.tool_call.tool_call_id == "read_file_1"
+    assert result.tool_call.tool_call_id == "read_1"
 
 
 def test_google_provider_api_key_uses_google_auth_header(
@@ -3113,7 +3113,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
                     {
                         "index": 0,
                         "function": {
-                            "name": "read_file",
+                            "name": "read",
                             "arguments": '{"path":"sample.txt"}',
                         },
                     }
@@ -3130,7 +3130,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text=('{"tool_name": "read_file", "arguments": {"path": "sample.txt"}, "tool_call_id": "read_file"}'),
+            text=('{"tool_name": "read", "arguments": {"path": "sample.txt"}, "tool_call_id": "read"}'),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -3152,7 +3152,7 @@ def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
                     {
                         "index": 0,
                         "function": {
-                            "name": "read_file",
+                            "name": "read",
                             "arguments": '{"path":',
                         },
                     }
@@ -3180,7 +3180,7 @@ def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
         ProviderStreamEvent(
             kind="content",
             channel="tool",
-            text=('{"tool_name": "read_file", "arguments": {"path": "sample.txt"}, "tool_call_id": "read_file"}'),
+            text=('{"tool_name": "read", "arguments": {"path": "sample.txt"}, "tool_call_id": "read"}'),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),
     ]
@@ -3204,7 +3204,7 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
                     },
                     {
                         "index": 1,
-                        "function": {"name": "read_file", "arguments": '{"path":'},
+                        "function": {"name": "read", "arguments": '{"path":'},
                     },
                 ],
                 None,
@@ -3229,9 +3229,9 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
             text=(
                 '{"tool_calls": [{"tool_name": "write_file", '
                 '"arguments": {"path": "out.txt", "content": "ok"}, '
-                '"tool_call_id": "write_file_1"}, {"tool_name": "read_file", '
+                '"tool_call_id": "write_file_1"}, {"tool_name": "read", '
                 '"arguments": {"path": "sample.txt"}, '
-                '"tool_call_id": "read_file_2"}]}'
+                '"tool_call_id": "read_2"}]}'
             ),
         ),
         ProviderStreamEvent(kind="done", done_reason="completed"),

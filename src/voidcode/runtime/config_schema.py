@@ -718,7 +718,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "tool": {
                         "type": "string",
                         "minLength": 1,
-                        "description": ("Tool name glob, for example read_file, grep, or shell_exec."),
+                        "description": ("Tool name glob, for example read, grep, or shell_exec."),
                     },
                     "path": {
                         "type": "string",

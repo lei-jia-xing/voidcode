@@ -375,7 +375,7 @@ def _verify_patch_expected_hashes(
             error_kind="tool_input_mismatch",
             reason="missing_expected_hash",
             retry_guidance=(
-                "Use read_file on each affected path, copy data.content_hash from the results into "
+                "Use read on each affected path, copy data.content_hash from the results into "
                 "expectedHashes (relative path -> hash), then retry apply_patch."
             ),
             details={
@@ -1017,7 +1017,7 @@ class ApplyPatchTool:
                 "additionalProperties": {"type": "string"},
                 "description": (
                     "Map of path -> SHA-256 hash for every EXISTING file the patch modifies or deletes. "
-                    "Hashes come from data.content_hash of prior read_file results. Required whenever "
+                    "Hashes come from data.content_hash of prior read results. Required whenever "
                     "the patch touches files that already exist; omit only for patches that solely "
                     "add new files."
                 ),
@@ -1107,7 +1107,7 @@ class ApplyPatchTool:
                     error_kind="parse_error",
                     reason="patch_apply_failed",
                     retry_guidance=(
-                        "Re-read the affected file(s) with read_file and rebuild the patch hunks from "
+                        "Re-read the affected file(s) with read and rebuild the patch hunks from "
                         "the current content, then retry apply_patch. Prefer the structured "
                         "*** Begin Patch envelope to avoid manual hunk counts."
                     ),
@@ -1124,7 +1124,7 @@ class ApplyPatchTool:
                 workspace=workspace,
             )
 
-            # Require every source line the hunks touch to have been revealed by read_file.
+            # Require every source line the hunks touch to have been revealed by read.
             _enforce_patch_seen_ranges(
                 patch_text=normalized_patch,
                 workspace=workspace,
@@ -1148,7 +1148,7 @@ class ApplyPatchTool:
                     error_kind="parse_error",
                     reason="patch_apply_failed",
                     retry_guidance=(
-                        "Re-read the affected file(s) with read_file and rebuild the patch hunks from "
+                        "Re-read the affected file(s) with read and rebuild the patch hunks from "
                         "the current content, then retry apply_patch. Prefer the structured "
                         "*** Begin Patch envelope to avoid manual hunk counts."
                     ),

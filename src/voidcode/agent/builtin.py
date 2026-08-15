@@ -7,7 +7,7 @@ from .models import AgentManifest, AgentManifestId, AgentPromptMaterialization
 from .prompts import render_builtin_prompt_profile
 
 _WORKSPACE_DISCOVERY_TOOLS = (
-    "read_file",
+    "read",
     "glob",
     "grep",
     "ast_grep",

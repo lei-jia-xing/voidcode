@@ -25,7 +25,7 @@ _TOOL_GUIDANCE_FILES = {
     "lsp": "lsp.txt",
     "multi_edit": "multi_edit.txt",
     "question": "question.txt",
-    "read_file": "read_file.txt",
+    "read": "read.txt",
     "shell_exec": "shell_exec.txt",
     "skill": "skill.txt",
     "task": "task.txt",

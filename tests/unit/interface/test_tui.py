@@ -738,7 +738,7 @@ async def test_tui_tool_display_summary_rendered(app_class: Any) -> None:
                     status="running",
                     event=_runtime_event(
                         "graph.tool_request_created",
-                        tool="read_file",
+                        tool="read",
                         display={
                             "kind": "read",
                             "title": "Read",
@@ -881,7 +881,7 @@ async def test_tui_ctrl_o_toggles_tool_blocks(app_class: Any) -> None:
                     status="running",
                     event=_runtime_event(
                         "runtime.tool_started",
-                        tool="read_file",
+                        tool="read",
                         tool_call_id="call-expand",
                     ),
                 )
@@ -950,7 +950,7 @@ async def test_tui_tool_result_read_uses_syntax_renderable(app_class: Any) -> No
                     status="running",
                     event=_runtime_event(
                         "runtime.tool_completed",
-                        tool="read_file",
+                        tool="read",
                         tool_call_id="call-read",
                         status="ok",
                         content="def foo():\n    return 42\n",
@@ -1373,7 +1373,7 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
                 status="running",
                 event=_runtime_event(
                     "graph.tool_request_created",
-                    tool="read_file",
+                    tool="read",
                     display={
                         "kind": "read",
                         "title": "Read",

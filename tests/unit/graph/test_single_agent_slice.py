@@ -28,7 +28,7 @@ from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 def _tool_definitions() -> tuple[ToolDefinition, ...]:
     return (
-        ToolDefinition(name="read_file", description="read", input_schema={}, read_only=True),
+        ToolDefinition(name="read", description="read", input_schema={}, read_only=True),
         ToolDefinition(name="write_file", description="write", input_schema={}, read_only=False),
     )
 
@@ -112,7 +112,7 @@ class _MixedNonStreamingTurnProvider:
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         _ = request
         return ProviderTurnResult(
-            tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
+            tool_call=ToolCall(tool_name="read", arguments={"path": "sample.txt"}),
             output="done",
         )
 
@@ -125,12 +125,12 @@ class _BatchNonStreamingTurnProvider:
         return ProviderTurnResult(
             tool_calls=(
                 ToolCall(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": "alpha.txt"},
                     tool_call_id="call-alpha",
                 ),
                 ToolCall(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": "beta.txt"},
                     tool_call_id="call-beta",
                 ),
@@ -153,7 +153,7 @@ class _MixedStreamingTurnProvider:
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
-                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                    text='{"tool_name":"read","arguments":{"path":"sample.txt"}}',
                 ),
                 ProviderStreamEvent(kind="done", done_reason="completed"),
             )
@@ -271,7 +271,7 @@ class _StreamToolTurnProvider:
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
-                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                    text='{"tool_name":"read","arguments":{"path":"sample.txt"}}',
                 ),
                 ProviderStreamEvent(kind="done", done_reason="completed"),
             )
@@ -292,7 +292,7 @@ class _StreamChunkedToolTurnProvider:
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
-                    text='{"tool_name":"read_file",',
+                    text='{"tool_name":"read",',
                 ),
                 ProviderStreamEvent(
                     kind="content",
@@ -318,12 +318,12 @@ class _StreamToolSnapshotTurnProvider:
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
-                    text='{"tool_name":"read_file","arguments":{}}',
+                    text='{"tool_name":"read","arguments":{}}',
                 ),
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
-                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                    text='{"tool_name":"read","arguments":{"path":"sample.txt"}}',
                 ),
                 ProviderStreamEvent(kind="done", done_reason="completed"),
             )
@@ -346,9 +346,9 @@ class _StreamToolBatchTurnProvider:
                     channel="tool",
                     text=(
                         '{"tool_calls":['
-                        '{"tool_name":"read_file","tool_call_id":"call-alpha",'
+                        '{"tool_name":"read","tool_call_id":"call-alpha",'
                         '"arguments":{"path":"alpha.txt"}},'
-                        '{"tool_name":"read_file","tool_call_id":"call-beta",'
+                        '{"tool_name":"read","tool_call_id":"call-beta",'
                         '"arguments":{"path":"beta.txt"}}]}'
                     ),
                 ),
@@ -401,7 +401,7 @@ class _StreamMixedTerminalTurnProvider:
                 ProviderStreamEvent(
                     kind="content",
                     channel="tool",
-                    text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                    text='{"tool_name":"read","arguments":{"path":"sample.txt"}}',
                 ),
                 ProviderStreamEvent(kind="done", done_reason="completed"),
             )
@@ -432,7 +432,7 @@ def test_provider_provider_graph_requests_tool_on_first_turn() -> None:
     )
 
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.output is None
     assert step.is_finished is False
     assert [event.event_type for event in step.events] == ["graph.loop_step", "graph.model_turn"]
@@ -466,7 +466,7 @@ def test_provider_graph_queues_non_streaming_tool_call_batch() -> None:
     first_step = graph.step(request=request, tool_results=(), session=_session())
     second_step = graph.step(
         request=request,
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
         session=_session(),
     )
 
@@ -572,7 +572,7 @@ def test_provider_graph_preserves_queued_tool_call_batch_for_approval_resume() -
 
     resumed_context = RuntimeContextWindow(
         prompt="read then write",
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
     )
     resumed_session = _session_with_run("approval-session", "resume-run")
     resumed_request = GraphRunRequest(
@@ -672,7 +672,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         prompt="read sample.txt",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="alpha\n",
                 status="ok",
                 data={"path": "sample.txt", "content": "alpha\n"},
@@ -689,7 +689,7 @@ def test_provider_provider_graph_finalizes_after_tool_result() -> None:
         ),
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="alpha\n",
                 status="ok",
                 data={"path": "sample.txt", "content": "alpha\n"},
@@ -745,7 +745,7 @@ def test_provider_provider_graph_prefers_nonstream_tool_call_over_text() -> None
     )
 
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.output is None
 
 
@@ -1052,7 +1052,7 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
         prompt="read sample.txt",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="new\n",
                 status="ok",
                 data={"path": "sample.txt", "content": "new\n"},
@@ -1065,8 +1065,8 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
         continuity_state=ContextProjection(
             summary_text=(
                 "Compacted 2 earlier tool results:\n"
-                '1. read_file ok path=sample.txt content_preview="old\\n"\n'
-                '2. read_file ok path=sample.txt content_preview="older\\n"'
+                '1. read ok path=sample.txt content_preview="old\\n"\n'
+                '2. read ok path=sample.txt content_preview="older\\n"'
             ),
             dropped_tool_result_count=2,
             retained_tool_result_count=1,
@@ -1084,7 +1084,7 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
         ),
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="old\n",
                 status="ok",
                 data={"path": "sample.txt", "content": "old\n"},
@@ -1098,8 +1098,8 @@ def test_provider_provider_graph_forwards_bounded_context_window_to_provider() -
     assert provider.requests[0].assembled_context.continuity_state == ContextProjection(
         summary_text=(
             "Compacted 2 earlier tool results:\n"
-            '1. read_file ok path=sample.txt content_preview="old\\n"\n'
-            '2. read_file ok path=sample.txt content_preview="older\\n"'
+            '1. read ok path=sample.txt content_preview="old\\n"\n'
+            '2. read ok path=sample.txt content_preview="older\\n"'
         ),
         dropped_tool_result_count=2,
         retained_tool_result_count=1,
@@ -1197,7 +1197,7 @@ def test_provider_provider_graph_enforces_configured_max_steps() -> None:
             ),
             tool_results=(
                 ToolResult(
-                    tool_name="read_file",
+                    tool_name="read",
                     content="alpha\n",
                     status="ok",
                     data={"path": "sample.txt", "content": "alpha\n"},
@@ -1320,7 +1320,7 @@ def test_provider_provider_graph_returns_streamed_tool_call() -> None:
     assert step.is_finished is False
     assert step.output is None
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.tool_call.arguments == {"path": "sample.txt"}
 
 
@@ -1348,7 +1348,7 @@ def test_provider_provider_graph_prefers_streamed_tool_call_over_text() -> None:
     )
 
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.output is None
 
 
@@ -1378,7 +1378,7 @@ def test_provider_provider_graph_reconstructs_chunked_streamed_tool_call() -> No
     assert step.is_finished is False
     assert step.output is None
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.tool_call.arguments == {"path": "sample.txt"}
 
 
@@ -1408,7 +1408,7 @@ def test_provider_provider_graph_uses_latest_complete_tool_snapshot() -> None:
     assert step.is_finished is False
     assert step.output is None
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.tool_call.arguments == {"path": "sample.txt"}
 
 
@@ -1431,7 +1431,7 @@ def test_provider_provider_graph_returns_streamed_tool_call_batch() -> None:
     first_step = graph.step(request=request, tool_results=(), session=_session())
     second_step = graph.step(
         request=request,
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
         session=_session(),
     )
 
@@ -1522,7 +1522,7 @@ def test_provider_provider_graph_prefers_mixed_stream_tool_terminal_output() -> 
     )
 
     assert step.tool_call is not None
-    assert step.tool_call.tool_name == "read_file"
+    assert step.tool_call.tool_name == "read"
     assert step.output is None
 
 
@@ -1575,7 +1575,7 @@ def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:
 
     second_step = graph.step(
         request=request,
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="alpha"),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content="alpha"),),
         session=_session(),
     )
 

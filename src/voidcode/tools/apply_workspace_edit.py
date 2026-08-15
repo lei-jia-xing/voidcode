@@ -39,7 +39,7 @@ class ApplyWorkspaceEditTool:
                 "description": (
                     "Text edits with 1-based line/character ranges. Every edit requires expectedHash: "
                     "the SHA-256 hash of the current file content, taken from data.content_hash of a "
-                    "prior read_file result."
+                    "prior read result."
                 ),
                 "items": {
                     "type": "object",
@@ -63,7 +63,7 @@ class ApplyWorkspaceEditTool:
                         error_kind="tool_input_mismatch",
                         reason="missing_expected_hash",
                         retry_guidance=(
-                            "Use read_file on each target path, copy data.content_hash from the results, "
+                            "Use read on each target path, copy data.content_hash from the results, "
                             "then retry apply_workspace_edit with expectedHash on every edit."
                         ),
                         details={

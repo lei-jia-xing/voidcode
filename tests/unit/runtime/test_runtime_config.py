@@ -148,7 +148,7 @@ def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
             {
                 "permission": {
                     "rules": [
-                        {"tool": "read_file", "path": "src/**", "decision": "allow"},
+                        {"tool": "read", "path": "src/**", "decision": "allow"},
                         {"tool": "write_file", "path": ".github/**", "decision": "ask"},
                         {"tool": "shell_exec", "command": "rm -rf *", "decision": "deny"},
                     ]
@@ -161,7 +161,7 @@ def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
     config = load_runtime_config(tmp_path, env={})
 
     assert config.permission.rules == (
-        PatternPermissionRule(tool="read_file", path="src/**", decision="allow"),
+        PatternPermissionRule(tool="read", path="src/**", decision="allow"),
         PatternPermissionRule(tool="write_file", path=".github/**", decision="ask"),
         PatternPermissionRule(tool="shell_exec", command="rm -rf *", decision="deny"),
     )
@@ -1203,7 +1203,7 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
                 "mode: primary",
                 "model: opencode/planner",
                 "fallback_models: [opencode/fallback]",
-                "tool_allowlist: [read_file, grep]",
+                "tool_allowlist: [read, grep]",
                 "skill_refs: [planning]",
                 "preset_hook_refs: [role_reminder]",
             )
@@ -1231,7 +1231,7 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
     }
     assert config.agent.manifest_source_scope == "project"
     assert config.agent.manifest_source_path == str(manifest_path)
-    assert config.agent.manifest_tool_allowlist == ("read_file", "grep")
+    assert config.agent.manifest_tool_allowlist == ("read", "grep")
     assert config.agent.manifest_skill_refs == ("planning",)
     assert config.agent.manifest_hook_refs == ("role_reminder",)
     assert config.agent.model == "opencode/planner"
@@ -1253,7 +1253,7 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
                 "name: Local Reviewer",
                 "description: review",
                 "mode: subagent",
-                "tool_allowlist: [read_file, grep]",
+                "tool_allowlist: [read, grep]",
                 "skill_refs: [review]",
                 "preset_hook_refs: [role_reminder]",
             )
@@ -1273,7 +1273,7 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
     assert agent.prompt_source == "custom_markdown"
     assert agent.prompt_materialization is not None
     assert agent.prompt_materialization["body"] == "Review from markdown."
-    assert agent.manifest_tool_allowlist == ("read_file", "grep")
+    assert agent.manifest_tool_allowlist == ("read", "grep")
     assert agent.manifest_skill_refs == ("review",)
     assert agent.manifest_hook_refs == ("role_reminder",)
     assert agent.model == "opencode/reviewer"
@@ -1316,8 +1316,8 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
             "model": "opencode/gpt-5.4",
             "tools": {
                 "builtin": {"enabled": True},
-                "allowlist": ["read_file", "grep"],
-                "default": ["read_file"],
+                "allowlist": ["read", "grep"],
+                "default": ["read"],
             },
             "skills": {"enabled": False, "paths": [".voidcode/skills"]},
             "mcp_binding": {"servers": ["context7"]},
@@ -1333,8 +1333,8 @@ def test_runtime_agent_payload_round_trips_through_serialization() -> None:
         "model": "opencode/gpt-5.4",
         "tools": {
             "builtin": {"enabled": True},
-            "allowlist": ["read_file", "grep"],
-            "default": ["read_file"],
+            "allowlist": ["read", "grep"],
+            "default": ["read"],
         },
         "skills": {"enabled": False, "paths": [".voidcode/skills"]},
         "mcp_binding": {"servers": ["context7"]},
@@ -1403,14 +1403,14 @@ def test_runtime_agent_serialization_excludes_unsupported_local_tools() -> None:
         preset="leader",
         tools=RuntimeToolsConfig(
             local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
-            allowlist=("read_file",),
+            allowlist=("read",),
         ),
     )
 
     assert serialize_runtime_agent_config(agent) == {
         "preset": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
-        "tools": {"allowlist": ["read_file"]},
+        "tools": {"allowlist": ["read"]},
     }
 
 
@@ -3119,15 +3119,15 @@ def test_parse_simple_extension_configs_preserve_public_dataclasses() -> None:
         {
             "builtin": {"enabled": True},
             "local": {"enabled": True, "path": ".voidcode/tools"},
-            "allowlist": ["read_file", "grep"],
-            "default": ["read_file"],
+            "allowlist": ["read", "grep"],
+            "default": ["read"],
         }
     ) == (
         RuntimeToolsConfig(
             builtin=RuntimeToolsBuiltinConfig(enabled=True),
             local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
-            allowlist=("read_file", "grep"),
-            default=("read_file",),
+            allowlist=("read", "grep"),
+            default=("read",),
         )
     )
     assert _parse_tools_config({"allowlist": [], "default": []}) == RuntimeToolsConfig(

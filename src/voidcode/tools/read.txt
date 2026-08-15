@@ -6,5 +6,5 @@ If the file is large, continue reading it with a later offset instead of switchi
 
 This tool does not read directories.
 Internal documentation URLs:
-- read_file(path="voidcode://tool/<name>") returns the on-demand documentation and JSON input schema for any runtime-registered tool, including tools that are not listed top-level (the discoverable set). Read the doc first, then execute the tool with invoke_tool.
-- read_file(path="voidcode://artifact/<id>") returns a bounded slice of a spilled tool-output artifact owned by the current session (for example, a truncated tool output). Use the offset and limit arguments to page through large artifacts.
+- read(path="voidcode://tool/<name>") returns the on-demand documentation and JSON input schema for any runtime-registered tool, including tools that are not listed top-level (the discoverable set). Read the doc first, then execute the tool with invoke_tool.
+- read(path="voidcode://artifact/<id>") returns a bounded slice of a spilled tool-output artifact owned by the current session (for example, a truncated tool output). Use the offset and limit arguments to page through large artifacts.

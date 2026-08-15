@@ -6,7 +6,7 @@ Usage:
 - Unified diffs that `git apply` can validate are also accepted for compatibility.
 - Use this tool for multi-file edits, renames, deletions, or patch-shaped changes that are clearer as a patch.
 - Prefer edit or multi_edit for small replacements in one known file.
-- Read every file the patch will modify or delete first: pass expectedHashes, a map of each existing file's path -> its data.content_hash from the read_file result. Patches that only add new files do not need expectedHashes. A missing entry or a stale hash is rejected before anything is written.
+- Read every file the patch will modify or delete first: pass expectedHashes, a map of each existing file's path -> its data.content_hash from the read result. Patches that only add new files do not need expectedHashes. A missing entry or a stale hash is rejected before anything is written.
 - If the tool returns status=ok, its content/data list the affected paths. Use that result as the source of truth for follow-up verification.
 - If the tool returns status=error, read the error text (which includes the reason, retry guidance, and structured details such as the git error and affected paths) and retry with a corrected patch instead of assuming any files changed.
 

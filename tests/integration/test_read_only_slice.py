@@ -251,7 +251,7 @@ class EventEnvelopeFactory(Protocol):
     ) -> object: ...
 
 
-class ReadFileToolType(Protocol):
+class ReadToolType(Protocol):
     invoke: Callable[..., object]
 
 
@@ -634,7 +634,7 @@ class _ProviderRuntimeParityGraph:
             return _GraphStep(
                 events=(),
                 tool_call=tool_call_factory(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": "sample.txt"},
                 ),
             )
@@ -688,7 +688,7 @@ class _ReadFileParityModelProvider:
                 if not _assembled_context(request).tool_results:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
-                            tool_name="read_file",
+                            tool_name="read",
                             arguments={"path": "sample.txt"},
                             tool_call_id="read-1",
                         )
@@ -702,8 +702,8 @@ class _SingleThenBatchTurnProvider:
     """Scripted turn provider that emits a single call, then a two-call batch.
 
     Used with ``ProviderGraph`` to model a multi-tool-call turn: the first
-    provider query returns one ``read_file`` call, the second returns two
-    ``read_file`` calls at once (queued by ``ProviderGraph``), and a later
+    provider query returns one ``read`` call, the second returns two
+    ``read`` calls at once (queued by ``ProviderGraph``), and a later
     query with all three tool results returns terminal output. The per-query
     tool-result counts are recorded so a test can prove a resume re-queries
     the provider from durable ``tool_results`` rather than relying on the
@@ -723,7 +723,7 @@ class _SingleThenBatchTurnProvider:
         if not tool_results:
             return provider_protocol_module.ProviderTurnResult(
                 tool_call=tool_contracts_module.ToolCall(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": "a.txt"},
                     tool_call_id="call-a",
                 )
@@ -732,12 +732,12 @@ class _SingleThenBatchTurnProvider:
             return provider_protocol_module.ProviderTurnResult(
                 tool_calls=(
                     tool_contracts_module.ToolCall(
-                        tool_name="read_file",
+                        tool_name="read",
                         arguments={"path": "b.txt"},
                         tool_call_id="call-b",
                     ),
                     tool_contracts_module.ToolCall(
-                        tool_name="read_file",
+                        tool_name="read",
                         arguments={"path": "c.txt"},
                         tool_call_id="call-c",
                     ),
@@ -816,7 +816,7 @@ class _ParentToolResultGuardrailProvider:
                 if not tool_results:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
-                            tool_name="read_file",
+                            tool_name="read",
                             arguments={"path": "parent-secret.txt"},
                         )
                     )
@@ -1250,9 +1250,9 @@ def test_runtime_background_subagent_queue_running_completed_states_respect_conc
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     config_module = importlib.import_module("voidcode.runtime.config")
-    read_file_module = importlib.import_module("voidcode.tools.read_file")
-    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
-    original_invoke = read_file_tool.invoke
+    read_module = importlib.import_module("voidcode.tools.read")
+    read_tool = cast(ReadToolType, read_module.ReadTool)
+    original_invoke = read_tool.invoke
     started = threading.Event()
     release = threading.Event()
     active = 0
@@ -1274,7 +1274,7 @@ def test_runtime_background_subagent_queue_running_completed_states_respect_conc
             with active_lock:
                 active -= 1
 
-    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_blocking_read):
+    with patch.object(read_tool, "invoke", autospec=True, side_effect=_blocking_read):
         runtime = cast(
             RuntimeRunner,
             cast(
@@ -1543,7 +1543,7 @@ def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(
     assert denial["read_only"] is True
 
 
-def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
+def test_provider_context_live_persisted_replay_and_debug_parity_for_read(
     tmp_path: Path,
 ) -> None:
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
@@ -1648,7 +1648,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read_file(
     assert tool_segments == []
     assert provider_context.provider_messages[-1].source == "provider_synthetic_tool_feedback"
     synthetic_feedback = provider_context.provider_messages[-1].content or ""
-    assert synthetic_feedback.count('"tool_name": "read_file"') == 1
+    assert synthetic_feedback.count('"tool_name": "read"') == 1
     assert "Read 2 line(s) from sample.txt." in synthetic_feedback
     assert "tool_status" not in synthetic_feedback
     assert "display" not in synthetic_feedback
@@ -1678,7 +1678,7 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
                     if len(requests) == 1:
                         return provider_protocol_module.ProviderTurnResult(
                             tool_call=tool_contracts_module.ToolCall(
-                                tool_name="read_file",
+                                tool_name="read",
                                 arguments={"path": "sample.txt"},
                                 tool_call_id="read-1",
                             )
@@ -1711,7 +1711,7 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     assert len(requests) == 3
     continued_context = _assembled_context(requests[1])
     second_turn_context = _assembled_context(requests[2])
-    assert [result.tool_name for result in continued_context.tool_results] == ["read_file"]
+    assert [result.tool_name for result in continued_context.tool_results] == ["read"]
     assert continued_context.tool_results[0].content == "Read 2 line(s) from sample.txt."
     assert continued_context.tool_results[0].data["raw_content"] == "alpha\nbeta"
     assert continued_context.tool_results[0].data["tool_call_id"] == "read-1"
@@ -1971,7 +1971,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
                     if len(requests) == 2:
                         return provider_protocol_module.ProviderTurnResult(
                             tool_call=tool_contracts_module.ToolCall(
-                                tool_name="read_file",
+                                tool_name="read",
                                 arguments={"path": "sample.txt"},
                                 tool_call_id="read-1",
                             )
@@ -2000,7 +2000,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     # no longer spends a separate provider turn on model-assisted distillation.
     assert len(requests) == 3
     final_context = _assembled_context(requests[-1])
-    assert [result.tool_name for result in final_context.tool_results] == ["read_file"]
+    assert [result.tool_name for result in final_context.tool_results] == ["read"]
 
     provider_context = snapshot.provider_context
     assert provider_context is not None
@@ -2012,10 +2012,10 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
     assert continuity["dropped_tool_result_count"] == 1
     assert isinstance(continuity["summary_text"], str)
     retained_tool_segments = [segment for segment in provider_context.segments if segment.role == "tool"]
-    assert [segment.tool_name for segment in retained_tool_segments] == ["read_file"]
+    assert [segment.tool_name for segment in retained_tool_segments] == ["read"]
     assert retained_tool_segments[0].content == final_context.tool_results[0].content
     provider_message_text = "\n".join(message.content or "" for message in provider_context.provider_messages)
-    assert '"tool_name": "read_file"' in provider_message_text
+    assert '"tool_name": "read"' in provider_message_text
     assert '"tool_name": "shell_exec"' not in provider_message_text
     assert any(
         segment.role == "system" and segment.source == "context_projection" and "shell_exec" in (segment.content or "")
@@ -2246,12 +2246,12 @@ def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
                 "question",
                 "background_output",
             },
-            {"read_file", "grep", "glob"},
+            {"read", "grep", "glob"},
         ),
         (
             "worker",
             {"task", "question", "background_output"},
-            {"read_file", "write_file", "edit", "apply_patch"},
+            {"read", "write_file", "edit", "apply_patch"},
         ),
     )
     for subagent_type, denied_tools, expected_tools in cases:
@@ -2989,7 +2989,7 @@ def test_runtime_aborts_tool_run_when_pre_hook_fails(tmp_path: Path) -> None:
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     shell_exec_module = importlib.import_module("voidcode.tools.shell_exec")
-    shell_exec_tool = cast(ReadFileToolType, shell_exec_module.ShellExecTool)
+    shell_exec_tool = cast(ReadToolType, shell_exec_module.ShellExecTool)
 
     with patch.object(shell_exec_tool, "invoke", autospec=True) as invoke_mock:
         runtime = cast(
@@ -3131,7 +3131,7 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
     write_file_module = importlib.import_module("voidcode.tools.write_file")
-    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
+    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
 
     def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -3195,7 +3195,7 @@ def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) 
     runtime = runtime_class(workspace=tmp_path, permission_policy=policy)
     write_file_module = importlib.import_module("voidcode.tools.write_file")
 
-    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
+    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
 
     def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -3515,7 +3515,7 @@ def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: 
                     ),
                 ),
                 graph=_SingleToolGraph(
-                    "read_file",
+                    "read",
                     {"path": str(outside_file)},
                 ),
                 permission_policy=policy,
@@ -3527,7 +3527,7 @@ def test_runtime_requests_external_read_approval_with_context_payload(tmp_path: 
     assert waiting.session.status == "waiting"
     approval_event = waiting.events[-1]
     assert approval_event.event_type == "runtime.approval_requested"
-    assert approval_event.payload["tool"] == "read_file"
+    assert approval_event.payload["tool"] == "read"
     assert approval_event.payload["path_scope"] == "external"
     assert approval_event.payload["operation_class"] == "read"
     assert approval_event.payload["matched_rule"] == "*"
@@ -3555,7 +3555,7 @@ def test_runtime_allows_external_read_by_default_without_approval(tmp_path: Path
             runtime_class(
                 workspace=tmp_path,
                 config=runtime_config(approval_mode="allow"),
-                graph=_SingleToolGraph("read_file", {"path": str(outside_file)}),
+                graph=_SingleToolGraph("read", {"path": str(outside_file)}),
                 permission_policy=policy,
             ),
         ),
@@ -3653,7 +3653,7 @@ def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(
                         read=policy_config(rules=(("~voidcode_unknown_user_for_test/**", "allow"), ("*", "ask"))),
                     ),
                 ),
-                graph=_SingleToolGraph("read_file", {"path": str(outside_file)}),
+                graph=_SingleToolGraph("read", {"path": str(outside_file)}),
                 permission_policy=policy,
             ),
         ),
@@ -4013,7 +4013,7 @@ def test_external_permission_rule_supports_tilde_home_pattern(
                         write=policy_config(rules=(("*", "deny"),)),
                     ),
                 ),
-                graph=_SingleToolGraph("read_file", {"path": str(home_file)}),
+                graph=_SingleToolGraph("read", {"path": str(home_file)}),
                 permission_policy=policy,
             ),
         ),
@@ -4149,14 +4149,14 @@ def test_provider_runtime_converts_tool_exceptions_to_tool_error_results(
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("alpha\n", encoding="utf-8")
     runtime_request, runtime = _provider_runtime(tmp_path, mode="allow")
-    read_file_module = importlib.import_module("voidcode.tools.read_file")
-    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
+    read_module = importlib.import_module("voidcode.tools.read")
+    read_tool = cast(ReadToolType, read_module.ReadTool)
 
     def _failing_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
         raise ValueError("provider tool boom")
 
-    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
+    with patch.object(read_tool, "invoke", autospec=True, side_effect=_failing_invoke):
         result = runtime.run(runtime_request(prompt="read sample.txt", session_id="provider-tool-error"))
 
     assert result.session.status == "completed"
@@ -4948,7 +4948,7 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
     ]
     assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
     assert [cast(str, event.payload.get("tool")) for event in denied.events if event.event_type == "graph.tool_request_created"] == [
-        "read_file",
+        "read",
         "write_file",
     ]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
@@ -5240,7 +5240,7 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     write_file_module = importlib.import_module("voidcode.tools.write_file")
-    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
+    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
 
     def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -5691,8 +5691,8 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
     calls = (
-        ("read_file", {"path": str(first_file)}),
-        ("read_file", {"path": str(second_file)}),
+        ("read", {"path": str(first_file)}),
+        ("read", {"path": str(second_file)}),
     )
 
     first_runtime = cast(
@@ -5728,8 +5728,8 @@ def test_runtime_crash_mid_run_marks_interrupted_and_resumes_to_completion(tmp_p
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
     assert [cast(str, event.payload.get("tool")) for event in resumed.events if event.event_type == "runtime.tool_completed"] == [
-        "read_file",
-        "read_file",
+        "read",
+        "read",
     ]
 
 
@@ -5742,8 +5742,8 @@ def test_runtime_resume_truncates_orphaned_tail_after_interrupted_checkpoint(tmp
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
     calls = (
-        ("read_file", {"path": str(first_file)}),
-        ("read_file", {"path": str(second_file)}),
+        ("read", {"path": str(first_file)}),
+        ("read", {"path": str(second_file)}),
     )
 
     first_runtime = cast(
@@ -5832,7 +5832,7 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="multi-tool-crash")
     assert checkpoint is not None and checkpoint.get("kind") == "interrupted"
     checkpoint_tool_results = cast(list[object], checkpoint.get("tool_results", []))
-    assert [cast(dict[str, object], result).get("tool_name") for result in checkpoint_tool_results] == ["read_file"]
+    assert [cast(dict[str, object], result).get("tool_name") for result in checkpoint_tool_results] == ["read"]
 
     resumed_provider = _SingleThenBatchTurnProvider()
     resumed_graph = provider_graph_module.ProviderGraph(provider=resumed_provider, provider_model=provider_model)
@@ -5845,9 +5845,9 @@ def test_runtime_multi_tool_call_crash_requeries_provider_from_durable_tool_resu
     assert resumed.session.status == "completed"
     assert resumed.output == "done"
     assert [cast(str, event.payload.get("tool")) for event in resumed.events if event.event_type == "runtime.tool_completed"] == [
-        "read_file",
-        "read_file",
-        "read_file",
+        "read",
+        "read",
+        "read",
     ]
     # The resumed provider was re-queried with durable tool-result counts [1, 3],
     # proving the queued "c" call was recovered from durable tool_results rather
@@ -5895,22 +5895,22 @@ def test_runtime_stream_yields_before_tool_completion(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("delayed stream\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    read_file_module = importlib.import_module("voidcode.tools.read_file")
+    read_module = importlib.import_module("voidcode.tools.read")
 
     tool_started = threading.Event()
     allow_tool_completion = threading.Event()
     fifth_chunk_ready = threading.Event()
     fifth_chunk: list[StreamChunkLike] = []
 
-    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
-    original_invoke = read_file_tool.invoke
+    read_tool = cast(ReadToolType, read_module.ReadTool)
+    original_invoke = read_tool.invoke
 
     def _blocking_invoke(self: object, _call: object, *, workspace: Path) -> object:
         tool_started.set()
         _ = allow_tool_completion.wait(timeout=2)
         return original_invoke(self, _call, workspace=workspace)
 
-    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_blocking_invoke):
+    with patch.object(read_tool, "invoke", autospec=True, side_effect=_blocking_invoke):
         runtime = runtime_class(workspace=tmp_path)
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
@@ -5959,14 +5959,14 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("failure proof\n", encoding="utf-8")
     runtime_request, runtime_class = _load_runtime_types()
-    read_file_module = importlib.import_module("voidcode.tools.read_file")
-    read_file_tool = cast(ReadFileToolType, read_file_module.ReadFileTool)
+    read_module = importlib.import_module("voidcode.tools.read")
+    read_tool = cast(ReadToolType, read_module.ReadTool)
 
     def _failing_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
         raise ValueError("boom from tool")
 
-    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
+    with patch.object(read_tool, "invoke", autospec=True, side_effect=_failing_invoke):
         runtime = runtime_class(workspace=tmp_path)
         stream = runtime.run_stream(runtime_request(prompt="read sample.txt"))
 
@@ -5996,13 +5996,13 @@ def test_runtime_stream_emits_failed_terminal_chunk_before_tool_error(tmp_path: 
     assert tool_completed_chunk.kind == "event"
     assert tool_completed_chunk.event is not None
     assert tool_completed_chunk.event.event_type == "runtime.tool_completed"
-    assert tool_completed_chunk.event.payload["tool"] == "read_file"
+    assert tool_completed_chunk.event.payload["tool"] == "read"
     assert tool_completed_chunk.event.payload["status"] == "error"
     assert tool_completed_chunk.event.payload["error"] == "boom from tool"
     tool_status = tool_completed_chunk.event.payload["tool_status"]
     assert isinstance(tool_status, dict)
     typed_tool_status = cast(dict[str, object], tool_status)
-    assert typed_tool_status["tool_name"] == "read_file"
+    assert typed_tool_status["tool_name"] == "read"
     assert typed_tool_status["status"] == "failed"
     assert tool_completed_chunk.session.status == "running"
     assert failed_chunk.kind == "event"
@@ -6021,7 +6021,7 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
     write_file_module = importlib.import_module("voidcode.tools.write_file")
-    write_tool = cast(ReadFileToolType, write_file_module.WriteFileTool)
+    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
     original_invoke = write_tool.invoke
     tool_started = threading.Event()
     allow_tool_completion = threading.Event()

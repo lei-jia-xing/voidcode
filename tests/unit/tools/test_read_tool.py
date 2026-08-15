@@ -7,22 +7,22 @@ from unittest.mock import patch
 import pytest
 
 from voidcode.runtime.service import ToolRegistry
-from voidcode.tools import ReadFileTool, ToolCall
-from voidcode.tools.read_file import MAX_ATTACHMENT_BYTES, MAX_LINE_LENGTH
+from voidcode.tools import ReadTool, ToolCall
+from voidcode.tools.read import MAX_ATTACHMENT_BYTES, MAX_LINE_LENGTH
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
-def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
+def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
     sample = tmp_path / "sample.txt"
     _ = sample.write_text("alpha\nbeta\ngamma\ndelta\n", encoding="utf-8")
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"path": "sample.txt", "offset": 2, "limit": 2}),
+        ToolCall(tool_name="read", arguments={"path": "sample.txt", "offset": 2, "limit": 2}),
         workspace=tmp_path,
     )
 
-    assert result.tool_name == "read_file"
+    assert result.tool_name == "read"
     assert result.status == "ok"
     assert result.content == "Read 2 line(s) from sample.txt; output is truncated."
     assert result.data["raw_content"] == "beta\ngamma"
@@ -33,27 +33,27 @@ def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) ->
     assert "copy_guidance" not in result.data
 
 
-def test_read_file_tool_rejects_directories_with_suggestions(tmp_path: Path) -> None:
+def test_read_tool_rejects_directories_with_suggestions(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     (tmp_path / "b.txt").write_text("b", encoding="utf-8")
     subdir = tmp_path / "subdir"
     subdir.mkdir()
 
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with pytest.raises(ValueError, match="does not support directories") as exc_info:
-        tool.invoke(ToolCall(tool_name="read_file", arguments={"path": "."}), workspace=tmp_path)
+        tool.invoke(ToolCall(tool_name="read", arguments={"path": "."}), workspace=tmp_path)
 
     assert "Did you mean:" in str(exc_info.value)
 
 
-def test_read_file_tool_returns_attachment_for_images(tmp_path: Path) -> None:
+def test_read_tool_returns_attachment_for_images(tmp_path: Path) -> None:
     image = tmp_path / "image.png"
     _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"fake")
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"path": "image.png"}),
+        ToolCall(tool_name="read", arguments={"path": "image.png"}),
         workspace=tmp_path,
     )
 
@@ -62,13 +62,13 @@ def test_read_file_tool_returns_attachment_for_images(tmp_path: Path) -> None:
     assert isinstance(result.data["attachment"], dict)
 
 
-def test_read_file_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:
+def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-read.txt"
     outside.write_text("outside", encoding="utf-8")
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"path": "../outside-read.txt"}),
+        ToolCall(tool_name="read", arguments={"path": "../outside-read.txt"}),
         workspace=tmp_path,
     )
 
@@ -76,7 +76,7 @@ def test_read_file_tool_allows_workspace_escape_path_with_absolute_display(tmp_p
     assert result.data["path"] == str(outside.resolve())
 
 
-def test_read_file_tool_allows_symlink_escape_when_runtime_permission_allows(
+def test_read_tool_allows_symlink_escape_when_runtime_permission_allows(
     tmp_path: Path,
 ) -> None:
     outside = tmp_path.parent / "outside_read_escape.txt"
@@ -87,23 +87,23 @@ def test_read_file_tool_allows_symlink_escape_when_runtime_permission_allows(
     except OSError:
         pytest.skip("symlink is not available on this platform")
 
-    tool = ReadFileTool()
+    tool = ReadTool()
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"path": "link.txt"}),
+        ToolCall(tool_name="read", arguments={"path": "link.txt"}),
         workspace=tmp_path,
     )
     assert result.status == "ok"
     assert result.data["path"] == str(outside.resolve())
 
 
-def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> None:
+def test_read_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> None:
     sample = tmp_path / "sample.txt"
     _ = sample.write_text("alpha\nbeta\n", encoding="utf-8")
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
         result = tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
+            ToolCall(tool_name="read", arguments={"path": "sample.txt"}),
             workspace=tmp_path,
         )
 
@@ -112,90 +112,90 @@ def test_read_file_tool_sniffs_text_with_bounded_stream_read(tmp_path: Path) -> 
     assert result.data["raw_content"] == "alpha\nbeta"
 
 
-def test_read_file_tool_rejects_non_regular_target(tmp_path: Path) -> None:
+def test_read_tool_rejects_non_regular_target(tmp_path: Path) -> None:
     if not hasattr(os, "mkfifo"):
         pytest.skip("mkfifo is not available on this platform")
 
     fifo_path = tmp_path / "sample.fifo"
     os.mkfifo(fifo_path)
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with pytest.raises(ValueError, match="only supports regular files"):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"path": "sample.fifo"}),
+            ToolCall(tool_name="read", arguments={"path": "sample.fifo"}),
             workspace=tmp_path,
         )
 
 
-def test_read_file_tool_reports_field_specific_validation_errors(tmp_path: Path) -> None:
-    tool = ReadFileTool()
+def test_read_tool_reports_field_specific_validation_errors(tmp_path: Path) -> None:
+    tool = ReadTool()
 
     file_path_error = (
-        r"read_file Validation error: path: "
+        r"read Validation error: path: "
         r"Input should be a valid string \(received int\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=file_path_error):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"path": 123}),
+            ToolCall(tool_name="read", arguments={"path": 123}),
             workspace=tmp_path,
         )
 
     offset_error = (
-        r"read_file Validation error: offset: Value error, "
+        r"read Validation error: offset: Value error, "
         r"offset must be greater than or equal to 1 \(received int\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=offset_error):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"path": "sample.txt", "offset": 0}),
+            ToolCall(tool_name="read", arguments={"path": "sample.txt", "offset": 0}),
             workspace=tmp_path,
         )
 
     limit_error = (
-        r"read_file Validation error: limit: Value error, "
+        r"read Validation error: limit: Value error, "
         r"limit must be greater than or equal to 1 \(received int\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=limit_error):
         tool.invoke(
-            ToolCall(tool_name="read_file", arguments={"path": "sample.txt", "limit": 0}),
+            ToolCall(tool_name="read", arguments={"path": "sample.txt", "limit": 0}),
             workspace=tmp_path,
         )
 
 
-def test_read_file_tool_reports_missing_file_path(tmp_path: Path) -> None:
-    tool = ReadFileTool()
+def test_read_tool_reports_missing_file_path(tmp_path: Path) -> None:
+    tool = ReadTool()
     missing_file_path_error = (
-        r"read_file Validation error: path: "
+        r"read Validation error: path: "
         r"Input should be a valid string \(received NoneType\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with pytest.raises(ValueError, match=missing_file_path_error):
-        tool.invoke(ToolCall(tool_name="read_file", arguments={}), workspace=tmp_path)
+        tool.invoke(ToolCall(tool_name="read", arguments={}), workspace=tmp_path)
 
 
-def test_read_file_tool_rejects_oversized_attachment_before_read_bytes(tmp_path: Path) -> None:
+def test_read_tool_rejects_oversized_attachment_before_read_bytes(tmp_path: Path) -> None:
     image = tmp_path / "image.png"
     _ = image.write_bytes(b"\x89PNG\r\n\x1a\n" + (b"x" * MAX_ATTACHMENT_BYTES))
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with patch.object(Path, "read_bytes", side_effect=AssertionError("read_bytes should not be used")):
         with pytest.raises(ValueError, match="attachment exceeds the maximum supported size"):
             tool.invoke(
-                ToolCall(tool_name="read_file", arguments={"path": "image.png"}),
+                ToolCall(tool_name="read", arguments={"path": "image.png"}),
                 workspace=tmp_path,
             )
 
 
-def test_read_file_tool_does_not_emit_offset_guidance_for_clipped_line_only(tmp_path: Path) -> None:
+def test_read_tool_does_not_emit_offset_guidance_for_clipped_line_only(tmp_path: Path) -> None:
     sample = tmp_path / "sample.txt"
     _ = sample.write_text("x" * (MAX_LINE_LENGTH + 5), encoding="utf-8")
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}),
+        ToolCall(tool_name="read", arguments={"path": "sample.txt"}),
         workspace=tmp_path,
     )
 
@@ -207,11 +207,11 @@ def test_read_file_tool_does_not_emit_offset_guidance_for_clipped_line_only(tmp_
     assert result.data["partial"] is True
 
 
-def test_tools_package_and_default_registry_export_read_file_tool() -> None:
+def test_tools_package_and_default_registry_export_read_tool() -> None:
     registry = ToolRegistry.with_defaults()
 
-    assert "ReadFileTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
-    assert registry.resolve("read_file").definition.name == "read_file"
+    assert "ReadTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
+    assert registry.resolve("read").definition.name == "read"
 
 
 class _FakeArtifactFacade:
@@ -252,15 +252,15 @@ class _FakeArtifactFacade:
 _ARTIFACT_ID = "artifact_0123456789abcdef01234567"
 
 
-def test_read_file_tool_resolves_artifact_uri_with_bounded_content(tmp_path: Path) -> None:
+def test_read_tool_resolves_artifact_uri_with_bounded_content(tmp_path: Path) -> None:
     content = "".join(f"line-{index}\n" for index in range(3000))
     facade = _FakeArtifactFacade(_ARTIFACT_ID, content)
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
         result = tool.invoke(
             ToolCall(
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}", "limit": 100},
             ),
             workspace=tmp_path,
@@ -280,15 +280,15 @@ def test_read_file_tool_resolves_artifact_uri_with_bounded_content(tmp_path: Pat
     assert facade.requests == [(_ARTIFACT_ID, 0, 100)]
 
 
-def test_read_file_tool_artifact_uri_pages_with_one_based_offset(tmp_path: Path) -> None:
+def test_read_tool_artifact_uri_pages_with_one_based_offset(tmp_path: Path) -> None:
     content = "".join(f"line-{index}\n" for index in range(3000))
     facade = _FakeArtifactFacade(_ARTIFACT_ID, content)
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
         result = tool.invoke(
             ToolCall(
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}", "offset": 101, "limit": 100},
             ),
             workspace=tmp_path,
@@ -300,45 +300,45 @@ def test_read_file_tool_artifact_uri_pages_with_one_based_offset(tmp_path: Path)
     assert facade.requests == [(_ARTIFACT_ID, 100, 100)]
 
 
-def test_read_file_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
+def test_read_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
     facade = _FakeArtifactFacade(_ARTIFACT_ID, "content")
-    tool = ReadFileTool()
+    tool = ReadTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
         with pytest.raises(ValueError, match="artifact not found in current session"):
             tool.invoke(
                 ToolCall(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": "voidcode://artifact/artifact_ffffffffffffffffffffffff"},
                 ),
                 workspace=tmp_path,
             )
 
 
-def test_read_file_tool_rejects_malformed_artifact_id(tmp_path: Path) -> None:
-    tool = ReadFileTool()
+def test_read_tool_rejects_malformed_artifact_id(tmp_path: Path) -> None:
+    tool = ReadTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1")):
         with pytest.raises(ValueError, match="invalid artifact id"):
             tool.invoke(
-                ToolCall(tool_name="read_file", arguments={"path": "voidcode://artifact/not-an-id"}),
+                ToolCall(tool_name="read", arguments={"path": "voidcode://artifact/not-an-id"}),
                 workspace=tmp_path,
             )
         with pytest.raises(ValueError, match="requires an artifact id"):
             tool.invoke(
-                ToolCall(tool_name="read_file", arguments={"path": "voidcode://artifact/"}),
+                ToolCall(tool_name="read", arguments={"path": "voidcode://artifact/"}),
                 workspace=tmp_path,
             )
 
 
-def test_read_file_tool_artifact_uri_requires_runtime_artifact_reader(tmp_path: Path) -> None:
-    tool = ReadFileTool()
+def test_read_tool_artifact_uri_requires_runtime_artifact_reader(tmp_path: Path) -> None:
+    tool = ReadTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1")):
         with pytest.raises(ValueError, match="without a runtime artifact reader"):
             tool.invoke(
                 ToolCall(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}"},
                 ),
                 workspace=tmp_path,

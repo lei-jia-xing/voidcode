@@ -26,17 +26,17 @@ considered complete until implementation and focused tests provide evidence.
 - [x] Preserve `ToolDefinition.path_argument_keys` whenever definitions are
   decorated with guidance.
 - [x] Make every input schema explicit about required fields, constraints, enums,
-  and field-level descriptions. `read_file` now documents path, offset, limit,
+  and field-level descriptions. `read` now documents path, offset, limit,
   and continuation semantics; `write_file` and `multi_edit` now document their
   replacement semantics; `grep` now documents explicit literal/regex selection
   and search filters; the broader tool surface remains.
 - [x] Reconcile `grep`'s regex description with its actual explicit-switch
   behavior and retry guidance.
 - [x] Converge on `content` as a short human summary and put machine-readable
-  payloads in `data`. `read_file` returns a short summary in `content` with
+  payloads in `data`. `read` returns a short summary in `content` with
   structured `data.lines` / `data.raw_content` / `data.content_hash`; `grep`
   returns a summary in `content` with matching details in `data.matches`.
-- [x] Switch `read_file` to the canonical `path` field without a legacy alias.
+- [x] Switch `read` to the canonical `path` field without a legacy alias.
 - [x] Provide structured file lines/raw content so edit calls do not need to
   strip presentation line prefixes.
 

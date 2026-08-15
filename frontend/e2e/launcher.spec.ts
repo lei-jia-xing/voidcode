@@ -109,13 +109,13 @@ async function installMockRuntime(page: Page) {
     event_type: "runtime.tool_completed",
     source: "runtime",
     payload: {
-      tool: "read_file",
+      tool: "read",
       tool_call_id: "read-1",
       status: "ok",
       arguments: { path: "README.md" },
       tool_status: {
         invocation_id: "read-1",
-        tool_name: "read_file",
+        tool_name: "read",
         status: "completed",
         display: {
           kind: "context",

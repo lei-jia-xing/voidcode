@@ -254,8 +254,7 @@ class GrepTool:
                     "severity": "info",
                     "reason": "no_matches",
                     "message": (
-                        "No matches found. Broaden the path/include filter, verify the search "
-                        "text with read_file, or use a plain string for literal text."
+                        "No matches found. Broaden the path/include filter, verify the search text with read, or use a plain string for literal text."
                     ),
                 }
             )

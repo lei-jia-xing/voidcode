@@ -89,7 +89,7 @@ describe("RuntimeClient integration contract", () => {
       start(controller) {
         controller.enqueue(
           encoder.encode(
-            'data: {"kind":"event","session":{"session":{"id":"session-1"},"status":"running","turn":1,"metadata":{}},"event":{"session_id":"session-1","sequence":1,"event_type":"runtime.tool_started","source":"runtime","payload":{"tool":"read_file","tool_call_id":"call-1","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}},"tool_status":{"tool_name":"read_file","invocation_id":"call-1","phase":"running","status":"running","label":"Read README.md","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}}}},"tool_status":{"tool_name":"read_file","invocation_id":"call-1","phase":"running","status":"running","label":"Read README.md","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}}}},"output":null}\n\n',
+            'data: {"kind":"event","session":{"session":{"id":"session-1"},"status":"running","turn":1,"metadata":{}},"event":{"session_id":"session-1","sequence":1,"event_type":"runtime.tool_started","source":"runtime","payload":{"tool":"read","tool_call_id":"call-1","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}},"tool_status":{"tool_name":"read","invocation_id":"call-1","phase":"running","status":"running","label":"Read README.md","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}}}},"tool_status":{"tool_name":"read","invocation_id":"call-1","phase":"running","status":"running","label":"Read README.md","display":{"kind":"context","title":"Read","summary":"Read README.md","args":["README.md"],"copyable":{"path":"README.md"}}}},"output":null}\n\n',
           ),
         );
         controller.enqueue(
@@ -115,7 +115,7 @@ describe("RuntimeClient integration contract", () => {
 
     expect(chunks).toHaveLength(2);
     expect(chunks[0].event?.payload.tool_status).toEqual({
-      tool_name: "read_file",
+      tool_name: "read",
       invocation_id: "call-1",
       phase: "running",
       status: "running",

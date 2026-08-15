@@ -1097,7 +1097,7 @@ def test_apply_patch_rejects_missing_hash_for_existing_file(tmp_path: Path) -> N
     assert diagnostic.error_details["reason"] == "missing_expected_hash"
     assert diagnostic.error_details["affected_paths"] == ["sample.txt"]
     assert diagnostic.error_details["missing_paths"] == ["sample.txt"]
-    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert "read" in (diagnostic.retry_guidance or "")
     assert target.read_text(encoding="utf-8") == "line-1\nline-2\n"
 
 
@@ -1224,7 +1224,7 @@ def test_apply_patch_marker_update_rejects_hunk_outside_read_window(tmp_path: Pa
     )
 
     with bind_runtime_tool_context(_apply_patch_context(target, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             ApplyPatchTool().invoke(
                 ToolCall(
                     tool_name="apply_patch",
@@ -1286,7 +1286,7 @@ def test_apply_patch_unified_diff_rejects_hunk_outside_read_window(tmp_path: Pat
     )
 
     with bind_runtime_tool_context(_apply_patch_context(target, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             ApplyPatchTool().invoke(
                 ToolCall(
                     tool_name="apply_patch",
@@ -1345,7 +1345,7 @@ def test_apply_patch_marker_delete_requires_whole_file_seen(tmp_path: Path) -> N
     )
 
     with bind_runtime_tool_context(_apply_patch_context(target, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             ApplyPatchTool().invoke(
                 ToolCall(
                     tool_name="apply_patch",
@@ -1405,7 +1405,7 @@ def test_apply_patch_unified_diff_delete_requires_whole_file_seen(tmp_path: Path
     )
 
     with bind_runtime_tool_context(_apply_patch_context(target, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             ApplyPatchTool().invoke(
                 ToolCall(
                     tool_name="apply_patch",

@@ -29,7 +29,7 @@ class _Tool:
 def _registry() -> ToolRegistry:
     return ToolRegistry.from_tools(
         (
-            _Tool("read_file", read_only=True),
+            _Tool("read", read_only=True),
             _Tool("write_file", read_only=False),
             _Tool("shell_exec", read_only=False),
             _Tool("memory_add", read_only=False),
@@ -41,12 +41,12 @@ def test_tool_scope_resolver_applies_agent_scope_before_runtime_policy() -> None
     resolver = RuntimeToolScopeResolver(memory_enabled=True)
     agent = RuntimeAgentConfig(
         preset="leader",
-        tools=RuntimeToolsConfig(allowlist=("read_file", "write_file")),
+        tools=RuntimeToolsConfig(allowlist=("read", "write_file")),
     )
 
     scoped = resolver.scope(_registry(), agent=agent, metadata={"mode": "analyze"})
 
-    assert tuple(scoped.tools) == ("read_file",)
+    assert tuple(scoped.tools) == ("read",)
 
 
 def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> None:
@@ -86,7 +86,7 @@ def test_tool_scope_resolver_preserves_shell_for_command_level_classification() 
 
     agent = RuntimeAgentConfig(
         preset="worker",
-        manifest_tool_allowlist=("read_file",),
+        manifest_tool_allowlist=("read",),
     )
 
     denial = RuntimeToolScopeResolver.delegation_policy_error(
@@ -104,7 +104,7 @@ def test_tool_scope_resolver_preserves_shell_for_command_level_classification() 
 def test_tool_scope_resolver_does_not_claim_delegation_for_unknown_or_allowed_tools() -> None:
     agent = RuntimeAgentConfig(
         preset="worker",
-        manifest_tool_allowlist=("read_file",),
+        manifest_tool_allowlist=("read",),
     )
 
     assert (
@@ -112,7 +112,7 @@ def test_tool_scope_resolver_does_not_claim_delegation_for_unknown_or_allowed_to
             delegated_child=True,
             agent=agent,
             base_registry=_registry(),
-            tool_name="read_file",
+            tool_name="read",
         )
         is None
     )

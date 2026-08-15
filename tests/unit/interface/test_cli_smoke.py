@@ -407,7 +407,7 @@ def test_stats_tools_outputs_persisted_effectiveness_json() -> None:
     assert effectiveness["schema_version"] == 1
     assert effectiveness["session_count"] == 1
     assert effectiveness["tool_call_count"] == 1
-    assert effectiveness["tools"][0]["tool"] == "read_file"
+    assert effectiveness["tools"][0]["tool"] == "read"
     assert effectiveness["privacy"]["stores_arguments"] is False
 
 
@@ -684,7 +684,7 @@ def test_sessions_debug_outputs_json_snapshot() -> None:
     assert payload["pending_question"] is None
     assert payload["last_relevant_event"]["event_type"] == "graph.response_ready"
     assert payload["provider_context"]["segment_count"] >= 3
-    assert payload["provider_context"]["segments"][-1]["tool_name"] == "read_file"
+    assert payload["provider_context"]["segments"][-1]["tool_name"] == "read"
     provider_context = payload["provider_context"]
     policy_decision = provider_context["policy_decision"]
     assert policy_decision["mode"] == "warn"
@@ -1169,7 +1169,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
                 "runtime.tool_completed",
                 sequence=2,
                 source="tool",
-                tool="read_file",
+                tool="read",
                 status="ok",
                 content="sample",
                 arguments={"path": "sample.txt"},
@@ -1190,7 +1190,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
     )
     snapshot = SimpleNamespace(
         resumable=True,
-        last_tool=SimpleNamespace(tool_name="read_file"),
+        last_tool=SimpleNamespace(tool_name="read"),
     )
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1208,7 +1208,7 @@ def test_run_command_prints_provider_failure_footer(capsys: Any) -> None:
     assert "model: glm-5" in captured.err
     assert "provider_error_kind: transient_failure" in captured.err
     assert "resumable: true" in captured.err
-    assert "last_successful_tool: read_file" in captured.err
+    assert "last_successful_tool: read" in captured.err
     assert "voidcode sessions debug provider-failed-session" in captured.err
     assert "voidcode sessions resume provider-failed-session" in captured.err
 
@@ -1389,7 +1389,7 @@ def test_run_trace_reports_incomplete_runtime_stream_as_failure(capsys: Any) -> 
             event=_runtime_event(
                 "runtime.tool_completed",
                 source="tool",
-                tool="read_file",
+                tool="read",
                 status="ok",
             ),
         ),
@@ -1833,7 +1833,7 @@ def test_run_command_real_cli_reports_current_request_truth_without_agent_preset
     assert result.returncode != 0
     assert result.stdout == ""
     assert "EVENT runtime.request_received" not in result.stdout
-    assert "read_file target does not exist: README.md" in result.stderr
+    assert "read target does not exist: README.md" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -1852,7 +1852,7 @@ def test_run_command_missing_config_named_file_is_runtime_error() -> None:
 
     assert result.returncode == 12
     assert result.stdout == ""
-    assert "read_file target does not exist: config.md" in result.stderr
+    assert "read target does not exist: config.md" in result.stderr
     assert "Traceback" not in result.stderr
 
 

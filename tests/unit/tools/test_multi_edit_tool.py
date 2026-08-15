@@ -367,7 +367,7 @@ def test_multi_edit_rejects_missing_expected_hash_with_structured_diagnostic(tmp
     assert diagnostic.error_kind == "tool_input_mismatch"
     assert diagnostic.error_details["reason"] == "missing_expected_hash"
     assert diagnostic.error_details["path"] == "sample.txt"
-    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert "read" in (diagnostic.retry_guidance or "")
     assert target.read_text(encoding="utf-8") == "alpha\n"
 
 
@@ -419,7 +419,7 @@ def test_multi_edit_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> 
             read_lines={resolved: frozenset({1})},
         )
     ):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
                     tool_name="multi_edit",

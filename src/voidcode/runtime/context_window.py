@@ -367,7 +367,7 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
     if isinstance(command, str) and command:
         parts.append(f"command={command}")
 
-    content = normalize_read_file_output(result.content)
+    content = normalize_read_output(result.content)
     error = result.error.strip() if result.error else ""
     preview_source = content or error
     if preview_source:
@@ -949,7 +949,7 @@ def _coerce_int(payload: Mapping[str, object], key: str, *, default: int) -> int
     return value
 
 
-def normalize_read_file_output(content: str | None) -> str | None:
+def normalize_read_output(content: str | None) -> str | None:
     if not content:
         return content
 
@@ -1151,7 +1151,7 @@ def _artifact_reference_segments(
             (f"byte_count={diagnostic.artifact_byte_count}" if diagnostic.artifact_byte_count is not None else None),
             (f"line_count={diagnostic.artifact_line_count}" if diagnostic.artifact_line_count is not None else None),
             f"reference={diagnostic.reference}" if diagnostic.reference else None,
-            f'Read the omitted output with read_file(path="voidcode://artifact/{diagnostic.artifact_id}").',
+            f'Read the omitted output with read(path="voidcode://artifact/{diagnostic.artifact_id}").',
         ]
         content = "\n".join(part for part in parts if part is not None)
         metadata: dict[str, object] = {

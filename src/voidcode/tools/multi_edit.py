@@ -56,7 +56,7 @@ class MultiEditTool:
                 "type": "string",
                 "description": (
                     "Required SHA-256 hash of the current file content, taken from data.content_hash "
-                    "of a prior read_file result. Rejects stale edits when the file changed since that read."
+                    "of a prior read result. Rejects stale edits when the file changed since that read."
                 ),
             },
             "edits": {
@@ -152,9 +152,7 @@ class MultiEditTool:
                 message="multi_edit requires an expectedHash argument: the file must be read before it is edited.",
                 error_kind="tool_input_mismatch",
                 reason="missing_expected_hash",
-                retry_guidance=(
-                    "Use read_file on the target path, copy data.content_hash from the result, then retry multi_edit with that expectedHash."
-                ),
+                retry_guidance=("Use read on the target path, copy data.content_hash from the result, then retry multi_edit with that expectedHash."),
                 details={"path": display_path, "raw_path": args.path},
             )
 

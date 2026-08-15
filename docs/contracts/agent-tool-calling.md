@@ -47,7 +47,7 @@ Runtime 暴露给 agent 的工具元数据遵循以下 shape：
 
 ```json
 {
-  "name": "read_file",
+  "name": "read",
   "description": "Read a file inside the current workspace.",
   "input_schema": {
     "path": {"type": "string"},
@@ -71,7 +71,7 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 ```json
 {
-  "tool_name": "read_file",
+  "tool_name": "read",
   "arguments": {
     "path": "README.md",
     "offset": 1,
@@ -96,7 +96,7 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 ```json
 {
-  "tool_name": "read_file",
+  "tool_name": "read",
   "status": "ok",
   "content": "file contents or human-readable summary",
   "data": {
@@ -132,7 +132,7 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 ```json
 {
-  "tool": "read_file",
+  "tool": "read",
   "status": "ok",
   "content": "...",
   "error": null
@@ -210,7 +210,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ### Workspace 读取与搜索工具
 
-#### `read_file`
+#### `read`
 
 - 分组：workspace read
 - 只读：是
@@ -809,7 +809,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 | 目标 | 推荐工具 | 避免 |
 | --- | --- | --- |
 | 找文件名 / 扩展名 | `glob` | 不要读取整个仓库 |
-| 读取已知文件 | `read_file` | 不要用 `shell_exec cat` |
+| 读取已知文件 | `read` | 不要用 `shell_exec cat` |
 | 文本搜索（文件或目录范围） | `grep` | 不要用 LSP 或 AST 搜索 |
 | 结构化代码搜索 | `ast_grep`（`mode=search`） | 不要用 brittle text grep 匹配语法结构 |
 | 代码定义 / 引用 / hover / diagnostics | `lsp` | 不要猜测调用链 |
@@ -824,8 +824,8 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ## Agent 调用准则
 
-1. **优先只读上下文收集。** 在没有足够上下文前，使用 `glob` / `read_file` / `grep` / `ast_grep` / `lsp` 收敛事实。
-2. **选择最窄工具。** 能用 `read_file` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write_file`。
+1. **优先只读上下文收集。** 在没有足够上下文前，使用 `glob` / `read` / `grep` / `ast_grep` / `lsp` 收敛事实。
+2. **选择最窄工具。** 能用 `read` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write_file`。
 3. **预期 approval pause。** 所有 `read_only=false` 的调用都可能让 session 进入 `waiting`，agent 不应假设调用立即执行。
 4. **把外部资料与本地事实分开。** `web_search` / `web_fetch` 给的是外部证据；本仓库状态仍以 workspace 工具和 runtime events 为准。
 5. **不要绕过 runtime。** UI、agent preset、graph / provider engine 都不应直接执行工具或自行处理审批。
@@ -837,10 +837,10 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 1. Agent 先读取目标文件：
 
 ```json
-{"tool_name": "read_file", "arguments": {"path": "docs/example.md"}}
+{"tool_name": "read", "arguments": {"path": "docs/example.md"}}
 ```
 
-2. Runtime 自动 allow，因为 `read_file.read_only=true`。
+2. Runtime 自动 allow，因为 `read.read_only=true`。
 
 3. Agent 生成最小 edit：
 

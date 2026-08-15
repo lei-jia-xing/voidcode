@@ -943,7 +943,7 @@ def test_session_bundle_import_seals_terminal_session_against_late_events(
         target_store.append_session_events(
             workspace=target_workspace,
             session_id=imported_id,
-            events=(("runtime.tool_completed", "tool", {"tool": "read_file", "status": "ok", "content": "late"}, None),),
+            events=(("runtime.tool_completed", "tool", {"tool": "read", "status": "ok", "content": "late"}, None),),
         )
     with pytest.raises(SessionSealedError):
         target_store.append_session_event(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.tools import ApplyPatchTool, EditTool, MultiEditTool, ReadFileTool, ToolCall, WriteFileTool
+from voidcode.tools import ApplyPatchTool, EditTool, MultiEditTool, ReadTool, ToolCall, WriteFileTool
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.contracts import ToolResult
 from voidcode.tools.guards import ReadTracking, read_paths_for_tool_results, read_tracking_for_tool_results
@@ -23,7 +23,7 @@ def test_read_paths_for_tool_results_collects_successful_workspace_reads(tmp_pat
     paths = read_paths_for_tool_results(
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 content="sample",
                 data={"path": "sample.txt", "arguments": {"path": "sample.txt"}},
@@ -147,7 +147,7 @@ def _read_result(*, workspace: Path, path: str, offset: int | None = None, limit
         arguments["offset"] = offset
     if limit is not None:
         arguments["limit"] = limit
-    return ReadFileTool().invoke(ToolCall(tool_name="read_file", arguments=arguments), workspace=workspace)
+    return ReadTool().invoke(ToolCall(tool_name="read", arguments=arguments), workspace=workspace)
 
 
 def _seen_lines(tracking: ReadTracking, target: Path) -> frozenset[int]:
@@ -213,7 +213,7 @@ def test_write_file_tool_rejects_partial_read_overwrite_with_unseen_range(
             read_lines={resolved: frozenset({1})},
         )
     ):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
                     tool_name="write_file",
@@ -226,7 +226,7 @@ def test_write_file_tool_rejects_partial_read_overwrite_with_unseen_range(
     assert diagnostic.error_kind == "tool_input_mismatch"
     assert diagnostic.error_details["reason"] == "unseen_range"
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 2, "end": 3}]
-    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert "read" in (diagnostic.retry_guidance or "")
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
@@ -244,7 +244,7 @@ def test_write_file_tool_rejects_fail_closed_when_path_read_but_no_line_data(
             read_paths=frozenset({resolved}),
         )
     ):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
                     tool_name="write_file",

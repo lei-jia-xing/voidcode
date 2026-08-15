@@ -28,7 +28,7 @@ from voidcode.runtime.context_window import (
     continuity_state_from_metadata_payload,
     continuity_summary_metadata,
     count_text_tokens,
-    normalize_read_file_output,
+    normalize_read_output,
     prepare_provider_context,
     project_tool_results_for_context_window,
 )
@@ -71,7 +71,7 @@ def _context_window_policy(**overrides: object) -> Any:
 
 def _tool_result(index: int) -> ToolResult:
     return ToolResult(
-        tool_name="read_file",
+        tool_name="read",
         content=f"content-{index}",
         status="ok",
         data={"index": index},
@@ -80,7 +80,7 @@ def _tool_result(index: int) -> ToolResult:
 
 def _sized_tool_result(index: int, *, content_size: int) -> ToolResult:
     return ToolResult(
-        tool_name="read_file",
+        tool_name="read",
         content=f"content-{index}-" + ("x" * content_size),
         status="ok",
         data={"index": index, "path": f"sample-{index}.txt"},
@@ -117,7 +117,7 @@ def test_prepare_provider_context_default_policy_truncates_large_tool_results() 
         prompt="inspect large file",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 content=large_content,
                 data={"path": "large.txt"},
@@ -243,7 +243,7 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
         prompt="continue",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 content="alpha",
                 data={"tool_call_id": "call-1", "arguments": {"path": "src/app.py"}},
@@ -303,7 +303,7 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
         prompt="continue",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 content="content",
                 data={"path": "src/app.py", "arguments": {"path": "src/app.py"}},
@@ -471,7 +471,7 @@ def test_assemble_provider_context_uses_full_tool_history_for_rules_not_compacte
     for i in range(6):
         results.append(
             ToolResult(
-                tool_name="read_file" if i % 2 == 0 else "edit",
+                tool_name="read" if i % 2 == 0 else "edit",
                 status="ok",
                 content="content",
                 data={"path": "src/module.py"},
@@ -516,7 +516,7 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
                 },
             ),
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="current code",
                 status="ok",
                 data={"tool_call_id": "read-1", "arguments": {"path": "src/app.py"}},
@@ -541,7 +541,7 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
         policy=_context_window_policy(model_context_window_tokens=100),
     )
 
-    assert [segment.tool_name for segment in assembled.segments if segment.role == "tool"] == ["read_file"]
+    assert [segment.tool_name for segment in assembled.segments if segment.role == "tool"] == ["read"]
     system_text = "\n".join(str(segment.content) for segment in assembled.segments if segment.role == "system")
     assert "authoritative runtime state" in system_text
     assert "stale tool feedback" not in system_text
@@ -670,7 +670,7 @@ def test_provider_context_inspector_reports_synthetic_feedback_mode() -> None:
         prompt="continue",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="hello",
                 status="ok",
                 data={
@@ -752,7 +752,7 @@ def test_provider_context_inspector_redacts_secret_text_from_tool_output() -> No
         prompt="inspect env",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content=("OPENAI_API_KEY=sk-test-secret\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz"),
                 status="ok",
                 data={"tool_call_id": "call:secret", "arguments": {"path": ".env"}},
@@ -831,7 +831,7 @@ def test_provider_context_inspector_reports_tool_pairing_problems() -> None:
                 role="assistant",
                 content=None,
                 tool_call_id="missing-result",
-                tool_name="read_file",
+                tool_name="read",
                 tool_arguments={"path": "sample.txt"},
             ),
             RuntimeContextSegment(
@@ -869,20 +869,20 @@ def test_provider_context_inspector_reports_duplicate_tool_result_ids() -> None:
                 role="assistant",
                 content=None,
                 tool_call_id="duplicate-result",
-                tool_name="read_file",
+                tool_name="read",
             ),
             RuntimeContextSegment(
                 role="tool",
                 content="first",
                 tool_call_id="duplicate-result",
-                tool_name="read_file",
+                tool_name="read",
                 metadata={"status": "ok", "data": {}},
             ),
             RuntimeContextSegment(
                 role="tool",
                 content="second",
                 tool_call_id="duplicate-result",
-                tool_name="read_file",
+                tool_name="read",
                 metadata={"status": "ok", "data": {}},
             ),
         ),
@@ -912,13 +912,13 @@ def test_provider_context_inspector_reports_oversized_retained_tool_feedback() -
                 role="assistant",
                 content=None,
                 tool_call_id="large-result",
-                tool_name="read_file",
+                tool_name="read",
             ),
             RuntimeContextSegment(
                 role="tool",
                 content="x" * 32,
                 tool_call_id="large-result",
-                tool_name="read_file",
+                tool_name="read",
                 metadata={"status": "ok", "data": {}},
             ),
         ),
@@ -952,7 +952,7 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
     )
     tool_results = (
         ToolResult(
-            tool_name="read_file",
+            tool_name="read",
             status="ok",
             content=raw_read_content,
             data={
@@ -1153,7 +1153,7 @@ def test_prepare_provider_context_uses_chars_per_4_token_approximation() -> None
         prompt="read ascii.txt",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="a" * 80,
                 status="ok",
                 data={"path": "ascii.txt"},
@@ -1166,7 +1166,7 @@ def test_prepare_provider_context_uses_chars_per_4_token_approximation() -> None
         prompt="read unicode.txt",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="你" * 80,
                 status="ok",
                 data={"path": "unicode.txt"},
@@ -1323,7 +1323,7 @@ def test_prepare_provider_context_older_todo_and_task_do_not_displace_newer_read
     )
 
     retained_indexes = tuple(result.data["index"] for result in context.tool_results)
-    assert retained_indexes == (1, 3, 4, 5)
+    assert retained_indexes == (2, 3, 4, 5)
 
 
 def test_prepare_provider_context_older_write_edit_do_not_displace_newer_reads() -> None:
@@ -1362,7 +1362,7 @@ def test_prepare_provider_context_older_error_does_not_displace_newer_results() 
         prompt="debug",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="error",
                 error="not found",
                 data={"index": 1, "path": "missing.py"},
@@ -1416,7 +1416,7 @@ def test_prepare_provider_context_protected_recent_always_kept() -> None:
                 data={"index": 1, "path": "src/app.py"},
             ),
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="error",
                 error="missing",
                 data={"index": 2, "path": "src/missing.py"},
@@ -1638,15 +1638,15 @@ def test_continuity_summary_metadata_is_derived_from_state() -> None:
         summary_text="one",
         dropped_tool_result_count=1,
         retained_tool_result_count=3,
-        dropped_tool_results=(DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=1),),
+        dropped_tool_results=(DroppedToolResultDiagnostic(tool_name="read", status="ok", index=1),),
     )
     second = ContextProjection(
         summary_text="one",
         dropped_tool_result_count=2,
         retained_tool_result_count=3,
         dropped_tool_results=(
-            DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=1),
-            DroppedToolResultDiagnostic(tool_name="read_file", status="ok", index=2),
+            DroppedToolResultDiagnostic(tool_name="read", status="ok", index=1),
+            DroppedToolResultDiagnostic(tool_name="read", status="ok", index=2),
         ),
     )
 
@@ -1740,7 +1740,7 @@ def test_continuity_state_round_trip_includes_source_references() -> None:
     assert restored.source_references == ("tool:call-1", "event:file:src/a.py")
 
 
-def test_normalize_read_file_output_preserves_showing_lines_footer() -> None:
+def test_normalize_read_output_preserves_showing_lines_footer() -> None:
     content = "\n".join(
         [
             "<path>sample.txt</path>",
@@ -1753,12 +1753,12 @@ def test_normalize_read_file_output_preserves_showing_lines_footer() -> None:
         ]
     )
 
-    normalized = normalize_read_file_output(content)
+    normalized = normalize_read_output(content)
 
     assert normalized == ("alpha\nbeta\n(Showing lines 10-11 of 20. Use offset=12 to continue.)")
 
 
-def test_normalize_read_file_output_preserves_output_capped_footer() -> None:
+def test_normalize_read_output_preserves_output_capped_footer() -> None:
     content = "\n".join(
         [
             "<path>sample.txt</path>",
@@ -1770,12 +1770,12 @@ def test_normalize_read_file_output_preserves_output_capped_footer() -> None:
         ]
     )
 
-    normalized = normalize_read_file_output(content)
+    normalized = normalize_read_output(content)
 
     assert normalized == ("alpha\n(Output capped at 50 KB. Showing lines 1-1. Use offset=2 to continue.)")
 
 
-def test_context_window_token_estimate_counts_raw_read_file_content() -> None:
+def test_context_window_token_estimate_counts_raw_read_content() -> None:
     raw_content = "\n".join(
         [
             "<path>sample.txt</path>",
@@ -1787,7 +1787,7 @@ def test_context_window_token_estimate_counts_raw_read_file_content() -> None:
             "</content>",
         ]
     )
-    stripped_content = normalize_read_file_output(raw_content)
+    stripped_content = normalize_read_output(raw_content)
     policy = _context_window_policy(
         auto_compaction=False,
         model_context_window_tokens=100_000,
@@ -1795,13 +1795,13 @@ def test_context_window_token_estimate_counts_raw_read_file_content() -> None:
 
     raw_context = prepare_provider_context(
         prompt="read sample.txt",
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content=raw_content),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content=raw_content),),
         session_metadata={},
         policy=policy,
     )
     stripped_context = prepare_provider_context(
         prompt="read sample.txt",
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content=stripped_content),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content=stripped_content),),
         session_metadata={},
         policy=policy,
     )

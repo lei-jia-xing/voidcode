@@ -13,13 +13,13 @@ from .tool_provider import BuiltinToolProvider
 #: Tools always shown top-level in the provider tools array when the
 #: essential/discoverable split is enabled. Everything not in this set is
 #: discoverable: reachable on demand through ``voidcode://tool/<name>`` doc
-#: reads (via read_file) and ``invoke_tool`` dispatch. The dispatch/read
+#: reads (via read) and ``invoke_tool`` dispatch. The dispatch/read
 #: mechanisms themselves MUST stay essential or discoverable tools become
 #: unreachable.
 ESSENTIAL_TOOL_NAMES = frozenset(
     {
         # Core workspace navigation and edit loop.
-        "read_file",
+        "read",
         "edit",
         "write_file",
         "grep",

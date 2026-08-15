@@ -16,7 +16,7 @@ def test_directory_readme_contexts_load_root_and_nearest_readmes(tmp_path: Path)
         workspace=tmp_path,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 content="content",
                 data={"path": "src/app.py", "arguments": {"path": "src/app.py"}},
@@ -36,7 +36,7 @@ def test_directory_readme_contexts_ignore_external_paths(tmp_path: Path) -> None
         workspace=tmp_path,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 content="content",
                 data={

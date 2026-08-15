@@ -131,7 +131,7 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
     assert "artifact-line-0" in capped.content
     assert "artifact-line-10" not in capped.content
     assert capped.reference == f"voidcode://artifact/{capped.data['artifact_id']}"
-    assert "read_file(path=" in capped.content
+    assert "read(path=" in capped.content
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)

@@ -545,7 +545,7 @@ class _StubGraph:
     ) -> _StubStep:
         _ = session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}))
+            return _StubStep(tool_call=ToolCall(tool_name="read", arguments={"path": "sample.txt"}))
         return _StubStep(output=request.prompt, is_finished=True)
 
 
@@ -1170,7 +1170,7 @@ class _DistillAwareTurnProvider:
 
         self.main_calls += 1
         if self.main_calls <= 2:
-            return ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"}))
         return ProviderTurnResult(output="done")
 
 
@@ -1222,12 +1222,12 @@ class _BatchedReadsTurnProvider:
             return ProviderTurnResult(
                 tool_calls=(
                     ToolCall(
-                        tool_name="read_file",
+                        tool_name="read",
                         arguments={"path": "alpha.txt"},
                         tool_call_id="call-alpha",
                     ),
                     ToolCall(
-                        tool_name="read_file",
+                        tool_name="read",
                         arguments={"path": "beta.txt"},
                         tool_call_id="call-beta",
                     ),
@@ -1270,7 +1270,7 @@ class _DeniedWriteThenReadTurnProvider:
             )
         last_result = turn_request.tool_results[-1]
         if last_result.data.get("permission_denied") is True:
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "safe.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": "safe.txt"}))
         return ProviderTurnResult(output="recovered from denial")
 
     def stream_turn(self, request: object):
@@ -1443,8 +1443,8 @@ class _UnreadWriteThenReadTurnProvider:
         last_result = turn_request.tool_results[-1]
         error_details = last_result.error_details or {}
         if error_details.get("reason") == "write_without_read":
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "safe.txt"}))
-        if last_result.tool_name == "read_file" and last_result.status == "ok":
+            return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": "safe.txt"}))
+        if last_result.tool_name == "read" and last_result.status == "ok":
             content_hash = last_result.data.get("content_hash")
             write_arguments: dict[str, object] = {"path": "safe.txt", "content": "updated"}
             if isinstance(content_hash, str):
@@ -1687,7 +1687,7 @@ class _TwoEpisodeTransientTurnProvider:
                 message=f"transient failure episode {self.model_provider.calls}",
             )
         if not turn_request.tool_results:
-            return ProviderTurnResult(tool_call=ToolCall(tool_name="read_file", arguments={"path": "sample.txt"}))
+            return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": "sample.txt"}))
         return ProviderTurnResult(output="recovered twice")
 
 
@@ -1802,7 +1802,7 @@ class _TwoEpisodeFallbackTurnProvider:
         if self.model_provider.calls == 1:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="read_file",
+                    tool_name="read",
                     arguments={"path": "sample.txt"},
                 )
             )
@@ -3644,7 +3644,7 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
     assert provider_context.message_count == len(provider_context.provider_messages)
     assert [segment.role for segment in provider_context.segments][-2:] == ["assistant", "tool"]
     assert provider_context.segments[-1].source == "retained_tool_result"
-    assert provider_context.segments[-1].tool_name == "read_file"
+    assert provider_context.segments[-1].tool_name == "read"
     assert provider_context.segments[-1].content == "Read 1 line(s) from sample.txt."
     assert provider_context.segments[-1].metadata["status"] == "ok"
     reconstructed_data = provider_context.segments[-1].metadata["data"]
@@ -3785,7 +3785,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
             agent=RuntimeAgentConfig(
                 preset="leader",
                 hook_refs=("role_reminder",),
-                tools=RuntimeToolsConfig(allowlist=("read_file", "skill", "mcp/*")),
+                tools=RuntimeToolsConfig(allowlist=("read", "skill", "mcp/*")),
             ),
         ),
     )
@@ -3805,7 +3805,7 @@ def test_runtime_persists_agent_capability_snapshot_for_replay(
     assert cast(dict[str, object], capability_snapshot["agent"])["preset"] == "leader"
     assert cast(dict[str, object], capability_snapshot["tools"])["effective_names"] == [
         "mcp/echo/echo",
-        "read_file",
+        "read",
         "skill",
     ]
     generation = cast(dict[str, object], capability_snapshot["tools"])["generation"]
@@ -3836,7 +3836,7 @@ def test_runtime_custom_primary_agent_summary_and_capability_snapshot(tmp_path: 
                 "name: Local Planner",
                 "description: Local planning agent",
                 "mode: primary",
-                "tool_allowlist: [read_file]",
+                "tool_allowlist: [read]",
                 "skill_refs: [planning]",
                 "preset_hook_refs: [role_reminder]",
             )
@@ -3884,7 +3884,7 @@ def test_runtime_custom_primary_agent_summary_and_capability_snapshot(tmp_path: 
     materialization = cast(dict[str, object], prompt_snapshot["materialization"])
     assert materialization["source"] == "custom_markdown"
     assert materialization["body"] == "Custom planner prompt body."
-    assert tools_snapshot["manifest_allowlist"] == ["read_file"]
+    assert tools_snapshot["manifest_allowlist"] == ["read"]
     assert skills_snapshot["manifest_refs"] == ["planning"]
 
     manifest_path.unlink()
@@ -4730,9 +4730,7 @@ def test_runtime_provider_recovers_after_permission_denial_feedback(tmp_path: Pa
     )
     assert denial_feedback.payload["status"] == "error"
     assert denial_feedback.payload["error"] == "permission denied for tool: write_file"
-    read_feedback = next(
-        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"
-    )
+    read_feedback = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read")
     assert read_feedback.payload["status"] == "ok"
     assert len(created_providers[-1].requests) == 3
     denied_tool_result = created_providers[-1].requests[1].tool_results[-1]
@@ -4780,9 +4778,7 @@ def test_runtime_provider_recovers_after_read_before_write_feedback(tmp_path: Pa
     assert feedback.payload["error_kind"] == "tool_input_mismatch"
     error_details = cast(dict[str, object], feedback.payload["error_details"])
     assert error_details["reason"] == "write_without_read"
-    read_feedback = next(
-        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"
-    )
+    read_feedback = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read")
     assert read_feedback.payload["status"] == "ok"
 
 
@@ -4808,9 +4804,7 @@ def test_runtime_provider_executes_batched_tool_calls_before_next_model_turn(
     assert len(provider.requests) == 2
     assert provider.requests[1].tool_results[0].data["tool_call_id"] == "call-alpha"
     assert provider.requests[1].tool_results[1].data["tool_call_id"] == "call-beta"
-    completed_reads = [
-        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"
-    ]
+    completed_reads = [event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read"]
     assert [event.payload["tool_call_id"] for event in completed_reads] == [
         "call-alpha",
         "call-beta",
@@ -4919,7 +4913,7 @@ def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path) ->
         workspace=tmp_path,
         config=RuntimeConfig(
             execution_engine="deterministic",
-            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="read_file", path="src/**", decision="allow"),)),
+            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="read", path="src/**", decision="allow"),)),
         ),
     )
     (tmp_path / "sample.txt").write_text("persist permissions\n", encoding="utf-8")
@@ -4928,9 +4922,9 @@ def test_runtime_persists_pattern_permission_rules_for_resume(tmp_path: Path) ->
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     permission = cast(dict[str, object], runtime_config["permission"])
 
-    assert permission["rules"] == [{"tool": "read_file", "path": "src/**", "decision": "allow"}]
+    assert permission["rules"] == [{"tool": "read", "path": "src/**", "decision": "allow"}]
     resumed = VoidCodeRuntime(workspace=tmp_path).effective_runtime_config(session_id="persist-rules")
-    assert resumed.permission.rules == (PatternPermissionRule(tool="read_file", path="src/**", decision="allow"),)
+    assert resumed.permission.rules == (PatternPermissionRule(tool="read", path="src/**", decision="allow"),)
 
 
 def test_runtime_session_debug_snapshot_classifies_provider_failure(tmp_path: Path) -> None:
@@ -5680,7 +5674,7 @@ def test_hook_preset_snapshot_cannot_grant_denied_tools_or_policy_authority(
             agent=RuntimeAgentConfig(
                 preset="leader",
                 hook_refs=("delegation_guard",),
-                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+                tools=RuntimeToolsConfig(allowlist=("read",)),
                 execution_engine="provider",
             )
         ),
@@ -5699,7 +5693,7 @@ def test_hook_preset_snapshot_cannot_grant_denied_tools_or_policy_authority(
     )
     hook_capability = cast(dict[str, object], capability_snapshot["hooks"])
 
-    assert tuple(scoped_tools.tools) == ("read_file",)
+    assert tuple(scoped_tools.tools) == ("read",)
     assert "task" not in scoped_tools.tools
     assert hook_snapshot["refs"] == ["delegation_guard"]
     assert hook_capability["authority"] == "non_authoritative"
@@ -5796,14 +5790,14 @@ def test_runtime_child_runtime_policy_is_derived_from_parent_snapshot_subset(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(tools=RuntimeToolsConfig(allowlist=("read_file", "grep"))),
+        config=RuntimeConfig(tools=RuntimeToolsConfig(allowlist=("read", "grep"))),
     )
     parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
     parent_policy = cast(dict[str, object], parent_response.session.metadata["runtime_policy"])
     parent_tool_policy = cast(dict[str, object], parent_policy["tool_policy"])
     parent_delegation_policy = cast(dict[str, object], parent_policy["delegation_policy"])
     parent_hook_policy = cast(dict[str, object], parent_policy["hook_policy"])
-    assert parent_tool_policy["allowed"] == ["read_file", "grep"]
+    assert parent_tool_policy["allowed"] == ["read", "grep"]
 
     child_response = runtime.run(
         RuntimeRequest(
@@ -5887,7 +5881,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
                 "name: Local Auditor",
                 "description: Local delegated auditor",
                 "mode: subagent",
-                "tool_allowlist: [read_file, submit_result]",
+                "tool_allowlist: [read, submit_result]",
             )
         ),
         body="Audit from local markdown.",
@@ -5915,7 +5909,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
     assert agent_payload["prompt_source"] == "custom_markdown"
     assert agent_payload["manifest_source_scope"] == "project"
     assert agent_payload["manifest_source_path"] == str(manifest_path)
-    assert agent_payload["manifest_tool_allowlist"] == ["read_file", "submit_result"]
+    assert agent_payload["manifest_tool_allowlist"] == ["read", "submit_result"]
     prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
     assert prompt_materialization["body"] == "Audit from local markdown."
     assert response.session.metadata["delegation"] == {
@@ -10899,9 +10893,9 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             permission=ExternalDirectoryPermissionConfig(
                 read=ExternalDirectoryPolicy(rules=(("/var/log/**", "allow"), ("*", "ask"))),
                 write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
-                rules=(PatternPermissionRule(tool="read_file", path="docs/**", decision="allow"),),
+                rules=(PatternPermissionRule(tool="read", path="docs/**", decision="allow"),),
             ),
-            policy=RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read_file",))),
+            policy=RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",))),
             execution_engine="provider",
             model="opencode/gpt-5.4",
             max_steps=7,
@@ -10922,7 +10916,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             ),
             tools=RuntimeToolsConfig(
                 builtin=RuntimeToolsBuiltinConfig(enabled=True),
-                allowlist=("read_file", "grep"),
+                allowlist=("read", "grep"),
             ),
             agent=RuntimeAgentConfig(
                 preset="leader",
@@ -10969,8 +10963,8 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     assert effective.approval_mode == "ask"
     assert effective.permission.read.rules == (("/var/log/**", "allow"), ("*", "ask"))
     assert effective.permission.write.rules == (("*", "deny"),)
-    assert effective.permission.rules == (PatternPermissionRule(tool="read_file", path="docs/**", decision="allow"),)
-    assert effective.policy == RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read_file",)))
+    assert effective.permission.rules == (PatternPermissionRule(tool="read", path="docs/**", decision="allow"),)
+    assert effective.policy == RuntimePolicyConfig(tool_policy=RuntimePolicyToolPolicyConfig(default="deny", allowed=("read",)))
     assert effective.execution_engine == "provider"
     assert effective.model == "opencode/gpt-5.4"
     assert effective.max_steps == 7
@@ -10989,7 +10983,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     )
     assert effective.tools == RuntimeToolsConfig(
         builtin=RuntimeToolsBuiltinConfig(enabled=True),
-        allowlist=("read_file", "grep"),
+        allowlist=("read", "grep"),
     )
     assert effective.agent == RuntimeAgentConfig(
         preset="leader",
@@ -11161,7 +11155,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
             model="opencode/gpt-5.4",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                tools=RuntimeToolsConfig(allowlist=("read_file", "task", "submit_result")),
+                tools=RuntimeToolsConfig(allowlist=("read", "task", "submit_result")),
             ),
         ),
     )
@@ -11185,7 +11179,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     child_delegation = cast(dict[str, object], child_capability["delegation"])
 
     assert child_tools - {"submit_result"} <= parent_tools
-    assert child_tools == {"read_file", "submit_result"}
+    assert child_tools == {"read", "submit_result"}
     assert child_delegation["parent_bounded"] is True
     assert child_delegation["can_expand_parent_policy"] is False
     assert cast(list[str], child_delegation["allowed_child_presets"]) == [
@@ -11749,8 +11743,8 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -11854,8 +11848,8 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
                             "write_file",
@@ -12663,7 +12657,7 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
         "_prepare_provider_context_window",
         _counting_prepare_provider_context_window,
     )
-    tool_results = [ToolResult(tool_name="read_file", status="ok", content="alpha")]
+    tool_results = [ToolResult(tool_name="read", status="ok", content="alpha")]
 
     runtime._session_store.save_interrupted_checkpoint(
         workspace=tmp_path,
@@ -13014,8 +13008,8 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13100,7 +13094,7 @@ def test_runtime_provider_context_policy_warn_does_not_block_provider_call(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13145,7 +13139,7 @@ def test_runtime_provider_context_policy_block_fails_before_provider_call(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="unused"),
                 ),
                 created_providers=created_providers,
@@ -13191,7 +13185,7 @@ def test_runtime_provider_context_policy_off_preserves_provider_execution(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13229,7 +13223,7 @@ def test_runtime_transform_failure_policy_ignore_keeps_debug_only_trace(tmp_path
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13277,7 +13271,7 @@ def test_runtime_transform_failure_policy_warn_emits_policy_warning(tmp_path: Pa
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13323,7 +13317,7 @@ def test_runtime_transform_failure_policy_block_stops_provider_call(tmp_path: Pa
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13373,7 +13367,7 @@ def test_runtime_transform_failure_policy_block_overrides_warn_diagnostics_mode(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13425,7 +13419,7 @@ def test_runtime_transform_failure_policy_block_overrides_off_diagnostics_mode(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13477,7 +13471,7 @@ def test_runtime_provider_context_diagnostics_off_with_block_transform_policy_no
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
                 created_providers=created_providers,
@@ -13636,10 +13630,10 @@ def test_rehydrated_tool_results_for_existing_child_session_allow_omitted_parent
                 event_type="runtime.tool_completed",
                 source="tool",
                 payload={
-                    "tool": "read_file",
-                    "tool_name": "read_file",
+                    "tool": "read",
+                    "tool_name": "read",
                     "result": {
-                        "tool_name": "read_file",
+                        "tool_name": "read",
                         "status": "ok",
                         "content": "alpha",
                         "data": {"path": "sample.txt", "arguments": {"path": "sample.txt"}},
@@ -13679,7 +13673,7 @@ def test_rehydrated_tool_results_for_existing_child_session_allow_omitted_parent
     )
 
     assert len(rehydrated) == 1
-    assert rehydrated[0].tool_name == "read_file"
+    assert rehydrated[0].tool_name == "read"
 
 
 def test_runtime_turn_progress_hook_fires_with_payload(tmp_path: Path) -> None:
@@ -13716,8 +13710,8 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
             )
@@ -13756,8 +13750,8 @@ def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_eve
             "opencode": _ScriptedModelProvider(
                 name="opencode",
                 outcomes=(
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
-                    ProviderTurnResult(tool_call=ToolCall("read_file", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(output="done"),
                 ),
             )
@@ -14496,7 +14490,7 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
             agent=RuntimeAgentConfig(
                 preset="leader",
                 model="opencode/gpt-5.4",
-                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+                tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
         model_provider_registry=registry,
@@ -14507,14 +14501,14 @@ def test_runtime_agent_tool_allowlist_limits_provider_visible_tools(tmp_path: Pa
     assert response.session.status == "completed"
     assert created_providers
     visible_tool_names = {tool.name for tool in created_providers[0].requests[0].available_tools}
-    assert visible_tool_names == {"read_file"}
+    assert visible_tool_names == {"read"}
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == {
         "preset": "leader",
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
-        "tools": {"allowlist": ["read_file"]},
+        "tools": {"allowlist": ["read"]},
     }
 
 
@@ -14536,7 +14530,7 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
                 preset="leader",
                 model="opencode/gpt-5.4",
                 tools=RuntimeToolsConfig(
-                    allowlist=("read_file", "grep"),
+                    allowlist=("read", "grep"),
                     default=("grep", "write_file"),
                 ),
             )
@@ -14600,7 +14594,7 @@ def test_runtime_agent_empty_default_set_exposes_no_tools(tmp_path: Path) -> Non
                 preset="leader",
                 model="opencode/gpt-5.4",
                 tools=RuntimeToolsConfig(
-                    allowlist=("read_file", "grep"),
+                    allowlist=("read", "grep"),
                     default=(),
                 ),
             )
@@ -15207,7 +15201,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
             agent=RuntimeAgentConfig(
                 preset="leader",
                 model="opencode/gpt-5.4",
-                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+                tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
         model_provider_registry=registry,
@@ -15242,7 +15236,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
             agent=RuntimeAgentConfig(
                 preset="leader",
                 model="opencode/gpt-5.4",
-                tools=RuntimeToolsConfig(allowlist=("read_file",)),
+                tools=RuntimeToolsConfig(allowlist=("read",)),
             )
         ),
         model_provider_registry=registry,
@@ -16842,7 +16836,7 @@ def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_pat
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"}}'),
+                            text=('{"tool_name":"read","arguments":{"path":"sample.txt"}}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -16974,7 +16968,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text='{"tool_name":"read_file","arguments":{"path":"sample.txt"}}',
+                            text='{"tool_name":"read","arguments":{"path":"sample.txt"}}',
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -16999,7 +16993,7 @@ def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> 
     assert events
     tool_request_events = [event for event in events if event.event_type == "graph.tool_request_created"]
     assert len(tool_request_events) == 1
-    assert tool_request_events[0].payload["tool"] == "read_file"
+    assert tool_request_events[0].payload["tool"] == "read"
     assert tool_request_events[0].payload["arguments"] == {"path": "sample.txt"}
     assert isinstance(tool_request_events[0].payload["tool_call_id"], str)
     output_chunks = [chunk.output for chunk in chunks if chunk.kind == "output"]
@@ -17280,7 +17274,7 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -17324,14 +17318,14 @@ def test_runtime_provider_transient_failure_after_tool_is_resumable(
     assert snapshot.resume_checkpoint_kind == "provider_failure_retryable"
     assert snapshot.suggested_operator_action == "resume_provider_failure"
     assert snapshot.last_tool is not None
-    assert snapshot.last_tool.tool_name == "read_file"
+    assert snapshot.last_tool.tool_name == "read"
 
     resumed = runtime.resume("provider-retry-session")
 
     assert resumed.session.status == "completed"
     assert resumed.output == "resumed complete"
     assert created_providers[0].requests[-1].tool_results
-    assert created_providers[0].requests[-1].tool_results[0].tool_name == "read_file"
+    assert created_providers[0].requests[-1].tool_results[0].tool_name == "read"
     tool_completed_events = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
     assert len(tool_completed_events) == 1
 
@@ -17349,7 +17343,7 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -17488,7 +17482,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -17586,7 +17580,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
                         ProviderStreamEvent(
                             kind="content",
                             channel="tool",
-                            text=('{"tool_name":"read_file","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
+                            text=('{"tool_name":"read","arguments":{"path":"sample.txt"},"tool_call_id":"read-sample"}'),
                         ),
                         ProviderStreamEvent(kind="done", done_reason="completed"),
                     ),
@@ -18639,9 +18633,9 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
     context_window = runtime._prepare_provider_context_window(
         prompt="verify build",
         tool_results=(
-            ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
-            ToolResult(tool_name="read_file", status="ok", content="b", data={"index": 2}),
-            ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
+            ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
+            ToolResult(tool_name="read", status="ok", content="b", data={"index": 2}),
+            ToolResult(tool_name="read", status="ok", content="c", data={"index": 3}),
         ),
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
@@ -18680,7 +18674,7 @@ def test_runtime_persists_assembled_context_token_estimate(
     }
     assembled = runtime._assemble_provider_context(
         prompt="检查构建输出",
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="hello world", data={}),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content="hello world", data={}),),
         session_metadata=session_metadata,
         preserved_system_segments=("Follow project instructions.",),
     )
@@ -18717,7 +18711,7 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
         "source": "tool_result_window",
         "distillation_source": "deterministic",
         "dropped_tool_results": [
-            {"tool_name": "read_file", "status": "ok", "index": 1},
+            {"tool_name": "read", "status": "ok", "index": 1},
             {"tool_name": "grep", "status": "ok", "index": 2},
         ],
     }
@@ -18728,7 +18722,7 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
 
     assembled = runtime._assemble_provider_context(
         prompt="resume using raw events",
-        tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
+        tool_results=(ToolResult(tool_name="read", status="ok", content="raw retained"),),
         session_metadata=session_metadata,
     )
 
@@ -18769,7 +18763,7 @@ def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
     with pytest.raises(ValueError, match="legacy runtime continuity metadata"):
         runtime._assemble_provider_context(
             prompt="resume despite malformed metadata",
-            tool_results=(ToolResult(tool_name="read_file", status="ok", content="raw retained"),),
+            tool_results=(ToolResult(tool_name="read", status="ok", content="raw retained"),),
             session_metadata=session_metadata,
         )
 
@@ -18826,10 +18820,10 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
     context = runtime._prepare_provider_context_window(
         prompt="continue coding",
         tool_results=(
-            ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
-            ToolResult(tool_name="read_file", status="ok", content="b", data={"index": 2}),
-            ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
-            ToolResult(tool_name="read_file", status="ok", content="d", data={"index": 4}),
+            ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
+            ToolResult(tool_name="read", status="ok", content="b", data={"index": 2}),
+            ToolResult(tool_name="read", status="ok", content="c", data={"index": 3}),
+            ToolResult(tool_name="read", status="ok", content="d", data={"index": 4}),
         ),
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),
@@ -18850,9 +18844,9 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
     context = runtime._prepare_provider_context_window(
         prompt="inspect",
         tool_results=(
-            ToolResult(tool_name="read_file", status="ok", content="a", data={"index": 1}),
-            ToolResult(tool_name="read_file", status="ok", content="b", data={"index": 2}),
-            ToolResult(tool_name="read_file", status="ok", content="c", data={"index": 3}),
+            ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
+            ToolResult(tool_name="read", status="ok", content="b", data={"index": 2}),
+            ToolResult(tool_name="read", status="ok", content="c", data={"index": 3}),
         ),
         session_metadata={
             "runtime_config": runtime._runtime_config_metadata(),

@@ -473,7 +473,7 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         prompt_profile="leader",
         execution_engine="provider",
         model_preference="opencode/gpt-5.4",
-        tool_allowlist=("read_file",),
+        tool_allowlist=("read",),
         skill_refs=("demo",),
         preset_hook_refs=("role_reminder",),
         mcp_binding=AgentMcpBindingIntent(servers=("docs",)),

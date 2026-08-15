@@ -272,7 +272,7 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     assert "runtime_policy" not in checkpoint_metadata
 
 
-def test_tool_results_from_events_preserves_raw_read_file_content() -> None:
+def test_tool_results_from_events_preserves_raw_read_content() -> None:
     raw_content = "\n".join(
         [
             "<path>sample.txt</path>",
@@ -289,7 +289,7 @@ def test_tool_results_from_events_preserves_raw_read_file_content() -> None:
         event_type="runtime.tool_completed",
         source="tool",
         payload={
-            "tool": "read_file",
+            "tool": "read",
             "status": "ok",
             "content": raw_content,
         },
@@ -324,7 +324,7 @@ def test_session_storage_revert_marker_filters_active_view_only(tmp_path: Path) 
                 sequence=2,
                 event_type="runtime.tool_completed",
                 source="runtime",
-                payload={"tool": "read_file", "status": "ok", "content": "context"},
+                payload={"tool": "read", "status": "ok", "content": "context"},
             ),
             EventEnvelope(
                 session_id="undo-session",
@@ -1016,7 +1016,7 @@ def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> No
                 event_type="runtime.tool_completed",
                 source="runtime",
                 payload={
-                    "tool": "read_file",
+                    "tool": "read",
                     "status": "ok",
                     "content": "alpha\n",
                     "error": None,
@@ -1028,11 +1028,11 @@ def test_tool_results_from_events_keeps_success_payloads_with_null_error() -> No
 
     assert tool_results == [
         {
-            "tool_name": "read_file",
+            "tool_name": "read",
             "content": "alpha\n",
             "status": "ok",
             "data": {
-                "tool": "read_file",
+                "tool": "read",
                 "status": "ok",
                 "content": "alpha\n",
                 "error": None,
@@ -2070,9 +2070,9 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
     store = SqliteSessionStore(database_path=tmp_path / "sessions.sqlite3")
     tool_results: tuple[dict[str, object], ...] = (
         {
-            "tool_name": "read_file",
+            "tool_name": "read",
             "status": "ok",
-            "data": {"tool": "read_file", "status": "ok", "content": "alpha\n"},
+            "data": {"tool": "read", "status": "ok", "content": "alpha\n"},
             "content": "alpha\n",
             "error": None,
         },

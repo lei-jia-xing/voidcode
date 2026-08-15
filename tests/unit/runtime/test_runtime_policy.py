@@ -38,7 +38,7 @@ def _sample_policy_inputs() -> dict[str, object]:
         "agent_preset": "leader",
         "agent_manifest_id": "leader",
         "runtime_config": {
-            "tools": {"allowlist": ["read_file", "grep", "task"]},
+            "tools": {"allowlist": ["read", "grep", "task"]},
             "policy": {"enabled": True, "version": "v1"},
         },
         "request_metadata": {},
@@ -149,7 +149,7 @@ def test_runtime_policy_intent_stays_neutral_for_free_text_inputs() -> None:
 
 
 def test_runtime_policy_neutral_intent_cannot_grant_capabilities() -> None:
-    snapshot = _materialize_sample_snapshot(runtime_config={"tools": {"allowlist": ["read_file"]}})
+    snapshot = _materialize_sample_snapshot(runtime_config={"tools": {"allowlist": ["read"]}})
 
     tool_policy = cast(Mapping[str, object], snapshot["tool_policy"])
     delegation_policy = cast(Mapping[str, object], snapshot["delegation_policy"])
@@ -177,7 +177,7 @@ def test_runtime_policy_hooks_are_non_authoritative() -> None:
             "tool_policy_patch": {"allow": ["shell_exec"]},
             "delegation_policy_patch": {"allow": ["product"]},
         },
-        runtime_config={"tools": {"allowlist": ["read_file"]}},
+        runtime_config={"tools": {"allowlist": ["read"]}},
     )
 
     hook_policy = cast(Mapping[str, object], snapshot["hook_policy"])
@@ -249,7 +249,7 @@ def test_runtime_policy_rejects_current_version_with_incomplete_shape() -> None:
 def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
     parent = _materialize_sample_snapshot(
         runtime_config={
-            "tools": {"allowlist": ["read_file"]},
+            "tools": {"allowlist": ["read"]},
             "policy": {
                 "delegation_policy": {"allow": ["explore"]},
                 "hook_policy": {
@@ -264,7 +264,7 @@ def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
         agent_preset="explore",
         agent_manifest_id="explore",
         runtime_config={
-            "tools": {"allowlist": ["read_file", "write_file", "task"]},
+            "tools": {"allowlist": ["read", "write_file", "task"]},
             "policy": {
                 "delegation_policy": {"allow": ["explore", "worker"]},
                 "hook_policy": {
@@ -281,7 +281,7 @@ def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
     hook_policy = cast(Mapping[str, object], child["hook_policy"])
     trace = cast(Sequence[Mapping[str, object]], child["precedence_trace"])
 
-    assert tool_policy["allowed"] == ["read_file"]
+    assert tool_policy["allowed"] == ["read"]
     assert delegation_policy["allowed_presets"] == ["explore"]
     assert hook_policy["allowed_event_scopes"] == ["pre_tool"]
     assert hook_policy["actions"] == ["observe"]

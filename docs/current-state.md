@@ -23,7 +23,7 @@
 - [x] **契约层**：代码中存在类型化的会话、事件、运行时、图和工具契约。
 - [x] **稳定的 deterministic reference/debug engine**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。它保留为无凭据本地演示、测试和参考 harness；新产品行为优先沿 provider-backed execution path 演进。
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
-- [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read_file`、`shell_exec` 和 `write_file`。
+- [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read`、`shell_exec` 和 `write_file`。
 - [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
 - [x] **LSP 和 ACP/MCP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件、只读 tool 基线，以及主流 workspace 的 implicit defaults）。MCP 已具备 runtime-managed lifecycle、tool discovery 和 tool call 基础集成，但当前仍是 config-gated / opt-in 能力，默认不会进入 MVP 主执行路径；现阶段重点仍是边界稳定化而非功能扩张。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍保持严格收敛的 MVP 范围。
 - [x] **极简 HTTP 传输**：精简的后端 HTTP 层现在暴露了 `GET /api/sessions`、`GET /api/sessions/{session_id}` 和 `POST /api/runtime/run/stream`，其中 SSE 数据块直接从运行时边界序列化，并且现在可以通过 `voidcode serve` 在本地提供服务。

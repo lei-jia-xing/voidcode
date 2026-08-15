@@ -94,7 +94,7 @@ def test_persist_event_assigns_db_sequence(tmp_path: Path) -> None:
         session_id="session-1",
         event_type="runtime.tool_started",
         source="runtime",
-        payload={"tool": "read_file"},
+        payload={"tool": "read"},
     )
 
     assert envelope.sequence == 1
@@ -166,7 +166,7 @@ def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
 
     tool_results = [
         ToolResult(
-            tool_name="read_file",
+            tool_name="read",
             status="ok",
             content="alpha\n",
             data={"tool_call_id": "call-1", "arguments": {"path": "a.txt"}},
@@ -185,7 +185,7 @@ def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
 
     serialized = _serialized_tool_results(tool_results)
 
-    assert serialized[0]["tool_name"] == "read_file"
+    assert serialized[0]["tool_name"] == "read"
     assert serialized[0]["status"] == "ok"
     assert serialized[0]["content"] == "alpha\n"
     assert serialized[0]["error"] is None
@@ -194,7 +194,7 @@ def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
     assert serialized[1]["error_kind"] == "tool_timeout"
 
     rehydrated = RuntimeResumeCoordinator.tool_results_from_checkpoint(list(serialized))
-    assert [result.tool_name for result in rehydrated] == ["read_file", "shell_exec"]
+    assert [result.tool_name for result in rehydrated] == ["read", "shell_exec"]
     assert rehydrated[1].status == "error"
     assert rehydrated[1].error == "boom"
     assert rehydrated[1].error_kind == "tool_timeout"
@@ -259,7 +259,7 @@ def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) ->
             _ = request, session
             if not tool_results:
                 return _GraphStep(
-                    tool_call=ToolCall(tool_name="read_file", arguments={"path": str(sample_file)}),
+                    tool_call=ToolCall(tool_name="read", arguments={"path": str(sample_file)}),
                 )
             return _GraphStep(output="done", is_finished=True)
 
@@ -285,5 +285,5 @@ def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) ->
     assert checkpoint["kind"] == "interrupted"
     raw_tool_results = checkpoint["tool_results"]
     assert isinstance(raw_tool_results, list)
-    assert [cast(dict[str, object], entry)["tool_name"] for entry in raw_tool_results] == ["read_file"]
+    assert [cast(dict[str, object], entry)["tool_name"] for entry in raw_tool_results] == ["read"]
     assert cast(int, checkpoint["last_event_sequence"]) > 0

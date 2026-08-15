@@ -67,8 +67,8 @@ def resolve_tool_instruction(
         path_text = read_match.group("path").strip()
         if not path_text:
             raise ValueError("request path must not be empty")
-        _ensure_tool(available_tools, "read_file", read_only=True, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(ToolCall(tool_name="read_file", arguments={"path": path_text}))
+        _ensure_tool(available_tools, "read", read_only=True, suffix=unavailable_message_suffix)
+        return ToolCommandResolution(ToolCall(tool_name="read", arguments={"path": path_text}))
 
     grep_match = GREP_REQUEST_PATTERN.match(instruction)
     if grep_match is not None:

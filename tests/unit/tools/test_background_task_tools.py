@@ -490,7 +490,7 @@ class _RepeatedToolCompletionBackgroundRuntime(_StubBackgroundRuntime):
                     sequence=1,
                     event_type=RUNTIME_TOOL_COMPLETED,
                     source="runtime",
-                    payload={"tool_call_id": "tool-1", "tool": "read_file"},
+                    payload={"tool_call_id": "tool-1", "tool": "read"},
                 ),
                 EventEnvelope(
                     session_id="child-session",

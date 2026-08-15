@@ -24,7 +24,7 @@ from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 def _tool_definitions() -> tuple[ToolDefinition, ...]:
     return (
-        ToolDefinition(name="read_file", description="read", input_schema={}, read_only=True),
+        ToolDefinition(name="read", description="read", input_schema={}, read_only=True),
         ToolDefinition(name="grep", description="grep", input_schema={}, read_only=True),
         ToolDefinition(name="write_file", description="write", input_schema={}, read_only=False),
         ToolDefinition(name="shell_exec", description="run", input_schema={}, read_only=False),
@@ -83,7 +83,7 @@ def test_stub_provider_protocol_proposes_tool_call_for_first_turn() -> None:
     )
 
     assert result.tool_call is not None
-    assert result.tool_call.tool_name == "read_file"
+    assert result.tool_call.tool_name == "read"
     assert result.tool_call.arguments == {"path": "sample.txt"}
     assert result.output is None
 
@@ -101,7 +101,7 @@ def test_stub_provider_protocol_finalizes_from_last_tool_result() -> None:
                     prompt="read sample.txt",
                     tool_results=(
                         ToolResult(
-                            tool_name="read_file",
+                            tool_name="read",
                             content="alpha\nbeta\n",
                             status="ok",
                             data={"path": "sample.txt", "type": "file", "content": "alpha\nbeta\n"},
@@ -163,7 +163,7 @@ def test_stub_provider_protocol_uses_bounded_context_window_results_for_finalize
                     prompt="read sample.txt",
                     tool_results=(
                         ToolResult(
-                            tool_name="read_file",
+                            tool_name="read",
                             content="new\n",
                             status="ok",
                             data={"path": "sample.txt", "type": "file", "content": "new\n"},
@@ -196,13 +196,13 @@ def test_stub_provider_protocol_compact_projection_keeps_provider_invariants() -
         prompt="read sample.txt",
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="old\n",
                 status="ok",
                 data={"tool_call_id": "old-call", "path": "old.txt"},
             ),
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 content="new\n",
                 status="ok",
                 data={"tool_call_id": "new-call", "path": "sample.txt"},

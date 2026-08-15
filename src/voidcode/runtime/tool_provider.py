@@ -14,7 +14,7 @@ from ..tools.glob import GlobTool
 from ..tools.grep import GrepTool
 from ..tools.invoke_tool import InvokeTool
 from ..tools.local_custom import discover_local_custom_tools
-from ..tools.read_file import ReadFileTool
+from ..tools.read import ReadTool
 from ..tools.shell_exec import ShellExecTool
 from ..tools.submit_result import SubmitResultTool
 from ..tools.web_fetch import WebFetchTool
@@ -40,7 +40,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "invoke_tool",
         "lsp",
         "multi_edit",
-        "read_file",
+        "read",
         "question",
         "shell_exec",
         "submit_result",
@@ -241,7 +241,7 @@ class BuiltinToolProvider:
             GlobTool(),
             GrepTool(),
             InvokeTool(),
-            ReadFileTool(),
+            ReadTool(),
             ShellExecTool(),
             SubmitResultTool(),
             WebFetchTool(),

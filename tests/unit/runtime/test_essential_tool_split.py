@@ -3,7 +3,7 @@
 Covers:
 (a) essential-only filtering of the provider tools array (with allowlist
     overrides and the all-top-level fallback),
-(b) ``read_file(path="voidcode://tool/<name>")`` returning real guidance +
+(b) ``read(path="voidcode://tool/<name>")`` returning real guidance +
     input schema for a discoverable tool,
 (c) ``invoke_tool`` dispatch executing a discoverable tool through the
     registry and enforcing permission (pending approval / read-only denial as
@@ -153,7 +153,7 @@ def test_provider_path_keeps_allowlist_required_tools_top_level(tmp_path: Path) 
             tools=RuntimeToolsConfig(essential_only=True),
             agent=RuntimeAgentConfig(
                 preset="leader",
-                tools=RuntimeToolsConfig(allowlist=("web_search", "multi_edit", "read_file", "grep")),
+                tools=RuntimeToolsConfig(allowlist=("web_search", "multi_edit", "read", "grep")),
             ),
         ),
         workspace=tmp_path,
@@ -161,7 +161,7 @@ def test_provider_path_keeps_allowlist_required_tools_top_level(tmp_path: Path) 
     names = set(available)
     # Allowlist-selected tools stay top-level even when they are not part of
     # the essential set; scoping still narrows to the allowlist.
-    assert names == {"read_file", "grep", "web_search", "multi_edit"}
+    assert names == {"read", "grep", "web_search", "multi_edit"}
 
 
 # ---------------------------------------------------------------------------
@@ -169,11 +169,11 @@ def test_provider_path_keeps_allowlist_required_tools_top_level(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def test_read_file_serves_discoverable_tool_documentation(tmp_path: Path) -> None:
+def test_read_serves_discoverable_tool_documentation(tmp_path: Path) -> None:
     graph = _ScriptedGraph(
         _ScriptedStep(
             tool_call=ToolCall(
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": "voidcode://tool/apply_patch"},
             )
         ),
@@ -186,8 +186,8 @@ def test_read_file_serves_discoverable_tool_documentation(tmp_path: Path) -> Non
         permission_policy=PermissionPolicy(mode="allow"),
     )
     events, outputs, _ = _run_events(runtime, graph, session_id="doc-read")
-    completed = [event for event in events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read_file"]
-    assert completed, "expected read_file completion"
+    completed = [event for event in events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read"]
+    assert completed, "expected read completion"
     payload = completed[-1].payload
     assert payload["status"] == "ok"
     assert payload["type"] == "tool_documentation"
@@ -199,11 +199,11 @@ def test_read_file_serves_discoverable_tool_documentation(tmp_path: Path) -> Non
     assert outputs == ["done"]
 
 
-def test_read_file_rejects_unknown_tool_documentation(tmp_path: Path) -> None:
+def test_read_rejects_unknown_tool_documentation(tmp_path: Path) -> None:
     graph = _ScriptedGraph(
         _ScriptedStep(
             tool_call=ToolCall(
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": "voidcode://tool/does_not_exist"},
             )
         ),
@@ -215,7 +215,7 @@ def test_read_file_rejects_unknown_tool_documentation(tmp_path: Path) -> None:
         config=RuntimeConfig(execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="allow"),
     )
-    # read_file errors follow the existing tool error semantics: under the
+    # read errors follow the existing tool error semantics: under the
     # deterministic engine an invalid target raises; under the provider engine
     # it surfaces as tool-level feedback.
     with pytest.raises(ValueError, match="unknown tool in runtime registry: does_not_exist"):

@@ -60,7 +60,7 @@ def test_prompt_command_rejects_unknown_command() -> None:
 
 def test_tool_instruction_resolver_is_shared_for_read_grep_run_and_write() -> None:
     tools = (
-        ToolDefinition("read_file", "Read", read_only=True),
+        ToolDefinition("read", "Read", read_only=True),
         ToolDefinition("grep", "Grep", read_only=True),
         ToolDefinition("shell_exec", "Run", read_only=False),
         ToolDefinition("write_file", "Write", read_only=False),

@@ -126,7 +126,7 @@ describe("Tool Status Contract", () => {
         payload: {
           tool_status: {
             invocation_id: "call_xyz",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "running",
             status: "running",
             label: "Reading file",
@@ -146,7 +146,7 @@ describe("Tool Status Contract", () => {
     expect(assistantMessage?.tools).toMatchObject([
       {
         id: "call_xyz",
-        name: "read_file",
+        name: "read",
         label: "Reading file",
         summary: "Reading file",
         status: "running",
@@ -403,7 +403,7 @@ describe("Tool Status Contract", () => {
         event_type: "runtime.tool_completed",
         source: "tool",
         payload: {
-          tool: "read_file",
+          tool: "read",
           tool_call_id: "call_read",
           path: "README.md",
           content: "contents",
@@ -661,7 +661,7 @@ describe("Tool Display Metadata Contract", () => {
         payload: {
           tool_status: {
             invocation_id: "read-a",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "running",
             status: "running",
             display: {
@@ -682,7 +682,7 @@ describe("Tool Display Metadata Contract", () => {
         payload: {
           tool_status: {
             invocation_id: "read-b",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "running",
             status: "running",
             display: {
@@ -704,7 +704,7 @@ describe("Tool Display Metadata Contract", () => {
           content: "b contents",
           tool_status: {
             invocation_id: "read-b",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "completed",
             status: "completed",
             display: {
@@ -726,7 +726,7 @@ describe("Tool Display Metadata Contract", () => {
           content: "a contents",
           tool_status: {
             invocation_id: "read-a",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "completed",
             status: "completed",
             display: {

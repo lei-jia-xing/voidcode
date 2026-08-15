@@ -18,7 +18,7 @@ def test_runtime_file_rule_contexts_load_nearest_workspace_rules(tmp_path: Path)
         workspace=workspace,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": "src/voidcode/runtime/service.py"},
             ),
@@ -42,7 +42,7 @@ def test_runtime_file_rule_contexts_ignore_external_paths(tmp_path: Path) -> Non
         workspace=workspace,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": external.as_posix()},
             ),
@@ -79,7 +79,7 @@ def test_runtime_file_rule_contexts_cap_preserves_nearest_rules(tmp_path: Path) 
         workspace=workspace,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": target.relative_to(workspace).as_posix()},
             ),
@@ -104,7 +104,7 @@ def test_runtime_file_rule_contexts_skip_invalid_utf8_rule_files(tmp_path: Path)
         workspace=workspace,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": "src/module.py"},
             ),
@@ -160,17 +160,17 @@ def test_runtime_file_rule_contexts_cap_preserves_latest_revisited_path(
         workspace=workspace,
         tool_results=(
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": "active/module.py"},
             ),
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": "one_off_a/module.py"},
             ),
             ToolResult(
-                tool_name="read_file",
+                tool_name="read",
                 status="ok",
                 data={"path": "one_off_b/module.py"},
             ),

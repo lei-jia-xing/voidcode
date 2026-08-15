@@ -439,7 +439,7 @@ def test_write_file_tool_rejects_overwrite_without_expected_hash(tmp_path: Path)
     assert diagnostic.error_kind == "tool_input_mismatch"
     assert diagnostic.error_details["reason"] == "missing_expected_hash"
     assert diagnostic.error_details["path"] == "note.txt"
-    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert "read" in (diagnostic.retry_guidance or "")
     assert target.read_text(encoding="utf-8") == "old\n"
 
 

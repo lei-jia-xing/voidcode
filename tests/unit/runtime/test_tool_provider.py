@@ -55,7 +55,7 @@ from voidcode.tools import (
     McpTool,
     MultiEditTool,
     QuestionTool,
-    ReadFileTool,
+    ReadTool,
     ShellExecTool,
     SkillTool,
     TaskTool,
@@ -245,7 +245,7 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         EditTool,
         GlobTool,
         GrepTool,
-        ReadFileTool,
+        ReadTool,
         ShellExecTool,
         QuestionTool,
         SkillTool,
@@ -340,7 +340,7 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
         "edit",
         "glob",
         "grep",
-        "read_file",
+        "read",
         "shell_exec",
         "web_fetch",
         "web_search",
@@ -378,7 +378,7 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
         agent=RuntimeAgentConfig(
             preset="explore",
             manifest_tool_allowlist=(
-                "read_file",
+                "read",
                 "glob",
                 "grep",
                 "ast_grep",
@@ -387,7 +387,7 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
         ),
     )
 
-    assert "read_file" in scoped.tools
+    assert "read" in scoped.tools
     assert "grep" in scoped.tools
     assert "write_file" not in scoped.tools
     assert "task" not in scoped.tools
@@ -417,13 +417,13 @@ def test_scoped_tool_registry_applies_agent_allowlist_and_default_filters() -> N
         agent=RuntimeAgentConfig(
             preset="leader",
             tools=RuntimeToolsConfig(
-                allowlist=("read_file", "grep", "write_file"),
-                default=("read_file", "grep"),
+                allowlist=("read", "grep", "write_file"),
+                default=("read", "grep"),
             ),
         ),
     )
 
-    assert set(scoped.tools) == {"read_file", "grep"}
+    assert set(scoped.tools) == {"read", "grep"}
 
 
 def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None:
@@ -545,7 +545,7 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
         workspace=tmp_path,
         graph=_ToolCallGraph(
             ToolCall(
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": "sample.txt"},
             )
         ),
@@ -580,7 +580,7 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
     hook_event = next(event for event in events if event.event_type == "runtime.tool_hook_pre")
     assert hook_event.payload == {
         "phase": "pre",
-        "tool_name": "read_file",
+        "tool_name": "read",
         "session_id": "read-only-hook-skipped",
         "status": "skipped",
         "hook_policy": {
@@ -677,7 +677,7 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "lsp",
         "multi_edit",
         "question",
-        "read_file",
+        "read",
         "shell_exec",
         "skill",
         "task",
@@ -779,7 +779,7 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "edit",
         "glob",
         "grep",
-        "read_file",
+        "read",
         "shell_exec",
         "web_fetch",
         "web_search",

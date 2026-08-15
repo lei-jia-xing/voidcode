@@ -377,12 +377,12 @@ describe("ChatThread", () => {
         event_type: "graph.tool_request_created",
         source: "graph",
         payload: {
-          tool: "read_file",
+          tool: "read",
           tool_call_id: "call-1",
           arguments: { filePath: "README.md" },
           tool_status: {
             invocation_id: "call-1",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "running",
             status: "running",
             display: {
@@ -399,14 +399,14 @@ describe("ChatThread", () => {
         event_type: "runtime.tool_completed",
         source: "runtime",
         payload: {
-          tool: "read_file",
+          tool: "read",
           tool_call_id: "call-1",
           status: "ok",
           arguments: { filePath: "README.md" },
           content: "ok",
           tool_status: {
             invocation_id: "call-1",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "completed",
             status: "completed",
             display: {
@@ -431,7 +431,7 @@ describe("ChatThread", () => {
     );
 
     const firstTextNode = screen.getByText(/FIRST_TEXT/);
-    const toolRow = document.querySelector('[data-tool-row="read_file"]');
+    const toolRow = document.querySelector('[data-tool-row="read"]');
     const secondTextNode = screen.getByText(/SECOND_TEXT/);
 
     expect(firstTextNode).toBeInTheDocument();
@@ -494,7 +494,7 @@ describe("ChatThread", () => {
             tools: [
               {
                 id: "read-1",
-                name: "read_file",
+                name: "read",
                 status: "completed",
                 arguments: { path: "src/app.ts", offset: 10, limit: 20 },
               },
@@ -525,10 +525,8 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("read_file")).toBeInTheDocument();
-    const readRow = screen
-      .getByText("read_file")
-      .closest('[data-tool-row="read_file"]');
+    expect(screen.getByText("read")).toBeInTheDocument();
+    const readRow = screen.getByText("read").closest('[data-tool-row="read"]');
     expect(readRow).not.toBeNull();
     expect(readRow).toHaveTextContent("path=src/app.ts");
     expect(screen.getByText(/offset=10/)).toBeInTheDocument();
@@ -1360,7 +1358,7 @@ describe("Tool Card Display Contract", () => {
             tools: [
               {
                 id: "read-1",
-                name: "read_file",
+                name: "read",
                 status: "completed",
                 display: {
                   kind: "context",
@@ -1394,15 +1392,13 @@ describe("Tool Card Display Contract", () => {
       />,
     );
 
-    expect(
-      container.querySelector('[data-tool-row="read_file"]'),
-    ).not.toBeNull();
+    expect(container.querySelector('[data-tool-row="read"]')).not.toBeNull();
     expect(container.querySelector('[data-tool-row="grep"]')).not.toBeNull();
     expect(screen.getByText("Read")).toBeInTheDocument();
     expect(screen.getByText("grep")).toBeInTheDocument();
     const groupedReadRow = screen
       .getByText("Read")
-      .closest('[data-tool-row="read_file"]');
+      .closest('[data-tool-row="read"]');
     const groupedGrepRow = screen
       .getByText("grep")
       .closest('[data-tool-row="grep"]');
@@ -1474,14 +1470,14 @@ describe("Tool Card Display Contract", () => {
         event_type: "runtime.tool_completed",
         source: "runtime",
         payload: {
-          tool: "read_file",
+          tool: "read",
           tool_call_id: "read-1",
           status: "ok",
           arguments: { path: "README.md", internalState: { secret: true } },
           content: "# README",
           tool_status: {
             invocation_id: "read-1",
-            tool_name: "read_file",
+            tool_name: "read",
             phase: "completed",
             status: "completed",
             display: {

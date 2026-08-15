@@ -10,7 +10,7 @@ import pytest
 from voidcode.tools import (
     ApplyPatchTool,
     EditTool,
-    ReadFileTool,
+    ReadTool,
     ShellExecTool,
     ToolCall,
     ToolResult,
@@ -26,7 +26,7 @@ class _InvokableTool(Protocol):
 @pytest.mark.parametrize(
     ("tool", "arguments"),
     [
-        (ReadFileTool(), {"path": "link.txt"}),
+        (ReadTool(), {"path": "link.txt"}),
         (WriteFileTool(), {"path": "linkdir/out.txt", "content": "x"}),
         (
             EditTool(),

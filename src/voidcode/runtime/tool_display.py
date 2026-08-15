@@ -22,7 +22,7 @@ from typing import cast
 
 _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "shell_exec": ("shell", "Shell"),
-    "read_file": ("read", "Read"),
+    "read": ("read", "Read"),
     "write_file": ("write", "Write"),
     "edit": ("edit", "Edit"),
     "multi_edit": ("edit", "Edit"),
@@ -197,7 +197,7 @@ def build_tool_display(
         args = _extract_primitive_args(arguments, "command")
         copyable = _build_copyable(tool_name, arguments, result_data)
 
-    elif tool_name in {"read_file"}:
+    elif tool_name in {"read"}:
         path = _first_primitive(arguments, "path")
         summary = path if path else "Read file"
         args = _extract_primitive_args(arguments, "path")

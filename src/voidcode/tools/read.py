@@ -21,13 +21,13 @@ from .output import _ARTIFACT_ID_PATTERN
 from .runtime_context import require_runtime_tool_context
 
 #: Internal URL scheme for on-demand tool documentation (essential/discoverable
-#: split): read_file(path="voidcode://tool/<name>") returns the tool's guidance
+#: split): read(path="voidcode://tool/<name>") returns the tool's guidance
 #: text plus its JSON input schema, read from the same guidance files and the
 #: live tool registry used for execution.
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 
 #: Internal URL scheme for session-scoped artifact reads:
-#: read_file(path="voidcode://artifact/<id>") returns a bounded slice of a
+#: read(path="voidcode://artifact/<id>") returns a bounded slice of a
 #: spilled tool-output artifact, resolved through the runtime's own
 #: session-validated artifact reader — never through the external-directory
 #: permission path.
@@ -38,10 +38,10 @@ def _render_tool_documentation(path: str) -> _ReadOutcome:
     tool_name = path[len(VOIDCODE_TOOL_DOC_PREFIX) :].strip()
     if not tool_name:
         raise ValueError("voidcode://tool/<name> requires a tool name")
-    context = require_runtime_tool_context("read_file")
+    context = require_runtime_tool_context("read")
     catalog = context.tool_catalog
     if catalog is None:
-        raise ValueError("read_file cannot resolve voidcode://tool URLs without a runtime tool catalog")
+        raise ValueError("read cannot resolve voidcode://tool URLs without a runtime tool catalog")
     definition = catalog.lookup(tool_name)
     if definition is None:
         raise ValueError(f"unknown tool in runtime registry: {tool_name}")
@@ -95,10 +95,10 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
         raise ValueError("voidcode://artifact/<id> requires an artifact id")
     if _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
         raise ValueError(f"invalid artifact id: {artifact_id}")
-    context = require_runtime_tool_context("read_file")
+    context = require_runtime_tool_context("read")
     facade = context.artifact
     if facade is None:
-        raise ValueError("read_file cannot resolve voidcode://artifact URLs without a runtime artifact reader")
+        raise ValueError("read cannot resolve voidcode://artifact URLs without a runtime artifact reader")
     result = facade.read_artifact(
         artifact_id=artifact_id,
         offset=max(0, offset - 1),
@@ -140,7 +140,7 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
     )
 
 
-class ReadFileArgs(BaseModel):
+class ReadArgs(BaseModel):
     path: str
     offset: int | None = None
     limit: int | None = None
@@ -247,7 +247,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
     if mime and (mime.startswith("image/") or mime == "application/pdf"):
         attachment_size = candidate.stat().st_size
         if attachment_size > MAX_ATTACHMENT_BYTES:
-            raise ValueError(f"read_file attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
+            raise ValueError(f"read attachment exceeds the maximum supported size ({MAX_ATTACHMENT_BYTES} bytes): {relative_path}")
         raw = candidate.read_bytes()
         data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
         label = "Image" if mime.startswith("image/") else "PDF"
@@ -267,7 +267,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
         )
 
     if _is_binary_file(candidate):
-        raise ValueError(f"read_file only supports text files or image/pdf attachments: {relative_path}")
+        raise ValueError(f"read only supports text files or image/pdf attachments: {relative_path}")
 
     digest = hashlib.sha256()
     with candidate.open("rb") as hash_handle:
@@ -304,7 +304,7 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
                 bytes_used += encoded_size
                 content_truncated = content_truncated or line_truncated
     except UnicodeDecodeError as exc:
-        raise ValueError("read_file only supports UTF-8 text files") from exc
+        raise ValueError("read only supports UTF-8 text files") from exc
 
     if total_lines < offset and not (total_lines == 0 and offset == 1):
         raise ValueError(f"Offset {offset} is out of range for this file ({total_lines} lines)")
@@ -332,11 +332,11 @@ def _render_file(candidate: Path, *, relative_path: str, offset: int, limit: int
 
 
 @final
-class ReadFileTool:
+class ReadTool:
     """Read a file or supported attachment from the current workspace."""
 
     definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="read_file",
+        name="read",
         description="Read a file inside the current workspace.",
         input_schema={
             "path": {
@@ -366,7 +366,7 @@ class ReadFileTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
-            args = ReadFileArgs.model_validate(
+            args = ReadArgs.model_validate(
                 {
                     "path": call.arguments.get("path"),
                     "offset": call.arguments.get("offset"),
@@ -410,16 +410,16 @@ class ReadFileTool:
         candidate = resolution.candidate
         relative_path = str(candidate.resolve()) if resolution.is_external else resolution.relative_path
         if not candidate.exists():
-            raise ValueError(f"read_file target does not exist: {args.path}")
+            raise ValueError(f"read target does not exist: {args.path}")
 
         offset = args.offset or 1
         limit = args.limit or DEFAULT_READ_LIMIT
         if candidate.is_dir():
             suggestions = suggest_workspace_paths(workspace=workspace, raw_path=args.path)
             suffix = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-            raise ValueError(f"read_file does not support directories: {args.path}.{suffix}")
+            raise ValueError(f"read does not support directories: {args.path}.{suffix}")
         if not candidate.is_file():
-            raise ValueError(f"read_file only supports regular files: {args.path}")
+            raise ValueError(f"read only supports regular files: {args.path}")
 
         outcome = _render_file(candidate, relative_path=relative_path, offset=offset, limit=limit)
 

@@ -53,7 +53,7 @@ class InvokeTool:
         description=(
             "Execute a runtime-registered tool by name, passing its own input schema arguments. "
             "Use this when the target tool is not listed top-level (it is still available for "
-            "dispatch). Read its documentation first with read_file on 'voidcode://tool/<name>'. "
+            "dispatch). Read its documentation first with read on 'voidcode://tool/<name>'. "
             "The runtime applies the target tool's normal permission, allowlist, and read-only "
             "policy; a denied or unknown tool returns an error result instead of failing the run."
         ),

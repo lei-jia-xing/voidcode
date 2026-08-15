@@ -280,7 +280,7 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
                 "authoritative": False,
                 "matched_rule_ids": ["rule-1"],
             },
-            "tool_policy": {"allowed": ["read_file"], "denied": [], "source": "runtime_config"},
+            "tool_policy": {"allowed": ["read"], "denied": [], "source": "runtime_config"},
             "delegation_policy": {
                 "allowed_presets": ["explore"],
                 "denied": [
@@ -315,7 +315,7 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
         "snapshot_present": True,
     }
     assert payload["tool_policy"] == {
-        "allowed": ["read_file"],
+        "allowed": ["read"],
         "denied": [],
         "source": "runtime_config",
     }

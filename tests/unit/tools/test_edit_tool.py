@@ -747,7 +747,7 @@ def test_edit_tool_rejects_missing_expected_hash_with_structured_diagnostic(tmp_
     assert diagnostic.error_kind == "tool_input_mismatch"
     assert diagnostic.error_details["reason"] == "missing_expected_hash"
     assert diagnostic.error_details["path"] == "test.txt"
-    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert "read" in (diagnostic.retry_guidance or "")
     assert file_path.read_text(encoding="utf-8") == "hello world"
 
 
@@ -839,7 +839,7 @@ def test_edit_tool_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> N
     tool = EditTool()
 
     with bind_runtime_tool_context(_read_lines_context(file_path, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
                     tool_name="edit",
@@ -853,7 +853,7 @@ def test_edit_tool_rejects_edit_of_line_outside_read_window(tmp_path: Path) -> N
     assert diagnostic.error_details["reason"] == "unseen_range"
     assert diagnostic.error_details["path"] == "sample.txt"
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 3, "end": 3}]
-    assert "read_file" in (diagnostic.retry_guidance or "")
+    assert "read" in (diagnostic.retry_guidance or "")
     assert file_path.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
@@ -881,7 +881,7 @@ def test_edit_tool_rejects_replace_all_when_any_occurrence_is_unseen(tmp_path: P
     tool = EditTool()
 
     with bind_runtime_tool_context(_read_lines_context(file_path, {1})):
-        with pytest.raises(ToolDiagnosticError, match="never revealed by read_file") as exc_info:
+        with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
                     tool_name="edit",
@@ -955,7 +955,7 @@ def test_edit_tool_strict_schema_rejects_non_exact_input_with_ambiguous_match(
     assert diagnostic.error_details["match_count"] == 0
     assert isinstance(diagnostic.retry_guidance, str)
     assert diagnostic.retry_guidance
-    assert "read_file" in diagnostic.retry_guidance
+    assert "read" in diagnostic.retry_guidance
     assert file_path.read_text(encoding="utf-8") == "hello world"
 
 

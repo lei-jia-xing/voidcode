@@ -265,7 +265,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 {
   "permission": {
     "rules": [
-      {"tool": "read_file", "path": "src/**", "decision": "allow"},
+      {"tool": "read", "path": "src/**", "decision": "allow"},
       {"tool": "grep", "path": "src/**", "decision": "allow"},
       {"tool": "glob", "path": "src/**", "decision": "allow"},
       {"tool": "write_file", "path": ".github/**", "decision": "ask"},
@@ -365,7 +365,7 @@ MVP 支持 true local manifest，而不是 marketplace / plugin distribution。�
 name: Review Helper
 description: Read-only reviewer for focused code quality checks.
 mode: subagent
-tool_allowlist: [read_file, glob, grep]
+tool_allowlist: [read, glob, grep]
 skill_refs: [code-review]
 preset_hook_refs: [role_reminder]
 prompt_append: |

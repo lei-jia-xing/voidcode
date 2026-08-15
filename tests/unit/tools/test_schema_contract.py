@@ -9,7 +9,7 @@ from voidcode.tools.ast_grep import AstGrepTool
 from voidcode.tools.edit import EditTool
 from voidcode.tools.grep import GrepTool
 from voidcode.tools.multi_edit import MultiEditTool
-from voidcode.tools.read_file import ReadFileTool
+from voidcode.tools.read import ReadTool
 from voidcode.tools.shell_exec import ShellExecTool
 from voidcode.tools.web_fetch import WebFetchTool
 from voidcode.tools.web_search import WebSearchTool
@@ -19,7 +19,7 @@ from voidcode.tools.write_file import WriteFileTool
 @pytest.mark.parametrize(
     ("tool", "required"),
     [
-        (ReadFileTool, ["path"]),
+        (ReadTool, ["path"]),
         (WriteFileTool, ["path", "content"]),
         (EditTool, ["path", "oldString", "newString", "expectedHash"]),
         (MultiEditTool, ["path", "edits", "expectedHash"]),
@@ -39,11 +39,11 @@ def test_builtin_schema_declares_required_fields(tool: type[object], required: l
         assert str(schema[field].get("description", "")).strip()
 
 
-def test_read_file_schema_uses_only_path() -> None:
-    schema = ReadFileTool.definition.input_schema
+def test_read_schema_uses_only_path() -> None:
+    schema = ReadTool.definition.input_schema
     assert "path" in schema
     assert "filePath" not in schema
-    assert ReadFileTool.definition.path_argument_keys == ("path",)
+    assert ReadTool.definition.path_argument_keys == ("path",)
 
 
 def test_ast_grep_schema_constrains_mode() -> None:

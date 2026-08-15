@@ -66,7 +66,7 @@ def test_project_tool_effectiveness_aggregates_errors_retries_and_pressure() -> 
             _completed(
                 session_id="s2",
                 sequence=1,
-                tool="read_file",
+                tool="read",
                 status="ok",
                 arguments={"path": "large.txt"},
                 content="bounded result",
@@ -76,7 +76,7 @@ def test_project_tool_effectiveness_aggregates_errors_retries_and_pressure() -> 
             _completed(
                 session_id="s2",
                 sequence=2,
-                tool="read_file",
+                tool="read",
                 status="ok",
                 arguments={"path": "large.txt", "offset": 2001},
                 content="continued",
@@ -123,7 +123,7 @@ def test_project_tool_effectiveness_aggregates_errors_retries_and_pressure() -> 
     assert edit.retries_after_error == 1
     assert edit.retry_guidance_count == 1
     assert edit.error_kinds == {"stale_edit": 1}
-    read = next(tool for tool in report.tools if tool.tool == "read_file")
+    read = next(tool for tool in report.tools if tool.tool == "read")
     assert read.truncated_results == 1
     assert read.partial_results == 1
     assert report.repeated_read_count == 1
@@ -219,7 +219,7 @@ def test_project_tool_effectiveness_reports_per_model_edit_breakdown() -> None:
             _completed(
                 session_id="s1",
                 sequence=6,
-                tool="read_file",
+                tool="read",
                 status="ok",
                 model="model-a",
                 arguments={"path": "a.txt"},

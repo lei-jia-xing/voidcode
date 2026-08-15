@@ -19,7 +19,7 @@
 
 VoidCode 已不再只是一个有会话持久化和审批的运行时骨架。相较旧调研，它已经补上或推进了：
 
-- `read_file` 的结构化行数据、continuation 和 `content_hash`；
+- `read` 的结构化行数据、continuation 和 `content_hash`；
 - `edit.expectedHash` stale-edit 拒绝、near-match 修复提示和写后 formatter/LSP diagnostics；
 - `apply_workspace_edit` 的多文件 hash 校验；
 - provider 原生流式事件、缓存使用信息和错误归一化；
@@ -38,7 +38,7 @@ OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优�
 
 | 旧结论 | 当前状态 | 新判断 |
 |---|---|---|
-| read/edit 缺少结构化输出和 stale 防护 | `read_file` 已返回行对象、raw content、hash 和 continuation；`edit` 支持 `expectedHash` | 已部分解决；差距转为强制锚点、可见范围约束和协议实测 |
+| read/edit 缺少结构化输出和 stale 防护 | `read` 已返回行对象、raw content、hash 和 continuation；`edit` 支持 `expectedHash` | 已部分解决；差距转为强制锚点、可见范围约束和协议实测 |
 | 写入未进入 LSP 闭环 | edit/write 路径已能返回 formatter 和 LSP diagnostics；另有 `apply_workspace_edit` | 已有闭环基线；差距转为覆盖率、rename lifecycle 和任务成功率 |
 | context 只有确定性截断 | 已有 deterministic 与 model-assisted projection，失败时回退确定性摘要 | 已落地第一版；差距转为质量评估、token/cost 数据和长会话回归 |
 | child result 主要依赖自由文本 | child 必须通过 `submit_result` 形成结构化 handoff；parent 有结果读取与组完成事件 | 已明显推进；差距转为 JSON Schema、隔离 workspace 和合并语义 |
@@ -196,7 +196,7 @@ VoidCode 不应复制 OMP 的功能数量。更合适的路线是：
 
 ### VoidCode
 
-- `src/voidcode/tools/read_file.py`
+- `src/voidcode/tools/read.py`
 - `src/voidcode/tools/edit.py`
 - `src/voidcode/tools/apply_workspace_edit.py`
 - `src/voidcode/runtime/context_projection.py`

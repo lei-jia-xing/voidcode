@@ -40,7 +40,7 @@ class WriteFileTool:
                 "type": "string",
                 "description": (
                     "Required when the target file already exists: SHA-256 hash of the current file "
-                    "content, taken from data.content_hash of a prior read_file result. Rejects stale "
+                    "content, taken from data.content_hash of a prior read result. Rejects stale "
                     "overwrites when the file changed since that read. Omit for brand-new files."
                 ),
             },
@@ -91,7 +91,7 @@ class WriteFileTool:
                     error_kind="tool_input_mismatch",
                     reason="missing_expected_hash",
                     retry_guidance=(
-                        "Use read_file on the target path, copy data.content_hash from the result, then retry write_file with that expectedHash."
+                        "Use read on the target path, copy data.content_hash from the result, then retry write_file with that expectedHash."
                     ),
                     details={"path": display_path, "raw_path": args.path},
                 )

@@ -23,7 +23,7 @@ def test_tool_execution_intent_sanitizes_arguments_and_records_policy() -> None:
 def test_safe_pending_tool_intent_requests_replay() -> None:
     intent = ToolExecutionIntent(
         tool_call_id="call-1",
-        tool_name="read_file",
+        tool_name="read",
         arguments={"path": "a.txt"},
         replay_policy="safe",
     )

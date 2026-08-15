@@ -7,7 +7,7 @@ from typing import Protocol, cast
 from langgraph.graph import END, START
 
 from ..command.resolver import resolve_tool_instruction
-from ..runtime.context_window import normalize_read_file_output
+from ..runtime.context_window import normalize_read_output
 from ..runtime.events import (
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
@@ -225,10 +225,10 @@ class DeterministicGraph:
                 ),
                 self._graph_event(
                     GRAPH_RESPONSE_READY,
-                    {"output_preview": normalize_read_file_output(last_result.content) or ""},
+                    {"output_preview": normalize_read_output(last_result.content) or ""},
                 ),
             ],
-            "output": normalize_read_file_output(last_result.content) or "",
+            "output": normalize_read_output(last_result.content) or "",
         }
 
     def _select_tool_call(

@@ -18,7 +18,7 @@ from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools import ReadFileTool, ShellExecTool, tool_output_artifact_temp_root
+from voidcode.tools import ReadTool, ShellExecTool, tool_output_artifact_temp_root
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import (
     RuntimeToolInvocationContext,
@@ -445,7 +445,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert artifact_root in output_path.parents
     assert payload["artifact_missing"] is False
     assert payload["retry_guidance"] == (
-        f'Read the full output with read_file(path="voidcode://artifact/{payload["artifact_id"]}"), or use background_output with full_session=true.'
+        f'Read the full output with read(path="voidcode://artifact/{payload["artifact_id"]}"), or use background_output with full_session=true.'
     )
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
@@ -1146,7 +1146,7 @@ class _ArtifactThenUriReadGraph:
             self.artifact_id = str(first_result.data.get("artifact_id") or "")
             assert self.artifact_id, "large output tool result must carry an artifact_id"
             step.tool_call = ToolCall(  # type: ignore[attr-defined]
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": f"voidcode://artifact/{self.artifact_id}", "limit": 100},
             )
             step.output = None  # type: ignore[attr-defined]
@@ -1160,11 +1160,11 @@ class _ArtifactThenUriReadGraph:
         return step
 
 
-def test_read_file_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path) -> None:
+def test_read_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path) -> None:
     """The URI resolves a real spilled artifact for the owning session."""
     session_id = "artifact-uri-owner"
     graph = _ArtifactThenUriReadGraph()
-    registry = ToolRegistry.from_tools([_LargeOutputTool(), ReadFileTool()])
+    registry = ToolRegistry.from_tools([_LargeOutputTool(), ReadTool()])
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         tool_registry=registry,
@@ -1180,8 +1180,8 @@ def test_read_file_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: 
     completed_events = [
         chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
     ]
-    read_events = [event for event in completed_events if event.payload.get("tool") == "read_file"]
-    assert len(read_events) == 1, "expected one read_file completion for the artifact URI"
+    read_events = [event for event in completed_events if event.payload.get("tool") == "read"]
+    assert len(read_events) == 1, "expected one read completion for the artifact URI"
     payload = read_events[0].payload
     assert payload["status"] == "ok"
     assert payload["type"] == "artifact"
@@ -1194,7 +1194,7 @@ def test_read_file_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: 
 
 
 class _ForeignArtifactUriReadGraph:
-    """Immediately issues a read_file URI for a pre-seeded foreign artifact id."""
+    """Immediately issues a read URI for a pre-seeded foreign artifact id."""
 
     def __init__(self, artifact_id: str) -> None:
         self._artifact_id = artifact_id
@@ -1209,7 +1209,7 @@ class _ForeignArtifactUriReadGraph:
         step = _Step()
         if not self._done:
             step.tool_call = ToolCall(  # type: ignore[attr-defined]
-                tool_name="read_file",
+                tool_name="read",
                 arguments={"path": f"voidcode://artifact/{self._artifact_id}", "limit": 100},
             )
             step.output = None  # type: ignore[attr-defined]
@@ -1224,14 +1224,14 @@ class _ForeignArtifactUriReadGraph:
         return step
 
 
-def test_read_file_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> None:
+def test_read_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> None:
     """An artifact created in session A is not resolvable from session B."""
     owner_session = "artifact-uri-owner-b"
     foreign_session = "artifact-uri-foreign-b"
     owner_graph = _ArtifactThenUriReadGraph()
     owner_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        tool_registry=ToolRegistry.from_tools([_LargeOutputTool(), ReadFileTool()]),
+        tool_registry=ToolRegistry.from_tools([_LargeOutputTool(), ReadTool()]),
         graph=owner_graph,
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),
@@ -1244,7 +1244,7 @@ def test_read_file_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path)
 
     foreign_runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        tool_registry=ToolRegistry.from_tools([ReadFileTool()]),
+        tool_registry=ToolRegistry.from_tools([ReadTool()]),
         graph=_ForeignArtifactUriReadGraph(owner_graph.artifact_id),
         config=RuntimeConfig(
             mcp=RuntimeMcpConfig(enabled=False),

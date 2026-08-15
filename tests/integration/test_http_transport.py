@@ -1340,7 +1340,7 @@ def test_transport_reads_session_debug_snapshot(tmp_path: Path) -> None:
     provider_context = cast(dict[str, object], payload["provider_context"])
     assert cast(int, provider_context["segment_count"]) >= 3
     provider_segments = cast(list[dict[str, object]], provider_context["segments"])
-    assert provider_segments[-1]["tool_name"] == "read_file"
+    assert provider_segments[-1]["tool_name"] == "read"
     policy_decision = cast(dict[str, object], provider_context["policy_decision"])
     assert policy_decision["mode"] == "warn"
     assert policy_decision["action"] in {"none", "warn"}
@@ -2966,8 +2966,8 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("broken\n", encoding="utf-8")
     create_runtime_app = _load_transport_app_factory()
-    read_file_module = importlib.import_module("voidcode.tools.read_file")
-    read_file_tool = cast(type[object], read_file_module.ReadFileTool)
+    read_module = importlib.import_module("voidcode.tools.read")
+    read_tool = cast(type[object], read_module.ReadTool)
 
     def _failing_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -2975,7 +2975,7 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
 
     app = create_runtime_app(workspace=tmp_path)
 
-    with patch.object(read_file_tool, "invoke", autospec=True, side_effect=_failing_invoke):
+    with patch.object(read_tool, "invoke", autospec=True, side_effect=_failing_invoke):
         stream_response = _run_app(
             app,
             method="POST",
@@ -2999,13 +2999,13 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
     assert tool_completed_event["event_type"] == "runtime.tool_completed"
     assert tool_completed_event["source"] == "tool"
     tool_completed_payload = cast(dict[str, object], tool_completed_event["payload"])
-    assert tool_completed_payload["tool"] == "read_file"
+    assert tool_completed_payload["tool"] == "read"
     assert tool_completed_payload["status"] == "error"
     assert tool_completed_payload["error"] == "boom from transport stream"
     tool_status = tool_completed_payload["tool_status"]
     assert isinstance(tool_status, dict)
     typed_tool_status = cast(dict[str, object], tool_status)
-    assert typed_tool_status["tool_name"] == "read_file"
+    assert typed_tool_status["tool_name"] == "read"
     assert typed_tool_status["status"] == "failed"
     failed_event = _sse_event_by_type(payloads, "runtime.failed", reverse=True)
     assert failed_event == {

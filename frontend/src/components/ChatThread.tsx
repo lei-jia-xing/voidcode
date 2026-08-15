@@ -643,7 +643,7 @@ function ToolDisclosureRow({
 
 function toolIcon(tool: ChatTool) {
   const className = "h-3.5 w-3.5";
-  if (tool.name === "read_file" || tool.name === "read") {
+  if (tool.name === "read") {
     return <FileText className={className} />;
   }
   if (tool.name === "glob") {
@@ -729,7 +729,6 @@ function toolOutputSummary(tool: ChatTool): string | null {
 
 function isReadonlyTool(tool: ChatTool) {
   return (
-    tool.name === "read_file" ||
     tool.name === "read" ||
     tool.name === "glob" ||
     tool.name === "grep" ||

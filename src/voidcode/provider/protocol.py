@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from ..runtime.context_window import normalize_read_file_output
+from ..runtime.context_window import normalize_read_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
 
@@ -387,5 +387,5 @@ class StubTurnProvider:
 
 
 def _normalize_tool_output(content: str | None) -> str:
-    normalized = normalize_read_file_output(content)
+    normalized = normalize_read_output(content)
     return "" if normalized is None else normalized

@@ -405,7 +405,7 @@ def _replace(
             message="No changes to apply: oldString and newString are identical.",
             error_kind="no_op",
             reason="identical_old_and_new",
-            retry_guidance=("Provide a newString that differs from oldString, or use read_file to confirm the file already has the desired content."),
+            retry_guidance=("Provide a newString that differs from oldString, or use read to confirm the file already has the desired content."),
             details={"old_string": old_string, "new_string": new_string},
         )
 
@@ -523,8 +523,7 @@ def _replace(
             error_kind="ambiguous_match",
             reason="strict_no_exact_match",
             retry_guidance=(
-                "Use read_file on the target path, copy exact current file text without line-number "
-                "prefixes, then retry edit with that exact oldString."
+                "Use read on the target path, copy exact current file text without line-number prefixes, then retry edit with that exact oldString."
             ),
             details={
                 "edit_schema": "strict",
@@ -538,7 +537,7 @@ def _replace(
         error_kind="tool_input_mismatch",
         reason="old_string_not_found",
         retry_guidance=(
-            "Use read_file on the target path, copy exact current file text without line-number prefixes, then retry edit with that exact oldString."
+            "Use read on the target path, copy exact current file text without line-number prefixes, then retry edit with that exact oldString."
         ),
         details={
             "attempted_replacers": attempted_replacers,
@@ -628,7 +627,7 @@ class EditTool:
         name="edit",
         description=(
             "Edit a file by replacing text. Supports multiple replacement strategies "
-            "for flexible matching. When constructing oldString from read_file output, "
+            "for flexible matching. When constructing oldString from read output, "
             "omit any leading line-number prefix such as '42: ' and pass only the "
             "file's actual text."
         ),
@@ -650,7 +649,7 @@ class EditTool:
                 "type": "string",
                 "description": (
                     "Required SHA-256 hash of the current file content, taken from data.content_hash "
-                    "of a prior read_file result. Rejects stale edits when the file changed since that read."
+                    "of a prior read result. Rejects stale edits when the file changed since that read."
                 ),
             },
             "required": ["path", "oldString", "newString", "expectedHash"],
@@ -730,9 +729,7 @@ class EditTool:
                 message="edit requires an expectedHash argument: the file must be read before it is edited.",
                 error_kind="tool_input_mismatch",
                 reason="missing_expected_hash",
-                retry_guidance=(
-                    "Use read_file on the target path, copy data.content_hash from the result, then retry the edit with that expectedHash."
-                ),
+                retry_guidance=("Use read on the target path, copy data.content_hash from the result, then retry the edit with that expectedHash."),
                 details={"path": display_path, "raw_path": path_value},
             )
 

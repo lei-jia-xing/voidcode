@@ -279,7 +279,7 @@ def project_tool_effectiveness(
         stats.successes += 1
         if model_stats is not None:
             model_stats.successes += 1
-        if tool == "read_file" and isinstance(arguments, Mapping):
+        if tool == "read" and isinstance(arguments, Mapping):
             typed_arguments = cast(Mapping[str, object], arguments)
             raw_path = typed_arguments.get("path")
             if isinstance(raw_path, str) and raw_path:

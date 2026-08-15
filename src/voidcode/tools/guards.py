@@ -13,7 +13,7 @@ from .runtime_context import current_runtime_tool_context
 
 @dataclass(frozen=True, slots=True)
 class ReadTracking:
-    """Paths revealed by read_file plus the exact 1-based line numbers seen."""
+    """Paths revealed by read plus the exact 1-based line numbers seen."""
 
     read_paths: frozenset[str]
     read_lines: Mapping[str, frozenset[int]]
@@ -27,7 +27,7 @@ def read_tracking_for_tool_results(
     resolved_paths: set[str] = set()
     lines_by_path: dict[str, set[int]] = {}
     for result in tool_results:
-        if result.tool_name != "read_file" or result.status != "ok":
+        if result.tool_name != "read" or result.status != "ok":
             continue
         candidate = _resolve_internal_workspace_path(
             workspace=workspace,
@@ -58,7 +58,7 @@ def read_paths_for_tool_results(
 
 
 def _read_result_lines(result: ToolResult) -> frozenset[int] | None:
-    """Extract the 1-based line numbers revealed by a read_file result.
+    """Extract the 1-based line numbers revealed by a read result.
 
     Returns ``None`` when the result carried no line data at all (e.g. an
     image/pdf attachment read), and an (possibly empty) frozenset when a text
@@ -96,7 +96,7 @@ def enforce_read_before_write(
         message=(f"{tool_name} requires reading the current file before modifying it: {display_path}"),
         error_kind="tool_input_mismatch",
         reason="write_without_read",
-        retry_guidance=("Use read_file on the target path first, review the current content, then retry the change."),
+        retry_guidance=("Use read on the target path first, review the current content, then retry the change."),
         details={"path": display_path, "raw_path": raw_path},
     )
 
@@ -113,7 +113,7 @@ def enforce_seen_lines(
     end_line: int,
 ) -> None:
     """Require every line in ``[start_line, end_line]`` (1-based, inclusive) to
-    have been revealed by a prior read_file result.
+    have been revealed by a prior read result.
 
     Fails closed: a file with no recorded line data rejects every change.
     """
@@ -128,7 +128,7 @@ def enforce_seen_lines(
             message=(f"{tool_name} requires reading the current file before modifying it: {display_path}"),
             error_kind="tool_input_mismatch",
             reason="write_without_read",
-            retry_guidance=("Use read_file on the target path first, review the current content, then retry the change."),
+            retry_guidance=("Use read on the target path first, review the current content, then retry the change."),
             details={"path": display_path, "raw_path": raw_path},
         )
     seen = context.read_lines.get(resolved)
@@ -160,7 +160,7 @@ def enforce_seen_whole_file(
     display_path: str,
     is_external: bool,
 ) -> None:
-    """Require every line of an existing file to have been revealed by read_file."""
+    """Require every line of an existing file to have been revealed by read."""
     if is_external or not candidate.exists() or not candidate.is_file():
         return
     content = candidate.read_text(encoding="utf-8")
@@ -203,11 +203,11 @@ def _raise_unseen_range(
     rendered = ", ".join(_format_range(start, end) for start, end in unseen_ranges)
     was_were = "was" if len(unseen_ranges) == 1 else "were"
     raise_tool_diagnostic(
-        message=(f"{tool_name} cannot modify {display_path}: {rendered} {was_were} never revealed by read_file."),
+        message=(f"{tool_name} cannot modify {display_path}: {rendered} {was_were} never revealed by read."),
         error_kind="tool_input_mismatch",
         reason="unseen_range",
         retry_guidance=(
-            "Use read_file on the target path to reveal the missing lines first "
+            "Use read on the target path to reveal the missing lines first "
             "(continue reading with data.next_offset until data.next_offset is None), "
             "then retry the change against the current content."
         ),
