@@ -117,8 +117,9 @@ def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
     prompt = render_builtin_prompt_profile("leader")
 
     assert prompt is not None
-    assert "background_retry" in prompt
-    assert "inspect the returned retry task id with background_output" in prompt
+    assert "background_retry" not in prompt
+    assert "re-dispatch through the task tool" in prompt
+    assert "reusing the child session_id where applicable" in prompt
     assert "do not manually reconstruct child requests" in prompt
 
 

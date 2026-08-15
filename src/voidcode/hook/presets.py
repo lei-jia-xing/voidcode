@@ -237,10 +237,10 @@ _BUILTIN_HOOK_PRESETS: Mapping[HookPresetRef, HookPreset] = MappingProxyType(
             description="Keep delegated retry decisions explicit and leader-owned.",
             guidance=(
                 "Retry failed, cancelled, or interrupted delegated background tasks only when it "
-                "is the next explicit recovery step. Use the runtime-owned background_retry tool "
-                "from a leader context instead of manually reconstructing child requests, inspect "
-                "the new task id with background_output, and escalate repeated failures rather "
-                "than looping."
+                "is the next explicit recovery step. Re-dispatch through the task tool, reusing "
+                "the child session_id where applicable, instead of manually reconstructing child "
+                "requests; inspect the new task id with background_output, and escalate repeated "
+                "failures rather than looping."
             ),
             event_scopes=(
                 "runtime.background_task_failed",

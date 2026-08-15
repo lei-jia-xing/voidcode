@@ -50,7 +50,8 @@ def test_builtin_hook_presets_carry_guidance_metadata() -> None:
     assert "runtime completion reminder" in background_guidance.guidance
     assert "reuse returned task/process ids" in background_guidance.guidance
     assert delegated_retry.kind == "guard"
-    assert "background_retry" in delegated_retry.guidance
+    assert "background_retry" not in delegated_retry.guidance
+    assert "task tool" in delegated_retry.guidance
     assert "escalate repeated failures" in delegated_retry.guidance
     assert delegated_timing.kind == "guidance"
     assert role_reminder.event_scopes == ("runtime.request_received", "graph.model_turn")

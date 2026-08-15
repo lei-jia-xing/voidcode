@@ -3972,9 +3972,9 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "allowed_actions": ["observe", "report", "guidance"],
                 "guidance": (
                     "Retry failed, cancelled, or interrupted delegated background tasks only when "
-                    "it is the next explicit recovery step. Use the runtime-owned "
-                    "background_retry tool from a leader context instead of manually "
-                    "reconstructing child requests, inspect the new task id with "
+                    "it is the next explicit recovery step. Re-dispatch through the task tool, "
+                    "reusing the child session_id where applicable, instead of manually "
+                    "reconstructing child requests; inspect the new task id with "
                     "background_output, and escalate repeated failures rather than looping."
                 ),
             },
@@ -13951,8 +13951,9 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert "Use subagent_type when you know the exact specialist" in leader_prompt
     assert "Use run_in_background=true only for independent work" in leader_prompt
     assert "Collect child results with background_output" in leader_prompt
-    assert "Retry failed, cancelled, or interrupted children with background_retry" in leader_prompt
-    assert "inspect the returned retry task id with background_output" in leader_prompt
+    assert "Retry failed, cancelled, or interrupted children" in leader_prompt
+    assert "re-dispatch through the task tool" in leader_prompt
+    assert "reusing the child session_id where applicable" in leader_prompt
     assert "do not manually reconstruct child requests" in leader_prompt
 
     assert explore_prompt is not None
