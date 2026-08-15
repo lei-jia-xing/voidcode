@@ -2833,7 +2833,7 @@ def test_runtime_background_task_status_includes_queue_concurrency_observability
 
     assert second_queued.status == "queued"
     assert second_queued.observability is not None
-    assert second_queued.observability.waiting_reason == "queued"
+    assert second_queued.observability.waiting_reason == "concurrency_limit"
     assert second_queued.observability.queue_position == 1
     assert second_queued.observability.concurrency is not None
     assert second_queued.observability.concurrency.active_worker_slots == 1
@@ -2853,6 +2853,94 @@ def test_runtime_background_task_status_includes_queue_concurrency_observability
     graph.release_first.set()
     assert _wait_for_background_task(runtime, first.task.id).status == "completed"
     assert _wait_for_background_task(runtime, second.task.id).status == "completed"
+
+
+def test_runtime_background_task_queued_read_path_drain_re_dispatches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task left queued by the creation-time drain (concurrency blocked) is
+    re-dispatched by a subsequent read-path drain instead of being stranded."""
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
+    )
+    supervisor = runtime._background_task_supervisor
+    real_can_start = supervisor._can_start_task
+    blocked = {"value": True}
+
+    def _can_start_when_unblocked(identity: object) -> bool:
+        if blocked["value"]:
+            return False
+        return real_can_start(identity)
+
+    monkeypatch.setattr(supervisor, "_can_start_task", _can_start_when_unblocked)
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="queued child"))
+    assert started.status == "queued"
+    assert started.observability is not None
+    assert started.observability.waiting_reason == "concurrency_limit"
+
+    # No worker finished, so only the read-path drain can dispatch it now.
+    blocked["value"] = False
+    reloaded = runtime.load_background_task(started.task.id)
+    assert reloaded.status in ("running", "completed")
+    assert _wait_for_background_task(runtime, started.task.id).status == "completed"
+
+
+def test_runtime_background_task_shutdown_blocked_returns_interrupted(tmp_path: Path) -> None:
+    """A task created while the runtime is shutting down is terminalized with a
+    durable reason instead of being stranded as ``queued``."""
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
+    )
+    runtime._background_task_supervisor.shutdown(timeout_seconds=0.1)
+
+    started = runtime.start_background_task(RuntimeRequest(prompt="post shutdown child"))
+    assert started.status == "interrupted"
+    assert started.error == "runtime shutdown requested before delegated worker execution started"
+
+
+def test_runtime_background_task_shutdown_terminalizes_queued(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shutdown`` marks still-queued (never-started) tasks terminal so no
+    cross-process ``queued`` orphans survive teardown."""
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_BackgroundTaskSuccessGraph(),
+        config=RuntimeConfig(
+            background_task=RuntimeBackgroundTaskConfig(default_concurrency=1),
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
+    )
+    supervisor = runtime._background_task_supervisor
+    real_can_start = supervisor._can_start_task
+    blocked = {"value": True}
+
+    def _can_start_when_unblocked(identity: object) -> bool:
+        if blocked["value"]:
+            return False
+        return real_can_start(identity)
+
+    monkeypatch.setattr(supervisor, "_can_start_task", _can_start_when_unblocked)
+    started = runtime.start_background_task(RuntimeRequest(prompt="queued orphan"))
+    assert started.status == "queued"
+
+    supervisor.shutdown(timeout_seconds=0.1)
+
+    terminal = runtime.load_background_task(started.task.id)
+    assert terminal.status == "interrupted"
+    assert terminal.error == "runtime shutdown requested before delegated worker execution started"
 
 
 def test_runtime_background_task_list_observability_batches_store_reads(
@@ -2893,7 +2981,9 @@ def test_runtime_background_task_list_observability_batches_store_reads(
     summaries = runtime.list_background_tasks()
 
     assert {summary.task.id for summary in summaries} == {first.task.id, second.task.id}
-    assert calls == {"list": 1, "list_queued": 1, "load": 2}
+    # The read-path drain adds one status-indexed queued scan + one queued-task
+    # load on top of the observability pass (which stays batched).
+    assert calls == {"list": 1, "list_queued": 2, "load": 3}
 
     graph.release_first.set()
     assert _wait_for_background_task(runtime, first.task.id).status == "completed"
@@ -2940,7 +3030,9 @@ def test_runtime_background_task_load_observability_uses_queued_scope(
     assert queued.status == "queued"
     assert queued.observability is not None
     assert queued.observability.queue_position == 1
-    assert calls == {"list_queued": 1, "load": 1}
+    # Read-path drain adds one queued scan + one queued-task load; observability
+    # itself stays batched and never touches the full-history scan.
+    assert calls == {"list_queued": 2, "load": 2}
 
     monkeypatch.setattr(store, "list_background_tasks", original_list_background_tasks)
 
@@ -13940,47 +14032,45 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     worker_prompt = render_agent_prompt({"preset": "worker", "prompt_profile": "worker"})
 
     assert leader_prompt is not None
-    assert "Delegate only through runtime-provided tools" in leader_prompt
-    assert "Use category when you know the kind of work" in leader_prompt
-    assert "Use subagent_type when you know the exact specialist" in leader_prompt
-    assert "Use run_in_background=true only for independent work" in leader_prompt
-    assert "Collect child results with background_output" in leader_prompt
-    assert "Retry failed, cancelled, or interrupted children" in leader_prompt
-    assert "re-dispatch through the task tool" in leader_prompt
-    assert "reusing the child session_id where applicable" in leader_prompt
-    assert "do not manually reconstruct child requests" in leader_prompt
+    assert "Delegate only through the runtime's task tool" in leader_prompt
+    assert "choosing the narrowest specialist that fits (explore, advisor, worker, researcher, product)" in leader_prompt
+    assert "delegate to the product agent and read its plan back via submit_result" in leader_prompt
+    assert "a child's completion is an incremental result, not a finished deliverable" in leader_prompt
+    assert "Collect outstanding child results with background_output" in leader_prompt
+    assert "Never present an unrun command, unread file, or unverified change as done" in leader_prompt
 
     assert explore_prompt is not None
-    assert "Stay read only" in explore_prompt
-    assert "paths, patterns, and findings" in explore_prompt
-    assert "do not edit or write files" in explore_prompt
+    assert "Stay read-only: do not edit or write files" in explore_prompt
+    assert "report relevant files with absolute paths, observed patterns or call paths" in explore_prompt
+    assert "Your delegated run is not complete until you call submit_result" in explore_prompt
 
     assert advisor_prompt is not None
-    assert "Stay read only and advisory" in advisor_prompt
-    assert "Recommend, analyze, and debug" in advisor_prompt
-    assert "do not edit or write files" in advisor_prompt
+    assert "Stay read-only: do not edit or write files" in advisor_prompt
+    assert "Analyze tradeoffs and risk, and hand back a recommendation" in advisor_prompt
+    assert "Your delegated run is not complete until you call submit_result" in advisor_prompt
 
     assert worker_prompt is not None
-    assert "Do not delegate by default" in worker_prompt
-    assert "current runtime tool allowlist exposes it" in worker_prompt
-    assert "Runtime tool allowlists, approvals, and session state remain authoritative" in worker_prompt
+    assert "Stay tightly scoped to the delegated task" in worker_prompt
+    assert "do not delegate or spawn child agents" in worker_prompt
+    assert "Your delegated run is not complete until you call submit_result with a non-empty summary of completed work" in worker_prompt
 
 
 def test_runtime_product_agent_config_is_not_top_level_selectable(
     tmp_path: Path,
 ) -> None:
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        config=RuntimeConfig(
-            agent=RuntimeAgentConfig(
-                preset="product",
-                model="opencode/gpt-5.4",
-            )
-        ),
-    )
-
+    # ``product`` is a delegated plan subagent (top_level_selectable=False), so
+    # the runtime rejects it at construction time — the top-level active agent
+    # must be an executable primary preset.
     with pytest.raises(ValueError, match="agent preset 'product' cannot be executed as the top-level active agent"):
-        _ = runtime.run(RuntimeRequest(prompt="shape the issue", session_id="product-agent"))
+        _ = VoidCodeRuntime(
+            workspace=tmp_path,
+            config=RuntimeConfig(
+                agent=RuntimeAgentConfig(
+                    preset="product",
+                    model="opencode/gpt-5.4",
+                )
+            ),
+        )
 
 
 def test_runtime_request_metadata_agent_override_persists_and_restores_agent_config(
@@ -14211,11 +14301,15 @@ def test_runtime_plan_command_keeps_leader_active_and_sets_workflow_mode(tmp_pat
     assert response.session.metadata.get("agent") is None
     assert response.session.metadata["workflow_mode"] == "product"
     assert "workflow_preset" not in response.session.metadata
+    # The /plan command keeps the leader active (workflow_mode=product), so the
+    # provider-facing agent_preset is the leader's own config. This runtime
+    # config sets only a top-level model (no agent block), so the leader agent
+    # config carries no model of its own — the agent_preset reflects the agent
+    # config, not the top-level model.
     assert created_providers[-1].requests[0].agent_preset == {
         "preset": "leader",
         "prompt_profile": "leader",
         "prompt_materialization": _prompt_materialization_payload("leader"),
-        "model": "opencode/gpt-5.4",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset

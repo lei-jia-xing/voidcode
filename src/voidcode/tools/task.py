@@ -271,15 +271,27 @@ class TaskTool:
                 "reminder, or use background_output(block=true) when you intentionally "
                 "want to wait in the current turn."
             )
-            return ToolResult(
-                tool_name=self.definition.name,
-                status="ok",
-                content=(
+            waiting_reason = task.observability.waiting_reason if task.observability is not None else None
+            if task.status == "queued":
+                queued_reason = waiting_reason or "queued"
+                content = (
+                    f"Started background task {task.task.id} (status: queued; reason: {queued_reason}). "
+                    "It will be dispatched when capacity is available; continue other work now and "
+                    "do not call background_output immediately unless you truly need a status check. "
+                    "Wait for a completion reminder, or use background_output(block=true) when you "
+                    "intentionally need to wait."
+                )
+            else:
+                content = (
                     f"Started background task {task.task.id}. Continue other work now; "
                     "do not call background_output immediately unless you truly need a "
                     "status check. Wait for a completion reminder, or use "
                     "background_output(block=true) when you intentionally need to wait."
-                ),
+                )
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=content,
                 data={
                     "task_id": task.task.id,
                     "status": task.status,
@@ -290,6 +302,7 @@ class TaskTool:
                     "requested_category": args.category,
                     "requested_subagent_type": args.subagent_type,
                     "load_skills": list(args.load_skills),
+                    "waiting_reason": waiting_reason,
                 },
                 retry_guidance=retry_guidance,
             )

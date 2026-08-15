@@ -57,6 +57,18 @@ _BACKGROUND_TASK_RATE_LIMIT_RETRIES = 2
 _BACKGROUND_TASK_RATE_LIMIT_BASE_BACKOFF_SECONDS = 0.05
 _RUNTIME_BACKGROUND_TASK_IDLE_REMINDER = "runtime.background_task_idle_reminder"
 
+# Per-task outcomes returned by ``_drain_background_task_queue``.
+_BACKGROUND_TASK_DRAIN_DISPATCHED = "dispatched"
+_BACKGROUND_TASK_DRAIN_BLOCKED_CONCURRENCY = "blocked-concurrency"
+_BACKGROUND_TASK_DRAIN_BLOCKED_SHUTDOWN = "blocked-shutdown"
+_BACKGROUND_TASK_DRAIN_ROUTING_FAILED = "routing-failed"
+
+# Waiting reasons surfaced through ``BackgroundTaskObservability.waiting_reason``
+# for queued tasks that the drain could not dispatch.
+_QUEUED_WAITING_REASON_QUEUED = "queued"
+_QUEUED_WAITING_REASON_CONCURRENCY = "concurrency_limit"
+_QUEUED_WAITING_REASON_SHUTDOWN = "blocked"
+
 
 @dataclass(frozen=True, slots=True)
 class _BackgroundTaskConcurrencyIdentity:
@@ -141,6 +153,11 @@ class RuntimeBackgroundTaskSupervisor:
         self._provider_running_counts: dict[str, int] = {}
         self._model_running_counts: dict[str, int] = {}
         self._rate_limit_retries: dict[str, _BackgroundTaskRetrySnapshot] = {}
+        # task_id -> waiting reason for queued tasks the drain could not
+        # dispatch (e.g. concurrency limit, runtime shutdown). Consulted by
+        # ``_waiting_reason`` so reads surface *why* a task is queued instead
+        # of a generic "queued".
+        self._queued_waiting_reasons: dict[str, str] = {}
 
     @property
     def threads(self) -> dict[str, threading.Thread]:
@@ -190,17 +207,55 @@ class RuntimeBackgroundTaskSupervisor:
             with self._queue_lock:
                 threads = tuple(self._threads.items())
             if not threads:
-                return
+                break
             for task_id, thread in threads:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._fail_unfinished_shutdown_threads(threads)
-                    return
+                    break
                 thread.join(timeout=min(remaining, 0.1))
                 if not thread.is_alive():
                     with self._queue_lock:
                         if self._threads.get(task_id) is thread:
                             self._threads.pop(task_id, None)
+        # Terminalize still-queued (never-started) tasks so no cross-process
+        # ``queued`` orphans survive a runtime teardown.
+        self._terminalize_queued_tasks_for_shutdown()
+
+    def _terminalize_queued_tasks_for_shutdown(self) -> tuple[str, ...]:
+        """Mark every still-queued task terminal (``interrupted``) durably.
+
+        Called by ``shutdown`` and by the queue drain once the supervisor is
+        shutting down: a queued task can never be dispatched again, so it must
+        not survive as a ``queued`` orphan. ``interrupted`` is the resumable
+        terminal status (retry is allowed), matching
+        ``_mark_background_task_interrupted_before_worker``.
+        """
+        runtime = self._runtime
+        terminalized: list[str] = []
+        for summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
+            if summary.status != "queued":
+                continue
+            try:
+                terminal_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=summary.task.id,
+                    status="interrupted",
+                    error="runtime shutdown requested before delegated worker execution started",
+                )
+            except Exception as exc:
+                if "unknown background task" in str(exc):
+                    continue
+                logger.exception(
+                    "background task %s could not persist shutdown interruption state",
+                    summary.task.id,
+                )
+                continue
+            with self._queue_lock:
+                self._queued_waiting_reasons.pop(summary.task.id, None)
+            terminalized.append(terminal_task.task.id)
+            self.run_background_task_lifecycle_hook(terminal_task)
+        return tuple(terminalized)
 
     def _fail_unfinished_shutdown_threads(self, threads: tuple[tuple[str, threading.Thread], ...]) -> None:
         runtime = self._runtime
@@ -414,14 +469,15 @@ class RuntimeBackgroundTaskSupervisor:
             return task.error or "interrupted"
         return None
 
-    @staticmethod
     def _waiting_reason(
+        self,
         *,
         task: BackgroundTaskState,
         retry: BackgroundTaskRetryObservability | None,
     ) -> str:
         if task.status == "queued":
-            return "queued"
+            with self._queue_lock:
+                return self._queued_waiting_reasons.get(task.task.id, _QUEUED_WAITING_REASON_QUEUED)
         if task.status == "running" and retry is not None:
             return "rate_limited"
         if task.status == "running" and task.cancel_requested_at is not None:
@@ -685,10 +741,65 @@ class RuntimeBackgroundTaskSupervisor:
         except (RuntimeRequestError, ValueError):
             return {}
 
-    def _drain_background_task_queue(self) -> None:
+    def drain_queued_background_tasks(self) -> None:
+        """Idempotent read-path re-dispatch of queued background tasks.
+
+        Safe to call from any read/status surface (``load_background_task``,
+        ``load_background_task_result``, ``list_background_tasks``, status
+        snapshots, ``background_output`` polling): the underlying drain skips
+        non-queued tasks and tasks that already own a worker thread, and
+        consults the live concurrency counts, so a task left queued by an
+        earlier drain is re-attempted instead of being stranded forever.
+        """
+        self._drain_background_task_queue()
+
+    def _parent_session_is_terminal(self, parent_session_id: str | None) -> bool:
+        """True when the parent session is durably terminal (completed/failed).
+
+        An unknown parent session (row gone) is treated as terminal: the task
+        is an orphan that can never be owned again. ``interrupted`` parents
+        are intentionally NOT terminal — an interrupted session may be resumed.
+        """
+        if parent_session_id is None:
+            return False
+        store = self._runtime._session_store
+        load_status = getattr(store, "load_session_status", None)
+        if not callable(load_status):
+            return False
+        try:
+            status = load_status(
+                workspace=self._runtime._workspace,
+                session_id=parent_session_id,
+            )
+        except UnknownSessionError:
+            return True
+        except Exception as exc:
+            logger.debug("background task parent status check failed: %s", exc)
+            return False
+        return status in {"completed", "failed"}
+
+    def _drain_background_task_queue(self) -> dict[str, str]:
+        """Dispatch as many queued tasks as concurrency currently allows.
+
+        Idempotent: tasks that are no longer ``queued`` or that already own a
+        worker thread are skipped, so read/status paths may call this freely.
+        Returns a ``task_id -> outcome`` map for every queued task considered
+        by this pass:
+
+        * ``dispatched`` — a worker thread was started for the task
+        * ``blocked-concurrency`` — the task stayed queued because the
+          provider/model concurrency limit is exhausted
+        * ``blocked-shutdown`` — the task was terminalized because the runtime
+          is shutting down and will never dispatch again
+        * ``routing-failed`` — the task was terminalized because its routing
+          could not be resolved
+        """
         runtime = self._runtime
+        outcomes: dict[str, str] = {}
         if self._shutdown_requested:
-            return
+            for task_id in self._terminalize_queued_tasks_for_shutdown():
+                outcomes[task_id] = _BACKGROUND_TASK_DRAIN_BLOCKED_SHUTDOWN
+            return outcomes
         failed_tasks: list[BackgroundTaskState] = []
         started_tasks: list[
             tuple[
@@ -700,9 +811,13 @@ class RuntimeBackgroundTaskSupervisor:
         ] = []
         with self._queue_lock:
             summaries = sorted(
-                runtime._session_store.list_background_tasks(workspace=runtime._workspace),
+                runtime._session_store.list_queued_background_tasks(workspace=runtime._workspace),
                 key=lambda summary: (summary.created_at, summary.task.id),
             )
+            queued_ids = {summary.task.id for summary in summaries}
+            for task_id in tuple(self._queued_waiting_reasons):
+                if task_id not in queued_ids:
+                    self._queued_waiting_reasons.pop(task_id, None)
             for summary in summaries:
                 if summary.status != "queued":
                     continue
@@ -730,8 +845,12 @@ class RuntimeBackgroundTaskSupervisor:
                         error=str(exc),
                     )
                     failed_tasks.append(failed_task)
+                    self._queued_waiting_reasons.pop(task.task.id, None)
+                    outcomes[task.task.id] = _BACKGROUND_TASK_DRAIN_ROUTING_FAILED
                     continue
                 if not self._can_start_task(identity):
+                    self._queued_waiting_reasons[task.task.id] = _QUEUED_WAITING_REASON_CONCURRENCY
+                    outcomes[task.task.id] = _BACKGROUND_TASK_DRAIN_BLOCKED_CONCURRENCY
                     continue
                 self._reserve_slot(identity)
                 running_task = runtime._session_store.mark_background_task_running(
@@ -741,7 +860,10 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 if running_task.status != "running":
                     self._release_slot(identity)
+                    self._queued_waiting_reasons.pop(task.task.id, None)
                     continue
+                self._queued_waiting_reasons.pop(task.task.id, None)
+                outcomes[task.task.id] = _BACKGROUND_TASK_DRAIN_DISPATCHED
                 worker_start_gate = threading.Event()
 
                 background_task_id = running_task.task.id
@@ -798,6 +920,7 @@ class RuntimeBackgroundTaskSupervisor:
                 worker_start_gate.set()
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
+        return outcomes
 
     def _mark_background_task_interrupted_before_worker(self, *, task_id: str) -> None:
         runtime = self._runtime
@@ -1707,6 +1830,13 @@ class RuntimeBackgroundTaskSupervisor:
         )
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
+        # Queued orphans whose parent session is durably terminal can never be
+        # owned again (the process that created them is gone or the parent
+        # finished before dispatch). Terminalize them so no cross-process
+        # ``queued`` orphans survive; tasks with active/interrupted parents are
+        # re-dispatched by the drain at the end of this pass.
+        for orphan_task in self._terminalize_queued_orphans_with_terminal_parent():
+            self.run_background_task_lifecycle_hook(orphan_task)
         task_summaries = runtime._session_store.list_background_tasks(workspace=runtime._workspace)
         for task_summary in task_summaries:
             task = runtime._session_store.load_background_task(
@@ -1716,6 +1846,56 @@ class RuntimeBackgroundTaskSupervisor:
             self.backfill_parent_background_task_event(task=task)
         self._reconciled = True
         self._drain_background_task_queue()
+
+    def _terminalize_queued_orphans_with_terminal_parent(self) -> tuple[BackgroundTaskState, ...]:
+        """Terminalize queued tasks whose parent session is completed/failed.
+
+        Runs once per supervisor lifetime from the startup reconcile: a queued
+        task whose parent is already terminal is an orphan left behind by an
+        earlier process (or by a parent that finished while the task was never
+        dispatched). ``cancelled`` is the terminal status — the parent is gone,
+        so the delegation cannot proceed — with a durable error reason.
+        """
+        runtime = self._runtime
+        terminalized: list[BackgroundTaskState] = []
+        for summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
+            if summary.status != "queued":
+                continue
+            task = runtime._session_store.load_background_task(
+                workspace=runtime._workspace,
+                task_id=summary.task.id,
+            )
+            if task.parent_session_id is None or not self._parent_session_is_terminal(task.parent_session_id):
+                continue
+            # Routing-invalid tasks must keep the drain's own routing-failed
+            # outcome (``failed`` + the routing error): do not shadow it with
+            # the orphan cancellation.
+            request = RuntimeRequest(
+                prompt=task.request.prompt,
+                session_id=task.request.session_id,
+                parent_session_id=task.request.parent_session_id,
+                metadata=cast(RuntimeRequestMetadataPayload, task.request.metadata),
+                allocate_session_id=task.request.allocate_session_id,
+            )
+            try:
+                _ = self._concurrency_identity_for_task(task)
+                _ = runtime._session_routing_for_request(request)
+            except (RuntimeRequestError, ValueError):
+                continue
+            try:
+                terminal_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=task.task.id,
+                    status="cancelled",
+                    error="cancelled because parent session is terminal before delegated task started",
+                )
+            except Exception as exc:
+                logger.debug("background task %s orphan terminalization failed: %s", task.task.id, exc)
+                continue
+            with self._queue_lock:
+                self._queued_waiting_reasons.pop(task.task.id, None)
+            terminalized.append(terminal_task)
+        return tuple(terminalized)
 
     def run_background_task_worker(self, task_id: str) -> None:
         runtime = self._runtime

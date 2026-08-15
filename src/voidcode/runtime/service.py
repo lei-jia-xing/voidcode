@@ -3459,6 +3459,7 @@ class VoidCodeRuntime:
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
         validate_background_task_id(task_id)
         task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
         return self._background_task_supervisor.task_with_observability(task)
@@ -3470,6 +3471,7 @@ class VoidCodeRuntime:
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
         return self._background_task_supervisor.load_background_task_result(
             task_id,
             emit_result_read_hook=emit_result_read_hook,
@@ -3482,6 +3484,7 @@ class VoidCodeRuntime:
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult | None:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
         validated_child_session_id = validate_session_reference_id(
             child_session_id,
             field_name="child_session_id",
@@ -3499,10 +3502,12 @@ class VoidCodeRuntime:
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
         return self._background_task_supervisor.summaries_with_observability(self._session_store.list_background_tasks(workspace=self._workspace))
 
     def list_background_tasks_by_parent_session(self, *, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
         validated_parent_session_id = validate_session_reference_id(
             parent_session_id,
             field_name="parent_session_id",
@@ -4522,6 +4527,7 @@ class VoidCodeRuntime:
 
     def current_status(self) -> RuntimeStatusSnapshot:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
         git = self._git_status_snapshot()
         lsp_state = self.current_lsp_state()
         mcp_state = self.current_mcp_state()
