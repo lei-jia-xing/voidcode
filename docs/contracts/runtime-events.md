@@ -44,50 +44,63 @@ EventEnvelope(
 
 ## 当前稳定事件词汇表
 
-以下事件当前属于稳定的运行时事件契约，源自 `src/voidcode/runtime/service.py`、`src/voidcode/graph/deterministic_graph.py` 与 `src/voidcode/graph/provider_graph.py`。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
+以下事件当前属于稳定的运行时事件契约，与 `src/voidcode/runtime/events.py` 的 `CoreEventType`（即 `EMITTED_EVENT_TYPES`）一致。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
 
-- `runtime.request_received`
-- `runtime.skills_loaded`
-- `runtime.skills_applied`
-- `runtime.acp_connected`
-- `runtime.acp_disconnected`
-- `runtime.acp_failed`
-- `graph.loop_step`
-- `graph.model_turn`
-- `graph.tool_request_created`
-- `runtime.tool_lookup_succeeded`
-- `runtime.tool_started`
-- `runtime.approval_requested`
-- `runtime.approval_resolved`
-- `runtime.permission_resolved`
-- `runtime.tool_hook_pre`
-- `runtime.tool_hook_post`
-- `runtime.tool_progress`
-- `runtime.tool_completed`
-- `runtime.failed`
-- `graph.response_ready`
+- 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`
+- provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`、`runtime.category_model_diagnostic`
+- ACP：`runtime.acp_connected`、`runtime.acp_disconnected`、`runtime.acp_failed`、`runtime.acp_delegated_lifecycle`
+- LSP：`runtime.lsp_server_started`、`runtime.lsp_server_reused`、`runtime.lsp_server_startup_rejected`、`runtime.lsp_server_stopped`、`runtime.lsp_server_failed`
+- MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_released`、`runtime.mcp_server_stopped`、`runtime.mcp_server_idle_cleaned`、`runtime.mcp_server_failed`
+- graph 阶段：`graph.loop_step`、`graph.model_turn`、`graph.tool_request_created`
+- 工具执行边界：`runtime.tool_lookup_succeeded`、`runtime.tool_started`、`runtime.tool_progress`、`runtime.tool_completed`、`runtime.tool_hook_pre`、`runtime.tool_hook_post`
+- 权限 / 审批 / 提问：`runtime.permission_resolved`、`runtime.approval_requested`、`runtime.approval_resolved`、`runtime.question_requested`、`runtime.question_answered`
+- 终结：`graph.response_ready`、`runtime.failed`
 
 在轮次中发出的所有事件（包括来自图端的事件）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
 这确保了图端局部（graph-local）的序列值在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
+
+## RuntimeEventType 扩展事件
+
+以下事件在 `src/voidcode/runtime/events.py` 中归类为 `RuntimeEventType`，按需发射：
+
+- 会话：`runtime.session_started`、`runtime.session_ended`、`runtime.session_idle`
+- 技能绑定：`runtime.skill_loaded`、`runtime.skills_binding_mismatch`
+- 任务状态与推理：`runtime.todo_updated`、`runtime.reasoning_part`、`runtime.reasoning_diagnostic`、`runtime.turn_progress`、`runtime.stuck_detected`
+- 策略物化：`runtime.policy_materialized`
+- 上下文变换：`runtime.context_transform_applied`（正式事件，由 `run_loop.py` 发射；payload 见下文）
 
 ## 已交付的 delegated/background-task 事件
 
 以下事件名称当前已经是 shipped delegated execution surface 的一部分：
 
+- `runtime.background_task_registered`
+- `runtime.background_task_started`
+- `runtime.background_task_progress`
+- `runtime.background_task_idle_reminder`
 - `runtime.background_task_waiting_approval`
 - `runtime.background_task_completed`
 - `runtime.background_task_failed`
 - `runtime.background_task_cancelled`
+- `runtime.background_task_group_completed`
+- `runtime.background_task_notification_enqueued`
+- `runtime.background_task_result_read`
 - `runtime.delegated_result_available`
 
-它们在 `src/voidcode/runtime/events.py` 中归类为 `RuntimeEventType`。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件。
+它们在 `src/voidcode/runtime/events.py` 中归类为 `RuntimeEventType`（终态 / 通知类事件同时属于 `DelegatedBackgroundTaskEventType`）。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件；`runtime.acp_delegated_lifecycle`（CoreEventType）用于 ACP 侧的 delegated observability，payload 与 background-task 事件一致。
+
+## memory / context 事件
+
+以下事件表达 memory / context 观测：
+
+- `runtime.context_compacted`
+- `runtime.memory_added`
+- `runtime.memory_deleted`
+- `runtime.memory_searched`
+- `runtime.memory_status_checked`
 
 ## 未来补充 / additive 词汇表
 
-当前真正仍保持 additive/prototype 语义的共享事件名称至少包括：
-
-- `runtime.memory_refreshed`
-- `runtime.context_transform_applied`
+当前不再有仍保持 additive/prototype 语义的具名共享事件：`runtime.context_transform_applied` 已转为正式事件（见上文），memory 观测统一由上文 memory / context 事件表达。
 
 未来版本可以追加新的事件类型或为现有 payload 增加新字段；客户端必须继续容忍未知事件类型，并将 payload 视为可扩展结构。
 
@@ -196,9 +209,11 @@ EventEnvelope(
 
 ### `runtime.acp_delegated_lifecycle`
 ### `runtime.background_task_waiting_approval`
+### `runtime.background_task_idle_reminder`
 ### `runtime.background_task_completed`
 ### `runtime.background_task_failed`
 ### `runtime.background_task_cancelled`
+### `runtime.background_task_group_completed`
 ### `runtime.delegated_result_available`
 - source: `runtime`
 - 当前 payload 同时保留：
