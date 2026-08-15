@@ -34,12 +34,6 @@ VoidCode 已不再只是一个有会话持久化和审批的运行时骨架。�
 
 OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优势不是单纯拥有更多工具，而是把工具协议、真实会话统计、专项 benchmark、模型适配、终端产品和发布反馈连接成了持续优化循环。
 
-当前最值得 VoidCode 引入的机制是：
-
-> **建立 runtime-owned 的 agent effectiveness loop：从真实会话事件生成可脱敏的工具质量指标，用固定任务集做回归，并以数据决定 read/edit、上下文、委派和模型适配的演进。**
-
-这比继续增加 provider、memory、DAP、浏览器或更多 agent 角色更重要。
-
 ## 旧结论复核
 
 | 旧结论 | 当前状态 | 新判断 |
@@ -65,7 +59,7 @@ OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优�
 | 上下文管理 | runtime-owned window policy、稳定 prompt prefix、continuity facts、两种 projection、恢复持久化 | compaction、handoff、checkpoint/rewind、非压缩重试策略、prompt cache 优化 | VoidCode 已有正确骨架；OMP 策略与实战迭代更丰富 |
 | 委派执行 | 固定 preset、深度/预算治理、后台任务、通知、取消、重试、结构化 handoff、并行组完成 | batch fan-out、动态 agent、并发 semaphore、JSON Schema output、隔离 worktree/container、patch/branch、agent/history URI、可复活 agent | VoidCode 治理骨架可靠；OMP 产出和协作闭环更完整 |
 | 模型与 provider | 直连适配、LiteLLM/custom provider、catalog、fallback、cache usage、错误归一化 | 60+ provider/大量模型、OAuth/订阅、角色路由、模型 quirks 和 schema/tool conversion | OMP 大幅领先；VoidCode 不应以数量追赶 |
-| 工具质量工程 | 单元、集成、fuzz、契约测试较强；未发现独立 agent task benchmark 或会话工具质量 dashboard | TypeScript edit benchmark、metaharness、session-stats、tool error/token/cost dashboard、read/search/edit 分析脚本 | 这是当前最大差距 |
+| 工具质量工程 | 单元、集成、fuzz、契约测试较强；未发现独立 agent task benchmark 或会话工具质量 dashboard | TypeScript edit benchmark、metaharness、session-stats、tool error/token/cost dashboard、read/search/edit 分析脚本 | 差距存在，但不以 benchmark 为当前优先级 |
 | 扩展 | skills、hooks、local tools、MCP、ACP、commands 均有受控边界 | Extension API 可注册 tool/command/provider/renderer/event；插件、marketplace、MCP lifecycle 完整 | OMP 产品成熟度明显更高 |
 | Memory | session continuity 为核心；长期 memory 明确后置 | local/Hindsight/Mnemopi，多阶段提取、consolidation、recall/retain/reflect/learn | 战略不同，不应直接追平 |
 | 客户端 | CLI + TUI + Web 都接 runtime；Web 强调 review/approval，TUI 已进入真实流式路径 | 强 TUI、one-shot、SDK、RPC、ACP、collab Web | OMP 交互成熟度明显领先 |
@@ -145,69 +139,7 @@ OMP 的 thinking-level 模型：`Effort` 枚举 `minimal|low|medium|high|xhigh|m
 | GLM / zai | 静默丢弃：不在 supported params，只接受 `thinking={"type":"enabled"}`，需走 `extra_body` |
 | Kimi / moonshot、Qwen | 静默丢弃：不在 supported params |
 
-## 当前最值得引入的机制：Agent Effectiveness Loop
-
-### 目标
-
-在不上传源码和敏感内容的前提下，让 runtime 能持续回答：
-
-- 每个工具的成功率、错误类型和重试次数是多少；
-- 哪些工具结果导致重复读取、重复编辑或无效 token 驻留；
-- 不同 provider/model/edit strategy 的任务成功率如何；
-- compaction、resume、approval 和 delegation 是否降低完成率；
-- 哪次协议或 prompt 修改带来了可重复的收益。
-
-### 建议的数据层
-
-复用现有 runtime event truth，新增版本化、可脱敏的 effectiveness projection，而不是另建第二套执行日志。第一阶段每次 tool call 记录：
-
-- session/run/turn/tool_call 的稳定关联 id；
-- tool、provider、model、agent preset、execution mode；
-- 参数和结果的 schema 版本及字节/token 大小，不保存源码正文；
-- status、duration、error kind、retry guidance 是否被采用；
-- edit 的 stale/no-op/ambiguous/near-match/diagnostic 分类；
-- read 的 range、truncation、follow-up read 和重复覆盖比例；
-- cache read/write、input/output token 和成本；
-- compaction/resume/approval/delegation 标记；
-- 最终任务 verdict。
-
-默认只保存在本地 SQLite；导出时使用聚合值和 hash/path redaction，显式 opt-in 后才允许更详细样本。
-
-### 建议的 benchmark 层
-
-先建立小而稳定的任务集，不追求大而全：
-
-1. 单文件精确修改；
-2. stale read 后安全拒绝并恢复；
-3. 跨文件 rename 与 workspace edit；
-4. 根据 failing test 完成修复；
-5. 大文件局部读取后修改未展示区域的防护；
-6. formatter/LSP diagnostics 同轮修复；
-7. compaction 后继续完成任务；
-8. approval 中断和进程重启后 resume；
-9. 两个并行 child 返回 handoff 后由 parent 汇总；
-10. cancel/terminal/late-event 竞态。
-
-每个任务至少输出：最终 diff verdict、测试 verdict、工具调用数、edit 重试数、token、耗时、人工纠偏次数和恢复是否成功。
-
-### 第一阶段验收标准
-
-- 同一任务集可以固定 workspace fixture 和 provider 配置重复运行；
-- 能按 model/tool/error kind 查看结果；
-- 能比较两个 commit 的成功率、token、耗时和重试变化；
-- benchmark 失败保留可重放的 session/bundle，但默认脱敏；
-- CI 运行 deterministic/fake-provider 子集，真实模型集在本地或定时任务运行；
-- 任何 read/edit/context/delegation 协议改动都能给出前后数据，而不是只凭主观体验合并。
-
 ## 推荐实施顺序
-
-### P0：先建立测量闭环
-
-1. [x] 定义 aggregate-only effectiveness projection schema；
-2. [x] 实现本地 session 指标聚合命令 `voidcode stats tools`；
-3. [ ] 建立首批 10 个 agent task fixtures 和 verdict runner（暂缓）；
-4. [~] 已覆盖 tool error taxonomy、错误后成功重试、重复/续读、截断、payload pressure 和 provider token/cache usage；精确成本归因仍待后续；
-5. [ ] 记录当前 commit 的真实模型基线结果（暂缓）。
 
 ### P1：用数据强化编辑协议
 
@@ -216,7 +148,7 @@ OMP 的 thinking-level 模型：`Effort` 枚举 `minimal|low|medium|high|xhigh|m
 3. 为 apply_patch/edit 统一 stale、ambiguous、no-op 和 parse-error taxonomy；
 4. 对支持 tree-sitter 的语言增加可选语法验证；
 5. 让失败结果返回稳定的 recovery payload，而不仅是文本提示；
-6. 根据不同模型的 benchmark 选择 edit schema，而不是全模型共用一个默认值。
+6. 根据不同模型的表现选择 edit schema，而不是全模型共用一个默认值。
 
 ### P1：验证终态与恢复竞态
 
@@ -231,7 +163,7 @@ OMP 的 thinking-level 模型：`Effort` 枚举 `minimal|low|medium|high|xhigh|m
 2. worker 支持只读或隔离 worktree；
 3. 结果返回 patch/artifact/verification 元数据；
 4. parent 通过 runtime API 合并或拒绝，不让 child 直接绕过治理；
-5. 用 benchmark 证明并行执行在哪些任务上真正更优。
+5. 用真实任务验证并行执行在哪些场景真正更优。
 
 ### P2：客户端与首次使用
 
@@ -258,9 +190,7 @@ VoidCode 与 OMP 的差距已经从“运行时骨架对成熟产品”缩小为
 
 VoidCode 不应复制 OMP 的功能数量。更合适的路线是：
 
-> 保留 SQLite session truth、严格恢复、审批和跨客户端一致性，把它们变成可测量基础；先建立 agent effectiveness loop，再用数据强化编辑协议、终态竞态和隔离子任务产物。
-
-如果只选择一个机制开始，应选择 effectiveness loop。它不仅补一个功能，还会决定后续所有机制是否值得继续投入。
+> 保留 SQLite session truth、严格恢复、审批和跨客户端一致性，继续用真实使用中的反馈强化编辑协议、终态竞态和隔离子任务产物。
 
 ## 主要证据索引
 

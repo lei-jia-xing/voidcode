@@ -2,7 +2,7 @@
 
 关于将此路线图转变为具体交付阶段的执行清单，请参阅 [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md)。关于面向客户端的运行时契约，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
-关于与 Oh My Pi 的阶段性能力对比，以及由此形成的真实任务成功率、read/edit、LSP、首次配置、上下文连续性和受限子代理产品化优先级，请参阅 [`oh-my-pi-comparison-priorities.md`](./oh-my-pi-comparison-priorities.md)。
+关于与 Oh My Pi 的阶段性能力对比，以及由此形成的 read/edit、LSP、首次配置、上下文连续性和受限子代理产品化优先级，请参阅 [`oh-my-pi-comparison-priorities.md`](./oh-my-pi-comparison-priorities.md)。
 
 ## 当前状态
 
