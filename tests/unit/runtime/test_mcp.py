@@ -289,6 +289,89 @@ def test_mcp_manager_accepts_remote_http_transport_metadata(
     assert [tool.tool_name for tool in tools] == ["search"]
 
 
+def test_mcp_manager_reports_clean_diagnostic_for_unreachable_remote_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A dead remote-http endpoint surfaces as a task-group failure inside the
+    # SDK transport: anyio raises BaseExceptionGroup (not an Exception), which
+    # neither ``except Exception`` nor ``suppress(Exception)`` catches. The
+    # runtime must translate it into the same clean startup diagnostic used for
+    # other connect failures, never leaking the raw group to the caller.
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client as _real_streamable_http_client
+
+    import voidcode.runtime.mcp as runtime_mcp
+
+    class _FailingStreamContext:
+        def __init__(self, exc: httpx2.ConnectError) -> None:
+            self._exc = exc
+
+        async def __aenter__(self) -> object:
+            raise self._exc
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            _ = exc_type, exc, traceback
+
+    class _FakeHttpxClient:
+        """Minimal httpx2.AsyncClient stand-in whose requests fail to connect."""
+
+        def __init__(self) -> None:
+            self._exc = httpx2.ConnectError("All connection attempts failed")
+
+        async def __aenter__(self) -> _FakeHttpxClient:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            _ = exc_type, exc, traceback
+
+        def stream(self, method: str, url: str, **kwargs: object) -> _FailingStreamContext:
+            _ = method, url, kwargs
+            return _FailingStreamContext(self._exc)
+
+        def sse(self, url: str, **kwargs: object) -> _FailingStreamContext:
+            _ = url, kwargs
+            return _FailingStreamContext(self._exc)
+
+        async def delete(self, url: str, **kwargs: object) -> None:
+            _ = url, kwargs
+            raise self._exc
+
+    def fake_streamable_http_client(url: str) -> object:
+        return _real_streamable_http_client(url, http_client=_FakeHttpxClient())
+
+    monkeypatch.setattr(runtime_mcp, "streamable_http_client", fake_streamable_http_client)
+    collector = InMemoryMcpDiagnosticsCollector()
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "remote": RuntimeMcpServerConfig(
+                    transport="remote-http",
+                    url="https://mcp.example.test",
+                )
+            },
+        ),
+        diagnostics_collector=collector,
+    )
+
+    with pytest.raises(ValueError, match="failed to connect") as exc_info:
+        manager.list_tools(workspace=tmp_path)
+
+    # The escaping exception must be the clean diagnostic, not an exception group.
+    assert type(exc_info.value).__name__ not in {"ExceptionGroup", "BaseExceptionGroup"}
+
+    failure_events = [event for event in manager.drain_events() if event.event_type == "runtime.mcp_server_failed"]
+    assert len(failure_events) == 1
+    assert failure_events[0].payload["stage"] == "startup"
+    assert failure_events[0].payload["error"] == "MCP[remote]: failed to connect to remote server"
+
+    diagnostics = collector.get_diagnostics()
+    assert diagnostics
+    assert diagnostics[-1].category == "startup"
+    assert "MCP server failed to start" in diagnostics[-1].message
+
+
 def test_mcp_manager_defaults_to_production_request_timeout() -> None:
     assert DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS == 30.0
 

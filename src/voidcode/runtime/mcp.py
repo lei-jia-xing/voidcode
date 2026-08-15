@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Literal, cast
 
+import httpx2
 from anyio.from_thread import BlockingPortal, start_blocking_portal
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -67,6 +68,11 @@ _RECOVERABLE_MCP_CALL_ERROR_CODES = frozenset(
         -32600,  # JSON-RPC invalid request
     }
 )
+#: The SDK's CONNECTION_CLOSED JSON-RPC error code (mcp_types.CONNECTION_CLOSED).
+#: The streamable-http transport resolves an in-flight request with this error
+#: when the underlying connection dies (e.g. the connect POST failed), which is
+#: how an unreachable endpoint surfaces through ``ClientSession.initialize``.
+_MCP_CONNECTION_CLOSED_CODE = -32000
 
 
 def _validate_input_schema(raw_schema: object) -> dict[str, object]:
@@ -93,6 +99,36 @@ def _read_write_streams(transport_streams: tuple[object, ...]) -> tuple[object, 
     if len(transport_streams) < 2:
         raise ValueError("MCP transport context must provide read and write streams")
     return transport_streams[0], transport_streams[1]
+
+
+def _flatten_exception_group(exc: BaseExceptionGroup) -> BaseException:
+    """Return a representative leaf exception from an exception group.
+
+    anyio's ``TaskGroup.__aexit__`` raises ``BaseExceptionGroup`` (NOT an
+    ``Exception`` subclass) for failures in child tasks, so ``except Exception``
+    handlers and ``contextlib.suppress(Exception)`` do not catch it. Unwrap the
+    group to its first leaf so the runtime's diagnostic helpers can inspect a
+    concrete error; nested groups are unwrapped recursively.
+    """
+    leaf: BaseException = exc
+    while isinstance(leaf, BaseExceptionGroup) and leaf.exceptions:
+        leaf = leaf.exceptions[0]
+    return leaf
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """True for errors indicating the remote endpoint could not be reached.
+
+    A dead remote-http endpoint surfaces either as an ``httpx2.ConnectError``
+    (or ``httpx2.ConnectTimeout``) wrapped in an anyio exception group, or -
+    when the transport teardown resolves the in-flight initialize request - as
+    an ``MCPError`` carrying the SDK's CONNECTION_CLOSED code.
+    """
+    if isinstance(exc, httpx2.ConnectError | httpx2.ConnectTimeout):
+        return True
+    if isinstance(exc, MCPError):
+        return getattr(exc.error, "code", None) == _MCP_CONNECTION_CLOSED_CODE
+    return False
 
 
 def _validate_call_arguments_against_schema(
@@ -609,16 +645,67 @@ class ManagedMcpManager:
                 self._record_diagnostic(diagnostic)
                 if transport == "stdio":
                     message = f"MCP[{server_name}]: failed to start server - cmd not found (command not found): {server_config.command[0]}"
+                    self._record_failure_event(
+                        key=key,
+                        workspace_root=workspace_root,
+                        stage="startup",
+                        error=message,
+                        command=list(server_config.command),
+                        diagnostic=diagnostic,
+                    )
                 else:
-                    message = f"MCP[{server_name}]: failed to connect to remote server"
-                self._record_failure_event(
-                    key=key,
-                    workspace_root=workspace_root,
-                    stage="startup",
-                    error=message,
-                    command=list(server_config.command) if transport == "stdio" else None,
-                    diagnostic=diagnostic,
+                    message = self._report_remote_connect_failure(
+                        key=key,
+                        workspace_root=workspace_root,
+                        server_name=server_name,
+                    )
+                raise ValueError(message) from exc
+            except (ExceptionGroup, BaseExceptionGroup) as exc:
+                # anyio raises BaseExceptionGroup (NOT an Exception subclass)
+                # when a transport child task fails - e.g. the streamable-http
+                # connect POST on an unreachable endpoint - so neither the
+                # ``except Exception`` clause nor ``suppress(Exception)`` in the
+                # cleanup helpers can see it. Route it through the same clean
+                # diagnostic path as other startup failures.
+                self._close_partial_server(
+                    session_context=session_context,
+                    transport_context=transport_context,
+                    stderr_log=stderr_log,
                 )
+                leaf = _flatten_exception_group(exc)
+                if transport == "remote-http" and _is_connection_error(leaf):
+                    message = self._report_remote_connect_failure(
+                        key=key,
+                        workspace_root=workspace_root,
+                        server_name=server_name,
+                    )
+                else:
+                    diagnostic = self._diagnostic_for_exception(
+                        leaf,
+                        server_name=server_name,
+                        stage="startup",
+                        method="initialize",
+                    )
+                    self._record_diagnostic(diagnostic)
+                    message = self._message_for_exception(
+                        leaf,
+                        fallback=f"MCP[{server_name}]: failed to initialize server",
+                    )
+                    self._record_failure_event(
+                        key=key,
+                        workspace_root=workspace_root,
+                        stage="startup",
+                        error=message,
+                        method="initialize",
+                        command=list(server_config.command) if transport == "stdio" else None,
+                        diagnostic=diagnostic,
+                    )
+                if transport_context is not None:
+                    self._record_server_stopped(
+                        key=key,
+                        workspace_root=workspace_root,
+                        preserve_failed_state=True,
+                    )
                 raise ValueError(message) from exc
             except Exception as exc:
                 self._close_partial_server(
@@ -626,26 +713,33 @@ class ManagedMcpManager:
                     transport_context=transport_context,
                     stderr_log=stderr_log,
                 )
-                diagnostic = self._diagnostic_for_exception(
-                    exc,
-                    server_name=server_name,
-                    stage="startup",
-                    method="initialize",
-                )
-                self._record_diagnostic(diagnostic)
-                message = self._message_for_exception(
-                    exc,
-                    fallback=f"MCP[{server_name}]: failed to initialize server",
-                )
-                self._record_failure_event(
-                    key=key,
-                    workspace_root=workspace_root,
-                    stage="startup",
-                    error=message,
-                    method="initialize",
-                    command=list(server_config.command) if transport == "stdio" else None,
-                    diagnostic=diagnostic,
-                )
+                if transport == "remote-http" and _is_connection_error(exc):
+                    message = self._report_remote_connect_failure(
+                        key=key,
+                        workspace_root=workspace_root,
+                        server_name=server_name,
+                    )
+                else:
+                    diagnostic = self._diagnostic_for_exception(
+                        exc,
+                        server_name=server_name,
+                        stage="startup",
+                        method="initialize",
+                    )
+                    self._record_diagnostic(diagnostic)
+                    message = self._message_for_exception(
+                        exc,
+                        fallback=f"MCP[{server_name}]: failed to initialize server",
+                    )
+                    self._record_failure_event(
+                        key=key,
+                        workspace_root=workspace_root,
+                        stage="startup",
+                        error=message,
+                        method="initialize",
+                        command=list(server_config.command) if transport == "stdio" else None,
+                        diagnostic=diagnostic,
+                    )
                 if transport_context is not None:
                     self._record_server_stopped(
                         key=key,
@@ -1073,9 +1167,38 @@ class ManagedMcpManager:
         if self._diagnostics_collector is not None:
             self._diagnostics_collector.record_diagnostic(diagnostic)
 
+    def _report_remote_connect_failure(
+        self,
+        *,
+        key: _McpServerKey,
+        workspace_root: Path,
+        server_name: str,
+    ) -> str:
+        """Record a startup failure diagnostic/event for an unreachable remote-http endpoint.
+
+        Returns the clean user-facing message raised as a ``ValueError``.
+        """
+        diagnostic = create_diagnostic(
+            severity=McpDiagnosticSeverity.ERROR,
+            category="startup",
+            code="server_startup_failed",
+            server_name=server_name,
+        )
+        self._record_diagnostic(diagnostic)
+        message = f"MCP[{server_name}]: failed to connect to remote server"
+        self._record_failure_event(
+            key=key,
+            workspace_root=workspace_root,
+            stage="startup",
+            error=message,
+            method="initialize",
+            diagnostic=diagnostic,
+        )
+        return message
+
     def _diagnostic_for_exception(
         self,
-        exc: Exception,
+        exc: BaseException,
         *,
         server_name: str,
         stage: str,
@@ -1114,7 +1237,7 @@ class ManagedMcpManager:
             error=str(exc),
         )
 
-    def _message_for_exception(self, exc: Exception, *, fallback: str) -> str:
+    def _message_for_exception(self, exc: BaseException, *, fallback: str) -> str:
         if self._is_timeout_error(exc):
             return f"MCP server timed out after {self._request_timeout_seconds:.1f}s. The server may be unresponsive."
         if isinstance(exc, MCPError):
@@ -1122,7 +1245,7 @@ class ManagedMcpManager:
         return f"{fallback}: {exc}"
 
     @staticmethod
-    def _is_timeout_error(exc: Exception) -> bool:
+    def _is_timeout_error(exc: BaseException) -> bool:
         if isinstance(exc, TimeoutError):
             return True
         if isinstance(exc, MCPError):
@@ -1138,19 +1261,19 @@ class ManagedMcpManager:
         stderr_log: IO[str] | None,
     ) -> None:
         if session_context is not None:
-            with suppress(Exception):
+            with suppress(BaseException):
                 session_context.__exit__(None, None, None)
         if transport_context is not None:
-            with suppress(Exception):
+            with suppress(BaseException):
                 transport_context.__exit__(None, None, None)
         if stderr_log is not None:
             stderr_log.close()
 
     @staticmethod
     def _terminate_running_server(running: _RunningMcpServer) -> None:
-        with suppress(Exception):
+        with suppress(BaseException):
             running.session_context.__exit__(None, None, None)
-        with suppress(Exception):
+        with suppress(BaseException):
             running.transport_context.__exit__(None, None, None)
         if running.stderr_log is not None:
             running.stderr_log.close()
