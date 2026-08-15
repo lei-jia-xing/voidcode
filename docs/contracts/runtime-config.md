@@ -30,7 +30,7 @@
 
 目前 hooks/config 的 MVP 收敛目标已经锁定：
 
-- hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_registered`、`background_task_started`、`background_task_progress`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`background_task_notification_enqueued`、`background_task_result_read` 与 `delegated_result_available` 等已解析的 lifecycle hook phases
+- hooks 继续保持 runtime-owned，但当前已不再只限 `pre_tool` / `post_tool`，而是同时包含 `session_start`、`session_end`、`session_idle`、`background_task_registered`、`background_task_started`、`background_task_progress`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`background_task_notification_enqueued`、`background_task_result_read`、`delegated_result_available`、`turn_progress` 与 `stuck_detected` 等已解析的 lifecycle hook phases
 - 显式 / 仓库本地 / 环境 / 默认值这条完整优先级链当前适用于 `approval_mode`、`model`、`execution_engine`、`max_steps` 和 `reasoning_effort`
 - 单一可见检查面为 CLI：`voidcode config show --workspace <path> [--session <id>]`
 - 当前 schema-backed 配置 UX 包含 `voidcode config schema` 与 `voidcode config init`
@@ -75,7 +75,9 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
     "on_background_task_cancelled": [["python", "scripts/background_task_cancelled.py"]],
     "on_background_task_notification_enqueued": [["python", "scripts/background_task_notification.py"]],
     "on_background_task_result_read": [["python", "scripts/background_task_result_read.py"]],
-    "on_delegated_result_available": [["python", "scripts/delegated_result.py"]]
+    "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
+    "on_turn_progress": [["python", "scripts/turn_progress.py"]],
+    "on_stuck_detected": [["python", "scripts/stuck_detected.py"]]
   },
   "tools": {
     "builtin": {
@@ -142,7 +144,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `permission.rules`：有序数组，每条规则可包含 `tool`、`path`、`command` 与必填 `decision`，用于 runtime-owned 的工具/路径/命令 pattern 权限匹配
 - `model`：字符串
 - `max_steps`：大于等于 1 的整数
-- `reasoning_effort`：非空字符串；通常为 `low` / `medium` / `high` / `none`，但 runtime 不强制 enum，由 provider adapter 翻译
+- `reasoning_effort`：字符串枚举，仅接受 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；`"none"` 不被接受（规范来源：`docs/reasoning-effort-decision.md`）
 - `hooks.enabled`：布尔值；默认 `true`
 - `hooks.pre_tool`：命令数组的数组，每个命令在 workspace cwd 中执行
 - `hooks.post_tool`：命令数组的数组，每个命令在 workspace cwd 中执行
@@ -159,6 +161,8 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `hooks.on_background_task_notification_enqueued`：命令数组的数组
 - `hooks.on_background_task_result_read`：命令数组的数组
 - `hooks.on_delegated_result_available`：命令数组的数组
+- `hooks.on_turn_progress`：命令数组的数组
+- `hooks.on_stuck_detected`：命令数组的数组
 - `hooks.formatter_presets`：对象，用于覆盖或扩展 formatter preset
 - `tools.builtin.enabled`：布尔值
 - `tools.local.enabled`：布尔值；显式为 `true` 时 runtime 才会发现仓库本地自定义 tool manifest
@@ -556,15 +560,18 @@ voidcode config init --workspace <path> [--force] [--print] [--with-examples]
 - `workspace`
 - `session_id`
 - `approval_mode`
-- `model`
 - `execution_engine`
+- `model`
+- `fallback_models`（provider fallback 链；未配置时为空数组）
 - `max_steps`
 - `reasoning_effort`（仅当配置或会话覆盖该字段时出现）
 - `agent`
 - `agents`
 - `categories`
-- `provider_fallback`
 - `resolved_provider`
+- `provider_readiness`
+- `context_budget`
+- `mcp`
 
 `config schema` 成功输出必须是 JSON Schema 文档，用于描述仓库本地 `.voidcode.json` 的当前公共形状。schema 的稳定 `$id` 为：
 
@@ -589,7 +596,7 @@ https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.c
 
 ## 当前限制
 
-- hooks 在此轨道中已包含 `pre_tool` / `post_tool` 以及 `session_start`、`session_end`、`session_idle`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`delegated_result_available` 这些 lifecycle hook phases；但仍不包含 render/message-transform 一类更宽的展示层阶段
+- hooks 在此轨道中已包含 `pre_tool` / `post_tool` 以及 `session_start`、`session_end`、`session_idle`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`delegated_result_available`、`turn_progress`、`stuck_detected` 这些 lifecycle hook phases；但仍不包含 render/message-transform 一类更宽的展示层阶段
 - hooks 不得改变工具参数或结果，只能观察与失败中止
 - 除 `approval_mode` / `model` / `execution_engine` / `max_steps` / `reasoning_effort` 外，其余扩展领域继续保持浅层仓库本地配置
 - 仅 `approval_mode` / `model` / `execution_engine` / `max_steps` / `reasoning_effort` 在此轨道中具备恢复关键的优先级行为

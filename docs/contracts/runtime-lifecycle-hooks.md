@@ -28,9 +28,10 @@
   - `background_task_notification_enqueued`
   - `background_task_result_read`
   - `delegated_result_available`
-  - `context_pressure`
   - `turn_progress`
   - `stuck_detected`
+
+> 注：`context_pressure` 不在当前 runtime hook surface 中——`RuntimeHookSurface` 没有该阶段，无配置键、无触发点，本契约不将其列为 shipped phase。
 
 这些 phases 当前都由 runtime truth 触发；它们仍然只是通知/干预面，不等于 async agent substrate 或任意 multi-agent topology。
 

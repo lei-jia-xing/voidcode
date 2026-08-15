@@ -19,7 +19,8 @@ RuntimeRequest(
     prompt: str,
     session_id: str | None = None,
     parent_session_id: str | None = None,
-    metadata: dict[str, object] = {},
+    metadata: RuntimeRequestMetadataPayload = {},
+    allocate_session_id: bool = False,
 )
 
 RuntimeResponse(
@@ -36,7 +37,7 @@ RuntimeResponse(
 ```python
 SessionState(
     session: SessionRef(id: str, parent_id: str | None = None),
-    status: Literal["idle", "running", "waiting", "completed", "failed"],
+    status: Literal["idle", "running", "waiting", "completed", "failed", "interrupted"],
     turn: int,
     metadata: dict[str, object],
 )
@@ -172,15 +173,41 @@ MVP 生命周期：
 - `POST /api/runtime/run/stream`
 - `GET /api/sessions`
 - `GET /api/sessions/{id}`
+- `GET /api/sessions/{id}/events`（支持 `after_sequence` / `follow` 查询参数）
 - `GET /api/sessions/{id}/result`
+- `GET /api/sessions/{id}/debug`
+- `GET /api/sessions/{id}/delegated-context`
 - `POST /api/sessions/{id}/approval`
 - `POST /api/sessions/{id}/question`
+- `POST /api/sessions/{id}/cancel`
+- `POST /api/sessions/{id}/interrupt`
+- `POST /api/sessions/{id}/undo`
+- `POST /api/sessions/{id}/revert`
+- `POST /api/sessions/{id}/unrevert`
+- `GET /api/sessions/{parent}/tasks`
 - `GET /api/tasks`
 - `POST /api/tasks`
 - `GET /api/tasks/{id}`
 - `GET /api/tasks/{id}/output`
 - `POST /api/tasks/{id}/cancel`
-- `GET /api/sessions/{parent}/tasks`
+- `POST /api/tasks/{id}/retry`
+- `GET /api/notifications`
+- `POST /api/notifications/{id}/ack`
+- `GET /api/settings`
+- `POST /api/settings`
+- `GET /api/workspaces`
+- `POST /api/workspaces/open`
+- `GET /api/providers`
+- `GET /api/providers/{name}/models`
+- `GET /api/providers/{name}/inspect`
+- `POST /api/providers/{name}/validate`
+- `GET /api/agents`
+- `GET /api/skills`
+- `GET /api/commands`
+- `GET /api/status`
+- `POST /api/status/mcp/retry`
+- `GET /api/review`
+- `GET /api/review/diff/{path}`
 
 本文档仍然有意地将契约定义与具体框架实现细节解耦；但这些路由边界与 delegated/task surfaces 本身已经属于当前 shipped API，而不是 future work。
 
