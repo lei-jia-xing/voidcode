@@ -4,14 +4,16 @@
 
 **状态：proposed**
 
-本文档定义 VoidCode 后续的 agent 架构方向，但它不是当前仓库已经实现的功能说明。当前仓库的现实基线是 **runtime-centric：顶层 active execution 默认由 `leader` 拥有，同时 `product` 可作为显式选择的顶层规划 preset；runtime-owned delegation path 已能执行受支持的 child presets**；真正任意拓扑的 multi-agent execution semantics 仍未落地。
+> **已过时 / superseded (2026-08-15)**：`product` 不再是顶层可执行 planning preset（顶层可执行 preset 现仅 `leader`，`_EXECUTABLE_AGENT_PRESETS = {"leader"}`）。`product` 已改为 `mode=subagent`、`top_level_selectable=False` 的只读 plan subagent，由 leader 通过 `task`（`subagent_type=product` 或 `category=plan`/`planning`）委托，child 以 `submit_result` 交回 plan；`/plan` 命令不再切换 active agent（leader 保持活动，`workflow_mode=product` 保留）。本文档中凡把 `product` 描述为“顶层可执行 / 顶层规划 preset / 顶层 planning path”的表述均已过时。
+
+本文档定义 VoidCode 后续的 agent 架构方向，但它不是当前仓库已经实现的功能说明。当前仓库的现实基线是 **runtime-centric：顶层 active execution 由 `leader` 拥有；runtime-owned delegation path 已能执行受支持的 child presets（含只读 plan subagent `product`）**；真正任意拓扑的 multi-agent execution semantics 仍未落地。
 
 ## 目标
 
 本文档的目标不是给系统增加“更多 agent 名字”，而是为 VoidCode 定义一个**现代、可治理、可分阶段落地**的 agent 架构。它需要满足三个前提：
 
 1. 不破坏 `runtime/` 作为系统控制面的现实边界；
-2. 不夸大当前执行边界，明确顶层 `leader` / `product` 与 delegated child presets 的真实区别；
+2. 不夸大当前执行边界，明确顶层 `leader` 与 delegated child presets（含 `product`）的真实区别；
 3. 为 skill、hook、MCP、LSP、ACP 等能力面预留清晰的 agent 组合层，避免未来把 agent preset、运行时治理和客户端表现层重新混在一起。
 
 ## 当前现实
@@ -20,16 +22,16 @@
 
 - `runtime/` 仍是产品级控制面；
 - `graph/` 仍负责执行步骤推进与编排，而不是产品治理；
-- provider-backed 的顶层 `leader` 执行路径已经存在，且 `product` 可显式选择为顶层规划路径；
+- provider-backed 的顶层 `leader` 执行路径已经存在，`product` 作为只读 plan subagent 由 leader 通过 `task` 委托；
 - `src/voidcode/agent/` 目录现在已经存在，承载代码化声明层（typed models、preset manifest 与 `<role>/base.txt` 角色 prompt 文件），并由 runtime 实际解析消费（`runtime/service.py` / `agent_capability.py`）；它仍是声明层，而不是独立 runtime；
 - ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍然不是当前可用的 agent-to-agent 控制面；
-- runtime-owned delegation path 已可执行 `advisor`、`explore`、`researcher`、`worker` 这些 child presets，但真正任意拓扑的 multi-agent delegation、handoff、shared execution topology 仍未实现。
+- runtime-owned delegation path 已可执行 `advisor`、`explore`、`researcher`、`worker`、`product` 这些 child presets，但真正任意拓扑的 multi-agent delegation、handoff、shared execution topology 仍未实现。
 
 另外，还必须补一句更容易被忽略的现实：
 
 - 当前 runtime 已经具备 first-class background task、parent/child session linkage、task notification、result retrieval 与 delegated lifecycle substrate；
 - 当前 hooks 也已经超出 `pre_tool` / `post_tool`，覆盖了更宽的 runtime-owned lifecycle phases；
-- 但这仍不等于任意拓扑的成熟 multi-agent orchestration：当前 shipped truth 仍是 top-level `leader` / `product` + runtime-owned delegated child execution。
+- 但这仍不等于任意拓扑的成熟 multi-agent orchestration：当前 shipped truth 仍是 top-level `leader` + runtime-owned delegated child execution（含 `product` plan subagent）。
 
 因此，新的 agent 架构文档必须建立在这个现实之上，而不能写成“我们已经是一个成熟的多 agent 系统”。
 
@@ -140,7 +142,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 ### 6. `product`
 
-`product` 是可显式选择的顶层规划角色，用于补上"实现正确，但不一定做的是对的东西"这一层空缺。
+`product` 是只读 plan subagent（`mode=subagent`、`top_level_selectable=False`），由 leader 经 `task` 委托，用于补上"实现正确，但不一定做的是对的东西"这一层空缺。
 
 职责：
 
@@ -151,7 +153,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 `product` 不应成为新的 orchestrator，也不应替代 `leader`；它是一个偏只读/近只读的产品判断角色，负责需求讨论、范围收敛、验收标准与 issue 草拟，确保任务没有在技术实现中偏离用户真正想要的结果。
 
-在当前 shipped truth 中，`product` 可以通过 `voidcode run --agent product "..."` 或 runtime config 被选为顶层 planning workflow；它不是 runtime-owned delegation path 上的 child preset。如果 `leader` 判断下一步需要 product thinking，应向用户交付简短的产品 handoff，而不是通过 `task` 调用 `product`。这依然不意味着系统已经进入成熟的任意拓扑 multi-agent orchestration 阶段，因为 session truth、tool enforcement、approval、resume 与 provider invocation 仍全部由 runtime 持有。
+在当前 shipped truth 中，`product` 是 runtime-owned delegation path 上的只读 plan child preset：leader 通过 `task` 工具（`subagent_type=product` 或 `category=plan`/`planning`）委托规划，child 以 `submit_result` 交回 plan。`voidcode run --agent product "..."` 已不可用（顶层可执行 preset 仅 `leader`）；`/plan` 命令保持 leader 为 active agent 并设置 `workflow_mode=product`。这依然不意味着系统已经进入成熟的任意拓扑 multi-agent orchestration 阶段，因为 session truth、tool enforcement、approval、resume 与 provider invocation 仍全部由 runtime 持有。
 
 ## 为什么保留这六类角色
 
@@ -257,8 +259,8 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 - 角色集只有 `leader` / `worker` / `advisor` / `explore` / `researcher` / `product`
 - `leader` 对应今天的顶层 active path
-- `worker` / `advisor` / `explore` / `researcher` 对应今天已交付的 delegated child path
-- `product` 是显式顶层 planning path，不是 delegated child preset
+- `worker` / `advisor` / `explore` / `researcher` / `product` 对应今天已交付的 delegated child path
+- `product` 是 delegated 只读 plan subagent，不是顶层可执行 preset
 - `agent/` 只负责声明层
 
 ### Phase 1：让 runtime 支持 `leader` 作为顶层 preset
@@ -275,17 +277,19 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 - `explore`
 - `researcher`
 - `worker`
+- `product`
 
 这些 child presets 仍通过 runtime-owned task/background/session surface 执行，而不是成为可任意直接启动的顶层 agent。其中：
 
 - `explore` 先承接仓库内只读探索；
 - `researcher` 承接外部资料与公开实现调研；
 - `advisor` 承接只读判断与 review；
-- `worker` 承接受限的 focused execution，当前默认不获得再次 delegation 的 `task` 工具。
+- `worker` 承接受限的 focused execution，当前默认不获得再次 delegation 的 `task` 工具；
+- `product` 承接只读规划（`subagent_type=product` 或 `category=plan`/`planning`），以 `submit_result` 交回 plan。
 
 在这一阶段，已经交付的目标是**同步或受限的 delegated child execution baseline**，而不是任意拓扑 multi-agent orchestration。其中：
 
-- `product` 仍承担顶层同步规划与对齐语义；如果需要产品思考，应显式选择顶层 `product` preset，而不是通过 delegation path 调用。
+- `product` 承担规划与对齐语义；如果需要产品思考，leader 应通过 `task` 委托 `product` 或使用 `/plan` 命令，而不是把它当作顶层 active agent 直接启动。
 
 ### Phase 3：再评估更宽的 multi-agent orchestration
 
@@ -327,4 +331,4 @@ VoidCode 最合理的 agent 架构，不是照搬外部项目的命名或角色�
 - `researcher`
 - `product`
 
-其中 `leader` 与 `product` 映射到今天真实可运行的顶层 active 路径；`worker`、`advisor`、`explore`、`researcher` 已经能够通过 runtime-owned delegation path 作为 child presets 执行。与此同时，VoidCode 仍未进入任意拓扑的成熟 multi-agent 平台阶段。这样做既能吸收外部成熟系统的结构经验，又不会脱离 VoidCode 现在的真实边界与实现状态。
+其中 `leader` 映射到今天真实可运行的顶层 active 路径；`worker`、`advisor`、`explore`、`researcher`、`product` 已经能够通过 runtime-owned delegation path 作为 child presets 执行。与此同时，VoidCode 仍未进入任意拓扑的成熟 multi-agent 平台阶段。这样做既能吸收外部成熟系统的结构经验，又不会脱离 VoidCode 现在的真实边界与实现状态。

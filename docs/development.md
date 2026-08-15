@@ -29,8 +29,8 @@ mise run frontend:install
 uv run voidcode --help
 # 执行带内联审批的任务 (非只读工具如 write)
 uv run voidcode run "write hello.txt hello" --workspace . --approval-mode ask
-# 显式进入产品规划模式，用于需求澄清、范围收敛和验收标准
-uv run voidcode run --agent product "shape an issue for improving session replay" --workspace .
+# 进入产品规划模式（/plan 命令：保持 leader 为活动 agent，规划可经 task 委托 product plan subagent）
+uv run voidcode run "/plan shape an issue for improving session replay" --workspace .
 uv run voidcode run --json "read README.md" --workspace .
 uv run voidcode sessions list --workspace .
 uv run voidcode sessions list --json --workspace .
