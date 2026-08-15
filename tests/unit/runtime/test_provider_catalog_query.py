@@ -41,23 +41,13 @@ def test_provider_catalog_query_projects_catalog_without_runtime_state() -> None
     }
 
 
-def test_provider_catalog_query_merges_catalog_override_with_inferred_metadata() -> None:
+def test_provider_catalog_query_projects_catalog_metadata_without_inferred_merge() -> None:
     metadata = _query().metadata_for_model("openai", "gpt-4o")
 
     assert metadata is not None
     assert metadata.context_window == 64_000
-    assert metadata.supports_tools is True
-    assert metadata.supports_vision is True
-
-
-def test_provider_catalog_query_falls_back_to_inferred_metadata() -> None:
-    registry = ModelProviderRegistry(providers={}, model_catalog={})
-    query = RuntimeProviderCatalogQuery(registry=registry)
-
-    metadata = query.metadata_for_model("openai", "gpt-4o")
-
-    assert metadata is not None
-    assert metadata.context_window is not None
+    assert metadata.max_input_tokens == 64_000
+    assert metadata.supports_tools is None
 
 
 def test_provider_catalog_query_builds_models_result_from_catalog() -> None:
@@ -67,7 +57,6 @@ def test_provider_catalog_query_builds_models_result_from_catalog() -> None:
     assert result.configured is True
     assert result.models == ("gpt-4o",)
     assert result.model_metadata["gpt-4o"].context_window == 64_000
-    assert result.model_metadata["gpt-4o"].supports_tools is True
     assert result.source == "remote"
     assert result.last_refresh_status == "ok"
 

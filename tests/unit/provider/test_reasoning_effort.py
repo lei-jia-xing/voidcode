@@ -15,6 +15,7 @@ from voidcode.provider.reasoning_effort import (
     clamp_effort_to_supported,
     map_effort_for_provider,
     normalize_reasoning_effort,
+    provider_supports_reasoning_effort,
 )
 
 
@@ -128,6 +129,53 @@ def test_map_effort_for_provider_uses_glm_binary_for_glm_provider_high() -> None
 
 
 @pytest.mark.parametrize(
+    ("effort", "expected"),
+    [
+        (REASONING_EFFORT_OFF, {"extra_body": {"thinking": {"type": "disabled"}}}),
+        (REASONING_EFFORT_MINIMAL, {"extra_body": {"reasoning_effort": "low"}}),
+        (REASONING_EFFORT_LOW, {"extra_body": {"reasoning_effort": "low"}}),
+        (REASONING_EFFORT_MEDIUM, {"extra_body": {"reasoning_effort": "high"}}),
+        (REASONING_EFFORT_HIGH, {"extra_body": {"reasoning_effort": "high"}}),
+        (REASONING_EFFORT_XHIGH, {"extra_body": {"reasoning_effort": "high"}}),
+        (REASONING_EFFORT_MAX, {"extra_body": {"reasoning_effort": "max"}}),
+    ],
+)
+def test_map_effort_for_provider_routes_deepseek_through_extra_body(
+    effort: str,
+    expected: dict[str, object],
+) -> None:
+    assert map_effort_for_provider(provider_name="deepseek", effort=effort) == expected
+
+
+@pytest.mark.parametrize("effort", ALL_EFFORTS)
+def test_map_effort_for_provider_maps_opencode_go_m2_5_to_adaptive_thinking_for_every_effort(
+    effort: str,
+) -> None:
+    assert map_effort_for_provider(provider_name="opencode-go", model_name="minimax-m2.5", effort=effort) == {
+        "extra_body": {"thinking": {"type": "adaptive"}},
+    }
+
+
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [
+        (REASONING_EFFORT_OFF, {"extra_body": {"reasoning_effort": "low"}}),
+        (REASONING_EFFORT_MINIMAL, {"extra_body": {"reasoning_effort": "low"}}),
+        (REASONING_EFFORT_LOW, {"extra_body": {"reasoning_effort": "low"}}),
+        (REASONING_EFFORT_MEDIUM, {"extra_body": {"reasoning_effort": "medium"}}),
+        (REASONING_EFFORT_HIGH, {"extra_body": {"reasoning_effort": "high"}}),
+        (REASONING_EFFORT_XHIGH, {"extra_body": {"reasoning_effort": "high"}}),
+        (REASONING_EFFORT_MAX, {"extra_body": {"reasoning_effort": "high"}}),
+    ],
+)
+def test_map_effort_for_provider_maps_opencode_go_m2_7_ladder_through_extra_body(
+    effort: str,
+    expected: dict[str, object],
+) -> None:
+    assert map_effort_for_provider(provider_name="opencode-go", model_name="minimax-m2.7", effort=effort) == expected
+
+
+@pytest.mark.parametrize(
     ("provider_name", "effort", "expected"),
     [
         ("custom", "low", "low"),
@@ -144,3 +192,23 @@ def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_non_glm(
     assert map_effort_for_provider(provider_name=provider_name, effort=effort) == {
         "reasoning_effort": expected,
     }
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "model_name", "expected"),
+    [
+        ("deepseek", "deepseek-chat", None),
+        ("opencode-go", "minimax-m2.5", True),
+        ("opencode-go", "minimax-m2.7", True),
+        ("opencode-go", "glm-5", False),
+        ("glm", "glm-4-flash", False),
+        ("glm", "glm-5", True),
+        ("openai", "gpt-5", None),
+    ],
+)
+def test_provider_supports_reasoning_effort_gates_provider_capability(
+    provider_name: str,
+    model_name: str,
+    expected: bool | None,
+) -> None:
+    assert provider_supports_reasoning_effort(provider_name, model_name) is expected

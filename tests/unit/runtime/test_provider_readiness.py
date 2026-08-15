@@ -61,6 +61,26 @@ def test_provider_readiness_preserves_invalid_provider_status(tmp_path: Path) ->
 
 
 def test_provider_readiness_includes_fallback_and_context_metadata(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o", "gpt-4o-mini"),
+            refreshed=True,
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=128_000,
+                    max_output_tokens=16_384,
+                    supports_streaming=True,
+                ),
+                "gpt-4o-mini": ProviderModelMetadata(
+                    context_window=128_000,
+                    max_output_tokens=16_384,
+                    supports_streaming=True,
+                ),
+            },
+        )
+    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
@@ -72,6 +92,7 @@ def test_provider_readiness_includes_fallback_and_context_metadata(tmp_path: Pat
                 fallback_models=("openai/gpt-4o-mini",),
             ),
         ),
+        model_provider_registry=registry,
     )
     try:
         readiness = runtime.provider_readiness()

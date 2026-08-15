@@ -14,9 +14,7 @@ from voidcode.provider.model_catalog import (
     ModelDiscoveryFetchResult,
     ProviderModelMetadata,
     discover_available_models,
-    infer_model_metadata,
 )
-from voidcode.provider.reasoning_effort import CANONICAL_EFFORTS
 
 
 def test_discover_available_models_combines_alias_discovery_and_targets() -> None:
@@ -67,72 +65,41 @@ def test_discover_available_models_for_openai_uses_endpoint_fetcher() -> None:
     assert models.discovery_mode == "configured_endpoint"
 
 
-def test_discover_available_models_includes_known_model_budget_metadata() -> None:
-    result = discover_available_models(
-        "openai",
-        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
-        fetcher=lambda _request: ("gpt-4o", "unknown-model"),
-    )
-
-    metadata = result.model_metadata["gpt-4o"]
-    assert metadata.context_window == 128_000
-    assert metadata.max_input_tokens == 111_616
-    assert metadata.max_output_tokens == 16_384
-    assert metadata.supports_tools is True
-    assert metadata.supports_vision is True
-    assert metadata.cost_per_input_token is not None
-    assert metadata.modalities_input == ("text", "image")
-    assert "unknown-model" not in result.model_metadata
-
-
-def test_infer_model_metadata_exposes_reasoning_visibility_controls() -> None:
-    openai_metadata = infer_model_metadata("openai", "gpt-5")
-    assert openai_metadata is not None
-    assert openai_metadata.supports_reasoning_summary is True
-    assert openai_metadata.supports_thinking_budget is False
-    assert openai_metadata.reasoning_visibility == "summary"
-
-    anthropic_metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
-    assert anthropic_metadata is not None
-    assert anthropic_metadata.supports_thinking_budget is True
-    assert anthropic_metadata.reasoning_visibility == "full"
-
-    glm_metadata = infer_model_metadata("glm", "glm-5")
-    assert glm_metadata is not None
-    assert glm_metadata.supports_reasoning_effort is True
-    assert glm_metadata.reasoning_visibility == "full"
-
-
-def test_discover_available_models_merges_remote_metadata_over_inferred_defaults() -> None:
+def test_discover_available_models_includes_known_model_budget_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(model_catalog, "_static_catalog_metadata", lambda *_: None)
     result = discover_available_models(
         "openai",
         LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
-            models=("gpt-4o",),
-            model_metadata={
-                "gpt-4o": ProviderModelMetadata(
-                    context_window=64_000,
-                    max_output_tokens=4_096,
-                    cost_per_input_token=0.000001,
-                    supports_tools=True,
-                    modalities_input=("text",),
-                    model_status="preview",
-                )
-            },
+            models=("gpt-5", "unknown-model"),
+            model_metadata={"gpt-5": ProviderModelMetadata(context_window=400_000)},
         ),
     )
 
-    metadata = result.model_metadata["gpt-4o"]
-    assert metadata.context_window == 64_000
-    assert metadata.max_input_tokens == 59_904
-    assert metadata.max_output_tokens == 4_096
-    assert metadata.cost_per_input_token == 0.000001
-    assert metadata.cost_per_output_token == 0.00001
-    assert metadata.supports_vision is True
-    assert metadata.supports_json_mode is True
-    assert metadata.modalities_input == ("text",)
-    assert metadata.modalities_output == ("text",)
-    assert metadata.model_status == "preview"
+    assert "gpt-5" in result.model_metadata
+    assert "unknown-model" not in result.model_metadata
+
+
+def test_discover_available_models_prefers_discovery_metadata_over_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        model_catalog,
+        "_static_catalog_metadata",
+        lambda *_: ProviderModelMetadata(context_window=111),
+    )
+    result = discover_available_models(
+        "openai",
+        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
+        fetcher=lambda _request: ModelDiscoveryFetchResult(
+            models=("gpt-5",),
+            model_metadata={"gpt-5": ProviderModelMetadata(context_window=999)},
+        ),
+    )
+
+    assert result.model_metadata["gpt-5"].context_window == 999
 
 
 def test_discover_available_models_preserves_zero_priced_remote_costs() -> None:
@@ -155,50 +122,37 @@ def test_discover_available_models_preserves_zero_priced_remote_costs() -> None:
     assert metadata.cost_per_output_token == 0.0
 
 
-def test_discover_available_models_merges_partial_remote_metadata() -> None:
+def test_discover_available_models_fills_gaps_from_static_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        model_catalog,
+        "_static_catalog_metadata",
+        lambda *_: ProviderModelMetadata(context_window=111),
+    )
     result = discover_available_models(
-        "google",
-        LiteLLMProviderConfig(discovery_base_url="https://generativelanguage.googleapis.com"),
+        "openai",
+        LiteLLMProviderConfig(discovery_base_url="https://api.openai.com"),
         fetcher=lambda _request: ModelDiscoveryFetchResult(
-            models=("gemini-2.5-pro",),
-            model_metadata={
-                "gemini-2.5-pro": ProviderModelMetadata(
-                    supports_tools=True,
-                    supports_streaming=True,
-                    modalities_input=("text", "image"),
-                )
-            },
+            models=("gpt-5",),
+            model_metadata={},
         ),
     )
 
-    metadata = result.model_metadata["gemini-2.5-pro"]
-    assert metadata.context_window == 1_000_000
-    assert metadata.max_output_tokens == 65_536
-    assert metadata.supports_reasoning is True
-    assert metadata.supports_reasoning_effort is True
-    assert metadata.default_reasoning_effort == "medium"
-    assert metadata.cost_per_input_token is not None
-    assert metadata.cost_per_output_token is not None
-    assert metadata.model_status == "active"
+    assert result.model_metadata["gpt-5"].context_window == 111
 
 
-def test_infer_model_metadata_marks_tool_feedback_mode_by_model_route() -> None:
-    opencode_minimax = infer_model_metadata("opencode-go", "minimax-m2.7")
-    opencode_qwen = infer_model_metadata("opencode-go", "qwen3.6-plus")
-    opencode_mimo = infer_model_metadata("opencode-go", "mimo-v2.5-pro")
-    direct_minimax = infer_model_metadata("minimax", "minimax-m2.7")
-    direct_qwen = infer_model_metadata("qwen", "qwen3.6-plus")
+def test_static_catalog_metadata_lowercases_and_looks_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        model_catalog,
+        "_load_static_catalog",
+        lambda: {"openai": {"gpt-5": ProviderModelMetadata(context_window=400_000)}},
+    )
 
-    assert opencode_minimax is not None
-    assert opencode_qwen is not None
-    assert opencode_mimo is not None
-    assert direct_minimax is not None
-    assert direct_qwen is not None
-    assert opencode_minimax.tool_feedback_mode == "synthetic_user_message"
-    assert opencode_qwen.tool_feedback_mode == "synthetic_user_message"
-    assert opencode_mimo.tool_feedback_mode == "standard"
-    assert direct_minimax.tool_feedback_mode == "standard"
-    assert direct_qwen.tool_feedback_mode == "standard"
+    assert model_catalog._static_catalog_metadata("OpenAI", "GPT-5").context_window == 400_000
+    assert model_catalog._static_catalog_metadata("openai", "nope") is None
 
 
 def test_discover_available_models_recomputes_input_limit_for_remote_context_override() -> None:
@@ -210,6 +164,7 @@ def test_discover_available_models_recomputes_input_limit_for_remote_context_ove
             model_metadata={
                 "gpt-4o": ProviderModelMetadata(
                     context_window=64_000,
+                    max_output_tokens=16_384,
                 )
             },
         ),
@@ -229,6 +184,7 @@ def test_discover_available_models_recomputes_input_limit_for_remote_output_over
             models=("gpt-4o",),
             model_metadata={
                 "gpt-4o": ProviderModelMetadata(
+                    context_window=128_000,
                     max_output_tokens=4_096,
                 )
             },
@@ -282,143 +238,7 @@ def test_google_discovery_preserves_preview_model_status(
     metadata = result.model_metadata["gemini-3-pro-preview"]
     assert metadata.context_window == 64_000
     assert metadata.max_input_tokens == 64_000
-    assert metadata.max_output_tokens == 65_536
-    assert metadata.modalities_input == ("text", "image", "audio", "video")
-    assert metadata.modalities_output == ("text",)
     assert metadata.model_status == "preview"
-
-
-def test_deepseek_reasoning_effort_metadata_is_internally_consistent() -> None:
-    metadata = infer_model_metadata("deepseek", "deepseek-reasoner")
-
-    assert metadata is not None
-    assert metadata.supports_reasoning is True
-    assert metadata.supports_reasoning_effort is False
-    assert metadata.default_reasoning_effort is None
-
-
-@pytest.mark.parametrize(
-    ("provider", "model", "context_window"),
-    [
-        ("deepseek", "deepseek-v3", 128_000),
-        ("deepseek", "deepseek-coder", 128_000),
-        ("qwen", "qwq-plus", 128_000),
-        ("qwen", "qwq-max", 128_000),
-        ("qwen", "qwen-plus", 128_000),
-        ("glm", "glm-4-flash", 128_000),
-        ("glm", "glm-4-plus", 128_000),
-        ("glm", "glm-4", 128_000),
-        ("kimi", "kimi-k2", 128_000),
-        ("kimi", "kimi-latest", 128_000),
-        ("minimax", "mimo-v2-omni", 192_000),
-        ("minimax", "mimo-v2-pro", 192_000),
-        ("grok", "grok-3", 128_000),
-        ("grok", "grok-4", 128_000),
-    ],
-)
-def test_infer_model_metadata_family_catch_all_resolves_non_none(
-    provider: str,
-    model: str,
-    context_window: int,
-) -> None:
-    metadata = infer_model_metadata(provider, model)
-
-    assert metadata is not None, f"{provider}/{model} should infer metadata"
-    assert metadata.context_window == context_window
-    assert metadata.cost_per_input_token is not None
-    assert metadata.cost_per_output_token is not None
-
-
-def test_infer_model_metadata_family_catch_all_exposes_expected_flags() -> None:
-    qwq = infer_model_metadata("qwen", "qwq-plus")
-    assert qwq is not None
-    assert qwq.supports_reasoning is True
-    assert qwq.supports_reasoning_effort is False
-    assert qwq.reasoning_visibility == "full"
-
-    glm_flash = infer_model_metadata("glm", "glm-4-flash")
-    assert glm_flash is not None
-    assert glm_flash.supports_reasoning is False
-    assert glm_flash.supports_reasoning_effort is False
-
-    deepseek_v3 = infer_model_metadata("deepseek", "deepseek-v3")
-    assert deepseek_v3 is not None
-    assert deepseek_v3.supports_reasoning is False
-
-    grok3 = infer_model_metadata("grok", "grok-3")
-    assert grok3 is not None
-    assert grok3.supports_reasoning is False
-    assert grok3.supports_reasoning_effort is False
-
-    grok4 = infer_model_metadata("grok", "grok-4")
-    assert grok4 is not None
-    assert grok4.supports_reasoning is True
-    assert grok4.supports_reasoning_effort is True
-
-    mimo_omni = infer_model_metadata("minimax", "mimo-v2-omni")
-    assert mimo_omni is not None
-    assert mimo_omni.supports_vision is True
-    assert mimo_omni.supports_reasoning is False
-
-    kimi_k2 = infer_model_metadata("kimi", "kimi-k2")
-    assert kimi_k2 is not None
-    assert kimi_k2.supports_reasoning is False
-
-
-@pytest.mark.parametrize(
-    ("provider", "model", "context_window", "max_output_tokens"),
-    [
-        ("openai", "gpt-5.5", 1_000_000, 128_000),
-        ("anthropic", "claude-opus-4-7", 1_000_000, 64_000),
-        ("google", "gemini-3-pro-preview", 1_048_576, 65_536),
-        ("deepseek", "deepseek-v4-pro", 1_000_000, 384_000),
-        ("qwen", "qwen3.6-plus", 1_000_000, 64_000),
-        ("glm", "glm-5.1", 198_000, 128_000),
-        ("kimi", "kimi-k2.6", 256_000, 96_000),
-        ("minimax", "MiniMax-M2.5", 192_000, 32_000),
-        ("grok", "grok-4-1-fast-reasoning", 2_000_000, 30_000),
-    ],
-)
-def test_infer_model_metadata_covers_current_frontier_provider_models(
-    provider: str,
-    model: str,
-    context_window: int,
-    max_output_tokens: int,
-) -> None:
-    metadata = infer_model_metadata(provider, model)
-    assert metadata is not None
-    assert metadata.context_window == context_window
-    assert metadata.max_output_tokens == max_output_tokens
-    assert metadata.cost_per_input_token is not None
-    assert metadata.cost_per_output_token is not None
-    assert metadata.modalities_input is not None
-    assert metadata.modalities_output == ("text",)
-    assert metadata.model_status in {"active", "preview"}
-
-
-def test_infer_model_metadata_exposes_model_capability_flags() -> None:
-    metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
-
-    assert metadata == ProviderModelMetadata(
-        context_window=1_000_000,
-        max_output_tokens=64_000,
-        supports_tools=True,
-        supports_vision=True,
-        supports_streaming=True,
-        supports_reasoning=True,
-        supports_json_mode=False,
-        cost_per_input_token=0.000003,
-        cost_per_output_token=0.000015,
-        supports_reasoning_effort=True,
-        default_reasoning_effort="medium",
-        supports_reasoning_summary=False,
-        supports_thinking_budget=True,
-        supports_interleaved_reasoning=True,
-        reasoning_visibility="full",
-        modalities_input=("text", "image"),
-        modalities_output=("text",),
-        model_status="active",
-    )
 
 
 def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> None:
@@ -462,10 +282,6 @@ def test_provider_model_metadata_payload_includes_limits_and_capabilities() -> N
         "model_status": "active",
         "tool_feedback_mode": "synthetic_user_message",
     }
-
-
-def test_infer_model_metadata_returns_none_for_unknown_models() -> None:
-    assert infer_model_metadata("custom", "local-demo") is None
 
 
 def test_discover_available_models_for_anthropic_uses_provider_specific_headers() -> None:
@@ -897,100 +713,6 @@ def test_payload_omits_supported_effort_levels_when_none() -> None:
     ).payload()
 
     assert "supported_effort_levels" not in payload
-
-
-def test_metadata_values_parse_supported_effort_levels_list_to_tuple() -> None:
-    metadata = model_catalog._metadata(
-        context_window=100,
-        values={"supported_effort_levels": ["low", "high"]},
-    )
-
-    assert metadata.supported_effort_levels == ("low", "high")
-
-
-def test_metadata_values_accept_supported_effort_levels_tuple() -> None:
-    metadata = model_catalog._metadata(
-        context_window=100,
-        values={"supported_effort_levels": ("minimal", "medium")},
-    )
-
-    assert metadata.supported_effort_levels == ("minimal", "medium")
-
-
-def test_metadata_values_tolerate_malformed_supported_effort_levels() -> None:
-    metadata = model_catalog._metadata(
-        context_window=100,
-        values={"supported_effort_levels": ["low", "banana", 42, ""]},
-    )
-
-    assert metadata.supported_effort_levels == ("low", "banana")
-
-
-def test_merge_model_metadata_override_replaces_supported_effort_levels() -> None:
-    inferred = ProviderModelMetadata(
-        supported_effort_levels=("minimal", "low", "medium", "high", "xhigh"),
-    )
-    override = ProviderModelMetadata(supported_effort_levels=("low",))
-
-    merged = model_catalog.merge_model_metadata(inferred=inferred, override=override)
-
-    assert merged is not None
-    assert merged.supported_effort_levels == ("low",)
-
-
-def test_merge_model_metadata_keeps_inferred_supported_effort_levels_without_override() -> None:
-    inferred = ProviderModelMetadata(
-        supported_effort_levels=("minimal", "low", "medium", "high", "xhigh"),
-    )
-
-    merged = model_catalog.merge_model_metadata(inferred=inferred, override=None)
-
-    assert merged is not None
-    assert merged.supported_effort_levels == ("minimal", "low", "medium", "high", "xhigh")
-
-
-def test_infer_model_metadata_openai_exposes_explicit_effort_ladder() -> None:
-    metadata = infer_model_metadata("openai", "gpt-5")
-
-    assert metadata is not None
-    assert metadata.supported_effort_levels == ("minimal", "low", "medium", "high", "xhigh")
-    assert "max" not in metadata.supported_effort_levels
-    assert "off" not in metadata.supported_effort_levels
-
-
-def test_infer_model_metadata_other_families_leave_effort_ladder_unset() -> None:
-    anthropic_metadata = infer_model_metadata("anthropic", "claude-sonnet-4-6")
-    google_metadata = infer_model_metadata("google", "gemini-2.5-pro")
-    deepseek_metadata = infer_model_metadata("deepseek", "deepseek-reasoner")
-
-    assert anthropic_metadata is not None
-    assert google_metadata is not None
-    assert deepseek_metadata is not None
-    assert anthropic_metadata.supported_effort_levels is None
-    assert google_metadata.supported_effort_levels is None
-    assert deepseek_metadata.supported_effort_levels is None
-
-
-def test_infer_model_metadata_default_effort_is_canonical_across_families() -> None:
-    cases = [
-        ("openai", "gpt-5"),
-        ("openai", "gpt-4o"),
-        ("anthropic", "claude-sonnet-4-6"),
-        ("google", "gemini-2.5-pro"),
-        ("deepseek", "deepseek-reasoner"),
-        ("qwen", "qwen3.5-plus"),
-        ("glm", "glm-5"),
-        ("kimi", "kimi-k2-thinking"),
-        ("minimax", "minimax-m2"),
-        ("grok", "grok-4-1-fast-reasoning"),
-    ]
-
-    for provider, model in cases:
-        metadata = infer_model_metadata(provider, model)
-        assert metadata is not None, f"{provider}/{model} should infer metadata"
-        assert metadata.default_reasoning_effort is None or metadata.default_reasoning_effort in CANONICAL_EFFORTS, (
-            f"{provider}/{model} default_reasoning_effort must be canonical"
-        )
 
 
 def test_provider_model_metadata_rejects_non_canonical_default_effort() -> None:

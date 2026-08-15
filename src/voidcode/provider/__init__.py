@@ -42,7 +42,6 @@ from .model_catalog import (
     ProviderModelCatalog,
     ProviderModelMetadata,
     discover_available_models,
-    infer_model_metadata,
 )
 from .models import (
     ProviderModelSelection,
@@ -132,7 +131,6 @@ __all__ = [
     "resolve_provider_model",
     "resolved_provider_snapshot",
     "discover_available_models",
-    "infer_model_metadata",
     "serialize_provider_configs",
     "serialize_provider_fallback_config",
 ]

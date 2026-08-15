@@ -4,6 +4,8 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
+from importlib.resources import files as _resource_files
 from typing import Literal, cast
 from urllib.error import URLError
 from urllib.parse import quote
@@ -15,7 +17,6 @@ from .config import LiteLLMProviderConfig
 from .reasoning_effort import CANONICAL_EFFORTS
 
 type ToolFeedbackMode = Literal["standard", "synthetic_user_message"]
-type ModelMetadataValue = bool | int | float | str | None | tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +111,46 @@ class ProviderModelMetadata:
         if self.tool_feedback_mode is not None:
             payload["tool_feedback_mode"] = self.tool_feedback_mode
         return payload
+
+
+@lru_cache(maxsize=1)
+def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
+    try:
+        raw = _resource_files("voidcode.provider").joinpath("model_catalog_data.json").read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {}
+    data = json.loads(raw)
+    result: dict[str, dict[str, ProviderModelMetadata]] = {}
+    for provider, models in data.items():
+        if not isinstance(models, dict):
+            continue
+        per_provider: dict[str, ProviderModelMetadata] = {}
+        for model_id, entry in models.items():
+            if not isinstance(entry, dict):
+                continue
+            per_provider[model_id.strip().lower()] = ProviderModelMetadata(
+                context_window=_positive_int(entry.get("context_window")),
+                max_output_tokens=_positive_int(entry.get("max_output_tokens")),
+                cost_per_input_token=_non_negative_float(entry.get("cost_per_input_token")),
+                cost_per_output_token=_non_negative_float(entry.get("cost_per_output_token")),
+                cost_per_cache_read_token=_non_negative_float(entry.get("cost_per_cache_read_token")),
+                cost_per_cache_write_token=_non_negative_float(entry.get("cost_per_cache_write_token")),
+                supports_tools=_optional_bool(entry.get("supports_tools")),
+                supports_reasoning=_optional_bool(entry.get("supports_reasoning")),
+                supports_vision=_optional_bool(entry.get("supports_vision")),
+                modalities_input=_modalities(entry.get("modalities_input")),
+                model_status=_optional_str(entry.get("model_status")),
+            )
+        result[provider.strip().lower()] = per_provider
+    return result
+
+
+def _static_catalog_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:
+    provider = provider_name.strip().lower()
+    model = model_name.strip().lower()
+    if not model:
+        return None
+    return _load_static_catalog().get(provider, {}).get(model)
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,10 +316,9 @@ def discover_available_models(
 
     model_metadata: dict[str, ProviderModelMetadata] = {}
     for model in deduped:
-        metadata = merge_model_metadata(
-            inferred=infer_model_metadata(provider_name, model),
-            override=discovered_metadata.get(model),
-        )
+        metadata = discovered_metadata.get(model)
+        if metadata is None:
+            metadata = _static_catalog_metadata(provider_name, model)
         if metadata is not None:
             model_metadata[model] = metadata
 
@@ -292,408 +332,9 @@ def discover_available_models(
     )
 
 
-def _cost(
-    *,
-    input_per_million: float,
-    output_per_million: float,
-    cache_read_per_million: float | None = None,
-    cache_write_per_million: float | None = None,
-) -> dict[str, float]:
-    cost = {
-        "cost_per_input_token": input_per_million / 1_000_000,
-        "cost_per_output_token": output_per_million / 1_000_000,
-    }
-    if cache_read_per_million is not None:
-        cost["cost_per_cache_read_token"] = cache_read_per_million / 1_000_000
-    if cache_write_per_million is not None:
-        cost["cost_per_cache_write_token"] = cache_write_per_million / 1_000_000
-    return cost
-
-
-def _metadata(
-    *,
-    context_window: int,
-    max_output_tokens: int | None = None,
-    values: Mapping[str, object],
-) -> ProviderModelMetadata:
-    return ProviderModelMetadata(
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        supports_tools=_optional_bool(values.get("supports_tools")),
-        supports_vision=_optional_bool(values.get("supports_vision")),
-        supports_streaming=_optional_bool(values.get("supports_streaming")),
-        supports_reasoning=_optional_bool(values.get("supports_reasoning")),
-        supports_json_mode=_optional_bool(values.get("supports_json_mode")),
-        cost_per_input_token=_non_negative_float(values.get("cost_per_input_token")),
-        cost_per_output_token=_non_negative_float(values.get("cost_per_output_token")),
-        cost_per_cache_read_token=_non_negative_float(values.get("cost_per_cache_read_token")),
-        cost_per_cache_write_token=_non_negative_float(values.get("cost_per_cache_write_token")),
-        supports_reasoning_effort=_optional_bool(values.get("supports_reasoning_effort")),
-        default_reasoning_effort=_optional_str(values.get("default_reasoning_effort")),
-        supported_effort_levels=_effort_levels_tuple(values.get("supported_effort_levels")),
-        supports_reasoning_summary=_optional_bool(values.get("supports_reasoning_summary")),
-        supports_thinking_budget=_optional_bool(values.get("supports_thinking_budget")),
-        supports_interleaved_reasoning=_optional_bool(values.get("supports_interleaved_reasoning")),
-        reasoning_visibility=_optional_str(values.get("reasoning_visibility")),
-        modalities_input=_modalities_tuple(values.get("modalities_input")),
-        modalities_output=_modalities_tuple(values.get("modalities_output")),
-        model_status=_optional_str(values.get("model_status")),
-        tool_feedback_mode=_tool_feedback_mode(values.get("tool_feedback_mode")),
-    )
-
-
-def _modalities_tuple(value: object) -> tuple[str, ...] | None:
-    if not isinstance(value, tuple):
-        return None
-    raw_items = cast(Iterable[object], value)
-    modalities = tuple(item for item in raw_items if isinstance(item, str) and item)
-    return modalities or None
-
-
-def _effort_levels_tuple(value: object) -> tuple[str, ...] | None:
-    if not isinstance(value, list | tuple):
-        return None
-    raw_items = cast(Iterable[object], value)
-    levels = tuple(item for item in raw_items if isinstance(item, str) and item)
-    return levels or None
-
-
 def _tool_feedback_mode(value: object) -> ToolFeedbackMode | None:
     if value in {"standard", "synthetic_user_message"}:
         return cast(ToolFeedbackMode, value)
-    return None
-
-
-def _override_value[T](inferred: T | None, override: T | None) -> T | None:
-    return override if override is not None else inferred
-
-
-def _override_max_input_tokens(
-    *,
-    inferred: ProviderModelMetadata | None,
-    override: ProviderModelMetadata,
-) -> int | None:
-    if override.max_input_tokens is None:
-        if override.max_output_tokens is not None:
-            return None
-        return None if inferred is None else inferred.max_input_tokens
-    if (
-        override.context_window is not None
-        and override.max_input_tokens == override.context_window
-        and override.max_output_tokens is None
-        and override.derived_max_input_tokens
-    ):
-        if inferred is not None and override.context_window != inferred.context_window:
-            return None
-        return None if inferred is None else inferred.max_input_tokens
-    return override.max_input_tokens
-
-
-def merge_model_metadata(
-    *,
-    inferred: ProviderModelMetadata | None,
-    override: ProviderModelMetadata | None,
-) -> ProviderModelMetadata | None:
-    if inferred is None:
-        return override
-    if override is None:
-        return inferred
-    return ProviderModelMetadata(
-        context_window=_override_value(inferred.context_window, override.context_window),
-        max_input_tokens=_override_max_input_tokens(inferred=inferred, override=override),
-        max_output_tokens=_override_value(inferred.max_output_tokens, override.max_output_tokens),
-        supports_tools=_override_value(inferred.supports_tools, override.supports_tools),
-        supports_vision=_override_value(inferred.supports_vision, override.supports_vision),
-        supports_streaming=_override_value(inferred.supports_streaming, override.supports_streaming),
-        supports_reasoning=_override_value(inferred.supports_reasoning, override.supports_reasoning),
-        supports_json_mode=_override_value(inferred.supports_json_mode, override.supports_json_mode),
-        cost_per_input_token=_override_value(inferred.cost_per_input_token, override.cost_per_input_token),
-        cost_per_output_token=_override_value(inferred.cost_per_output_token, override.cost_per_output_token),
-        cost_per_cache_read_token=_override_value(inferred.cost_per_cache_read_token, override.cost_per_cache_read_token),
-        cost_per_cache_write_token=_override_value(inferred.cost_per_cache_write_token, override.cost_per_cache_write_token),
-        supports_reasoning_effort=_override_value(inferred.supports_reasoning_effort, override.supports_reasoning_effort),
-        default_reasoning_effort=_override_value(inferred.default_reasoning_effort, override.default_reasoning_effort),
-        supported_effort_levels=_override_value(inferred.supported_effort_levels, override.supported_effort_levels),
-        supports_reasoning_summary=_override_value(inferred.supports_reasoning_summary, override.supports_reasoning_summary),
-        supports_thinking_budget=_override_value(inferred.supports_thinking_budget, override.supports_thinking_budget),
-        supports_interleaved_reasoning=_override_value(
-            inferred.supports_interleaved_reasoning,
-            override.supports_interleaved_reasoning,
-        ),
-        reasoning_visibility=_override_value(
-            inferred.reasoning_visibility,
-            override.reasoning_visibility,
-        ),
-        modalities_input=_override_value(inferred.modalities_input, override.modalities_input),
-        modalities_output=_override_value(inferred.modalities_output, override.modalities_output),
-        model_status=_override_value(inferred.model_status, override.model_status),
-        tool_feedback_mode=_override_value(inferred.tool_feedback_mode, override.tool_feedback_mode),
-    )
-
-
-def infer_model_metadata(provider_name: str, model_name: str) -> ProviderModelMetadata | None:
-    provider = provider_name.strip().lower()
-    model = model_name.strip().lower()
-    if not model:
-        return None
-    if provider == "openai" or model.startswith(("gpt-5", "gpt-4.1", "gpt-4o", "o1", "o3", "o4")):
-        common_openai: dict[str, ModelMetadataValue] = {
-            "supports_tools": True,
-            "supports_vision": not model.startswith(("o1", "o3-mini")),
-            "supports_streaming": True,
-            "supports_reasoning": model.startswith(("gpt-5", "o1", "o3", "o4")),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": model.startswith(("gpt-5", "o1", "o3", "o4")),
-            "default_reasoning_effort": "medium" if model.startswith(("gpt-5", "o1", "o3", "o4")) else None,
-            "supported_effort_levels": ("minimal", "low", "medium", "high", "xhigh"),
-            "supports_reasoning_summary": model.startswith(("gpt-5", "o1", "o3", "o4")),
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": model.startswith(("gpt-5", "o3", "o4")),
-            "reasoning_visibility": "summary" if model.startswith(("gpt-5", "o1", "o3", "o4")) else "hidden",
-            "modalities_input": ("text", "image") if not model.startswith(("o1", "o3-mini")) else ("text",),
-            "modalities_output": ("text",),
-            "model_status": "active",
-        }
-        if model.startswith(("gpt-5.4", "gpt-5.5")):
-            common_openai.update(_cost(input_per_million=1.25, output_per_million=10.0))
-        elif model.startswith("gpt-5"):
-            common_openai.update(_cost(input_per_million=1.25, output_per_million=10.0))
-        elif model.startswith("gpt-4.1"):
-            common_openai.update(_cost(input_per_million=2.0, output_per_million=8.0))
-        elif model.startswith("gpt-4o-mini"):
-            common_openai.update(_cost(input_per_million=0.15, output_per_million=0.60))
-        elif model.startswith("gpt-4o"):
-            common_openai.update(_cost(input_per_million=2.5, output_per_million=10.0))
-        elif model.startswith(("o1", "o3", "o4")):
-            common_openai.update(_cost(input_per_million=2.0, output_per_million=8.0))
-        if model.startswith(("gpt-5.5", "gpt-5.4")) and not model.startswith(("gpt-5.4-mini", "gpt-5.4-nano")):
-            return _metadata(context_window=1_000_000, max_output_tokens=128_000, values=common_openai)
-        if model.startswith(("gpt-5.4-mini", "gpt-5.4-nano")):
-            return _metadata(context_window=400_000, max_output_tokens=128_000, values=common_openai)
-        if model.startswith("gpt-5"):
-            return _metadata(context_window=400_000, max_output_tokens=128_000, values=common_openai)
-        if model.startswith("gpt-4o-mini"):
-            return _metadata(context_window=128_000, max_output_tokens=16_384, values=common_openai)
-        if model.startswith("gpt-4o"):
-            return _metadata(context_window=128_000, max_output_tokens=16_384, values=common_openai)
-        if model.startswith("gpt-4.1"):
-            return _metadata(context_window=1_047_576, max_output_tokens=32_768, values=common_openai)
-        if model.startswith(("o1", "o3", "o4")):
-            return _metadata(context_window=200_000, max_output_tokens=100_000, values=common_openai)
-    if provider == "anthropic" or model.startswith("claude-"):
-        common_anthropic: dict[str, ModelMetadataValue] = {
-            "supports_tools": True,
-            "supports_vision": "haiku" not in model,
-            "supports_streaming": True,
-            "supports_reasoning": model.startswith(("claude-opus-4", "claude-sonnet-4")),
-            "supports_json_mode": False,
-            "supports_reasoning_effort": model.startswith(("claude-opus-4", "claude-sonnet-4")),
-            "default_reasoning_effort": "medium" if model.startswith(("claude-opus-4", "claude-sonnet-4")) else None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": model.startswith(("claude-opus-4", "claude-sonnet-4")),
-            "supports_interleaved_reasoning": model.startswith(("claude-opus-4", "claude-sonnet-4")),
-            "reasoning_visibility": "full" if model.startswith(("claude-opus-4", "claude-sonnet-4")) else "hidden",
-            "modalities_input": ("text", "image") if "haiku" not in model else ("text",),
-            "modalities_output": ("text",),
-            "model_status": "active",
-        }
-        if "opus" in model:
-            common_anthropic.update(_cost(input_per_million=15.0, output_per_million=75.0))
-        elif "haiku" in model:
-            common_anthropic.update(_cost(input_per_million=0.8, output_per_million=4.0))
-        else:
-            common_anthropic.update(_cost(input_per_million=3.0, output_per_million=15.0))
-        if model.startswith(("claude-opus-4-7", "claude-sonnet-4-6")):
-            return _metadata(context_window=1_000_000, max_output_tokens=64_000, values=common_anthropic)
-        if model.startswith("claude-haiku-4-5"):
-            return _metadata(context_window=200_000, max_output_tokens=64_000, values=common_anthropic)
-        return _metadata(context_window=200_000, max_output_tokens=8_192, values=common_anthropic)
-    if provider == "google" or model.startswith("gemini-"):
-        common_google: dict[str, ModelMetadataValue] = {
-            "supports_tools": True,
-            "supports_vision": True,
-            "supports_streaming": True,
-            "supports_reasoning": model.startswith(("gemini-2.5", "gemini-3")),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": model.startswith(("gemini-2.5", "gemini-3")),
-            "default_reasoning_effort": "medium" if model.startswith(("gemini-2.5", "gemini-3")) else None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": model.startswith(("gemini-2.5", "gemini-3")),
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "summary" if model.startswith(("gemini-2.5", "gemini-3")) else "hidden",
-            "modalities_input": ("text", "image", "audio", "video"),
-            "modalities_output": ("text",),
-            "model_status": "preview" if "preview" in model else "active",
-        }
-        if "flash" in model:
-            common_google.update(_cost(input_per_million=0.30, output_per_million=2.50))
-        else:
-            common_google.update(_cost(input_per_million=1.25, output_per_million=10.0))
-        if model.startswith(("gemini-3-pro-preview", "gemini-3-flash-preview")):
-            return _metadata(context_window=1_048_576, max_output_tokens=65_536, values=common_google)
-        if model.startswith("gemini-3"):
-            return _metadata(context_window=1_000_000, max_output_tokens=65_536, values=common_google)
-        if model.startswith("gemini-2.5"):
-            return _metadata(context_window=1_000_000, max_output_tokens=65_536, values=common_google)
-        return _metadata(context_window=1_000_000, max_output_tokens=8_192, values=common_google)
-    if provider == "deepseek" or model.startswith("deepseek-"):
-        common_deepseek = {
-            "supports_tools": True,
-            "supports_vision": False,
-            "supports_streaming": True,
-            "supports_reasoning": "reasoner" in model or model.startswith("deepseek-v4"),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": False,
-            "default_reasoning_effort": None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "full" if "reasoner" in model else "hidden",
-            "modalities_input": ("text",),
-            "modalities_output": ("text",),
-            "model_status": "active",
-            **_cost(input_per_million=0.27, output_per_million=1.10),
-        }
-        if model.startswith("deepseek-v4"):
-            return _metadata(context_window=1_000_000, max_output_tokens=384_000, values=common_deepseek)
-        if model in {"deepseek-chat", "deepseek-reasoner"}:
-            return _metadata(context_window=1_000_000, max_output_tokens=384_000, values=common_deepseek)
-        return _metadata(context_window=128_000, values=common_deepseek)
-    if provider in {"qwen", "opencode-go"} or model.startswith(("qwen", "qwq", "qvq")):
-        common_qwen = {
-            "supports_tools": True,
-            "supports_vision": model.startswith(("qvq",)) or "vl" in model,
-            "supports_streaming": True,
-            "supports_reasoning": model.startswith(("qwq", "qvq", "qwen3")),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": False,
-            "default_reasoning_effort": None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "full" if model.startswith(("qwq", "qvq", "qwen3")) else "hidden",
-            "modalities_input": ("text", "image") if model.startswith(("qvq",)) or "vl" in model else ("text",),
-            "modalities_output": ("text",),
-            "model_status": "preview" if "preview" in model else "active",
-            "tool_feedback_mode": "synthetic_user_message"
-            if provider == "opencode-go" and model.startswith(("qwen3.5-plus", "qwen3.6-plus"))
-            else "standard",
-            **_cost(input_per_million=0.40, output_per_million=1.20),
-        }
-        if model.startswith(("qwen3.6-plus", "qwen3.6-flash", "qwen3.5-plus", "qwen3.5-flash")):
-            return _metadata(context_window=1_000_000, max_output_tokens=64_000, values=common_qwen)
-        if model.startswith("qwen3.6-max-preview"):
-            return _metadata(context_window=256_000, max_output_tokens=64_000, values=common_qwen)
-        if model.startswith("qwen3.5-"):
-            return _metadata(context_window=256_000, max_output_tokens=64_000, values=common_qwen)
-        if model in {"qwen-plus-us", "qwen-flash-us"}:
-            return _metadata(context_window=1_000_000, values=common_qwen)
-        if model.startswith(("qwen", "qwq", "qvq")):
-            return _metadata(context_window=128_000, values=common_qwen)
-    if provider in {"glm", "opencode-go"} or model.startswith("glm-"):
-        common_glm = {
-            "supports_tools": True,
-            "supports_vision": model.startswith("glm-4v") or "vision" in model,
-            "supports_streaming": True,
-            "supports_reasoning": model.startswith(("glm-5", "glm-z1")),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": provider != "opencode-go" and model.startswith(("glm-5", "glm-z1")),
-            "default_reasoning_effort": "medium" if provider != "opencode-go" and model.startswith(("glm-5", "glm-z1")) else None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "full" if model.startswith(("glm-5", "glm-z1")) else "hidden",
-            "modalities_input": ("text", "image") if model.startswith("glm-4v") or "vision" in model else ("text",),
-            "modalities_output": ("text",),
-            "model_status": "active",
-            **_cost(input_per_million=0.60, output_per_million=2.20),
-        }
-        if model.startswith("glm-5.1"):
-            return _metadata(context_window=198_000, max_output_tokens=128_000, values=common_glm)
-        if model.startswith("glm-5"):
-            return _metadata(context_window=200_000, values=common_glm)
-        if model.startswith("glm-"):
-            return _metadata(context_window=128_000, values=common_glm)
-    if provider in {"kimi", "opencode-go"} or model.startswith(("kimi-", "moonshot-")):
-        common_kimi = {
-            "supports_tools": True,
-            "supports_vision": False,
-            "supports_streaming": True,
-            "supports_reasoning": "thinking" in model,
-            "supports_json_mode": True,
-            "supports_reasoning_effort": False,
-            "default_reasoning_effort": None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "full" if "thinking" in model else "hidden",
-            "modalities_input": ("text",),
-            "modalities_output": ("text",),
-            "model_status": "active",
-            **_cost(input_per_million=0.60, output_per_million=2.50),
-        }
-        if model.startswith(("kimi-k2.6", "kimi-k2.5", "kimi-k2-0905")):
-            return _metadata(context_window=256_000, max_output_tokens=96_000, values=common_kimi)
-        if model.startswith(("kimi-k2-thinking", "kimi-k2-turbo")):
-            return _metadata(context_window=256_000, values=common_kimi)
-        if model.startswith("kimi-k2-0711"):
-            return _metadata(context_window=128_000, values=common_kimi)
-        if model.startswith("moonshot-v1-128k"):
-            return _metadata(context_window=128_000, values=common_kimi)
-        if model.startswith("moonshot-v1-32k"):
-            return _metadata(context_window=32_000, values=common_kimi)
-        if model.startswith("moonshot-v1-8k"):
-            return _metadata(context_window=8_000, values=common_kimi)
-        if model.startswith(("kimi-", "moonshot-")):
-            return _metadata(context_window=128_000, values=common_kimi)
-    if provider in {"minimax", "opencode-go"} or model.startswith(("minimax-", "mimo-")):
-        common_minimax = {
-            "supports_tools": True,
-            "supports_vision": model.startswith("mimo-v2-omni"),
-            "supports_streaming": True,
-            "supports_reasoning": model.startswith(("minimax-m2", "mimo-v2.5")),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": False,
-            "default_reasoning_effort": None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "full" if model.startswith(("minimax-m2", "mimo-v2.5")) else "hidden",
-            "modalities_input": ("text", "image") if model.startswith("mimo-v2-omni") else ("text",),
-            "modalities_output": ("text",),
-            "model_status": "active",
-            "tool_feedback_mode": "synthetic_user_message" if provider == "opencode-go" and model.startswith("minimax-m2") else "standard",
-            **_cost(input_per_million=0.50, output_per_million=2.00),
-        }
-        if model.startswith("minimax-m2.5"):
-            return _metadata(context_window=192_000, max_output_tokens=32_000, values=common_minimax)
-        if model.startswith("minimax-m2"):
-            return _metadata(context_window=204_800, values=common_minimax)
-        if model.startswith("mimo-v2.5"):
-            return _metadata(context_window=256_000, values=common_minimax)
-        if model.startswith(("minimax-", "mimo-")):
-            return _metadata(context_window=192_000, values=common_minimax)
-    if provider == "grok" or model.startswith("grok-"):
-        common_grok = {
-            "supports_tools": True,
-            "supports_vision": True,
-            "supports_streaming": True,
-            "supports_reasoning": "reasoning" in model or model.startswith("grok-4"),
-            "supports_json_mode": True,
-            "supports_reasoning_effort": "reasoning" in model or model.startswith("grok-4"),
-            "default_reasoning_effort": "medium" if "reasoning" in model or model.startswith("grok-4") else None,
-            "supports_reasoning_summary": False,
-            "supports_thinking_budget": False,
-            "supports_interleaved_reasoning": False,
-            "reasoning_visibility": "full" if "reasoning" in model or model.startswith("grok-4") else "hidden",
-            "modalities_input": ("text", "image"),
-            "modalities_output": ("text",),
-            "model_status": "active",
-            **_cost(input_per_million=0.20, output_per_million=0.50),
-        }
-        if model.startswith(("grok-4-1-fast", "grok-4-fast")):
-            return _metadata(context_window=2_000_000, max_output_tokens=30_000, values=common_grok)
-        return _metadata(context_window=128_000, values=common_grok)
     return None
 
 

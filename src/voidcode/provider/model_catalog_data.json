@@ -1,0 +1,3867 @@
+{
+  "anthropic": {
+    "claude-fable-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 1e-06,
+      "cost_per_cache_write_token": 1.25e-05,
+      "cost_per_input_token": 1e-05,
+      "cost_per_output_token": 5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-haiku-4-5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1.0000000000000001e-07,
+      "cost_per_cache_write_token": 1.25e-06,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 5e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-haiku-4-5-20251001": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1.0000000000000001e-07,
+      "cost_per_cache_write_token": 1.25e-06,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 5e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-5-20251101": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-6": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-7": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-8": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4-5-20250929": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4-6": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 2.5e-06,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "copilot": {
+    "claude-fable-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 1e-06,
+      "cost_per_cache_write_token": 1.25e-05,
+      "cost_per_input_token": 1e-05,
+      "cost_per_output_token": 5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-haiku-4.5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1.0000000000000001e-07,
+      "cost_per_cache_write_token": 1.25e-06,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 5e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4.5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4.6": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4.7": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4.8": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4": {
+      "context_window": 216000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 16000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4.5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4.6": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 2.5e-06,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-pro-preview": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.5-flash": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 9e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.6-flash": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 7.5e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.7-flash": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 3.75e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-4.1": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 8e-06,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5-mini": {
+      "context_window": 264000,
+      "cost_per_cache_read_token": 2.5000000000000002e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-07,
+      "cost_per_output_token": 2e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.3-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-mini": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 4.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-nano": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.25e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.5": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-luna": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-sol": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-terra": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.5": {
+      "context_window": 500000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.7-code": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 1.9e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k3": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "mai-code-1-flash-picker": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 4.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "mai-code-1.1-flash": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "deepseek": {
+    "deepseek-chat": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.8e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-07,
+      "cost_per_output_token": 2.8e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-reasoner": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.8e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-07,
+      "cost_per_output_token": 2.8e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-v4-flash": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.8e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-07,
+      "cost_per_output_token": 2.8e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-v4-pro": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3.625e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 4.35e-07,
+      "cost_per_output_token": 8.7e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    }
+  },
+  "glm": {
+    "glm-4.5": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 1.1e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.2e-06,
+      "max_output_tokens": 98304,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.5-air": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.1e-06,
+      "max_output_tokens": 98304,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.5-flash": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 98304,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.5v": {
+      "context_window": 64000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 1.8000000000000001e-06,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "glm-4.6": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 1.1e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.6v": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 9.000000000000001e-07,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "glm-4.7": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.7-flash": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.7-flashx": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7e-08,
+      "cost_per_output_token": 4.0000000000000003e-07,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 3.2000000000000003e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5-turbo": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.1": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.2": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.2-highspeed": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.3": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5v-turbo": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "google": {
+    "deep-research-max-preview-04-2026": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "deep-research-preview-04-2026": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-2.5-computer-use-preview-10-2025": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-2.5-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-2.5-flash-lite": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.0000000000000001e-07,
+      "cost_per_output_token": 4.0000000000000003e-07,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-2.5-pro": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.25e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3-flash-preview": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 5.0000000000000004e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5e-07,
+      "cost_per_output_token": 3e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-flash-lite": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 2.5000000000000002e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-07,
+      "cost_per_output_token": 1.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-flash-lite-image": {
+      "context_window": 65536,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-07,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-flash-live-preview": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 4.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-pro-preview": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-pro-preview-customtools": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.5-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 9e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.5-flash-lite": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.6-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 7.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.7-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 3.75e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-flash-latest": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 9e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-flash-lite-latest": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 2.5000000000000002e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-07,
+      "cost_per_output_token": 1.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-robotics-er-1.6-preview": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemma-4-26b-a4b-it": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemma-4-31b-it": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "grok": {
+    "grok-4.20-0309-non-reasoning": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 30000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.20-0309-reasoning": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 30000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.3": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 30000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.5": {
+      "context_window": 500000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 500000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.6": {
+      "context_window": 500000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 500000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-build-0.1": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 2e-06,
+      "max_output_tokens": 256000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "kimi": {
+    "kimi-k2-0711-preview": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2-0905-preview": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2-thinking": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2-thinking-turbo": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.15e-06,
+      "cost_per_output_token": 8e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2-turbo-preview": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.4e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2.5": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.0000000000000001e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 3e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.6": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.7-code": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.9e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.7-code-highspeed": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 3.8e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.8999999999999998e-06,
+      "cost_per_output_token": 8e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k3": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "minimax": {
+    "minimax-m2": {
+      "context_window": 196608,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.1": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 3.75e-07,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.5": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 3.75e-07,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.5-highspeed": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 3.75e-07,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.4e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.7": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 3.75e-07,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.7-highspeed": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 3.75e-07,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.4e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m3": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "openai": {
+    "gpt-4.1": {
+      "context_window": 1047576,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 8e-06,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-4.1-mini": {
+      "context_window": 1047576,
+      "cost_per_cache_read_token": 1.0000000000000001e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 4.0000000000000003e-07,
+      "cost_per_output_token": 1.6000000000000001e-06,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-4o": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.25e-06,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-4o-2024-08-06": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.25e-06,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-4o-2024-11-20": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.25e-06,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-4o-mini": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-07,
+      "cost_per_output_token": 6e-07,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.25e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5-mini": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 2.5000000000000002e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-07,
+      "cost_per_output_token": 2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5-nano": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 5e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5.0000000000000004e-08,
+      "cost_per_output_token": 4.0000000000000003e-07,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5-pro": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-05,
+      "cost_per_output_token": 0.00012,
+      "max_output_tokens": 272000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.1": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.25e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2-chat-latest": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2-pro": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.1e-05,
+      "cost_per_output_token": 0.000168,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.3-chat-latest": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.3-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.3-codex-spark": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-mini": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 4.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-nano": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.25e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-pro": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-05,
+      "cost_per_output_token": 0.00018,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.5": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.5-pro": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-05,
+      "cost_per_output_token": 0.00018,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-luna": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 2.5e-07,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-sol": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-terra": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 2.5e-06,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-realtime-2.1": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 4.0000000000000003e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 4e-06,
+      "cost_per_output_token": 2.4e-05,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "audio",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "o3": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 8e-06,
+      "max_output_tokens": 100000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "o3-pro": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-05,
+      "cost_per_output_token": 8e-05,
+      "max_output_tokens": 100000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "opencode": {
+    "big-pickle": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "claude-fable-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 1e-06,
+      "cost_per_cache_write_token": 1.25e-05,
+      "cost_per_input_token": 1e-05,
+      "cost_per_output_token": 5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-haiku-4-5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1.0000000000000001e-07,
+      "cost_per_cache_write_token": 1.25e-06,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 5e-06,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-5": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-6": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-7": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-4-8": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-opus-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 2.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-4-6": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 3.75e-06,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "claude-sonnet-5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 2.5e-06,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "deepseek-v4-flash": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.8e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-07,
+      "cost_per_output_token": 2.8e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-v4-flash-free": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-v4-pro": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 1.45e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.74e-06,
+      "cost_per_output_token": 3.84e-06,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "gemini-3-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 5.0000000000000004e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5e-07,
+      "cost_per_output_token": 3e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.1-pro": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 1.2e-05,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.5-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 9e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.5-flash-lite": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 2.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.6-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 7.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gemini-3.7-flash": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.5e-06,
+      "cost_per_output_token": 7.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "glm-5": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 3.2000000000000003e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.1": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 2.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-06,
+      "cost_per_output_token": 4.4e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.2": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-06,
+      "cost_per_output_token": 4.4e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "gpt-5": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.0699999999999999e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.0700000000000001e-06,
+      "cost_per_output_token": 8.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.0699999999999999e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.0700000000000001e-06,
+      "cost_per_output_token": 8.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5-nano": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 5e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5.0000000000000004e-08,
+      "cost_per_output_token": 4.0000000000000003e-07,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.1": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.0699999999999999e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.0700000000000001e-06,
+      "cost_per_output_token": 8.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.1-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.0699999999999999e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.0700000000000001e-06,
+      "cost_per_output_token": 8.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.1-codex-max": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.25e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 1e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.1-codex-mini": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 2.5000000000000002e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-07,
+      "cost_per_output_token": 2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.2-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.3-codex": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.3-codex-spark": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 1.75e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.75e-06,
+      "cost_per_output_token": 1.4e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "gpt-5.4": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-mini": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 7.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7.5e-07,
+      "cost_per_output_token": 4.5e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-nano": {
+      "context_window": 400000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.25e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.4-pro": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 3e-05,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-05,
+      "cost_per_output_token": 0.00018,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.5": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.5-pro": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 3e-05,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-05,
+      "cost_per_output_token": 0.00018,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-luna": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 2.5e-07,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-sol": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 6.25e-06,
+      "cost_per_input_token": 5e-06,
+      "cost_per_output_token": 3e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "gpt-5.6-terra": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 2.5e-07,
+      "cost_per_cache_write_token": 3.125e-06,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.5": {
+      "context_window": 500000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 500000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.6": {
+      "context_window": 500000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 500000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-build-0.1": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 2e-06,
+      "max_output_tokens": 256000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "hy3-free": {
+      "context_window": 190000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2.5": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 8e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 3e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.6": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.7-code": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.9e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k3": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "laguna-s-2.1-free": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "mimo-v2.5-free": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32000,
+      "modalities_input": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "minimax-m2.5": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.7": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m3": {
+      "context_window": 512000,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "muse-spark-1.2": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 1.5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.25e-06,
+      "cost_per_output_token": 4.25e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "pdf",
+        "audio"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "nemotron-3-ultra-free": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "nemotron-3.5-lightning-free": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3.5-plus": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 2e-08,
+      "cost_per_cache_write_token": 2.5e-07,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.6-plus": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 5.0000000000000004e-08,
+      "cost_per_cache_write_token": 6.25e-07,
+      "cost_per_input_token": 5e-07,
+      "cost_per_output_token": 3e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "opencode-go": {
+    "deepseek-v4-flash": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 1.4e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7e-08,
+      "cost_per_output_token": 1.4e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "deepseek-v4-pro": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 3.625e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 4.35e-07,
+      "cost_per_output_token": 8.7e-07,
+      "max_output_tokens": 384000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.1": {
+      "context_window": 202752,
+      "cost_per_cache_read_token": 2.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-06,
+      "cost_per_output_token": 4.4e-06,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.2": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-06,
+      "cost_per_output_token": 4.4e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.3": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-06,
+      "cost_per_output_token": 4.4e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "gpt-5.6-luna": {
+      "context_window": 1050000,
+      "cost_per_cache_read_token": 1e-08,
+      "cost_per_cache_write_token": 1.25e-07,
+      "cost_per_input_token": 1.0000000000000001e-07,
+      "cost_per_output_token": 6e-07,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "grok-4.5": {
+      "context_window": 500000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 500000,
+      "modalities_input": [
+        "text",
+        "image"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "hy3": {
+      "context_window": 256000,
+      "cost_per_cache_read_token": 3.5e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-07,
+      "cost_per_output_token": 5.8e-07,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2.6": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.6e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k2.7-code": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 1.9e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 9.499999999999999e-07,
+      "cost_per_output_token": 4e-06,
+      "max_output_tokens": 262144,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "kimi-k3": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-06,
+      "cost_per_output_token": 1.5e-05,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "mimo-v2.5": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.8e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1.4e-07,
+      "cost_per_output_token": 2.8e-07,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "mimo-v2.5-pro": {
+      "context_window": 1048576,
+      "cost_per_cache_read_token": 3.625e-09,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 4.35e-07,
+      "cost_per_output_token": 8.7e-07,
+      "max_output_tokens": 128000,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m2.7": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "minimax-m3": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 6e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 1.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.6-plus": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5.0000000000000004e-08,
+      "cost_per_cache_write_token": 6.25e-07,
+      "cost_per_input_token": 5e-07,
+      "cost_per_output_token": 3e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.7-max": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 3.125e-06,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 7.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3.7-plus": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 4e-08,
+      "cost_per_cache_write_token": 5e-07,
+      "cost_per_input_token": 4.0000000000000003e-07,
+      "cost_per_output_token": 1.6000000000000001e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.8-max": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 2.5e-07,
+      "cost_per_cache_write_token": 2.5e-06,
+      "cost_per_input_token": 2e-06,
+      "cost_per_output_token": 6e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "qwen": {
+    "glm-4.7": {
+      "context_window": 202752,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5": {
+      "context_window": 202752,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "kimi-k2.5": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "minimax-m2.5": {
+      "context_window": 196608,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 24576,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3-coder-next": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3-coder-plus": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3-max-2026-01-23": {
+      "context_window": 262144,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": false,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3.5-plus": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.6-flash": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 2.34375e-07,
+      "cost_per_input_token": 1.875e-07,
+      "cost_per_output_token": 1.125e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.6-plus": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "qwen3.7-max": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 5e-07,
+      "cost_per_cache_write_token": 3.125e-06,
+      "cost_per_input_token": 2.5e-06,
+      "cost_per_output_token": 7.5e-06,
+      "max_output_tokens": 65536,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "qwen3.7-plus": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 64000,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  }
+}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ..provider.model_catalog import infer_model_metadata, merge_model_metadata
 from ..provider.registry import ModelProviderRegistry
 from .contracts import ProviderModelMetadata, ProviderModelsResult
 from .provider_metadata import contract_metadata_from_catalog
@@ -39,19 +38,12 @@ class RuntimeProviderCatalogQuery:
     ) -> ProviderModelMetadata | None:
         self._validate_provider_name(provider_name)
         catalog = self._registry.provider_catalog(provider_name)
-        if catalog is not None:
-            catalog_metadata = catalog.model_metadata.get(model_name)
-            if catalog_metadata is not None:
-                merged = merge_model_metadata(
-                    inferred=infer_model_metadata(provider_name, model_name),
-                    override=catalog_metadata,
-                )
-                if merged is not None:
-                    return contract_metadata_from_catalog(merged)
-        inferred = infer_model_metadata(provider_name, model_name)
-        if inferred is None:
+        if catalog is None:
             return None
-        return contract_metadata_from_catalog(inferred)
+        catalog_metadata = catalog.model_metadata.get(model_name)
+        if catalog_metadata is None:
+            return None
+        return contract_metadata_from_catalog(catalog_metadata)
 
     def models_result(
         self,

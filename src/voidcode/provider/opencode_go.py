@@ -4,15 +4,30 @@ from dataclasses import dataclass
 
 from .config import SimplifiedProviderConfig, simplified_config_to_litellm
 from .litellm_backend import LiteLLMBackendSingleAgentProvider
+from .model_catalog import ToolFeedbackMode
 from .protocol import ProviderTurnRequest, TurnProvider
 
-_ANTHROPIC_COMPATIBLE_MODELS = frozenset({"minimax-m2.5", "minimax-m2.7"})
-_ALIBABA_COMPATIBLE_MODELS = frozenset({"qwen3.5-plus", "qwen3.6-plus"})
+# Only minimax-m2.5 rides the Anthropic-compatible endpoint
+# (https://opencode.ai/zen/go/v1/messages). Everything else — including
+# minimax-m2.7, qwen3.5-plus, qwen3.6-plus — goes through the
+# OpenAI-compatible gateway endpoint (https://opencode.ai/zen/go/v1/chat/completions).
+_ANTHROPIC_COMPATIBLE_MODELS = frozenset({"minimax-m2.5"})
+
+_TOOL_FEEDBACK_OVERRIDES: dict[str, ToolFeedbackMode] = {
+    "qwen3.5-plus": "synthetic_user_message",
+    "qwen3.6-plus": "synthetic_user_message",
+    "minimax-m2.5": "synthetic_user_message",
+    "minimax-m2.7": "synthetic_user_message",
+}
 
 
 @dataclass(frozen=True, slots=True)
 class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
-    """LiteLLM adapter for OpenCode Go's model-family-specific SDK routes."""
+    """LiteLLM adapter for OpenCode Go's gateway.
+
+    All models except minimax-m2.5 are routed to the OpenAI-compatible
+    endpoint; only minimax-m2.5 uses the Anthropic-compatible endpoint.
+    """
 
     def _completion_kwargs_for_request(self, request: ProviderTurnRequest) -> dict[str, object]:
         kwargs = LiteLLMBackendSingleAgentProvider._completion_kwargs_for_request(self, request)
@@ -24,9 +39,6 @@ class OpenCodeGoSingleAgentProvider(LiteLLMBackendSingleAgentProvider):
                 "anthropic-version": "2023-06-01",
                 "user-agent": "@ai-sdk/anthropic",
             }
-            return kwargs
-        if model_name in _ALIBABA_COMPATIBLE_MODELS:
-            kwargs["custom_llm_provider"] = "dashscope"
             return kwargs
         kwargs["custom_llm_provider"] = "openai"
         return kwargs
@@ -53,9 +65,12 @@ class OpenCodeGoModelProvider:
         OPENCODE_API_KEY: API key shared by OpenCode Zen and OpenCode Go
 
     Note:
-        OpenCode Go uses different endpoints for different model families:
-        - OpenAI-compatible: https://opencode.ai/zen/go/v1/chat/completions
-        - Anthropic-compatible: https://opencode.ai/zen/go/v1/messages
+        OpenCode Go routes models through two gateway endpoints:
+        - OpenAI-compatible (default, used by minimax-m2.7, qwen3.5-plus,
+          qwen3.6-plus, and everything else):
+          https://opencode.ai/zen/go/v1/chat/completions
+        - Anthropic-compatible (minimax-m2.5 only):
+          https://opencode.ai/zen/go/v1/messages
         Model IDs in config use format: opencode-go/<model-id>
     """
 
@@ -71,4 +86,5 @@ class OpenCodeGoModelProvider:
             name=self.name,
             config=adapted_config,
             use_raw_model_name=True,
+            tool_feedback_model_overrides=_TOOL_FEEDBACK_OVERRIDES,
         )

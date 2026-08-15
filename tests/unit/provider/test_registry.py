@@ -18,6 +18,7 @@ from voidcode.provider.grok import GrokModelProvider
 from voidcode.provider.kimi import KimiModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.minimax import MiniMaxModelProvider
+from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
@@ -206,8 +207,10 @@ def test_registry_refresh_available_models_stores_model_metadata() -> None:
 
     assert "gpt-4o" in models
     assert catalog is not None
-    assert catalog.model_metadata["gpt-4o"].context_window == 128_000
-    assert catalog.model_metadata["gpt-4o"].cost_per_output_token is not None
+    # Without a discovery endpoint, the catalog lists aliases and targets but
+    # attaches no metadata: the static catalog is keyed by first-party
+    # provider + model, and "litellm" is a generic passthrough provider.
+    assert catalog.model_metadata == {}
     assert registry.available_models("litellm") == models
     catalog = registry.provider_catalog("litellm")
     assert catalog is not None
@@ -217,7 +220,21 @@ def test_registry_refresh_available_models_stores_model_metadata() -> None:
 
 def test_resolved_provider_model_carries_catalog_metadata_for_routing() -> None:
     registry = ModelProviderRegistry.with_defaults()
-    registry.refresh_available_models("openai")
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=128_000,
+                    supports_tools=True,
+                    cost_per_input_token=0.000001,
+                    model_status="active",
+                )
+            },
+        )
+    }
 
     resolved = resolve_provider_model("openai/gpt-4o", registry=registry)
 

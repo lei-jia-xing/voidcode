@@ -684,8 +684,8 @@ def test_transport_provider_inspect_exposes_model_capabilities(tmp_path: Path, m
     current_metadata = cast(dict[str, object], payload["current_model_metadata"])
     assert provider["configured"] is True
     assert payload["current_model"] == "glm-5.1"
-    assert glm_metadata["context_window"] == 198_000
-    assert glm_metadata["max_input_tokens"] == 70_000
+    assert glm_metadata["context_window"] == 202_752
+    assert glm_metadata["max_input_tokens"] == 169_984
     assert glm_metadata["supports_tools"] is True
     assert current_metadata["supports_reasoning"] is True
 

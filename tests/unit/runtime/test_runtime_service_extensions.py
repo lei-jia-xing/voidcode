@@ -3663,12 +3663,27 @@ def test_runtime_session_debug_snapshot_uses_model_tool_feedback_mode(
     tmp_path: Path,
 ) -> None:
     _ = (tmp_path / "sample.txt").write_text("provider debug\n", encoding="utf-8")
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "opencode-go": ProviderModelCatalog(
+            provider="opencode-go",
+            models=("minimax-m2.7",),
+            refreshed=True,
+            model_metadata={
+                "minimax-m2.7": ProviderModelMetadata(
+                    context_window=204_800,
+                    tool_feedback_mode="synthetic_user_message",
+                )
+            },
+        )
+    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
             model="opencode-go/minimax-m2.7",
             execution_engine="deterministic",
         ),
+        model_provider_registry=registry,
     )
 
     _ = runtime.run(RuntimeRequest(prompt="read sample.txt", session_id="synthetic-debug"))
@@ -6157,18 +6172,18 @@ def test_runtime_fails_fast_when_reasoning_effort_set_on_unsupported_model(
 ) -> None:
     registry = ModelProviderRegistry.with_defaults()
     registry.model_catalog = {
-        "openai": ProviderModelCatalog(
-            provider="openai",
-            models=("gpt-4o",),
+        "minimax": ProviderModelCatalog(
+            provider="minimax",
+            models=("minimax-m2.7",),
             refreshed=True,
-            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+            model_metadata={"minimax-m2.7": ProviderModelMetadata(supports_reasoning_effort=False)},
         )
     }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
             execution_engine="provider",
-            model="openai/gpt-4o",
+            model="minimax/minimax-m2.7",
             reasoning_effort="high",
         ),
         model_provider_registry=registry,
@@ -6183,16 +6198,16 @@ def test_runtime_fails_fast_when_request_metadata_reasoning_effort_unsupported(
 ) -> None:
     registry = ModelProviderRegistry.with_defaults()
     registry.model_catalog = {
-        "openai": ProviderModelCatalog(
-            provider="openai",
-            models=("gpt-4o",),
+        "minimax": ProviderModelCatalog(
+            provider="minimax",
+            models=("minimax-m2.7",),
             refreshed=True,
-            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+            model_metadata={"minimax-m2.7": ProviderModelMetadata(supports_reasoning_effort=False)},
         )
     }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="openai/gpt-4o"),
+        config=RuntimeConfig(execution_engine="provider", model="minimax/minimax-m2.7"),
         model_provider_registry=registry,
     )
 
@@ -7697,16 +7712,16 @@ def test_runtime_waiting_approval_event_records_child_ownership(tmp_path: Path) 
     assert approval_event.payload["delegated_task_id"] is None
 
 
-def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_unsupported(
+def test_runtime_resume_accepts_supported_persisted_reasoning_effort(
     tmp_path: Path,
 ) -> None:
     initial_registry = ModelProviderRegistry.with_defaults()
     initial_registry.model_catalog = {
         "openai": ProviderModelCatalog(
             provider="openai",
-            models=("gpt-4o",),
+            models=("gpt-5",),
             refreshed=True,
-            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=True)},
+            model_metadata={"gpt-5": ProviderModelMetadata(supports_reasoning_effort=True)},
         )
     }
     runtime = VoidCodeRuntime(
@@ -7714,7 +7729,7 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_unsupported(
         graph=_ApprovalThenCaptureSkillGraph(),
         config=RuntimeConfig(
             approval_mode="ask",
-            model="openai/gpt-4o",
+            model="openai/gpt-5",
             reasoning_effort="high",
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -7727,9 +7742,9 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_unsupported(
     resumed_registry.model_catalog = {
         "openai": ProviderModelCatalog(
             provider="openai",
-            models=("gpt-4o",),
+            models=("gpt-5",),
             refreshed=True,
-            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning_effort=False)},
+            model_metadata={"gpt-5": ProviderModelMetadata(supports_reasoning_effort=True)},
         )
     }
     resumed_runtime = VoidCodeRuntime(
@@ -7740,12 +7755,12 @@ def test_runtime_resume_fails_fast_when_persisted_reasoning_effort_unsupported(
         model_provider_registry=resumed_registry,
     )
 
-    with pytest.raises(RuntimeRequestError, match="does not support reasoning effort"):
-        _ = resumed_runtime.resume(
-            "reasoning-resume-block",
-            approval_request_id=approval_request_id,
-            approval_decision="allow",
-        )
+    resumed = resumed_runtime.resume(
+        "reasoning-resume-block",
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    assert resumed.session.session.id == "reasoning-resume-block"
 
 
 def test_runtime_resume_rejects_malformed_persisted_pending_approval_policy_mode(
@@ -12428,6 +12443,17 @@ def test_runtime_graph_selection_seam_uses_provider_attempt_target(tmp_path: Pat
 def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
     tmp_path: Path,
 ) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "kimi": ProviderModelCatalog(
+            provider="kimi",
+            models=("moonshot-v1-8k",),
+            refreshed=True,
+            model_metadata={
+                "moonshot-v1-8k": ProviderModelMetadata(context_window=8_000),
+            },
+        ),
+    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
@@ -12438,6 +12464,7 @@ def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
                 fallback_models=("kimi/moonshot-v1-8k",),
             ),
         ),
+        model_provider_registry=registry,
     )
 
     context_window = runtime._prepare_provider_context_window(
@@ -12455,6 +12482,17 @@ def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
 def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
     tmp_path: Path,
 ) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "kimi": ProviderModelCatalog(
+            provider="kimi",
+            models=("moonshot-v1-8k",),
+            refreshed=True,
+            model_metadata={
+                "moonshot-v1-8k": ProviderModelMetadata(context_window=8_000),
+            },
+        ),
+    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
@@ -12465,6 +12503,7 @@ def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
                 fallback_models=("kimi/moonshot-v1-8k",),
             ),
         ),
+        model_provider_registry=registry,
     )
 
     context_window = runtime._prepare_provider_context_window(
@@ -17975,9 +18014,10 @@ def test_runtime_persists_provider_model_catalog_cache(tmp_path: Path) -> None:
     assert result.models == models
     assert result.source == "fallback"
     assert result.last_refresh_status == "skipped"
-    assert result.model_metadata["gpt-4o"].max_input_tokens == 111_616
-    assert result.model_metadata["gpt-4o"].cost_per_input_token is not None
-    assert result.model_metadata["gpt-4o"].modalities_input == ("text", "image")
+    # Without a discovery endpoint the litellm catalog carries no metadata:
+    # the static catalog is keyed by first-party provider + model, so the
+    # persisted cache round-trips models and status without model_metadata.
+    assert result.model_metadata == {}
 
 
 def test_runtime_hydrates_provider_tool_feedback_mode_from_catalog_cache(
@@ -17996,6 +18036,7 @@ def test_runtime_hydrates_provider_tool_feedback_mode_from_catalog_cache(
                         "model_metadata": {
                             "minimax-m2.7": {
                                 "context_window": 204_800,
+                                "tool_feedback_mode": "synthetic_user_message",
                             }
                         },
                         "refreshed": True,
@@ -18103,9 +18144,27 @@ def test_runtime_provider_models_result_exposes_capability_metadata(tmp_path: Pa
 
 
 def test_runtime_inspect_provider_combines_status_models_and_validation(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=128_000,
+                    max_output_tokens=16_384,
+                    supports_tools=True,
+                    cost_per_input_token=0.0000025,
+                    model_status="active",
+                )
+            },
+        )
+    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(model="openai/gpt-4o"),
+        model_provider_registry=registry,
     )
 
     result = runtime.inspect_provider("openai")
@@ -18124,9 +18183,26 @@ def test_runtime_inspect_provider_combines_status_models_and_validation(tmp_path
 
 
 def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -> None:
+    registry = ModelProviderRegistry.with_defaults()
+    registry.model_catalog = {
+        "openai": ProviderModelCatalog(
+            provider="openai",
+            models=("gpt-4o",),
+            refreshed=True,
+            model_metadata={
+                "gpt-4o": ProviderModelMetadata(
+                    context_window=128_000,
+                    max_output_tokens=16_384,
+                    supports_tools=True,
+                    model_status="active",
+                )
+            },
+        )
+    }
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(model="openai/gpt-4o"),
+        model_provider_registry=registry,
     )
 
     context = runtime._prepare_provider_context_window(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ..provider.model_catalog import infer_model_metadata
 from ..provider.models import ResolvedProviderConfig
 from .config import RuntimeContextWindowConfig
 from .context_window import ContextWindowPolicy
@@ -35,12 +34,9 @@ def context_window_policy_from_config(
         provider_target = resolved_provider.target_chain.target_at(provider_attempt)
         if provider_target is None:
             provider_target = resolved_provider.active_target
-        provider = provider_target.selection.provider
-        model = provider_target.selection.model
-        if provider is not None and model is not None:
-            metadata = infer_model_metadata(provider, model)
-            if metadata is not None:
-                model_context_window_tokens = metadata.context_window
+        metadata = provider_target.metadata
+        if metadata is not None and metadata.context_window is not None:
+            model_context_window_tokens = metadata.context_window
     return ContextWindowPolicy(
         auto_compaction=config.auto_compaction,
         model_context_window_tokens=model_context_window_tokens,

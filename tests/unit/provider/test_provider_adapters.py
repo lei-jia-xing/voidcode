@@ -24,7 +24,7 @@ from voidcode.provider.glm import GLMModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.litellm_backend import LiteLLMBackendSingleAgentProvider
-from voidcode.provider.model_catalog import ProviderModelMetadata, infer_model_metadata
+from voidcode.provider.model_catalog import ProviderModelMetadata
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
 from voidcode.provider.opencode_go import OpenCodeGoModelProvider
@@ -1500,7 +1500,7 @@ def test_opencode_go_openai_compatible_provider_uses_tool_call_pairing(
         raw_model="opencode-go/kimi-k2.6",
         provider_name="opencode-go",
         model_name="kimi-k2.6",
-        model_metadata=infer_model_metadata("opencode-go", "kimi-k2.6"),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1569,7 +1569,7 @@ def test_opencode_go_openai_compatible_provider_sanitizes_tool_messages(
         raw_model="opencode-go/glm-5.1",
         provider_name="opencode-go",
         model_name="glm-5.1",
-        model_metadata=infer_model_metadata("opencode-go", "glm-5.1"),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1625,7 +1625,7 @@ def test_opencode_go_mimo_preserves_standard_tool_pairing_with_model_metadata(
         raw_model="opencode-go/mimo-v2.5-pro",
         provider_name="opencode-go",
         model_name="mimo-v2.5-pro",
-        model_metadata=infer_model_metadata("opencode-go", "mimo-v2.5-pro"),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -1681,7 +1681,7 @@ def test_opencode_go_deepseek_reinjects_reasoning_content_for_tool_history(
         raw_model="opencode-go/deepseek-v4-pro",
         provider_name="opencode-go",
         model_name="deepseek-v4-pro",
-        model_metadata=infer_model_metadata("opencode-go", "deepseek-v4-pro"),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -2149,6 +2149,7 @@ def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = OpenCodeGoModelProvider().turn_provider()
+    assert provider.tool_feedback_model_overrides["minimax-m2.7"] == "synthetic_user_message"
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
@@ -2172,7 +2173,7 @@ def test_provider_adapter_infers_tool_feedback_when_metadata_omits_mode(
         raw_model="opencode-go/minimax-m2.7",
         provider_name="opencode-go",
         model_name="minimax-m2.7",
-        model_metadata=ProviderModelMetadata(context_window=204_800),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -2205,6 +2206,7 @@ def test_provider_adapter_infers_tool_feedback_from_mapped_model_alias(
             model_map={"my-minimax": "minimax-m2.7"},
         )
     ).turn_provider()
+    assert provider.tool_feedback_model_overrides["minimax-m2.7"] == "synthetic_user_message"
     request = _build_turn_request(model_name="opencode-go")
     tool_results = (
         ToolResult(
@@ -2228,7 +2230,7 @@ def test_provider_adapter_infers_tool_feedback_from_mapped_model_alias(
         raw_model="opencode-go/my-minimax",
         provider_name="opencode-go",
         model_name="my-minimax",
-        model_metadata=ProviderModelMetadata(context_window=204_800),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -2244,7 +2246,7 @@ def test_provider_adapter_infers_tool_feedback_from_mapped_model_alias(
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == "minimax-m2.7"
-    assert payload["custom_llm_provider"] == "anthropic"
+    assert payload["custom_llm_provider"] == "openai"
     messages_obj = payload.get("messages")
     assert isinstance(messages_obj, list)
     messages = cast(list[dict[str, object]], messages_obj)
@@ -2281,7 +2283,7 @@ def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
         raw_model="opencode-go/minimax-m2.7",
         provider_name="opencode-go",
         model_name="minimax-m2.7",
-        model_metadata=infer_model_metadata("opencode-go", "minimax-m2.7"),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -2305,6 +2307,16 @@ def test_opencode_go_non_openai_families_declare_synthetic_tool_feedback_policy(
     assert "Completed tool calls for current request:" in feedback
     assert '"tool_name": "glob"' in feedback
     assert "tool_calls" not in messages[1]
+
+
+def test_opencode_go_turn_provider_declares_tool_feedback_model_overrides() -> None:
+    provider = OpenCodeGoModelProvider().turn_provider()
+    assert provider.tool_feedback_model_overrides == {
+        "qwen3.5-plus": "synthetic_user_message",
+        "qwen3.6-plus": "synthetic_user_message",
+        "minimax-m2.5": "synthetic_user_message",
+        "minimax-m2.7": "synthetic_user_message",
+    }
 
 
 def test_provider_adapter_logs_bounded_request_diagnostics(
@@ -2339,7 +2351,7 @@ def test_provider_adapter_logs_bounded_request_diagnostics(
         raw_model="opencode-go/minimax-m2.7",
         provider_name="opencode-go",
         model_name="minimax-m2.7",
-        model_metadata=infer_model_metadata("opencode-go", "minimax-m2.7"),
+        model_metadata=None,
         attempt=request.attempt,
         abort_signal=request.abort_signal,
     )
@@ -2681,10 +2693,10 @@ def test_provider_adapter_rejects_invalid_reasoning_effort(
         ("glm-5.1", "openai"),
         ("kimi-k2.6", "openai"),
         ("mimo-v2.5-pro", "openai"),
-        ("minimax-m2.7", "anthropic"),
+        ("minimax-m2.7", "openai"),
         ("minimax-m2.5", "anthropic"),
-        ("qwen3.6-plus", "dashscope"),
-        ("qwen3.5-plus", "dashscope"),
+        ("qwen3.6-plus", "openai"),
+        ("qwen3.5-plus", "openai"),
     ],
 )
 def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
@@ -2727,14 +2739,21 @@ def test_opencode_go_provider_routes_model_families_to_required_sdk_adapter(
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == model_name
     assert payload["custom_llm_provider"] == custom_provider
-    expected_api_base = "https://opencode.ai/zen/go" if model_name in {"minimax-m2.7", "minimax-m2.5"} else "https://opencode.ai/zen/go/v1"
+    expected_api_base = "https://opencode.ai/zen/go" if model_name == "minimax-m2.5" else "https://opencode.ai/zen/go/v1"
     assert payload["api_base"] == expected_api_base
     assert payload["api_key"] == "opencode-go-key"
     assert payload["timeout"] == 300.0
-    assert "thinking" not in payload
-    assert payload["reasoning_effort"] == "high"
-    assert "extra_body" not in payload
-    if model_name in {"minimax-m2.7", "minimax-m2.5"}:
+    if model_name == "minimax-m2.5":
+        assert payload["extra_body"] == {"thinking": {"type": "adaptive"}}
+        assert "reasoning_effort" not in payload
+    elif model_name == "minimax-m2.7":
+        assert payload["extra_body"] == {"reasoning_effort": "high"}
+        assert "reasoning_effort" not in payload
+    else:
+        assert "thinking" not in payload
+        assert payload["reasoning_effort"] == "high"
+        assert "extra_body" not in payload
+    if model_name == "minimax-m2.5":
         assert payload["extra_headers"] == {
             "anthropic-version": "2023-06-01",
             "user-agent": "@ai-sdk/anthropic",

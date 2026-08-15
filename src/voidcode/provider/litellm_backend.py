@@ -33,7 +33,7 @@ from ..tools.output import (
 )
 from .config import LiteLLMProviderConfig
 from .errors import provider_execution_error_from_api_payload
-from .model_catalog import ToolFeedbackMode, infer_model_metadata
+from .model_catalog import ToolFeedbackMode
 from .protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,
@@ -333,6 +333,7 @@ class LiteLLMBackendSingleAgentProvider:
         effort = clamp_effort_to_supported(effort, supported)
         mapped = map_effort_for_provider(
             provider_name=self.name,
+            model_name=self._mapped_model_name_for_request(request),
             effort=effort,
         )
         extra_body = mapped.get("extra_body")
@@ -366,11 +367,6 @@ class LiteLLMBackendSingleAgentProvider:
         metadata_mode = None if request.model_metadata is None else request.model_metadata.tool_feedback_mode
         if metadata_mode is not None:
             return metadata_mode
-        provider_name = request.provider_name or self.name
-        if mapped_model_name:
-            inferred = infer_model_metadata(provider_name, mapped_model_name)
-            if inferred is not None and inferred.tool_feedback_mode is not None:
-                return inferred.tool_feedback_mode
         return "standard"
 
     @staticmethod

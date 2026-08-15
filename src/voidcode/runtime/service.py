@@ -44,10 +44,7 @@ from ..provider.config import (
     ProviderTransientRetryConfig,
 )
 from ..provider.errors import guidance_for_provider_error_kind
-from ..provider.model_catalog import (
-    ToolFeedbackMode,
-    infer_model_metadata,
-)
+from ..provider.model_catalog import ToolFeedbackMode
 from ..provider.models import (
     ResolvedProviderChain,
     ResolvedProviderConfig,
@@ -58,6 +55,7 @@ from ..provider.protocol import (
     ProviderErrorKind,
     ProviderTokenUsage,
 )
+from ..provider.reasoning_effort import provider_supports_reasoning_effort
 from ..provider.registry import ModelProviderRegistry
 from ..provider.resolution import resolve_provider_config
 from ..provider.snapshot import (
@@ -115,7 +113,6 @@ from .agent_capability import (
 from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .bundle import (
     SessionBundle,
-    SessionBundleFormat,
     SessionBundleImportResult,
     SessionBundleOptions,
     apply_session_bundle,
@@ -1208,10 +1205,7 @@ class VoidCodeRuntime:
         model_name = active_target.model
         if provider_name is None or model_name is None:
             return
-        metadata = self._metadata_for_provider_model(provider_name, model_name)
-        if metadata is None:
-            return
-        if metadata.supports_reasoning_effort is False:
+        if provider_supports_reasoning_effort(provider_name, model_name) is False:
             raise ValueError(
                 "reasoning_effort is configured but model "
                 f"'{provider_name}/{model_name}' does not support reasoning effort; "
@@ -3760,7 +3754,7 @@ class VoidCodeRuntime:
         _ = write_session_bundle(
             bundle,
             path=output_path,
-            fmt=cast(SessionBundleFormat | None, fmt),
+            fmt=fmt,
         )
         return bundle
 
@@ -4047,17 +4041,11 @@ class VoidCodeRuntime:
             payload["status"] = "unavailable"
             payload["reason"] = "provider_model_unresolved"
             return payload
-        metadata = self._metadata_for_provider_model(provider_name, model_name)
-        if metadata is not None:
-            payload["supports_reasoning"] = metadata.supports_reasoning
-            payload["supports_reasoning_effort"] = metadata.supports_reasoning_effort
-            payload["supports_reasoning_summary"] = metadata.supports_reasoning_summary
-            payload["supports_thinking_budget"] = metadata.supports_thinking_budget
-            payload["supports_interleaved_reasoning"] = metadata.supports_interleaved_reasoning
-            payload["reasoning_visibility"] = metadata.reasoning_visibility
+        supports = provider_supports_reasoning_effort(provider_name, model_name)
+        payload["supports_reasoning_effort"] = supports
         if effort is None:
             return payload
-        if metadata is not None and metadata.supports_reasoning_effort is False:
+        if supports is False:
             payload["status"] = "unsupported"
             payload["reason"] = "model_metadata_disallows_reasoning_effort"
             return payload
@@ -4767,16 +4755,9 @@ class VoidCodeRuntime:
         effective_config: EffectiveRuntimeConfig,
     ) -> ToolFeedbackMode:
         active_target = effective_config.resolved_provider.active_target
-        provider = active_target.selection.provider or "unknown"
-        model = active_target.selection.model or active_target.selection.raw_model or "unknown"
-        inferred_metadata = infer_model_metadata(provider, model) if provider != "unknown" else None
-        return (
-            active_target.metadata.tool_feedback_mode
-            if active_target.metadata is not None and active_target.metadata.tool_feedback_mode is not None
-            else inferred_metadata.tool_feedback_mode
-            if inferred_metadata is not None and inferred_metadata.tool_feedback_mode is not None
-            else "standard"
-        )
+        if active_target.metadata is not None and active_target.metadata.tool_feedback_mode is not None:
+            return active_target.metadata.tool_feedback_mode
+        return "standard"
 
     def _provider_context_policy_decision_for_graph_request(
         self,

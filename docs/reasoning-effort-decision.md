@@ -28,7 +28,7 @@ issue #325 落地后，仓库的 reasoning effort 表面已经成为 runtime-own
 - `voidcode run --reasoning-effort <level>` 与 `VOIDCODE_REASONING_EFFORT` 环境变量都进入同一条优先级链
 - `.voidcode.json` 接受 `"reasoning_effort"` 顶层字段，并由 `voidcode config schema` 暴露 JSON Schema
 - `SessionState.metadata["runtime_config"]["reasoning_effort"]` 在 run 时被持久化，并在 resume 时优先于新的 runtime 默认值
-- runtime 在请求处理早期对“当前 model metadata 明确 `supports_reasoning_effort=False`”做 fail-fast 校验；opencode-go 的禁用由 `model_catalog.py` 通过 `supports_reasoning_effort=False` 在运行时强制（fail-fast），而不是适配器层的显式 ignore
+- runtime 在请求处理早期对“当前 model metadata 明确 `supports_reasoning_effort=False`”做 fail-fast 校验；opencode-go 由 `provider/reasoning_effort.py` 的 `provider_supports_reasoning_effort` gate 按模型分派（仅 `minimax-m2.5` / `minimax-m2.7` 放行，其余模型 fail-fast），而不是适配器层的显式 ignore
 - `reasoning` stream channel 仍只用于可观测性输出，不属于配置面
 
 ## 决策
@@ -84,11 +84,12 @@ provider 层通过 `normalize → clamp → map` 流水线处理：
 | Provider / 模型 | 映射方式 | 备注 |
 | --- | --- | --- |
 | GLM（`glm-5` / `glm-z1`） | `extra_body.thinking.type = enabled \| disabled` | 二元映射（`off` → `disabled`，其余档位 → `enabled`）；LiteLLM 的 zai 方言不支持 `reasoning_effort`，因此 GLM 走 thinking type 而不是 kwarg |
+| DeepSeek（`deepseek-v4-flash` / `deepseek-v4-pro`） | `extra_body.reasoning_effort = low \| high \| max` | 分级映射 `minimal/low → low`、`medium/high/xhigh → high`、`max → max`；`off → extra_body.thinking.type = disabled`；经 `extra_body` 路由，因为 litellm 会把顶层 `reasoning_effort` 二元坍缩为 `thinking` |
 | OpenAI / compatible | `reasoning_effort` kwarg | `off` → `"none"`，`max` → `"xhigh"`，中间档位按枚举名透传 |
 | Anthropic | `reasoning_effort` kwarg | `off` → `"none"`，`max` → `"max"`，中间档位按枚举名透传 |
 | Google（gemini / vertex_ai） | `reasoning_effort` kwarg | `off` → `"none"`，`max` → `"high"`（Google 最高档位即 `"high"`），中间档位按枚举名透传 |
 | Grok / 其他 | `reasoning_effort` kwarg | 采用 openai/compat 语义：`off` → `"none"`，`max` → `"xhigh"` |
-| opencode-go | 运行时 fail-fast | `model_catalog.py` 中 `supports_reasoning_effort=False`，在请求阶段 fail-fast；不是适配器层的显式 ignore |
+| opencode-go | 按模型分派 | `minimax-m2.5` → `extra_body.thinking.type = adaptive`（强制推理，所有档位含 off 映射 adaptive，不可关闭）；`minimax-m2.7` → `extra_body.reasoning_effort = low \| medium \| high`（off/minimal/low → low、medium → medium、high/xhigh/max → high）；其余 opencode-go 模型（glm/kimi/qwen/mimo/deepseek-v4-*）保持运行时 fail-fast（由 `provider_supports_reasoning_effort` gate 在请求阶段强制，不是适配器层的显式 ignore） |
 
 ### 3. 它只作用于 provider-backed 路径
 
@@ -119,8 +120,8 @@ runtime 持有 hint，执行 `normalize` 与 `clamp`；真正翻译成 provider 
 - 把 `reasoning` stream channel 误当成配置能力（它仍是观测面）
 - 在 deterministic execution 路径上消费 reasoning effort
 - 在 delegated/multi-agent 拓扑中独立扩张 reasoning effort 语义（child run 通过 binding scope 继承 parent 的 reasoning_effort，不引入新拓扑字段）
-- 解除 DeepSeek / Qwen / Kimi / MiniMax 的 `supports_reasoning_effort=False`：这些模型保持运行时 fail-fast，这是有意的产品决策
+- 解除 Qwen / Kimi / MiniMax 的 `supports_reasoning_effort=False`：这些模型保持运行时 fail-fast，这是有意的产品决策
 
 ## 结论
 
-reasoning effort 现在已经是 VoidCode 的 runtime-owned canonical enum hint（`off | minimal | low | medium | high | xhigh | max`），在 `config.py`、`contracts.py`、`config_materializer.py`、JSON Schema 四处严格校验，覆盖 CLI、`.voidcode.json`、环境变量、HTTP metadata 与 session 持久化；provider 侧通过 `normalize → clamp → map` 流水线做确定性映射，`off` 作为永不 clamp 的哨兵；GLM 走 `extra_body.thinking.type`，其余 provider 走 `reasoning_effort` kwarg；对不支持该能力或未解锁的模型（含 opencode-go、DeepSeek、Qwen、Kimi、MiniMax）在运行时 fail-fast，避免用户以为 effort 生效但实际被 provider 忽略。
+reasoning effort 现在已经是 VoidCode 的 runtime-owned canonical enum hint（`off | minimal | low | medium | high | xhigh | max`），在 `config.py`、`contracts.py`、`config_materializer.py`、JSON Schema 四处严格校验，覆盖 CLI、`.voidcode.json`、环境变量、HTTP metadata 与 session 持久化；provider 侧通过 `normalize → clamp → map` 流水线做确定性映射，`off` 作为永不 clamp 的哨兵；GLM 走 `extra_body.thinking.type`，其余 provider 走 `reasoning_effort` kwarg；对不支持该能力或未解锁的模型（含 Qwen、Kimi、MiniMax）在运行时 fail-fast，避免用户以为 effort 生效但实际被 provider 忽略。
