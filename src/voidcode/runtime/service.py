@@ -284,7 +284,6 @@ from .permission_policy import (
     waiting_request_id_from_response,
 )
 from .policy import (
-    PRODUCT_DELEGATION_DENIAL_REASON,
     materialize_runtime_policy_snapshot,
 )
 from .provider_catalog_cache import RuntimeProviderCatalogCache
@@ -410,8 +409,8 @@ _ACTIVE_SESSION_TYPES = (
     ActiveSessionRegistry,
 )
 
-_EXECUTABLE_AGENT_PRESETS = frozenset({"leader", "product"})
-_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
+_EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
+_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker", "product"})
 
 
 def _agent_effective_execution_engine(
@@ -7045,8 +7044,6 @@ class VoidCodeRuntime:
         source: str,
         allow_subagent_presets: bool = False,
     ) -> None:
-        if allow_subagent_presets and agent.preset == "product":
-            raise ValueError(PRODUCT_DELEGATION_DENIAL_REASON)
         executable_primary = self._agent_registry.executable_primary_ids()
         executable_subagents = self._agent_registry.executable_subagent_ids()
         if agent.preset in executable_primary:

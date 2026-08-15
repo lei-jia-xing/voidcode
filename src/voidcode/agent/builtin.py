@@ -166,6 +166,7 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
 
 _PRODUCT_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
+    *_CHILD_HANDOFF_TOOLS,
     "skill",
     "web_search",
     "web_fetch",
@@ -175,17 +176,13 @@ _PRODUCT_TOOL_ALLOWLIST = (
 PRODUCT_AGENT_MANIFEST = AgentManifest(
     id="product",
     name="Product",
-    mode="primary",
-    description=("One-shot plan agent: produces a concrete implementation plan from a request without user interaction."),
+    mode="subagent",
+    description=("Product agent: produces a concrete implementation plan from a request without user interaction."),
     prompt_profile="product",
     execution_engine="provider",
     tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,
-    preset_hook_refs=(
-        "role_reminder",
-        "delegated_task_timing_guidance",
-        "background_output_quality_guidance",
-    ),
-    top_level_selectable=True,
+    preset_hook_refs=_DELEGATED_PRESET_HOOK_REFS,
+    top_level_selectable=False,
     prompt_materialization=AgentPromptMaterialization(
         profile="product",
         version=2,

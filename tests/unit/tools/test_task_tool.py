@@ -235,7 +235,7 @@ def test_task_tool_runs_sync_child_session(tmp_path: Path) -> None:
     assert runtime.requests[0].prompt == "Do it now"
 
 
-@pytest.mark.parametrize("subagent_type", ("worker", "advisor", "explore", "researcher"))
+@pytest.mark.parametrize("subagent_type", ("worker", "advisor", "explore", "researcher", "product"))
 def test_task_tool_accepts_valid_direct_child_subagent_presets(
     tmp_path: Path,
     subagent_type: str,
@@ -268,7 +268,6 @@ def test_task_tool_accepts_valid_direct_child_subagent_presets(
     ("subagent_type", "message"),
     (
         ("leader", "subagent_type 'leader' is not a callable child preset"),
-        ("product", "subagent_type 'product' is a top-level planning preset"),
         ("unknown", "unknown subagent_type 'unknown'"),
     ),
 )
@@ -329,6 +328,8 @@ def test_task_category_mapping_contract_is_exact() -> None:
         "brain",
         "writing",
         "visual-engineering",
+        "plan",
+        "planning",
     }
     assert {
         category: resolve_subagent_route(SubagentRoutingIdentity(mode="background", category=category)).selected_preset
@@ -341,6 +342,8 @@ def test_task_category_mapping_contract_is_exact() -> None:
         "brain": "advisor",
         "writing": "worker",
         "visual-engineering": "worker",
+        "plan": "product",
+        "planning": "product",
     }
 
 
@@ -392,26 +395,28 @@ def test_task_tool_requires_runtime_context(tmp_path: Path) -> None:
         )
 
 
-def test_task_tool_rejects_product_with_stable_policy_reason_before_dispatch(
+def test_task_tool_dispatches_product_plan_delegation_before_dispatch(
     tmp_path: Path,
 ) -> None:
     runtime = _StubTaskRuntime()
     tool = TaskTool(runtime=runtime)
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
-        with pytest.raises(ValueError) as exc_info:
-            tool.invoke(
-                ToolCall(
-                    tool_name="task",
-                    arguments={
-                        "prompt": "Plan this",
-                        "run_in_background": True,
-                        "load_skills": [],
-                        "subagent_type": "product",
-                    },
-                ),
-                workspace=tmp_path,
-            )
+        result = tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={
+                    "prompt": "Plan this",
+                    "run_in_background": True,
+                    "load_skills": [],
+                    "subagent_type": "product",
+                },
+            ),
+            workspace=tmp_path,
+        )
 
-    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
-    assert runtime.requests == []
+    assert result.status == "ok"
+    assert runtime.requests[0].metadata == {
+        "force_load_skills": [],
+        "delegation": {"mode": "background", "subagent_type": "product"},
+    }

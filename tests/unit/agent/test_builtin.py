@@ -22,7 +22,7 @@ from voidcode.runtime import service as runtime_service_module
 from voidcode.runtime.task import SubagentRoutingIdentity, resolve_subagent_route
 
 _READ_ONLY_AGENT_PRESETS = ("advisor", "explore", "researcher", "product")
-_DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher")
+_DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher", "product")
 _CALLABLE_CHILD_AGENT_PRESETS = _DELEGATED_ONLY_AGENT_PRESETS
 _MUTATING_TOOL_PATTERNS = frozenset(
     {
@@ -117,16 +117,15 @@ def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
     assert "track the full set until every member is terminal" in prompt
 
 
-def test_leader_prompt_distinguishes_product_from_delegated_worker_roles() -> None:
+def test_leader_prompt_lists_product_as_a_delegable_child_specialist() -> None:
     prompt = render_builtin_prompt_profile("leader")
 
     assert prompt is not None
     assert "narrowest specialist that fits" in prompt
-    assert "explore, advisor, worker, researcher" in prompt
-    assert "Product is a separate top-level planning preset" in prompt
-    assert "calling task with product" in prompt
-    assert "give the user a concise product handoff" in prompt
-    assert "or product for planning" not in prompt
+    assert "explore, advisor, worker, researcher, product" in prompt
+    assert "delegate to the product agent" in prompt
+    assert "read its plan back via submit_result" in prompt
+    assert "top-level planning preset" not in prompt
 
 
 def test_builtin_agent_prompt_materialization_versions_match_prompt_contracts() -> None:
@@ -149,19 +148,15 @@ def test_builtin_agent_manifests_declare_top_level_selectability() -> None:
 
     assert [manifest.id for manifest in manifests if manifest.top_level_selectable] == [
         "leader",
-        "product",
     ]
     assert is_agent_top_level_selectable("leader") is True
-    assert is_agent_top_level_selectable("product") is True
+    assert is_agent_top_level_selectable("product") is False
     assert is_agent_top_level_selectable("worker") is False
     assert is_agent_top_level_selectable("advisor") is False
     assert is_agent_top_level_selectable("explore") is False
     assert is_agent_top_level_selectable("researcher") is False
     assert is_agent_top_level_selectable("missing") is False
-    assert tuple(manifest.id for manifest in list_top_level_selectable_agent_manifests()) == (
-        "leader",
-        "product",
-    )
+    assert tuple(manifest.id for manifest in list_top_level_selectable_agent_manifests()) == ("leader",)
 
 
 def test_builtin_top_level_selectability_matches_runtime_executable_presets() -> None:
@@ -171,7 +166,7 @@ def test_builtin_top_level_selectability_matches_runtime_executable_presets() ->
         vars(runtime_service_module)["_EXECUTABLE_AGENT_PRESETS"],
     )
 
-    assert top_level_manifest_ids == {"leader", "product"}
+    assert top_level_manifest_ids == {"leader"}
     assert top_level_manifest_ids == executable_agent_presets
 
 
@@ -199,8 +194,6 @@ def test_builtin_callable_child_presets_align_with_runtime_delegation_routes() -
 
     with pytest.raises(ValueError, match="leader.*not a callable child preset"):
         _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="leader"))
-    with pytest.raises(ValueError, match="product.*top-level planning preset"):
-        _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="product"))
 
 
 def test_builtin_manifests_omit_removed_memory_tools() -> None:
@@ -299,23 +292,26 @@ def test_worker_prompt_and_manifest_forbid_redelegation() -> None:
     assert "you do not orchestrate" in prompt
 
 
-def test_product_prompt_and_manifest_form_a_non_interactive_plan_agent() -> None:
+def test_product_prompt_and_manifest_form_a_non_interactive_planning_agent() -> None:
     manifest = get_builtin_agent_manifest("product")
     prompt = render_agent_prompt({"preset": "product", "prompt_profile": "product"})
 
     assert manifest is not None
     assert prompt is not None
-    assert manifest.mode == "primary"
-    assert manifest.top_level_selectable is True
+    assert manifest.mode == "subagent"
+    assert manifest.top_level_selectable is False
     assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
     assert "question" not in manifest.tool_allowlist
     assert "todo_write" not in manifest.tool_allowlist
+    assert "task" not in manifest.tool_allowlist
+    assert "submit_result" in manifest.tool_allowlist
     assert "background_output" not in manifest.tool_allowlist
     assert "without user interaction" in manifest.description
-    assert "plan agent" in prompt
+    assert "product agent" in prompt
     assert "Do not ask the user questions or wait for clarification" in prompt
     assert "do not write, edit, or execute code" in prompt
     assert "items to verify during implementation" in prompt
+    assert "call submit_result" in prompt
 
 
 def test_leader_prompt_balances_low_filler_output_with_complete_delivery() -> None:
@@ -412,7 +408,7 @@ def test_render_agent_prompt_uses_model_family_materialization_override() -> Non
         ("advisor", "VoidCode's advisor agent"),
         ("explore", "VoidCode's explore agent"),
         ("researcher", "VoidCode's researcher agent"),
-        ("product", "VoidCode's plan agent"),
+        ("product", "VoidCode's product agent"),
     ],
 )
 def test_render_agent_prompt_materializes_builtin_profiles(preset: str, expected_fragment: str) -> None:
@@ -641,8 +637,8 @@ def test_product_manifest_excludes_all_delegation_helpers() -> None:
     product = get_builtin_agent_manifest("product")
 
     assert product is not None
-    assert product.top_level_selectable is True
-    assert product.mode == "primary"
+    assert product.top_level_selectable is False
+    assert product.mode == "subagent"
     assert {
         "task",
         "background_output",
@@ -651,8 +647,7 @@ def test_product_manifest_excludes_all_delegation_helpers() -> None:
     }.isdisjoint(product.tool_allowlist)
 
 
-def test_product_delegation_denial_exposes_stable_policy_reason() -> None:
-    with pytest.raises(ValueError) as exc_info:
-        _ = resolve_subagent_route(SubagentRoutingIdentity(mode="background", subagent_type="product"))
+def test_product_resolves_as_a_delegable_child_preset() -> None:
+    route = resolve_subagent_route(SubagentRoutingIdentity(mode="background", subagent_type="product"))
 
-    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
+    assert route.selected_preset == "product"

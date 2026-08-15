@@ -165,12 +165,18 @@ class TaskTool:
                 },
                 "category": {
                     "type": "string",
-                    "description": ("Runtime-selected child route. Provide this or subagent_type, but not both."),
+                    "description": (
+                        "Runtime-selected child route. Provide this or subagent_type, but not both. "
+                        "Supported categories: plan/planning (product agent), brain (advisor), "
+                        "quick/low/deep/high/writing/visual-engineering (worker)."
+                    ),
                     "minLength": 1,
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": ("Explicit child preset. Provide this or category, but not both."),
+                    "description": (
+                        "Explicit child preset: advisor, explore, researcher, worker, or product. Provide this or category, but not both."
+                    ),
                     "minLength": 1,
                 },
                 "description": {

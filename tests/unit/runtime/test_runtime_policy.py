@@ -98,10 +98,10 @@ def test_runtime_policy_precedence_trace_orders_authoritative_sources() -> None:
             "policy": {
                 "enabled": True,
                 "version": "v1",
-                "delegation_policy": {"allow": ["product"]},
+                "delegation_policy": {"allow": ["worker"]},
             }
         },
-        request_metadata={"delegation": {"subagent_type": "product"}},
+        request_metadata={"delegation": {"subagent_type": "worker"}},
     )
 
     trace = cast(Sequence[Mapping[str, object]], snapshot["precedence_trace"])
@@ -117,7 +117,7 @@ def test_runtime_policy_precedence_trace_orders_authoritative_sources() -> None:
         "runtime_defaults",
     ]
     assert trace[1].get("applied") is False
-    assert any(entry.get("reason") == "delegation_denied_product_top_level_only" for entry in trace)
+    assert trace[0].get("reason") is None
 
 
 def test_runtime_policy_intent_stays_neutral_for_free_text_inputs() -> None:
@@ -160,7 +160,7 @@ def test_runtime_policy_neutral_intent_cannot_grant_capabilities() -> None:
     assert intent["matched_rule_ids"] == []
     assert "write_file" not in cast(Sequence[str], tool_policy.get("allowed", ()))
     assert "task" not in cast(Sequence[str], tool_policy.get("allowed", ()))
-    assert "product" not in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
+    assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
     intent_trace = next(entry for entry in trace if entry.get("source") == "intent_metadata")
     assert intent_trace.get("applied") is False
     assert intent_trace.get("authoritative") is False
@@ -190,10 +190,10 @@ def test_runtime_policy_hooks_are_non_authoritative() -> None:
         "guidance",
     }
     assert "shell_exec" not in cast(Sequence[str], tool_policy.get("allowed", ()))
-    assert "product" not in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
+    assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
 
 
-def test_runtime_policy_product_is_hard_denied_for_delegation() -> None:
+def test_runtime_policy_product_is_an_allowed_child_preset() -> None:
     snapshot = _materialize_sample_snapshot(
         request_metadata={"delegation": {"mode": "background", "subagent_type": "product"}},
         runtime_config={
@@ -203,9 +203,9 @@ def test_runtime_policy_product_is_hard_denied_for_delegation() -> None:
     )
 
     delegation_policy = cast(Mapping[str, object], snapshot["delegation_policy"])
-    assert "product" not in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
+    assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
     denied = cast(Sequence[Mapping[str, object]], delegation_policy.get("denied", ()))
-    assert any(item.get("target") == "product" and item.get("reason") == "delegation_denied_product_top_level_only" for item in denied)
+    assert denied == []
 
 
 def test_runtime_policy_requires_persisted_snapshot() -> None:

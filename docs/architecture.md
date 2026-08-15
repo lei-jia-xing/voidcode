@@ -110,15 +110,15 @@ provider-backed foreground loop 支持同一模型 turn 返回多个 tool calls�
 - tool allowlist / default tool set
 - provider / model preference metadata
 
-`voidcode.agent` 不拥有 session state、审批/权限、持久化、事件路由、transport 或 provider invocation loop。这些仍由 `voidcode.runtime` 持有；`voidcode.graph` 继续负责步骤推进与编排；`hook/`、`skills/`、`mcp/`、`tools/`、`provider/` 仍是可复用能力层。当前 runtime 会消费 `leader` / `product` 顶层 preset，并允许受支持的 child preset 通过 delegated path 执行；后续 multi-agent workflow 扩展在编排层面的作用范围可以扩大，但不影响 runtime-owned 治理和 agent/ 配置边界的分离。
+`voidcode.agent` 不拥有 session state、审批/权限、持久化、事件路由、transport 或 provider invocation loop。这些仍由 `voidcode.runtime` 持有；`voidcode.graph` 继续负责步骤推进与编排；`hook/`、`skills/`、`mcp/`、`tools/`、`provider/` 仍是可复用能力层。当前 runtime 以 `leader` 为顶层 active preset，并允许受支持的 child preset（含 `product` plan agent）通过 delegated path 执行；后续 multi-agent workflow 扩展在编排层面的作用范围可以扩大，但不影响 runtime-owned 治理和 agent/ 配置边界的分离。
 
 ### Delegated child execution 与明确非目标
 
 当前已经实现的 delegated/subagent 行为保持收敛：
 
-- 顶层 active run 默认是 `leader`，也可显式选择 `product`。
+- 顶层 active run 固定为 `leader`；`product` 通过 `task` 以 child preset 方式被 leader 委托执行。
 - `task` 工具会先验证 category / `subagent_type` routing，再创建 runtime-owned background task 与 child session lineage。
-- 支持的 child preset 是 `advisor`、`explore`、`researcher`、`worker`；它们不等价于可任意直接启动的顶层 agent。`product` 是显式顶层 planning preset，不通过 child delegation 执行。
+- 支持的 child preset 是 `advisor`、`explore`、`researcher`、`worker`、`product`；它们不等价于可任意直接启动的顶层 agent。`product` 是只读 plan agent：leader 通过 `task`（`subagent_type=product` 或 `category=plan`/`planning`）委托规划，child 以 `submit_result` 交回 plan。
 - runtime 根据 agent manifest 和 request tool config 收窄 provider 可见工具，并在实际 tool lookup 时再次执行 allowlist guardrail。
 - `skill_refs` 是 manifest/catalog 默认选择；`force_load_skills` 与 delegated `load_skills` 只在目标 run 或 child session 注入完整 skill body，不从 parent 泄漏到 child。
 - MCP server lifecycle 由 runtime 以 runtime scope 或 session scope 管理，并通过 fake MCP 覆盖测试；当前不宣称 workspace-scoped MCP、MCP 生态市场式语义或动态 agent marketplace。

@@ -11100,7 +11100,7 @@ def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_confi
         )
 
 
-def test_runtime_background_product_delegation_fails_before_side_effects(
+def test_runtime_background_product_delegation_starts_child_session(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -11108,24 +11108,21 @@ def test_runtime_background_product_delegation_fails_before_side_effects(
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
     )
-    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-denial-parent"))
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-delegation-parent"))
 
-    with pytest.raises(RuntimeRequestError) as exc_info:
-        _ = runtime.start_background_task(
-            RuntimeRequest(
-                prompt="try product child",
-                parent_session_id="product-denial-parent",
-                metadata={"delegation": {"mode": "background", "subagent_type": "product"}},
-                allocate_session_id=True,
-            )
+    state = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="produce a plan",
+            parent_session_id="product-delegation-parent",
+            metadata={"delegation": {"mode": "background", "subagent_type": "product"}},
+            allocate_session_id=True,
         )
+    )
 
-    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
-    assert runtime.list_background_tasks_by_parent_session(parent_session_id="product-denial-parent") == ()
-    assert [summary for summary in runtime.list_sessions() if summary.session.parent_id == "product-denial-parent"] == []
+    assert state.status in {"queued", "running"}
 
 
-def test_runtime_imported_product_selected_preset_fails_before_side_effects(
+def test_runtime_imported_product_selected_preset_starts_child_session(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -11135,24 +11132,22 @@ def test_runtime_imported_product_selected_preset_fails_before_side_effects(
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-import-parent"))
 
-    with pytest.raises(RuntimeRequestError) as exc_info:
-        _ = runtime.start_background_task(
-            RuntimeRequest(
-                prompt="try imported product child",
-                parent_session_id="product-import-parent",
-                metadata={
-                    "delegation": {
-                        "mode": "background",
-                        "subagent_type": "worker",
-                        "selected_preset": "product",
-                    }
-                },
-                allocate_session_id=True,
-            )
+    state = runtime.start_background_task(
+        RuntimeRequest(
+            prompt="try imported product child",
+            parent_session_id="product-import-parent",
+            metadata={
+                "delegation": {
+                    "mode": "background",
+                    "subagent_type": "product",
+                    "selected_preset": "product",
+                }
+            },
+            allocate_session_id=True,
         )
+    )
 
-    assert "delegation_denied_product_top_level_only" in str(exc_info.value)
-    assert runtime.list_background_tasks_by_parent_session(parent_session_id="product-import-parent") == ()
+    assert state.status in {"queued", "running"}
 
 
 def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
@@ -11198,8 +11193,9 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
         "explore",
         "researcher",
         "worker",
+        "product",
     ]
-    assert {"target": "product", "reason": "delegation_denied_product_top_level_only"} in cast(list[dict[str, object]], child_delegation["denied"])
+    assert child_delegation["denied"] == []
 
 
 def test_runtime_rejects_client_supplied_applied_skill_payloads_on_new_run(
@@ -12947,7 +12943,7 @@ def test_runtime_agent_summary_exposes_stable_agent_and_model_fields(tmp_path: P
 
     default_summary = default_runtime.list_agent_summaries()
 
-    assert [summary.id for summary in default_summary] == ["leader", "product"]
+    assert [summary.id for summary in default_summary] == ["leader"]
     for summary in default_summary:
         assert summary.mode == "primary"
         assert summary.selectable is True
@@ -13976,19 +13972,9 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert "Runtime tool allowlists, approvals, and session state remain authoritative" in worker_prompt
 
 
-def test_runtime_product_agent_config_is_top_level_selectable_and_persisted(
+def test_runtime_product_agent_config_is_not_top_level_selectable(
     tmp_path: Path,
 ) -> None:
-    created_providers: list[_ScriptedTurnProvider] = []
-    registry = ModelProviderRegistry(
-        providers={
-            "opencode": _ScriptedModelProvider(
-                name="opencode",
-                outcomes=(ProviderTurnResult(output="plan complete"),),
-                created_providers=created_providers,
-            )
-        }
-    )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
@@ -13997,33 +13983,10 @@ def test_runtime_product_agent_config_is_top_level_selectable_and_persisted(
                 model="opencode/gpt-5.4",
             )
         ),
-        model_provider_registry=registry,
     )
 
-    response = runtime.run(RuntimeRequest(prompt="shape the issue", session_id="product-agent"))
-    effective = runtime.effective_runtime_config(session_id="product-agent")
-
-    assert response.session.status == "completed"
-    assert response.output == "plan complete"
-    assert created_providers[0].requests[0].agent_preset == {
-        "preset": "product",
-        "prompt_profile": "product",
-        "prompt_materialization": {
-            "profile": "product",
-            "version": 2,
-            "source": "builtin",
-            "format": "text",
-        },
-        "model": "opencode/gpt-5.4",
-    }
-    runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    assert runtime_config["agent"] == created_providers[0].requests[0].agent_preset
-    assert effective.agent == RuntimeAgentConfig(
-        preset="product",
-        prompt_profile="product",
-        model="opencode/gpt-5.4",
-        execution_engine="provider",
-    )
+    with pytest.raises(ValueError, match="agent preset 'product' cannot be executed as the top-level active agent"):
+        _ = runtime.run(RuntimeRequest(prompt="shape the issue", session_id="product-agent"))
 
 
 def test_runtime_request_metadata_agent_override_persists_and_restores_agent_config(
@@ -14223,7 +14186,7 @@ def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
     assert prompt_materialization["body"] == "Use only the custom leader prompt."
 
 
-def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Path) -> None:
+def test_runtime_plan_command_keeps_leader_active_and_sets_workflow_mode(tmp_path: Path) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
@@ -14251,13 +14214,13 @@ def test_runtime_prompt_command_agent_metadata_selects_agent_preset(tmp_path: Pa
         "raw_arguments": "add command presets",
         "original_prompt": "/plan add command presets",
     }
-    assert response.session.metadata["agent"] == {"preset": "product"}
+    assert response.session.metadata.get("agent") is None
     assert response.session.metadata["workflow_mode"] == "product"
     assert "workflow_preset" not in response.session.metadata
     assert created_providers[-1].requests[0].agent_preset == {
-        "preset": "product",
-        "prompt_profile": "product",
-        "prompt_materialization": _prompt_materialization_payload("product"),
+        "preset": "leader",
+        "prompt_profile": "leader",
+        "prompt_materialization": _prompt_materialization_payload("leader"),
         "model": "opencode/gpt-5.4",
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])

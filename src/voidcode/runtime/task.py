@@ -4,8 +4,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from .policy import PRODUCT_DELEGATION_DENIAL_REASON
-
 type BackgroundTaskStatus = Literal[
     "queued",
     "running",
@@ -96,10 +94,12 @@ _CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
     "writing": "worker",
     "visual-engineering": "worker",
     "high": "worker",
+    "plan": "product",
+    "planning": "product",
 }
 SUPPORTED_SUBAGENT_CATEGORIES: tuple[str, ...] = tuple(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
 
-_CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker"})
+_CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker", "product"})
 _BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _CONTINUATION_LOOP_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "exhausted"})
 _CONTINUATION_LOOP_ALLOWED_TRANSITIONS: dict[ContinuationLoopStatus, frozenset[ContinuationLoopStatus]] = {
@@ -131,10 +131,6 @@ def resolve_subagent_route(
     if requested.subagent_type is not None:
         if requested.subagent_type == "leader":
             raise ValueError("subagent_type 'leader' is not a callable child preset")
-        if requested.subagent_type == "product":
-            raise ValueError(
-                f"{PRODUCT_DELEGATION_DENIAL_REASON}: subagent_type 'product' is a top-level planning preset, not a callable child preset"
-            )
         if requested.subagent_type not in callable_presets:
             valid_presets = ", ".join(sorted(callable_presets))
             raise ValueError(f"unknown subagent_type '{requested.subagent_type}'; valid child presets are: {valid_presets}")

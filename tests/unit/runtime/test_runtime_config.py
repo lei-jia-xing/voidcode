@@ -3247,7 +3247,7 @@ def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:
     assert policy.hook_policy.allowed_event_scopes == ("pre_tool", "post_tool")
 
 
-def test_runtime_config_policy_cannot_grant_product_delegation(tmp_path: Path) -> None:
+def test_runtime_config_policy_allows_product_delegation(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
@@ -3260,5 +3260,7 @@ def test_runtime_config_policy_cannot_grant_product_delegation(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="delegation_denied_product_top_level_only"):
-        _ = load_runtime_config(tmp_path, env={})
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.policy is not None
+    assert config.policy.delegation_policy.allowed == ("product",)

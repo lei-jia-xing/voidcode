@@ -9,8 +9,7 @@ from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 
 POLICY_SCHEMA_VERSION = 1
 POLICY_VERSION = "v1"
-PRODUCT_DELEGATION_DENIAL_REASON = "delegation_denied_product_top_level_only"
-_ALLOWED_CHILD_PRESETS = ("advisor", "explore", "researcher", "worker")
+_ALLOWED_CHILD_PRESETS = ("advisor", "explore", "researcher", "worker", "product")
 _ALLOWED_HOOK_ACTIONS = frozenset({"observe", "report", "cancel", "guidance"})
 _ALLOWED_HOOK_SCOPES = (
     "session_start",
@@ -213,8 +212,6 @@ def validate_runtime_policy_config_payload(
             source=f"{source}.delegation_policy",
             allowed_keys={"allow", "deny", "default"},
         )
-        if "product" in cast(tuple[str, ...], delegation.get("allow", ())):
-            raise ValueError(PRODUCT_DELEGATION_DENIAL_REASON)
         delegation_policy = RuntimePolicyDelegationPolicyConfig(
             default=_string(delegation.get("default")),
             allowed=cast(tuple[str, ...], delegation.get("allow", ())),
@@ -370,11 +367,9 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     delegation_allowed = _delegation_allowed(policy_config)
     hook_policy_request = _mapping(inputs.get("hook_policy_request"))
     hook_actions = _hook_actions(policy_config, hook_policy_request)
-    denied = [{"target": "product", "reason": PRODUCT_DELEGATION_DENIAL_REASON}]
+    denied: list[dict[str, object]] = []
 
     trace = _base_precedence_trace()
-    if _requested_product_delegation(request_metadata) or _policy_mentions_product(policy_config):
-        trace[0]["reason"] = PRODUCT_DELEGATION_DENIAL_REASON
     trace[6] = _intent_metadata_trace()
 
     snapshot = RuntimePolicySnapshot(
@@ -387,9 +382,8 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
             "source": "runtime_config" if tool_allowed else "runtime_defaults",
         },
         delegation_policy={
-            "allowed_presets": [preset for preset in delegation_allowed if preset != "product"],
+            "allowed_presets": list(delegation_allowed),
             "denied": denied,
-            "product_denial_reason": PRODUCT_DELEGATION_DENIAL_REASON,
         },
         hook_policy={
             "allowed_event_scopes": list(_hook_scopes(policy_config)),
@@ -646,7 +640,7 @@ def _delegation_allowed(policy_config: Mapping[str, object]) -> tuple[str, ...]:
     allowed = _string_tuple(delegation.get("allow"), source="policy.delegation_policy.allow")
     if not allowed:
         allowed = _ALLOWED_CHILD_PRESETS
-    return tuple(item for item in allowed if item in (*_ALLOWED_CHILD_PRESETS, "product"))
+    return tuple(item for item in allowed if item in _ALLOWED_CHILD_PRESETS)
 
 
 def _hook_actions(
@@ -674,22 +668,6 @@ def _hook_scopes(policy_config: Mapping[str, object]) -> tuple[str, ...]:
 def _prompt_activation_enabled(policy_config: Mapping[str, object]) -> bool:
     prompt_activation = _mapping(policy_config.get("prompt_activation"))
     return prompt_activation.get("enabled", True) is not False
-
-
-def _requested_product_delegation(metadata: Mapping[str, object]) -> bool:
-    delegation = metadata.get("delegation")
-    if not isinstance(delegation, dict):
-        return False
-    payload = cast(dict[str, object], delegation)
-    return payload.get("subagent_type") == "product" or payload.get("selected_preset") == "product"
-
-
-def _policy_mentions_product(policy_config: Mapping[str, object]) -> bool:
-    delegation = _mapping(policy_config.get("delegation_policy"))
-    return "product" in _string_tuple(
-        delegation.get("allow"),
-        source="policy.delegation_policy.allow",
-    )
 
 
 def _base_precedence_trace() -> list[dict[str, object]]:

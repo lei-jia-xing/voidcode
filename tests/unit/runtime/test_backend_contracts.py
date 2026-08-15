@@ -285,12 +285,11 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
                 "allowed_presets": ["explore"],
                 "denied": [
                     {
-                        "target": "product",
-                        "reason": "delegation_denied_product_top_level_only",
+                        "target": "shell_exec",
+                        "reason": "policy_denied",
                         "raw_prompt": "do not leak",
                     }
                 ],
-                "product_denial_reason": "delegation_denied_product_top_level_only",
             },
             "hook_policy": {
                 "allowed_event_scopes": ["pre_tool"],
@@ -322,8 +321,7 @@ def test_runtime_policy_observability_payload_is_bounded_and_redacted() -> None:
     }
     assert payload["delegation_policy"] == {
         "allowed_presets": ["explore"],
-        "denied": [{"target": "product", "reason": "delegation_denied_product_top_level_only"}],
-        "product_denial_reason": "delegation_denied_product_top_level_only",
+        "denied": [{"target": "shell_exec", "reason": "policy_denied"}],
     }
     assert "do not leak" not in json.dumps(payload)
     large_diagnostic = cast(str, cast(dict[str, object], payload["diagnostics"])["large"])

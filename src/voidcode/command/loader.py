@@ -81,7 +81,9 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         template=(
             "Workflow: produce an implementation plan, acceptance criteria, risks, and a "
             "verification strategy for the requested goal. Arguments describe the planning "
-            "target: $ARGUMENTS. Target agent: product. Read-only by default: do not write "
+            "target: $ARGUMENTS. You stay the active agent; you may delegate planning to the "
+            "product agent through the task tool (subagent_type=product or category=plan) and "
+            "read its plan back, or plan directly. Read-only by default: do not write "
             "code or modify files unless explicitly instructed after the plan is accepted. "
             "Use todo_write only for session planning/progress state; it is runtime state, not "
             "workspace mutation. If this plan should be executed later, include a concise "
@@ -89,7 +91,6 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "open risks."
         ),
         source="builtin",
-        agent="product",
         workflow_mode="product",
     ),
     CommandDefinition(

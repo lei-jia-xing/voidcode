@@ -341,7 +341,6 @@ def runtime_policy_observability_payload(
         "delegation_policy": {
             "allowed_presets": _bounded_string_list(delegation_policy.get("allowed_presets")),
             "denied": _bounded_denial_list(delegation_policy.get("denied")),
-            "product_denial_reason": _string_or_none(delegation_policy.get("product_denial_reason")),
         },
         "hook_policy": {
             "allowed_event_scopes": _bounded_string_list(hook_policy.get("allowed_event_scopes")),

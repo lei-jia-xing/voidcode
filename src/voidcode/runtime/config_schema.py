@@ -312,6 +312,8 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "deep",
                         "high",
                         "low",
+                        "plan",
+                        "planning",
                         "quick",
                         "visual-engineering",
                         "writing",

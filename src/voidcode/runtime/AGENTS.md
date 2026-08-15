@@ -68,6 +68,6 @@ runtime/
 - **Provider fallback:** `_execute_graph_loop()` increments `provider_attempt`, swaps active target, and rebuilds the graph when retryable provider failures occur.
 
 ## NOTES
-- Top-level execution is limited to `leader` and explicit `product`; supported delegated child presets are `advisor`, `explore`, `researcher`, and `worker`.
+- Top-level execution is limited to `leader`; supported delegated child presets are `advisor`, `explore`, `researcher`, `worker`, and `product` (read-only plan agent delegated via `task`, handing the plan back with `submit_result`).
 - LSP and MCP tooling are constructed by runtime and refreshed from managed capability state rather than treated as static builtins.
 - Session metadata carries runtime config truth for replay/resume, including provider fallback and applied skills.

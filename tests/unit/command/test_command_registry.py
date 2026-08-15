@@ -124,9 +124,9 @@ class TestBuiltinCommandDiscovery:
         ordered = [c.name for c in builtin_commands()]
         assert ordered == list(self._EXPECTED_NAMES), f"wrong order: {ordered}"
 
-    def test_plan_command_targets_product_agent(self) -> None:
+    def test_plan_command_targets_planning_workflow_without_agent_switch(self) -> None:
         plan = [c for c in builtin_commands() if c.name == "plan"][0]
-        assert plan.agent == "product", f"/plan agent should be product, got {plan.agent}"
+        assert plan.agent is None, f"/plan should keep the active agent, got {plan.agent}"
         assert plan.workflow_mode == "product"
 
     def test_start_work_command_targets_implementation_workflow(self) -> None:
@@ -252,7 +252,8 @@ class TestBuiltinCommandRendering:
         )
         assert "dark mode support" in rendered
         assert "do not write code" in rendered
-        assert "Target agent: product" in rendered
+        assert "You stay the active agent" in rendered
+        assert "delegate planning to the product agent" in rendered
         assert "acceptance criteria" in rendered
         assert "Use todo_write only for session planning/progress state" in rendered
         assert "Start-work handoff" in rendered

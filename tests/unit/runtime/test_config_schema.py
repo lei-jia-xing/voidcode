@@ -328,7 +328,7 @@ def test_runtime_config_rejects_invalid_policy_shapes(tmp_path: Path) -> None:
         _ = load_runtime_config(tmp_path, env={})
 
 
-def test_runtime_config_rejects_policy_product_delegation(tmp_path: Path) -> None:
+def test_runtime_config_accepts_policy_product_delegation(tmp_path: Path) -> None:
     config_path = tmp_path / ".voidcode.json"
     config_path.write_text(
         json.dumps(
@@ -342,8 +342,10 @@ def test_runtime_config_rejects_policy_product_delegation(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="delegation_denied_product_top_level_only"):
-        _ = load_runtime_config(tmp_path, env={})
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.policy is not None
+    assert config.policy.delegation_policy.allowed == ("product",)
 
 
 def test_runtime_config_rejects_invalid_policy_hook_scope(tmp_path: Path) -> None:

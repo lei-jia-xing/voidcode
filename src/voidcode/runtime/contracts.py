@@ -13,7 +13,6 @@ from .events import (
     DelegatedRoutingPayload,
     EventEnvelope,
 )
-from .policy import PRODUCT_DELEGATION_DENIAL_REASON
 from .question import QuestionResponse
 from .session import SessionRef, SessionState
 from .task import (
@@ -482,8 +481,6 @@ def runtime_subagent_route_from_metadata(
         return resolved
     if not isinstance(persisted_selected_preset, str):
         raise RuntimeRequestError("request metadata 'delegation.selected_preset' must be a non-empty string")
-    if persisted_selected_preset == "product":
-        raise RuntimeRequestError(PRODUCT_DELEGATION_DENIAL_REASON)
     if persisted_selected_preset != resolved.selected_preset:
         raise RuntimeRequestError("request metadata 'delegation.selected_preset' does not match the resolved child preset")
     persisted_execution_engine = routing_metadata.get("selected_execution_engine")

@@ -25,7 +25,7 @@ _PROFILE_OVERLAYS: dict[str, ProfileOverlay] = {
     ),
     "product": ProfileOverlay(
         profile_name="product",
-        role_summary="One-shot plan agent that produces an implementation plan without user interaction.",
+        role_summary="Product agent: produces an implementation plan without user interaction.",
         capabilities=(
             "Read the codebase to ground the plan.",
             "State assumptions and plan around them.",
