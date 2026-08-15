@@ -29,7 +29,6 @@ BUILTIN_PROMPT_PROFILES = (
     "researcher",
 )
 
-DELEGATION_PROFILES = {"product"}
 SEARCH_PROFILES = {"explore", "researcher"}
 PROVIDER_SPECIFIC_PROMPT_TERMS = (
     "Anthropic",
@@ -261,7 +260,7 @@ def test_builtin_prompt_profiles_render_with_expected_overlay_boundaries() -> No
         rendered_system_text = "\n\n".join(section.content for section in plan.sections if section.role == "system")
 
         assert rendered_system_text.count(base_prompt) == 1
-        assert ("<delegation_envelope>" in rendered_system_text) is (profile in DELEGATION_PROFILES)
+        assert "<delegation_envelope>" not in rendered_system_text
         assert ("<search_agent_contract>" in rendered_system_text) is (profile in SEARCH_PROFILES)
 
 

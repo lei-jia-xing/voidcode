@@ -166,9 +166,7 @@ RESEARCHER_AGENT_MANIFEST = AgentManifest(
 
 _PRODUCT_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
-    "question",
     "skill",
-    "todo_write",
     "web_search",
     "web_fetch",
     "invoke_tool",
@@ -178,7 +176,7 @@ PRODUCT_AGENT_MANIFEST = AgentManifest(
     id="product",
     name="Product",
     mode="primary",
-    description=("Planning agent preset for requirement discussion, scope shaping, acceptance criteria, and issue drafting."),
+    description=("One-shot plan agent: produces a concrete implementation plan from a request without user interaction."),
     prompt_profile="product",
     execution_engine="provider",
     tool_allowlist=_PRODUCT_TOOL_ALLOWLIST,

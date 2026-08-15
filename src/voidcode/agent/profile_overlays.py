@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from voidcode.agent.prompt_sections import delegation_envelope_block, search_agent_contract_block
+from voidcode.agent.prompt_sections import search_agent_contract_block
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,13 +25,12 @@ _PROFILE_OVERLAYS: dict[str, ProfileOverlay] = {
     ),
     "product": ProfileOverlay(
         profile_name="product",
-        role_summary="Top-level planning agent for requirements, scope, and acceptance criteria.",
+        role_summary="One-shot plan agent that produces an implementation plan without user interaction.",
         capabilities=(
-            "Clarify goals and hidden constraints.",
-            "Shape minimum viable scope and non-goals.",
-            "Draft acceptance criteria and issue content.",
+            "Read the codebase to ground the plan.",
+            "State assumptions and plan around them.",
+            "Produce scope, acceptance criteria, phases, and risks.",
         ),
-        prompt_sections=(delegation_envelope_block(),),
     ),
     "worker": ProfileOverlay(
         profile_name="worker",

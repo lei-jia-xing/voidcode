@@ -68,11 +68,11 @@ _PROMPT_BOUNDARY_PHRASES = {
         "distinguish official documentation, source examples, and incidental commentary",
     ),
     "product": (
-        "top-level planning preset",
-        "You are not an executor; you are a planning partner",
-        "Do not write, edit, or execute code",
-        "Do not claim code execution, implementation ownership, or verification of changes",
-        "surface the ambiguity explicitly rather than guessing",
+        "produce a concrete, ready-to-execute implementation plan",
+        "Do not ask the user questions or wait for clarification",
+        "state assumptions explicitly and plan around them",
+        "do not write, edit, or execute code",
+        "items to verify during implementation",
     ),
 }
 
@@ -299,7 +299,7 @@ def test_worker_prompt_and_manifest_forbid_redelegation() -> None:
     assert "you do not orchestrate" in prompt
 
 
-def test_product_prompt_and_manifest_remain_planning_only() -> None:
+def test_product_prompt_and_manifest_form_a_non_interactive_plan_agent() -> None:
     manifest = get_builtin_agent_manifest("product")
     prompt = render_agent_prompt({"preset": "product", "prompt_profile": "product"})
 
@@ -308,12 +308,14 @@ def test_product_prompt_and_manifest_remain_planning_only() -> None:
     assert manifest.mode == "primary"
     assert manifest.top_level_selectable is True
     assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
-    assert "todo_write" in manifest.tool_allowlist
-    assert "question" in manifest.tool_allowlist
+    assert "question" not in manifest.tool_allowlist
+    assert "todo_write" not in manifest.tool_allowlist
     assert "background_output" not in manifest.tool_allowlist
-    assert "planning preset" in prompt
-    assert "not an executor" in prompt
-    assert "Do not claim code execution" in prompt
+    assert "without user interaction" in manifest.description
+    assert "plan agent" in prompt
+    assert "Do not ask the user questions or wait for clarification" in prompt
+    assert "do not write, edit, or execute code" in prompt
+    assert "items to verify during implementation" in prompt
 
 
 def test_leader_prompt_balances_low_filler_output_with_complete_delivery() -> None:
@@ -410,7 +412,7 @@ def test_render_agent_prompt_uses_model_family_materialization_override() -> Non
         ("advisor", "VoidCode's advisor agent"),
         ("explore", "VoidCode's explore agent"),
         ("researcher", "VoidCode's researcher agent"),
-        ("product", "VoidCode's product agent"),
+        ("product", "VoidCode's plan agent"),
     ],
 )
 def test_render_agent_prompt_materializes_builtin_profiles(preset: str, expected_fragment: str) -> None:
