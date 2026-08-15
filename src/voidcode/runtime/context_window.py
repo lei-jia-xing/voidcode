@@ -318,50 +318,6 @@ def _context_tier_metadata(
     }
 
 
-def _compact_recent_tier_segments(
-    segments: list[RuntimeContextSegment],
-) -> tuple[list[RuntimeContextSegment], dict[str, object]]:
-    compacted_segments: list[RuntimeContextSegment] = []
-    dropped_recent_segments = 0
-    dropped_sources: list[str] = []
-    skip_tool_call_ids: set[str] = set()
-
-    for segment in segments:
-        metadata = segment.metadata or {}
-        tier = metadata.get("tier")
-        source = metadata.get("source")
-        tool_call_id = segment.tool_call_id
-
-        drop_recent = False
-        if tier == "recent":
-            if source in {"context_projection", "runtime_context_artifact_reference"}:
-                drop_recent = True
-
-        if drop_recent:
-            dropped_recent_segments += 1
-            if isinstance(source, str) and source not in dropped_sources:
-                dropped_sources.append(source)
-            if tool_call_id is not None:
-                skip_tool_call_ids.add(tool_call_id)
-            continue
-
-        if tool_call_id is not None and tool_call_id in skip_tool_call_ids:
-            dropped_recent_segments += 1
-            if isinstance(source, str) and source not in dropped_sources:
-                dropped_sources.append(source)
-            continue
-
-        compacted_segments.append(segment)
-
-    return compacted_segments, {
-        "version": 1,
-        "applied": dropped_recent_segments > 0,
-        "dropped_segment_count": dropped_recent_segments,
-        "dropped_sources": dropped_sources,
-        "target_tier": "recent",
-    }
-
-
 def estimate_provider_context_tokens(segments: tuple[RuntimeContextSegment, ...], *, tokenizer_model: str | None = None) -> TokenCount:
     payload: list[dict[str, object]] = []
     for segment in segments:
@@ -990,59 +946,6 @@ def _coerce_int(payload: Mapping[str, object], key: str, *, default: int) -> int
     if value is None:
         raise ValueError(f"context window policy field '{key}' must be an integer")
     return value
-
-
-def _coerce_float(payload: Mapping[str, object], key: str, *, default: float) -> float:
-    raw = payload.get(key)
-    if raw is None:
-        return default
-    if isinstance(raw, bool) or not isinstance(raw, int | float):
-        raise ValueError(f"context window policy field '{key}' must be a number")
-    return float(raw)
-
-
-def context_window_policy_from_payload(raw_payload: object) -> ContextWindowPolicy:
-    if not isinstance(raw_payload, dict):
-        raise ValueError("context window policy payload must be an object")
-    payload = cast(dict[str, object], raw_payload)
-    if payload.get("version") != 1:
-        raise ValueError("context window policy version must be 1")
-    per_tool_raw = payload.get("per_tool_result_tokens")
-    per_tool: dict[str, int] = {}
-    if per_tool_raw is not None:
-        if not isinstance(per_tool_raw, dict):
-            raise ValueError("context window policy field 'per_tool_result_tokens' must be an object")
-        for key, value in cast(dict[object, object], per_tool_raw).items():
-            if not isinstance(key, str) or not key:
-                raise ValueError("context window policy per-tool keys must be non-empty strings")
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError("context window policy per-tool limits must be positive integers")
-            per_tool[key] = value
-    auto_compaction = payload.get("auto_compaction", True)
-    if not isinstance(auto_compaction, bool):
-        raise ValueError("context window policy field 'auto_compaction' must be a boolean")
-    summary_strategy = payload.get("summary_strategy", "deterministic")
-    if summary_strategy not in {"deterministic", "model_assisted"}:
-        raise ValueError("context window policy field 'summary_strategy' must be deterministic or model_assisted")
-    tokenizer_model = payload.get("tokenizer_model")
-    if tokenizer_model is not None and not isinstance(tokenizer_model, str):
-        raise ValueError("context window policy field 'tokenizer_model' must be a string")
-    return ContextWindowPolicy(
-        auto_compaction=auto_compaction,
-        model_context_window_tokens=_coerce_optional_int(payload, "model_context_window_tokens"),
-        reserved_output_tokens=_coerce_optional_int(payload, "reserved_output_tokens"),
-        default_tool_result_tokens=_coerce_optional_int(payload, "default_tool_result_tokens"),
-        per_tool_result_tokens=per_tool,
-        tokenizer_model=tokenizer_model,
-        summary_strategy=cast(Literal["deterministic", "model_assisted"], summary_strategy),
-    )
-
-
-def normalize_tool_result_content(content: str | None) -> str | None:
-    if not content:
-        return content
-
-    return normalize_read_file_output(content)
 
 
 def normalize_read_file_output(content: str | None) -> str | None:

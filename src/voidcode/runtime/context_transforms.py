@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from ..context import directory_readme_contexts
 from ..tools.contracts import ToolResult
@@ -284,18 +284,6 @@ def build_provider_context_transform_result(
             failure_policy=failure_policy,
         )
     )
-
-
-def context_transform_metadata_from_payload(
-    payload: object,
-) -> Mapping[str, object] | None:
-    if not isinstance(payload, dict):
-        return None
-    typed_payload = cast(dict[str, object], payload)
-    applied = typed_payload.get("applied")
-    if not isinstance(applied, list):
-        return None
-    return typed_payload
 
 
 def validate_runtime_context_transform_refs(

@@ -3,12 +3,9 @@ from __future__ import annotations
 from typing import cast
 
 from voidcode.agent.prompt_sections import (
-    assemble_sections,
     capability_block,
     delegation_envelope_block,
     dynamic_boundary_marker,
-    env_card_dynamic,
-    env_card_stable,
     identity_header,
     search_agent_contract_block,
 )
@@ -273,12 +270,9 @@ def test_general_prompt_sections_are_provider_neutral() -> None:
     general_sections = (
         identity_header("worker", "Runtime role summary."),
         capability_block(["Inspect context.", "Verify results."]),
-        env_card_stable("Linux", "neutral-model"),
-        env_card_dynamic("/workspace", "2026-05-08", "clean"),
         delegation_envelope_block(),
         search_agent_contract_block(),
         dynamic_boundary_marker(),
-        assemble_sections(["stable section"], ["dynamic section"], dynamic_boundary_marker()),
     )
 
     rendered_general_sections = "\n\n".join(general_sections)

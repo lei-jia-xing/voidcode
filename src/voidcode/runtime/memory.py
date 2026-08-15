@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -85,12 +85,6 @@ class SqliteVecCapability:
 
 
 @dataclass(frozen=True, slots=True)
-class MemorySearchQuery:
-    text: str
-    limit: int = 5
-
-
-@dataclass(frozen=True, slots=True)
 class MemoryManagerState:
     mode: Literal["enabled", "disabled"]
     sqlite_vec: SqliteVecCapability
@@ -98,20 +92,8 @@ class MemoryManagerState:
     keyword_search_available: bool
 
 
-@dataclass(frozen=True, slots=True)
-class MemoryManagerSearchResult:
-    text: str
-    search_mode: Literal["keyword"]
-    score: int
-    embedding: None = None
-
-
 class MemoryManager(Protocol):
     def current_state(self) -> MemoryManagerState: ...
-
-    def remember(self, text: str, *, source: str | None = None) -> None: ...
-
-    def search(self, query: MemorySearchQuery) -> tuple[MemoryManagerSearchResult, ...]: ...
 
 
 @dataclass(slots=True)
@@ -119,7 +101,6 @@ class _KeywordMemoryManager:
     config: MemoryConfig | None
     sqlite_vec_capability: SqliteVecCapability | None = None
     workspace: Path | None = None
-    _entries: list[str] = field(default_factory=list)
 
     def current_state(self) -> MemoryManagerState:
         if self.config is None:
@@ -144,32 +125,6 @@ class _KeywordMemoryManager:
             semantic_search_available=semantic_search_available,
             keyword_search_available=not (_semantic_search_required(self.config) and not semantic_search_available),
         )
-
-    def remember(self, text: str, *, source: str | None = None) -> None:
-        _ = source
-        normalized = text.strip()
-        if self.config is None or not self.config.enabled or not normalized:
-            return
-        self._entries.append(normalized)
-
-    def search(self, query: MemorySearchQuery) -> tuple[MemoryManagerSearchResult, ...]:
-        state = self.current_state()
-        if not state.keyword_search_available:
-            return ()
-        terms = _keyword_terms(query.text)
-        if not terms:
-            return ()
-        results: list[MemoryManagerSearchResult] = []
-        for entry in self._entries:
-            entry_folded = entry.casefold()
-            score = sum(entry_folded.count(term) for term in terms)
-            if score:
-                results.append(MemoryManagerSearchResult(text=entry, search_mode="keyword", score=score))
-        ordered = sorted(
-            results,
-            key=lambda result: (-result.score, self._entries.index(result.text)),
-        )
-        return tuple(ordered[: query.limit])
 
 
 def _memory_recall_config_from_value(
@@ -198,17 +153,6 @@ def _memory_sqlite_vec_config_from_value(
 
 def _semantic_search_required(config: MemoryConfig) -> bool:
     return config.semantic_search == "required" or config.sqlite_vec.enabled == "required"
-
-
-def _keyword_terms(text: str) -> tuple[str, ...]:
-    seen: set[str] = set()
-    terms: list[str] = []
-    for raw_term in text.casefold().split():
-        term = raw_term.strip()
-        if term and term not in seen:
-            terms.append(term)
-            seen.add(term)
-    return tuple(terms)
 
 
 def _capability_for_config(config: MemoryConfig) -> SqliteVecCapability:

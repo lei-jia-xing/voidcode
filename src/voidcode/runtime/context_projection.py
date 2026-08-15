@@ -8,11 +8,7 @@ projection and must fall back to the deterministic text on failure.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Literal, Protocol
-
-
-class SummaryProjector(Protocol):
-    def project(self, *, facts: Mapping[str, object], deterministic_summary: str) -> str: ...
+from typing import Literal
 
 
 def project_summary(
@@ -36,4 +32,4 @@ def project_summary(
     return summary, "model_assisted", None
 
 
-__all__ = ["SummaryProjector", "project_summary"]
+__all__ = ["project_summary"]

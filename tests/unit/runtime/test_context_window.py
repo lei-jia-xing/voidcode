@@ -25,13 +25,16 @@ from voidcode.runtime.context_window import (
     RuntimeContextSegment,
     _retain_indexes_within_token_budget,
     assemble_provider_context,
-    context_window_policy_from_payload,
     continuity_state_from_metadata_payload,
     continuity_summary_metadata,
     count_text_tokens,
     normalize_read_file_output,
     prepare_provider_context,
     project_tool_results_for_context_window,
+)
+from voidcode.runtime.context_window_policy import (
+    context_window_config_from_policy,
+    context_window_policy_from_config,
 )
 from voidcode.runtime.provider_context import inspect_provider_context
 from voidcode.tools.contracts import ToolResult
@@ -1622,7 +1625,10 @@ def test_context_window_policy_metadata_round_trips() -> None:
         tokenizer_model="gpt-4o",
     )
 
-    parsed = context_window_policy_from_payload(policy.metadata_payload())
+    parsed = context_window_policy_from_config(
+        context_window_config_from_policy(policy),
+        resolved_provider=None,
+    )
 
     assert parsed == policy
 
