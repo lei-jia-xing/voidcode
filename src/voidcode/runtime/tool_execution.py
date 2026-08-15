@@ -16,6 +16,7 @@ from ..tools.contracts import (
     ToolResult,
 )
 from ..tools.runtime_context import (
+    RuntimeArtifactReadFacade,
     RuntimeLspToolFacade,
     RuntimeMemoryToolFacade,
     RuntimeToolCatalogFacade,
@@ -52,6 +53,7 @@ class RuntimeToolExecutor:
     lsp: RuntimeLspToolFacade
     lsp_diagnostics_on_write: bool = False
     tool_catalog: RuntimeToolCatalogFacade | None = None
+    artifact: RuntimeArtifactReadFacade | None = None
 
     def invoke(
         self,
@@ -133,6 +135,7 @@ class RuntimeToolExecutor:
                 lsp=self.lsp,
                 lsp_diagnostics_on_write=self.lsp_diagnostics_on_write,
                 tool_catalog=self.tool_catalog,
+                artifact=self.artifact,
             )
         ):
             if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):

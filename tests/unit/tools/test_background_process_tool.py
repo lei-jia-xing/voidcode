@@ -214,11 +214,11 @@ def test_background_process_logs_retains_bounded_recent_lines(tmp_path: Path) ->
     references = logs_result.data["references"]
     assert isinstance(references, list)
     assert references
-    assert str(references[0]).startswith("artifact:")
+    assert str(references[0]).startswith("voidcode://artifact/")
     stdout_artifact = cast(dict[str, object], logs_result.data["stdout_artifact"])
     assert isinstance(stdout_artifact, dict)
     stdout_artifact_id = str(stdout_artifact["artifact_id"])
-    assert stdout_artifact_id == str(references[0]).removeprefix("artifact:")
+    assert stdout_artifact_id == str(references[0]).removeprefix("voidcode://artifact/")
     assert logs_result.reference == references[0]
     assert "Background process logs truncated" in (logs_result.content or "")
     assert "retained log tails" in (logs_result.content or "")

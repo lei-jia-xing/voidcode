@@ -431,8 +431,8 @@ def test_shell_exec_large_output_spills_full_payload_via_central_cap(tmp_path: P
     assert isinstance(capped.content, str)
     assert "[Tool output truncated:" in capped.content
     assert "artifact_id=" in capped.content
-    assert "read/search the full output" in capped.content
-    assert capped.reference.startswith("artifact:")
+    assert 'read_file(path="voidcode://artifact/' in capped.content
+    assert capped.reference.startswith("voidcode://artifact/")
 
     artifact = capped.data["artifact"]
     assert isinstance(artifact, dict)

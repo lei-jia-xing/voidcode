@@ -39,7 +39,7 @@ def test_cap_tool_result_output_caps_by_line_count_and_saves_full_output(tmp_pat
     assert capped.truncated is True
     assert capped.partial is True
     assert isinstance(capped.reference, str)
-    assert capped.reference.startswith("artifact:")
+    assert capped.reference.startswith("voidcode://artifact/")
     assert not (tmp_path / ".voidcode" / "tool-output").exists()
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
@@ -130,8 +130,8 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
     assert capped.content is not None
     assert "artifact-line-0" in capped.content
     assert "artifact-line-10" not in capped.content
-    assert capped.reference == f"artifact:{capped.data['artifact_id']}"
-    assert "Use background_output with full_session=true" in capped.content
+    assert capped.reference == f"voidcode://artifact/{capped.data['artifact_id']}"
+    assert "read_file(path=" in capped.content
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)

@@ -9,6 +9,7 @@ import pytest
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ReadFileTool, ToolCall
 from voidcode.tools.read_file import MAX_ATTACHMENT_BYTES, MAX_LINE_LENGTH
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def test_read_file_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:
@@ -211,3 +212,134 @@ def test_tools_package_and_default_registry_export_read_file_tool() -> None:
 
     assert "ReadFileTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
     assert registry.resolve("read_file").definition.name == "read_file"
+
+
+class _FakeArtifactFacade:
+    """Minimal RuntimeArtifactReadFacade stand-in mirroring bounded read semantics."""
+
+    def __init__(self, artifact_id: str, content: str) -> None:
+        self._artifact_id = artifact_id
+        self._content = content
+        self.requests: list[tuple[str, int | None, int | None]] = []
+
+    def read_artifact(
+        self,
+        *,
+        artifact_id: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        self.requests.append((artifact_id, offset, limit))
+        if artifact_id != self._artifact_id:
+            return None
+        lines = self._content.splitlines(keepends=True)
+        start = max(0, offset or 0)
+        bounded = max(0, limit or 2000)
+        selected = lines[start : start + bounded]
+        next_offset = start + len(selected) if start + len(selected) < len(lines) else None
+        return {
+            "artifact_id": artifact_id,
+            "status": "available",
+            "artifact_missing": False,
+            "offset": start,
+            "limit": bounded,
+            "line_count": len(lines),
+            "next_offset": next_offset,
+            "content": "".join(selected),
+        }
+
+
+_ARTIFACT_ID = "artifact_0123456789abcdef01234567"
+
+
+def test_read_file_tool_resolves_artifact_uri_with_bounded_content(tmp_path: Path) -> None:
+    content = "".join(f"line-{index}\n" for index in range(3000))
+    facade = _FakeArtifactFacade(_ARTIFACT_ID, content)
+    tool = ReadFileTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="read_file",
+                arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}", "limit": 100},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["type"] == "artifact"
+    assert result.data["artifact_id"] == _ARTIFACT_ID
+    assert result.data["raw_content"] == "".join(f"line-{index}\n" for index in range(100))
+    assert result.data["next_offset"] == 100
+    assert result.data["line_count"] == 3000
+    assert result.data["truncated"] is True
+    assert result.data["partial"] is True
+    assert result.data["offset"] == 1
+    assert result.data["limit"] == 100
+    assert "output is truncated" in (result.content or "")
+    assert facade.requests == [(_ARTIFACT_ID, 0, 100)]
+
+
+def test_read_file_tool_artifact_uri_pages_with_one_based_offset(tmp_path: Path) -> None:
+    content = "".join(f"line-{index}\n" for index in range(3000))
+    facade = _FakeArtifactFacade(_ARTIFACT_ID, content)
+    tool = ReadFileTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="read_file",
+                arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}", "offset": 101, "limit": 100},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.data["raw_content"] == "".join(f"line-{index}\n" for index in range(100, 200))
+    assert result.data["next_offset"] == 200
+    assert result.data["offset"] == 101
+    assert facade.requests == [(_ARTIFACT_ID, 100, 100)]
+
+
+def test_read_file_tool_rejects_unknown_artifact_id(tmp_path: Path) -> None:
+    facade = _FakeArtifactFacade(_ARTIFACT_ID, "content")
+    tool = ReadFileTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1", artifact=facade)):
+        with pytest.raises(ValueError, match="artifact not found in current session"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="read_file",
+                    arguments={"path": "voidcode://artifact/artifact_ffffffffffffffffffffffff"},
+                ),
+                workspace=tmp_path,
+            )
+
+
+def test_read_file_tool_rejects_malformed_artifact_id(tmp_path: Path) -> None:
+    tool = ReadFileTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1")):
+        with pytest.raises(ValueError, match="invalid artifact id"):
+            tool.invoke(
+                ToolCall(tool_name="read_file", arguments={"path": "voidcode://artifact/not-an-id"}),
+                workspace=tmp_path,
+            )
+        with pytest.raises(ValueError, match="requires an artifact id"):
+            tool.invoke(
+                ToolCall(tool_name="read_file", arguments={"path": "voidcode://artifact/"}),
+                workspace=tmp_path,
+            )
+
+
+def test_read_file_tool_artifact_uri_requires_runtime_artifact_reader(tmp_path: Path) -> None:
+    tool = ReadFileTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="session-1")):
+        with pytest.raises(ValueError, match="without a runtime artifact reader"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="read_file",
+                    arguments={"path": f"voidcode://artifact/{_ARTIFACT_ID}"},
+                ),
+                workspace=tmp_path,
+            )

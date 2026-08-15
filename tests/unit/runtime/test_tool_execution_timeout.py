@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
     RuntimeProviderContextSegmentSnapshot,
@@ -16,7 +18,7 @@ from voidcode.runtime.events import RUNTIME_TOOL_PROGRESS
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools import ShellExecTool, tool_output_artifact_temp_root
+from voidcode.tools import ReadFileTool, ShellExecTool, tool_output_artifact_temp_root
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 from voidcode.tools.runtime_context import (
     RuntimeToolInvocationContext,
@@ -443,7 +445,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert artifact_root in output_path.parents
     assert payload["artifact_missing"] is False
     assert payload["retry_guidance"] == (
-        "Use background_output with full_session=true, or artifact retrieval by artifact_id/tool_call_id, to inspect the full output before retrying."
+        f'Read the full output with read_file(path="voidcode://artifact/{payload["artifact_id"]}"), or use background_output with full_session=true.'
     )
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
@@ -1118,3 +1120,137 @@ def test_timeout_replay_preserves_terminal_tool_status_with_matching_call_id(
     replay_event_types = [e.event_type for e in replay_events]
     assert "runtime.tool_timeout" in replay_event_types
     assert "runtime.failed" in replay_event_types
+
+
+class _ArtifactThenUriReadGraph:
+    """Runs the large-output tool, then reads the spilled artifact via URI."""
+
+    def __init__(self) -> None:
+        self.artifact_id: str | None = None
+
+    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+        _ = request, session
+
+        class _Step:
+            pass
+
+        step = _Step()
+        if not tool_results:
+            step.tool_call = ToolCall(tool_name="large_output_tool", arguments={})  # type: ignore[attr-defined]
+            step.output = None  # type: ignore[attr-defined]
+            step.events = ()  # type: ignore[attr-defined]
+            step.is_finished = False  # type: ignore[attr-defined]
+            return step
+        if self.artifact_id is None:
+            first_result = tool_results[0]
+            self.artifact_id = str(first_result.data.get("artifact_id") or "")
+            assert self.artifact_id, "large output tool result must carry an artifact_id"
+            step.tool_call = ToolCall(  # type: ignore[attr-defined]
+                tool_name="read_file",
+                arguments={"path": f"voidcode://artifact/{self.artifact_id}", "limit": 100},
+            )
+            step.output = None  # type: ignore[attr-defined]
+            step.events = ()  # type: ignore[attr-defined]
+            step.is_finished = False  # type: ignore[attr-defined]
+            return step
+        step.tool_call = None  # type: ignore[attr-defined]
+        step.output = "completed"  # type: ignore[attr-defined]
+        step.events = ()  # type: ignore[attr-defined]
+        step.is_finished = True  # type: ignore[attr-defined]
+        return step
+
+
+def test_read_file_artifact_uri_reads_own_session_artifact_end_to_end(tmp_path: Path) -> None:
+    """The URI resolves a real spilled artifact for the owning session."""
+    session_id = "artifact-uri-owner"
+    graph = _ArtifactThenUriReadGraph()
+    registry = ToolRegistry.from_tools([_LargeOutputTool(), ReadFileTool()])
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=registry,
+        graph=graph,
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            approval_mode="allow",
+            execution_engine="deterministic",
+        ),
+    )
+
+    chunks = list(runtime.run_stream(RuntimeRequest(prompt="go", session_id=session_id)))
+    completed_events = [
+        chunk.event for chunk in chunks if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == "runtime.tool_completed"
+    ]
+    read_events = [event for event in completed_events if event.payload.get("tool") == "read_file"]
+    assert len(read_events) == 1, "expected one read_file completion for the artifact URI"
+    payload = read_events[0].payload
+    assert payload["status"] == "ok"
+    assert payload["type"] == "artifact"
+    assert payload["artifact_id"] == graph.artifact_id
+    assert payload["raw_content"] == "".join(f"line-{index}\n" for index in range(100))
+    assert payload["next_offset"] == 100
+    assert payload["line_count"] == 2100
+    assert payload["truncated"] is True
+    assert payload["partial"] is True
+
+
+class _ForeignArtifactUriReadGraph:
+    """Immediately issues a read_file URI for a pre-seeded foreign artifact id."""
+
+    def __init__(self, artifact_id: str) -> None:
+        self._artifact_id = artifact_id
+        self._done = False
+
+    def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> Any:
+        _ = request, tool_results, session
+
+        class _Step:
+            pass
+
+        step = _Step()
+        if not self._done:
+            step.tool_call = ToolCall(  # type: ignore[attr-defined]
+                tool_name="read_file",
+                arguments={"path": f"voidcode://artifact/{self._artifact_id}", "limit": 100},
+            )
+            step.output = None  # type: ignore[attr-defined]
+            step.events = ()  # type: ignore[attr-defined]
+            step.is_finished = False  # type: ignore[attr-defined]
+            self._done = True
+        else:
+            step.tool_call = None  # type: ignore[attr-defined]
+            step.output = "completed"  # type: ignore[attr-defined]
+            step.events = ()  # type: ignore[attr-defined]
+            step.is_finished = True  # type: ignore[attr-defined]
+        return step
+
+
+def test_read_file_artifact_uri_rejects_foreign_session_artifact(tmp_path: Path) -> None:
+    """An artifact created in session A is not resolvable from session B."""
+    owner_session = "artifact-uri-owner-b"
+    foreign_session = "artifact-uri-foreign-b"
+    owner_graph = _ArtifactThenUriReadGraph()
+    owner_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([_LargeOutputTool(), ReadFileTool()]),
+        graph=owner_graph,
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            approval_mode="allow",
+            execution_engine="deterministic",
+        ),
+    )
+    _ = list(owner_runtime.run_stream(RuntimeRequest(prompt="go", session_id=owner_session)))
+    assert owner_graph.artifact_id
+
+    foreign_runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        tool_registry=ToolRegistry.from_tools([ReadFileTool()]),
+        graph=_ForeignArtifactUriReadGraph(owner_graph.artifact_id),
+        config=RuntimeConfig(
+            mcp=RuntimeMcpConfig(enabled=False),
+            approval_mode="allow",
+            execution_engine="deterministic",
+        ),
+    )
+    with pytest.raises(ValueError, match="artifact not found in current session"):
+        _ = list(foreign_runtime.run_stream(RuntimeRequest(prompt="go", session_id=foreign_session)))

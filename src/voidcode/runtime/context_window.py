@@ -346,6 +346,7 @@ def _tool_result_preview(result: ToolResult, *, max_preview_chars: int) -> str:
     artifact_id = _artifact_metadata_string(result, "artifact_id")
     if artifact_id is not None:
         parts.append(f"artifact_id={artifact_id}")
+        parts.append(f"uri=voidcode://artifact/{artifact_id}")
         tool_call_id = _optional_tool_string(result, "tool_call_id")
         if tool_call_id is not None:
             parts.append(f"tool_call_id={tool_call_id}")
@@ -1142,6 +1143,7 @@ def _artifact_reference_segments(
         parts = [
             "Runtime artifact reference for omitted tool output:",
             f"artifact_id={diagnostic.artifact_id}",
+            f"uri=voidcode://artifact/{diagnostic.artifact_id}",
             f"tool_call_id={diagnostic.tool_call_id}" if diagnostic.tool_call_id else None,
             f"tool_name={diagnostic.tool_name}",
             f"status={diagnostic.status}",
@@ -1149,11 +1151,13 @@ def _artifact_reference_segments(
             (f"byte_count={diagnostic.artifact_byte_count}" if diagnostic.artifact_byte_count is not None else None),
             (f"line_count={diagnostic.artifact_line_count}" if diagnostic.artifact_line_count is not None else None),
             f"reference={diagnostic.reference}" if diagnostic.reference else None,
+            f'Read the omitted output with read_file(path="voidcode://artifact/{diagnostic.artifact_id}").',
         ]
         content = "\n".join(part for part in parts if part is not None)
         metadata: dict[str, object] = {
             "source": "runtime_context_artifact_reference",
             "artifact_id": diagnostic.artifact_id,
+            "uri": f"voidcode://artifact/{diagnostic.artifact_id}",
             "tool_name": diagnostic.tool_name,
             "status": diagnostic.status,
             "dropped_tool_result_index": diagnostic.index,

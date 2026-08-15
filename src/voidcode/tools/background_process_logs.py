@@ -94,13 +94,14 @@ class BackgroundProcessLogsTool:
         truncated = state.stdout_dropped_lines > 0 or state.stderr_dropped_lines > 0
         references: list[str] = []
         if stdout_artifact is not None:
-            references.append(f"artifact:{stdout_artifact['artifact_id']}")
+            references.append(f"voidcode://artifact/{stdout_artifact['artifact_id']}")
         if stderr_artifact is not None:
-            references.append(f"artifact:{stderr_artifact['artifact_id']}")
+            references.append(f"voidcode://artifact/{stderr_artifact['artifact_id']}")
         if truncated and references:
             hint = (
                 f"[Background process logs truncated: use {', '.join(references)} "
-                "to inspect retained log tails. Earlier dropped lines are no longer available.]"
+                "with read_file to inspect retained log tails. "
+                "Earlier dropped lines are no longer available.]"
             )
             output = f"{output}\n\n{hint}" if output else hint
         running = state.process.poll() is None

@@ -44,6 +44,26 @@ class RuntimeToolCatalogFacade(Protocol):
     def lookup(self, tool_name: str) -> ToolDefinition | None: ...
 
 
+class RuntimeArtifactReadFacade(Protocol):
+    """Session-validated reader for spilled tool-output artifacts.
+
+    Resolves ``voidcode://artifact/<id>`` against the calling session's own
+    transcript through the runtime's session/workspace/path guards, never
+    through the external-directory permission path. Returns ``None`` when the
+    artifact id does not exist in the caller session.
+    """
+
+    def read_artifact(
+        self,
+        *,
+        artifact_id: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        """Return a bounded artifact slice or ``None`` when not found in the caller session."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeToolInvocationContext:
     session_id: str
@@ -59,6 +79,8 @@ class RuntimeToolInvocationContext:
     lsp: RuntimeLspToolFacade | None = None
     #: Read-only registry view for on-demand tool documentation (``voidcode://tool/<name>``).
     tool_catalog: RuntimeToolCatalogFacade | None = None
+    #: Session-validated reader for spilled tool-output artifacts (``voidcode://artifact/<id>``).
+    artifact: RuntimeArtifactReadFacade | None = None
     #: Opt-in gate for automatic post-write LSP diagnostics (default off).
     lsp_diagnostics_on_write: bool = False
 

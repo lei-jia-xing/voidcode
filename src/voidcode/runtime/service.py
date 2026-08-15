@@ -521,6 +521,42 @@ class _RuntimeToolCatalogFacade:
 
 
 @final
+class _RuntimeArtifactReadFacade:
+    """Adapter exposing runtime-owned, session-guarded artifact reads to tools.
+
+    ``voidcode://artifact/<id>`` resolves against the *caller's* session id
+    from the active runtime tool context. It reuses the service's own
+    ``read_tool_output_artifact`` path, which applies the session/workspace
+    guards (``_validate_session_workspace``) and the artifact-path containment
+    checks, so the URI can never reach a foreign session's artifact or an
+    arbitrary external file.
+    """
+
+    def __init__(self, runtime: VoidCodeRuntime) -> None:
+        self._runtime = runtime
+
+    def read_artifact(
+        self,
+        *,
+        artifact_id: str,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        context = current_runtime_tool_context()
+        if context is None or not context.session_id:
+            raise RuntimeError("voidcode://artifact/<id> requires an active runtime tool invocation context")
+        result = self._runtime.read_tool_output_artifact(
+            session_id=context.session_id,
+            artifact_id=artifact_id,
+            offset=max(0, offset or 0),
+            limit=max(1, limit or 2000),
+        )
+        if result.get("status") == "artifact_not_found":
+            return None
+        return result
+
+
+@final
 class VoidCodeRuntime:
     """Headless runtime entrypoint for one local deterministic request."""
 
@@ -675,6 +711,7 @@ class VoidCodeRuntime:
                 lsp=self,
                 lsp_diagnostics_on_write=bool(self._config.lsp is not None and self._config.lsp.diagnostics_on_write),
                 tool_catalog=_RuntimeToolCatalogFacade(self),
+                artifact=_RuntimeArtifactReadFacade(self),
             ),
         )
         self._resume_coordinator = RuntimeResumeCoordinator(self)

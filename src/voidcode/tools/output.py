@@ -26,7 +26,7 @@ _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
     }
 )
 _INLINE_BLOB_KEYS = frozenset({"data_uri", "dataUri", "base64", "blob"})
-_ARTIFACT_REFERENCE_PREFIX = "artifact:"
+_ARTIFACT_REFERENCE_PREFIX = "voidcode://artifact/"
 _ARTIFACT_PRODUCER = "voidcode.tool_output.v1"
 _ARTIFACT_ID_PATTERN = re.compile(r"^artifact_[0-9a-f]{24}$")
 _ARTIFACT_CACHE_DIR_NAME = "tool-output"
@@ -485,8 +485,9 @@ def cap_tool_result_output(
         hint = (
             "\n\n[Tool error truncated: "
             f"artifact_id={artifact['artifact_id']}. "
-            "Use background_output with full_session=true, or artifact retrieval by artifact_id "
-            "or tool_call_id, to read/search the full error.]"
+            f'Read the full error with read_file(path="{reference}"), or use '
+            "background_output with full_session=true, or artifact retrieval by "
+            "artifact_id or tool_call_id.]"
         )
         return replace(
             result,
@@ -510,16 +511,11 @@ def cap_tool_result_output(
                         "reason": "tool_error_truncated",
                         "message": "Tool error was truncated before being sent to the model.",
                         "retry_guidance": (
-                            "Use background_output with full_session=true, or artifact retrieval "
-                            "by artifact_id/tool_call_id, to inspect the full error before "
-                            "retrying."
+                            f'Read the full error with read_file(path="{reference}"), or use background_output with full_session=true.'
                         ),
                     },
                 ),
-                "retry_guidance": (
-                    "Use background_output with full_session=true, or artifact retrieval by "
-                    "artifact_id/tool_call_id, to inspect the full error before retrying."
-                ),
+                "retry_guidance": (f'Read the full error with read_file(path="{reference}"), or use background_output with full_session=true.'),
                 "artifact": artifact,
                 "artifact_id": artifact["artifact_id"],
                 "artifact_status": "available",
@@ -557,8 +553,9 @@ def cap_tool_result_output(
         "\n\n[Tool output truncated: "
         f"omitted {omitted_bytes} bytes and {omitted_lines} lines. "
         f"artifact_id={artifact['artifact_id']}. "
-        "Use background_output with full_session=true, or artifact retrieval by artifact_id "
-        "or tool_call_id, to read/search the full output.]"
+        f'Read the full output with read_file(path="{reference}"), or use '
+        "background_output with full_session=true, or artifact retrieval by "
+        "artifact_id or tool_call_id.]"
     )
 
     return replace(
@@ -582,16 +579,10 @@ def cap_tool_result_output(
                     "severity": "warning",
                     "reason": "tool_output_truncated",
                     "message": "Tool output was truncated before being sent to the model.",
-                    "retry_guidance": (
-                        "Use background_output with full_session=true, or artifact retrieval by "
-                        "artifact_id/tool_call_id, to inspect the full output before retrying."
-                    ),
+                    "retry_guidance": (f'Read the full output with read_file(path="{reference}"), or use background_output with full_session=true.'),
                 },
             ),
-            "retry_guidance": (
-                "Use background_output with full_session=true, or artifact retrieval by "
-                "artifact_id/tool_call_id, to inspect the full output before retrying."
-            ),
+            "retry_guidance": (f'Read the full output with read_file(path="{reference}"), or use background_output with full_session=true.'),
             "artifact": artifact,
             "artifact_id": artifact["artifact_id"],
             "artifact_status": "available",

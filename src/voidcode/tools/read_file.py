@@ -17,6 +17,7 @@ from ._pydantic_args import format_validation_error
 from ._workspace import suggest_workspace_paths
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guidance import guidance_for_tool
+from .output import _ARTIFACT_ID_PATTERN
 from .runtime_context import require_runtime_tool_context
 
 #: Internal URL scheme for on-demand tool documentation (essential/discoverable
@@ -24,6 +25,13 @@ from .runtime_context import require_runtime_tool_context
 #: text plus its JSON input schema, read from the same guidance files and the
 #: live tool registry used for execution.
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
+
+#: Internal URL scheme for session-scoped artifact reads:
+#: read_file(path="voidcode://artifact/<id>") returns a bounded slice of a
+#: spilled tool-output artifact, resolved through the runtime's own
+#: session-validated artifact reader — never through the external-directory
+#: permission path.
+VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
 
 
 def _render_tool_documentation(path: str) -> _ReadOutcome:
@@ -68,6 +76,65 @@ def _render_tool_documentation(path: str) -> _ReadOutcome:
             "read_only": definition.read_only,
             "guidance": guidance,
             "input_schema": definition.input_schema,
+            "raw_content": content,
+        },
+    )
+
+
+def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
+    """Render a bounded slice of a spilled tool-output artifact by URI.
+
+    The artifact is resolved through the runtime's session-validated reader
+    (``RuntimeToolInvocationContext.artifact``), which applies the session and
+    artifact-path guards; the URI never falls through to workspace path
+    resolution.
+    """
+
+    artifact_id = path[len(VOIDCODE_ARTIFACT_PREFIX) :].strip()
+    if not artifact_id:
+        raise ValueError("voidcode://artifact/<id> requires an artifact id")
+    if _ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
+        raise ValueError(f"invalid artifact id: {artifact_id}")
+    context = require_runtime_tool_context("read_file")
+    facade = context.artifact
+    if facade is None:
+        raise ValueError("read_file cannot resolve voidcode://artifact URLs without a runtime artifact reader")
+    result = facade.read_artifact(
+        artifact_id=artifact_id,
+        offset=max(0, offset - 1),
+        limit=limit,
+    )
+    if result is None:
+        raise ValueError(f"artifact not found in current session: {artifact_id}")
+    status = result.get("status")
+    if status == "missing":
+        raise ValueError(f"artifact is missing from storage: {artifact_id}")
+    if status != "available":
+        raise ValueError(f"artifact read failed with status {status}: {artifact_id}")
+    content = result.get("content")
+    if not isinstance(content, str):
+        raise ValueError(f"artifact read returned no content: {artifact_id}")
+    line_count = result.get("line_count")
+    next_offset = result.get("next_offset")
+    truncated = next_offset is not None
+    rendered_lines = content.splitlines()
+    return _ReadOutcome(
+        content=(
+            f"Read {len(rendered_lines)} line(s) from {path}"
+            + ("; output is truncated; continue reading with the returned next_offset." if truncated else ".")
+        ),
+        data={
+            "path": path,
+            "type": "artifact",
+            "artifact_id": artifact_id,
+            "status": status,
+            "line_count": line_count if isinstance(line_count, int) else len(rendered_lines),
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset,
+            "truncated": truncated,
+            "partial": truncated,
+            "byte_count": len(content.encode("utf-8")),
             "raw_content": content,
         },
     )
@@ -274,7 +341,12 @@ class ReadFileTool:
         input_schema={
             "path": {
                 "type": "string",
-                "description": "Path relative to the workspace (or an explicitly permitted external path).",
+                "description": (
+                    "Path relative to the workspace (or an explicitly permitted external path). "
+                    "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; "
+                    "voidcode://artifact/<id> reads a bounded slice of the current session's spilled "
+                    "tool-output artifact."
+                ),
             },
             "offset": {
                 "type": "integer",
@@ -306,6 +378,21 @@ class ReadFileTool:
 
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
             outcome = _render_tool_documentation(args.path)
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=outcome.content,
+                data=outcome.data,
+                truncated=bool(outcome.data.get("truncated", False)),
+                partial=bool(outcome.data.get("partial", False)),
+            )
+
+        if args.path.startswith(VOIDCODE_ARTIFACT_PREFIX):
+            outcome = _render_artifact(
+                args.path,
+                offset=args.offset or 1,
+                limit=args.limit or DEFAULT_READ_LIMIT,
+            )
             return ToolResult(
                 tool_name=self.definition.name,
                 status="ok",
