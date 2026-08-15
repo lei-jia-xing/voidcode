@@ -343,3 +343,133 @@ def test_read_tool_artifact_uri_requires_runtime_artifact_reader(tmp_path: Path)
                 ),
                 workspace=tmp_path,
             )
+
+
+class _FakeTranscriptFacade:
+    """Minimal RuntimeTranscriptFacade stand-in mirroring bounded semantics."""
+
+    def __init__(self, *, total_events: int = 30, accessible: set[str] | None = None) -> None:
+        self._total_events = total_events
+        self._accessible = accessible
+        self.requests: list[tuple[str, int | None]] = []
+
+    def read_transcript(
+        self,
+        *,
+        session_id: str,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        self.requests.append((session_id, limit))
+        if self._accessible is not None and session_id not in self._accessible:
+            return None
+        bounded = min(max(limit if limit is not None else 20, 1), 100)
+        selected = min(bounded, self._total_events)
+        return {
+            "session_id": session_id,
+            "status": "completed",
+            "summary": "done",
+            "last_event_sequence": self._total_events,
+            "message_limit": bounded,
+            "transcript_count": selected,
+            "transcript_truncated": self._total_events > selected,
+            "transcript": [{"sequence": index, "event_type": f"event-{index}", "source": "tool"} for index in range(1, selected + 1)],
+        }
+
+
+def test_read_tool_resolves_transcript_uri_bounded_and_payload_stripped(tmp_path: Path) -> None:
+    facade = _FakeTranscriptFacade(total_events=30)
+    tool = ReadTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="read",
+                arguments={"path": "voidcode://transcript/child", "limit": 5},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["type"] == "transcript"
+    assert result.data["session_id"] == "child"
+    assert result.data["message_limit"] == 5
+    assert result.data["transcript_count"] == 5
+    assert result.data["transcript_truncated"] is True
+    assert len(result.data["transcript"]) == 5
+    for event in result.data["transcript"]:
+        assert set(event) == {"sequence", "event_type", "source"}
+        assert "payload" not in event
+    assert result.data["status"] == "completed"
+    assert "Read 5 transcript event(s)" in (result.content or "")
+    assert "truncated" in (result.content or "")
+    assert facade.requests == [("child", 5)]
+
+
+def test_read_tool_transcript_uri_defaults_to_20_event_limit(tmp_path: Path) -> None:
+    facade = _FakeTranscriptFacade(total_events=100)
+    tool = ReadTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="read",
+                arguments={"path": "voidcode://transcript/child"},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.data["message_limit"] == 20
+    assert len(result.data["transcript"]) == 20
+    assert facade.requests == [("child", 20)]
+
+
+def test_read_tool_transcript_uri_rejects_unavailable_session(tmp_path: Path) -> None:
+    facade = _FakeTranscriptFacade(accessible={"child"})
+    tool = ReadTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
+        with pytest.raises(ValueError, match="transcript not accessible for session: other"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="read",
+                    arguments={"path": "voidcode://transcript/other"},
+                ),
+                workspace=tmp_path,
+            )
+
+
+def test_read_tool_transcript_uri_rejects_malformed_session_id(tmp_path: Path) -> None:
+    facade = _FakeTranscriptFacade()
+    tool = ReadTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", transcript=facade)):
+        with pytest.raises(ValueError, match="must not contain '/'"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="read",
+                    arguments={"path": "voidcode://transcript/a/b"},
+                ),
+                workspace=tmp_path,
+            )
+        with pytest.raises(ValueError, match="requires a session id"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="read",
+                    arguments={"path": "voidcode://transcript/"},
+                ),
+                workspace=tmp_path,
+            )
+
+
+def test_read_tool_transcript_uri_requires_runtime_transcript_reader(tmp_path: Path) -> None:
+    tool = ReadTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader")):
+        with pytest.raises(ValueError, match="without a runtime transcript reader"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="read",
+                    arguments={"path": "voidcode://transcript/child"},
+                ),
+                workspace=tmp_path,
+            )

@@ -8,3 +8,4 @@ This tool does not read directories.
 Internal documentation URLs:
 - read(path="voidcode://tool/<name>") returns the on-demand documentation and JSON input schema for any runtime-registered tool, including tools that are not listed top-level (the discoverable set). Read the doc first, then execute the tool with invoke_tool.
 - read(path="voidcode://artifact/<id>") returns a bounded slice of a spilled tool-output artifact owned by the current session (for example, a truncated tool output). Use the offset and limit arguments to page through large artifacts.
+- read(path="voidcode://transcript/<session_id>") returns a bounded, payload-stripped transcript (per event: sequence, event_type, source) of the current session or of a child session the current session spawned. Limit defaults to 20 events (clamped 1..100).

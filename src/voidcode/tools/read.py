@@ -12,6 +12,7 @@ from typing import ClassVar, cast, final
 
 from pydantic import BaseModel, ValidationError, field_validator
 
+from ..runtime.contracts import validate_session_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import format_validation_error
 from ._workspace import suggest_workspace_paths
@@ -32,6 +33,13 @@ VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 #: session-validated artifact reader — never through the external-directory
 #: permission path.
 VOIDCODE_ARTIFACT_PREFIX = "voidcode://artifact/"
+
+#: Internal URL scheme for lineage-guarded transcript reads:
+#: read(path="voidcode://transcript/<session_id>") returns a bounded,
+#: payload-stripped transcript of the caller's own session or of a child
+#: session the caller spawned, resolved through the runtime's session-validated
+#: transcript reader.
+VOIDCODE_TRANSCRIPT_PREFIX = "voidcode://transcript/"
 
 
 def _render_tool_documentation(path: str) -> _ReadOutcome:
@@ -140,6 +148,51 @@ def _render_artifact(path: str, *, offset: int, limit: int) -> _ReadOutcome:
     )
 
 
+def _render_transcript(path: str, *, limit: int) -> _ReadOutcome:
+    """Render a bounded, payload-stripped transcript of a session by URI.
+
+    The transcript is resolved through the runtime's lineage-guarded reader
+    (``RuntimeToolInvocationContext.transcript``): the caller may read its own
+    session or a direct child session, never an unrelated session. Per event
+    only ``sequence``, ``event_type``, and ``source`` are returned; raw tool
+    output payloads are not included.
+    """
+
+    session_id = path[len(VOIDCODE_TRANSCRIPT_PREFIX) :].strip()
+    if not session_id:
+        raise ValueError("voidcode://transcript/<session_id> requires a session id")
+    validate_session_id(session_id)
+    context = require_runtime_tool_context("read")
+    facade = context.transcript
+    if facade is None:
+        raise ValueError("read cannot resolve voidcode://transcript URLs without a runtime transcript reader")
+    result = facade.read_transcript(session_id=session_id, limit=limit)
+    if result is None:
+        raise ValueError(f"transcript not accessible for session: {session_id}")
+    transcript = result.get("transcript")
+    if not isinstance(transcript, list):
+        raise ValueError(f"transcript read returned no events for session: {session_id}")
+    truncated = result.get("transcript_truncated") is True
+    return _ReadOutcome(
+        content=(
+            f"Read {len(transcript)} transcript event(s) from {path}"
+            + ("; transcript is truncated; raise the limit to see more." if truncated else ".")
+        ),
+        data={
+            "path": path,
+            "type": "transcript",
+            "session_id": session_id,
+            "status": result.get("status"),
+            "summary": result.get("summary"),
+            "last_event_sequence": result.get("last_event_sequence"),
+            "message_limit": result.get("message_limit"),
+            "transcript_count": result.get("transcript_count"),
+            "transcript_truncated": truncated,
+            "transcript": transcript,
+        },
+    )
+
+
 class ReadArgs(BaseModel):
     path: str
     offset: int | None = None
@@ -172,6 +225,7 @@ class ReadArgs(BaseModel):
 
 
 DEFAULT_READ_LIMIT = 2000
+DEFAULT_TRANSCRIPT_LIMIT = 20
 MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
 MAX_ATTACHMENT_BYTES = 50 * 1024
@@ -345,7 +399,8 @@ class ReadTool:
                     "Path relative to the workspace (or an explicitly permitted external path). "
                     "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; "
                     "voidcode://artifact/<id> reads a bounded slice of the current session's spilled "
-                    "tool-output artifact."
+                    "tool-output artifact; voidcode://transcript/<session_id> reads a bounded, "
+                    "payload-stripped transcript of the current session or of a child session it spawned."
                 ),
             },
             "offset": {
@@ -400,6 +455,20 @@ class ReadTool:
                 data=outcome.data,
                 truncated=bool(outcome.data.get("truncated", False)),
                 partial=bool(outcome.data.get("partial", False)),
+            )
+
+        if args.path.startswith(VOIDCODE_TRANSCRIPT_PREFIX):
+            outcome = _render_transcript(
+                args.path,
+                limit=args.limit or DEFAULT_TRANSCRIPT_LIMIT,
+            )
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=outcome.content,
+                data=outcome.data,
+                truncated=bool(outcome.data.get("transcript_truncated", False)),
+                partial=bool(outcome.data.get("transcript_truncated", False)),
             )
 
         resolution = resolve_workspace_path_policy(

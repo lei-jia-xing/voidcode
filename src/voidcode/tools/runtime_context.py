@@ -64,6 +64,27 @@ class RuntimeArtifactReadFacade(Protocol):
         ...
 
 
+class RuntimeTranscriptFacade(Protocol):
+    """Lineage-guarded reader for bounded, payload-stripped session transcripts.
+
+    Resolves ``voidcode://transcript/<session_id>`` against the calling
+    session's id from the runtime tool context. A session may read its own
+    transcript or the transcript of a session it spawned (direct child, per
+    the persisted session parent linkage or the background-task parent/child
+    linkage). Returns ``None`` when the target is not accessible (unknown,
+    unrelated, or wrong workspace).
+    """
+
+    def read_transcript(
+        self,
+        *,
+        session_id: str,
+        limit: int | None = None,
+    ) -> dict[str, object] | None:
+        """Return a bounded payload-stripped transcript or ``None`` when not accessible."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeToolInvocationContext:
     session_id: str
@@ -81,6 +102,8 @@ class RuntimeToolInvocationContext:
     tool_catalog: RuntimeToolCatalogFacade | None = None
     #: Session-validated reader for spilled tool-output artifacts (``voidcode://artifact/<id>``).
     artifact: RuntimeArtifactReadFacade | None = None
+    #: Lineage-guarded reader for bounded session transcripts (``voidcode://transcript/<session_id>``).
+    transcript: RuntimeTranscriptFacade | None = None
     #: Opt-in gate for automatic post-write LSP diagnostics (default off).
     lsp_diagnostics_on_write: bool = False
 
