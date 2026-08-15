@@ -84,6 +84,7 @@ from voidcode.runtime.context_window import (
 )
 from voidcode.runtime.contracts import RuntimeRequestError, validate_runtime_request_metadata
 from voidcode.runtime.events import (
+    RUNTIME_ACP_DELEGATED_LIFECYCLE,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
@@ -9451,9 +9452,9 @@ def test_runtime_background_task_waiting_approval_publishes_acp_delegated_lifecy
     leader_response = _wait_for_session_event(
         runtime,
         "leader-session",
-        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+        RUNTIME_ACP_DELEGATED_LIFECYCLE,
     )
-    acp_events = [event for event in leader_response.events if event.event_type == "runtime.acp_delegated_lifecycle"]
+    acp_events = [event for event in leader_response.events if event.event_type == RUNTIME_ACP_DELEGATED_LIFECYCLE]
 
     assert len(acp_events) == 1
     assert acp_events[0].payload["session_id"] == child_session_id
