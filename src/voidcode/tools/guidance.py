@@ -32,7 +32,7 @@ _TOOL_GUIDANCE_FILES = {
     "todo_write": "todo_write.txt",
     "web_fetch": "web_fetch.txt",
     "web_search": "web_search.txt",
-    "write_file": "write_file.txt",
+    "write": "write.txt",
 }
 
 

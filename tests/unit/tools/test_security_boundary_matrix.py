@@ -15,7 +15,7 @@ from voidcode.tools import (
     ToolCall,
     ToolResult,
     WebFetchTool,
-    WriteFileTool,
+    WriteTool,
 )
 
 
@@ -27,7 +27,7 @@ class _InvokableTool(Protocol):
     ("tool", "arguments"),
     [
         (ReadTool(), {"path": "link.txt"}),
-        (WriteFileTool(), {"path": "linkdir/out.txt", "content": "x"}),
+        (WriteTool(), {"path": "linkdir/out.txt", "content": "x"}),
         (
             EditTool(),
             {

@@ -52,7 +52,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - render runtime timeline and activity panels (#33)
 
-- add real write_file approval slice (#36)
+- add real write approval slice (#36)
 
 - add real shell_exec approval slice (#37)
 

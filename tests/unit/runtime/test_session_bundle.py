@@ -551,9 +551,9 @@ def test_session_bundle_export_import_preserves_redacted_policy_observations(
                 source="runtime",
                 payload={
                     "kind": "runtime_tool_policy_denied",
-                    "tool": "write_file",
+                    "tool": "write",
                     "tool_policy": {
-                        "tool": "write_file",
+                        "tool": "write",
                         "mode": "plan",
                         "read_only": True,
                         "decision": "deny",

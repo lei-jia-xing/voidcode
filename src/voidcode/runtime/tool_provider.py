@@ -19,7 +19,7 @@ from ..tools.shell_exec import ShellExecTool
 from ..tools.submit_result import SubmitResultTool
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
-from ..tools.write_file import WriteFileTool
+from ..tools.write import WriteTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 from .edit_schema_policy import EditSchemaResolver
 
@@ -49,7 +49,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "todo_write",
         "web_fetch",
         "web_search",
-        "write_file",
+        "write",
         "mcp/context7/resolve-library-id",
         "mcp/context7/query-docs",
         "mcp/websearch/web_fetch_exa",
@@ -246,7 +246,7 @@ class BuiltinToolProvider:
             SubmitResultTool(),
             WebFetchTool(),
             WebSearchTool(),
-            WriteFileTool(hooks_config=self._hooks_config),
+            WriteTool(hooks_config=self._hooks_config),
         ]
 
         if self._lsp_tool is not None:

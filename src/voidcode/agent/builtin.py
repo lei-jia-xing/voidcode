@@ -19,7 +19,7 @@ _CHILD_HANDOFF_TOOLS = ("submit_result",)
 
 _LEADER_TOOL_ALLOWLIST = (
     *_WORKSPACE_DISCOVERY_TOOLS,
-    "write_file",
+    "write",
     "edit",
     "multi_edit",
     "apply_patch",
@@ -83,7 +83,7 @@ WORKER_AGENT_MANIFEST = AgentManifest(
     execution_engine="provider",
     tool_allowlist=(
         *_WORKSPACE_DISCOVERY_TOOLS,
-        "write_file",
+        "write",
         "edit",
         "multi_edit",
         "apply_patch",

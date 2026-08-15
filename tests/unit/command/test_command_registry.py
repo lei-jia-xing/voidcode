@@ -63,7 +63,7 @@ def test_tool_instruction_resolver_is_shared_for_read_grep_run_and_write() -> No
         ToolDefinition("read", "Read", read_only=True),
         ToolDefinition("grep", "Grep", read_only=True),
         ToolDefinition("shell_exec", "Run", read_only=False),
-        ToolDefinition("write_file", "Write", read_only=False),
+        ToolDefinition("write", "Write", read_only=False),
     )
 
     assert resolve_tool_instruction("read sample.txt", tools, unavailable_message_suffix="test").tool_call.arguments == {"path": "sample.txt"}

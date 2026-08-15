@@ -40,7 +40,7 @@ from .task import TaskTool
 from .todo_write import TodoWriteTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
-from .write_file import WriteFileTool
+from .write import WriteTool
 
 __all__ = [
     "ApplyPatchTool",
@@ -70,7 +70,7 @@ __all__ = [
     "TodoWriteTool",
     "WebFetchTool",
     "WebSearchTool",
-    "WriteFileTool",
+    "WriteTool",
     "ToolCall",
     "ToolDefinition",
     "ToolResult",

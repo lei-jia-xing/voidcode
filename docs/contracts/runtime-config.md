@@ -242,7 +242,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 
 ```json
 {
-  "tool": "write_file",
+  "tool": "write",
   "path": ".github/**",
   "decision": "ask"
 }
@@ -268,7 +268,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
       {"tool": "read", "path": "src/**", "decision": "allow"},
       {"tool": "grep", "path": "src/**", "decision": "allow"},
       {"tool": "glob", "path": "src/**", "decision": "allow"},
-      {"tool": "write_file", "path": ".github/**", "decision": "ask"},
+      {"tool": "write", "path": ".github/**", "decision": "ask"},
       {"tool": "edit", "path": ".github/**", "decision": "ask"},
       {"tool": "shell_exec", "command": "pytest*", "decision": "allow"},
       {"tool": "shell_exec", "command": "mise run test", "decision": "allow"},

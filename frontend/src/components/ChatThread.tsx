@@ -656,7 +656,6 @@ function toolIcon(tool: ChatTool) {
     return <FileSearch className={className} />;
   }
   if (
-    tool.name === "write_file" ||
     tool.name === "write" ||
     tool.name === "edit" ||
     tool.name === "multi_edit" ||
@@ -1974,7 +1973,6 @@ function ToolActivity({
 }) {
   if (isReadonlyTool(tool)) return <ReadToolActivity tool={tool} />;
   if (
-    tool.name === "write_file" ||
     tool.name === "write" ||
     tool.name === "edit" ||
     tool.name === "multi_edit" ||

@@ -27,7 +27,7 @@ considered complete until implementation and focused tests provide evidence.
   decorated with guidance.
 - [x] Make every input schema explicit about required fields, constraints, enums,
   and field-level descriptions. `read` now documents path, offset, limit,
-  and continuation semantics; `write_file` and `multi_edit` now document their
+  and continuation semantics; `write` and `multi_edit` now document their
   replacement semantics; `grep` now documents explicit literal/regex selection
   and search filters; the broader tool surface remains.
 - [x] Reconcile `grep`'s regex description with its actual explicit-switch

@@ -129,7 +129,7 @@ class _WriteThenDoneGraph:
         if not tool_results:
             return SimpleNamespace(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "child.txt", "content": "delegated"},
                 ),
                 output=None,
@@ -598,7 +598,7 @@ def test_cli_run_inline_approval_loop_emits_events(capsys: Any) -> None:
                 2,
                 {
                     "request_id": "req-1",
-                    "tool": "write_file",
+                    "tool": "write",
                     "target_summary": "x.txt",
                 },
             ),
@@ -717,7 +717,7 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
                 1,
                 {
                     "request_id": "req-1",
-                    "tool": "write_file",
+                    "tool": "write",
                     "target_summary": "x.txt",
                 },
             ),
@@ -1020,7 +1020,7 @@ def test_cli_tasks_output_supports_json_failure_guidance(capsys: Any) -> None:
         approval_blocked=False,
         result_available=True,
         summary_output="Failed: child tool failed",
-        error="tool write_file failed",
+        error="tool write failed",
         cancellation_cause=None,
         routing=None,
     )
@@ -1087,7 +1087,7 @@ def test_cli_tasks_surfaces_real_runtime_waiting_approval_and_cancel(tmp_path: P
     assert f"TASK id={started.task.id} status=running" in task_output
     assert f"approval_request_id={waiting.approval_request_id}" in task_output
     assert "approval_blocked=True" in task_output
-    assert "Approval blocked on write_file: write_file child.txt" in task_output
+    assert "Approval blocked on write: write child.txt" in task_output
     assert f"TASK id={started.task.id} status=cancelled" in cancel_output
     assert "cancellation_cause=cancelled by parent while child session was waiting" in cancel_output
     assert "cancelled by parent while child session was waiting" in cancel_output

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.tools import ApplyPatchTool, EditTool, MultiEditTool, ReadTool, ToolCall, WriteFileTool
+from voidcode.tools import ApplyPatchTool, EditTool, MultiEditTool, ReadTool, ToolCall, WriteTool
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.contracts import ToolResult
 from voidcode.tools.guards import ReadTracking, read_paths_for_tool_results, read_tracking_for_tool_results
@@ -35,30 +35,30 @@ def test_read_paths_for_tool_results_collects_successful_workspace_reads(tmp_pat
     assert paths == frozenset({target.resolve().as_posix()})
 
 
-def test_write_file_tool_rejects_overwrite_without_prior_read(tmp_path: Path) -> None:
+def test_write_tool_rejects_overwrite_without_prior_read(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("old", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
         with pytest.raises(ValueError, match="requires reading the current file before modifying it"):
             tool.invoke(
-                ToolCall(tool_name="write_file", arguments={"path": "sample.txt", "content": "new"}),
+                ToolCall(tool_name="write", arguments={"path": "sample.txt", "content": "new"}),
                 workspace=tmp_path,
             )
 
 
-def test_write_file_tool_allows_overwrite_after_prior_read(tmp_path: Path) -> None:
+def test_write_tool_allows_overwrite_after_prior_read(tmp_path: Path) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("old", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
     read_paths = frozenset({target.resolve().as_posix()})
     read_lines = {target.resolve().as_posix(): frozenset({1})}
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test", read_paths=read_paths, read_lines=read_lines)):
         result = tool.invoke(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "sample.txt", "content": "new", "expectedHash": _content_hash(target)},
             ),
             workspace=tmp_path,
@@ -68,15 +68,15 @@ def test_write_file_tool_allows_overwrite_after_prior_read(tmp_path: Path) -> No
     assert target.read_text(encoding="utf-8") == "new"
 
 
-def test_write_file_tool_allows_new_file_without_prior_read_even_with_runtime_context(
+def test_write_tool_allows_new_file_without_prior_read_even_with_runtime_context(
     tmp_path: Path,
 ) -> None:
-    tool = WriteFileTool()
+    tool = WriteTool()
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="test")):
         result = tool.invoke(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "new-file.txt", "content": "hello"},
             ),
             workspace=tmp_path,
@@ -198,12 +198,12 @@ def test_read_tracking_ignores_attachment_reads_for_line_data(tmp_path: Path) ->
     assert image.resolve().as_posix() not in tracking.read_lines
 
 
-def test_write_file_tool_rejects_partial_read_overwrite_with_unseen_range(
+def test_write_tool_rejects_partial_read_overwrite_with_unseen_range(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
     resolved = target.resolve().as_posix()
 
     with bind_runtime_tool_context(
@@ -216,7 +216,7 @@ def test_write_file_tool_rejects_partial_read_overwrite_with_unseen_range(
         with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "sample.txt", "content": "new", "expectedHash": _content_hash(target)},
                 ),
                 workspace=tmp_path,
@@ -230,12 +230,12 @@ def test_write_file_tool_rejects_partial_read_overwrite_with_unseen_range(
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
-def test_write_file_tool_rejects_fail_closed_when_path_read_but_no_line_data(
+def test_write_tool_rejects_fail_closed_when_path_read_but_no_line_data(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "sample.txt"
     target.write_text("alpha\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
     resolved = target.resolve().as_posix()
 
     with bind_runtime_tool_context(
@@ -247,7 +247,7 @@ def test_write_file_tool_rejects_fail_closed_when_path_read_but_no_line_data(
         with pytest.raises(ToolDiagnosticError, match="never revealed by read") as exc_info:
             tool.invoke(
                 ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "sample.txt", "content": "new", "expectedHash": _content_hash(target)},
                 ),
                 workspace=tmp_path,

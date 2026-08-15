@@ -169,10 +169,10 @@ CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime con
   "source": "runtime",
   "payload": {
     "request_id": "approval-...",
-    "tool": "write_file",
+    "tool": "write",
     "decision": "ask",
     "arguments": {"path": "README.md", "content": "..."},
-    "target_summary": "write_file README.md",
+    "target_summary": "write README.md",
     "reason": "non-read-only tool invocation",
     "policy": {"mode": "ask"}
   }
@@ -181,7 +181,7 @@ CLI / server 可以通过 `--approval-mode allow|deny|ask` 或等价 runtime con
 
 Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策交回 runtime。
 `allow` 会恢复并执行原工具调用；`deny` 不执行原工具调用，而是通过
-`runtime.tool_completed` 发出工具级错误反馈（例如 `permission denied for tool: write_file`），
+`runtime.tool_completed` 发出工具级错误反馈（例如 `permission denied for tool: write`），
 使 provider-backed agent 可以观察该约束并重新规划。拒绝本身不应自动产生
 `runtime.failed`。
 
@@ -206,7 +206,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ## 当前可用工具目录
 
-默认内置 registry 当前包含下列工具。`lsp` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。文件格式化不通过独立工具暴露：`edit` / `write_file` / `multi_edit` / `apply_patch` 写后自动执行 format-on-write，由 formatter 配置（`formatter.enabled` / `hooks.enabled` / formatter presets）控制。
+默认内置 registry 当前包含下列工具。`lsp` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。文件格式化不通过独立工具暴露：`edit` / `write` / `multi_edit` / `apply_patch` 写后自动执行 format-on-write，由 formatter 配置（`formatter.enabled` / `hooks.enabled` / formatter presets）控制。
 
 ### Workspace 读取与搜索工具
 
@@ -332,7 +332,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ### Workspace 写入与编辑工具
 
-#### `write_file`
+#### `write`
 
 - 分组：workspace write
 - 只读：否，默认触发 approval
@@ -816,7 +816,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 | 小范围文本替换 | `edit` | 不要完整重写文件 |
 | 同一文件多个替换 | `multi_edit` | 不要多次独立调用造成中间状态漂移 |
 | 跨文件或大 diff 修改 | `apply_patch` | 不要把 patch 拆成大量不相关 edit |
-| 创建或完整重写文件 | `write_file` | 不要用 patch 表达全量新内容，除非需要 diff 审阅 |
+| 创建或完整重写文件 | `write` | 不要用 patch 表达全量新内容，除非需要 diff 审阅 |
 | 执行测试 / 构建 | `shell_exec` | 不要用 shell 做已有窄工具可完成的读取操作 |
 | 搜索网页 | `web_search` | 不要在已有 URL 时重复搜索 |
 | 抓取已知 URL | `web_fetch` | 不要访问内部 / localhost 目标 |
@@ -825,7 +825,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 ## Agent 调用准则
 
 1. **优先只读上下文收集。** 在没有足够上下文前，使用 `glob` / `read` / `grep` / `ast_grep` / `lsp` 收敛事实。
-2. **选择最窄工具。** 能用 `read` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write_file`。
+2. **选择最窄工具。** 能用 `read` 就不要用 `shell_exec cat`；能用 `edit` 就不要完整 `write`。
 3. **预期 approval pause。** 所有 `read_only=false` 的调用都可能让 session 进入 `waiting`，agent 不应假设调用立即执行。
 4. **把外部资料与本地事实分开。** `web_search` / `web_fetch` 给的是外部证据；本仓库状态仍以 workspace 工具和 runtime events 为准。
 5. **不要绕过 runtime。** UI、agent preset、graph / provider engine 都不应直接执行工具或自行处理审批。

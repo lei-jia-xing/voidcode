@@ -17,15 +17,15 @@ from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_whole_file
 
 
-class WriteFileArgs(BaseModel):
+class WriteArgs(BaseModel):
     path: str
     content: str
 
 
 @final
-class WriteFileTool:
+class WriteTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
-        name="write_file",
+        name="write",
         description="Write a UTF-8 text file inside the current workspace.",
         input_schema={
             "path": {
@@ -55,7 +55,7 @@ class WriteFileTool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
-            args = WriteFileArgs.model_validate(
+            args = WriteArgs.model_validate(
                 {
                     "path": call.arguments.get("path"),
                     "content": call.arguments.get("content"),
@@ -67,7 +67,7 @@ class WriteFileTool:
         resolution = resolve_workspace_path(
             workspace=workspace,
             raw_path=args.path,
-            containment_error="write_file only allows paths inside the workspace",
+            containment_error="write only allows paths inside the workspace",
             allow_outside_workspace=True,
         )
         workspace_root = resolution.workspace_root
@@ -87,21 +87,19 @@ class WriteFileTool:
             expected_hash = call.arguments.get("expectedHash")
             if not isinstance(expected_hash, str):
                 raise_tool_diagnostic(
-                    message="write_file requires an expectedHash argument when overwriting an existing file.",
+                    message="write requires an expectedHash argument when overwriting an existing file.",
                     error_kind="tool_input_mismatch",
                     reason="missing_expected_hash",
-                    retry_guidance=(
-                        "Use read on the target path, copy data.content_hash from the result, then retry write_file with that expectedHash."
-                    ),
+                    retry_guidance=("Use read on the target path, copy data.content_hash from the result, then retry write with that expectedHash."),
                     details={"path": display_path, "raw_path": args.path},
                 )
             actual_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
             if expected_hash != actual_hash:
                 raise_tool_diagnostic(
-                    message="write_file rejected because the file changed since it was read (stale write).",
+                    message="write rejected because the file changed since it was read (stale write).",
                     error_kind="stale_edit",
                     reason="content_hash_mismatch",
-                    retry_guidance="Read the file again, use the returned data.content_hash, then retry write_file.",
+                    retry_guidance="Read the file again, use the returned data.content_hash, then retry write.",
                     details={"expected_hash": expected_hash, "actual_hash": actual_hash, "path": display_path},
                 )
             enforce_seen_whole_file(

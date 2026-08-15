@@ -1218,7 +1218,7 @@ def _background_task_error_type(error: str | None) -> str | None:
     normalized = error.lower()
     if any(token in normalized for token in ("provider", "model", "api key", "unreachable")):
         return "provider"
-    if any(token in normalized for token in ("tool", "write_file", "read", "shell_exec", "permission")):
+    if any(token in normalized for token in ("tool", "write", "read", "shell_exec", "permission")):
         return "tool"
     return "runtime"
 

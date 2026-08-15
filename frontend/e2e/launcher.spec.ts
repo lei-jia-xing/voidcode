@@ -189,7 +189,7 @@ async function installMockRuntime(page: Page) {
     source: "runtime",
     payload: {
       request_id: "approval-1",
-      tool: "write_file",
+      tool: "write",
       target_summary: "write note.txt",
     },
   };

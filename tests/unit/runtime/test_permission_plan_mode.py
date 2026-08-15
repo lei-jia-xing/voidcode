@@ -32,14 +32,14 @@ def _read_only_tool() -> ToolDefinition:
 
 def _write_tool() -> ToolDefinition:
     return ToolDefinition(
-        name="write_file",
+        name="write",
         description="mutating tool",
         input_schema={},
         read_only=False,
     )
 
 
-def _call(name: str = "write_file") -> ToolCall:
+def _call(name: str = "write") -> ToolCall:
     return ToolCall(tool_name=name, arguments={"path": "foo.txt"})
 
 

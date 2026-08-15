@@ -451,7 +451,7 @@ describe("useAppStore integration flow", () => {
       "runtime.approval_requested",
       {
         request_id: requestId,
-        tool: "write_file",
+        tool: "write",
         target_summary: "note.txt",
         decision: "ask",
       },
@@ -566,7 +566,7 @@ describe("useAppStore integration flow", () => {
       "runtime.approval_requested",
       {
         request_id: requestId,
-        tool: "write_file",
+        tool: "write",
         target_summary: "slow.txt",
         decision: "ask",
       },
@@ -583,7 +583,7 @@ describe("useAppStore integration flow", () => {
     const toolStarted = makeEvent(
       4,
       "runtime.tool_started",
-      { tool: "write_file", tool_call_id: "write-1" },
+      { tool: "write", tool_call_id: "write-1" },
       "runtime",
       sessionId,
     );
@@ -669,7 +669,7 @@ describe("useAppStore integration flow", () => {
       "runtime.approval_requested",
       {
         request_id: requestId,
-        tool: "write_file",
+        tool: "write",
         target_summary: "denied.txt",
         decision: "ask",
       },
@@ -964,7 +964,7 @@ describe("useAppStore integration flow", () => {
       "runtime.approval_requested",
       {
         request_id: requestId,
-        tool: "write_file",
+        tool: "write",
         target_summary: "nope.txt",
         decision: "ask",
       },
@@ -2759,7 +2759,7 @@ describe("useAppStore integration flow", () => {
     const approvalRequested = makeEvent(
       2,
       "runtime.approval_requested",
-      { request_id: requestId, tool: "write_file", decision: "ask" },
+      { request_id: requestId, tool: "write", decision: "ask" },
       "runtime",
       sessionId,
     );
@@ -2846,7 +2846,7 @@ describe("useAppStore integration flow", () => {
     const approvalRequested = makeEvent(
       2,
       "runtime.approval_requested",
-      { request_id: requestId, tool: "write_file", decision: "ask" },
+      { request_id: requestId, tool: "write", decision: "ask" },
       "runtime",
       sessionId,
     );
@@ -2937,14 +2937,14 @@ describe("useAppStore integration flow", () => {
     const approvalRequested = makeEvent(
       2,
       "runtime.approval_requested",
-      { request_id: requestId, tool: "write_file", decision: "ask" },
+      { request_id: requestId, tool: "write", decision: "ask" },
       "runtime",
       sessionId,
     );
     const replayProgress = makeEvent(
       3,
       "runtime.tool_started",
-      { tool: "write_file" },
+      { tool: "write" },
       "runtime",
       sessionId,
     );

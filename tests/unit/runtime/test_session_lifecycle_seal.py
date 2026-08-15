@@ -193,7 +193,7 @@ class _BlockingThenResultTool:
     """Tool that blocks until released, then returns a real result."""
 
     definition = ToolDefinition(
-        name="write_file",
+        name="write",
         description="Probe that blocks until released and then returns a real result",
         input_schema={"type": "object"},
         read_only=False,
@@ -227,7 +227,7 @@ class _ToolThenNothingGraph:
         session: SessionState,
     ) -> _StubStep:
         _ = request, tool_results, session
-        return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={}))
+        return _StubStep(tool_call=ToolCall(tool_name="write", arguments={}))
 
 
 def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Path) -> None:
@@ -281,7 +281,7 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
         store.append_session_events(
             workspace=tmp_path,
             session_id="race-1",
-            events=(("runtime.tool_completed", "tool", {"tool": "write_file", "status": "ok", "content": "late"}, None),),
+            events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
         )
     with pytest.raises(SessionSealedError):
         store.append_session_event(
@@ -375,7 +375,7 @@ class _ApprovalThenDoneGraph:
         if not tool_results and "pre-seal steer" not in request.prompt:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
@@ -550,7 +550,7 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
         store.append_session_events(
             workspace=tmp_path,
             session_id="leader-session",
-            events=(("runtime.tool_completed", "tool", {"tool": "write_file", "status": "ok", "content": "late"}, None),),
+            events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
         )
     with pytest.raises(SessionSealedError):
         store.append_session_event(

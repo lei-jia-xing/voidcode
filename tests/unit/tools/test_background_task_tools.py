@@ -249,7 +249,7 @@ class _ApprovalBlockedBackgroundRuntime(_StubBackgroundRuntime):
             child_session_id="child-session",
             status="running",
             approval_blocked=True,
-            summary_output="Approval blocked on write_file: write_file alpha.txt",
+            summary_output="Approval blocked on write: write alpha.txt",
             result_available=True,
         )
 
@@ -263,7 +263,7 @@ class _ApprovalBlockedBackgroundRuntime(_StubBackgroundRuntime):
             ),
             prompt="delegated",
             status="waiting",
-            summary="Approval blocked on write_file: write_file alpha.txt",
+            summary="Approval blocked on write: write alpha.txt",
             transcript=(),
             last_event_sequence=1,
         )
@@ -551,11 +551,11 @@ def test_background_output_full_session_preserves_approval_summary(tmp_path: Pat
 
     assert result.status == "ok"
     assert result.content is not None
-    assert "Approval blocked on write_file: write_file alpha.txt" in result.content
+    assert "Approval blocked on write: write alpha.txt" in result.content
     assert "Running child session" not in result.content
-    assert result.data["summary_output"] == ("Approval blocked on write_file: write_file alpha.txt")
+    assert result.data["summary_output"] == ("Approval blocked on write: write alpha.txt")
     message_payload = cast(dict[str, object], result.data["message"])
-    assert message_payload["summary_output"] == ("Approval blocked on write_file: write_file alpha.txt")
+    assert message_payload["summary_output"] == ("Approval blocked on write: write alpha.txt")
 
 
 def test_background_output_tool_bounds_full_session_transcript(tmp_path: Path) -> None:

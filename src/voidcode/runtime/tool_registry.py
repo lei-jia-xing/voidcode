@@ -21,7 +21,7 @@ ESSENTIAL_TOOL_NAMES = frozenset(
         # Core workspace navigation and edit loop.
         "read",
         "edit",
-        "write_file",
+        "write",
         "grep",
         "glob",
         "shell_exec",

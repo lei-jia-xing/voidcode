@@ -415,7 +415,7 @@ def _replace(
             error_kind="no_op",
             reason="empty_content",
             retry_guidance=(
-                "The target file is empty; use write_file to create content, or read the file again and retry the edit against the current text."
+                "The target file is empty; use write to create content, or read the file again and retry the edit against the current text."
             ),
             details={"content_empty": True},
         )

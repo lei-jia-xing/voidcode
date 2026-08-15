@@ -13,7 +13,7 @@ from voidcode.formatter import RuntimeFormatterPresetConfig
 from voidcode.hook.config import RuntimeHooksConfig
 from voidcode.runtime.config import load_runtime_config
 from voidcode.runtime.service import ToolRegistry
-from voidcode.tools import ToolCall, WriteFileTool
+from voidcode.tools import ToolCall, WriteTool
 from voidcode.tools._repair import ToolDiagnosticError
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
@@ -22,19 +22,19 @@ def _content_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) -> None:
-    tool = WriteFileTool()
+def test_write_tool_writes_utf8_content_inside_workspace(tmp_path: Path) -> None:
+    tool = WriteTool()
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "nested/output.txt", "content": "hello utf8 π"},
         ),
         workspace=tmp_path,
     )
 
     assert (tmp_path / "nested" / "output.txt").read_text(encoding="utf-8") == "hello utf8 π"
-    assert result.tool_name == "write_file"
+    assert result.tool_name == "write"
     assert result.status == "ok"
     assert result.content == "Wrote file successfully: nested/output.txt"
     assert result.data == {
@@ -44,14 +44,14 @@ def test_write_file_tool_writes_utf8_content_inside_workspace(tmp_path: Path) ->
     }
 
 
-def test_write_file_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
+def test_write_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
     note_path = tmp_path / "note.txt"
     note_path.write_text("old\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={
                 "path": "note.txt",
                 "content": "new\n",
@@ -64,40 +64,40 @@ def test_write_file_tool_returns_diff_for_rewrite(tmp_path: Path) -> None:
     assert result.data["diff"] == ("--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n")
 
 
-def test_write_file_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
-    tool = WriteFileTool()
+def test_write_tool_rejects_non_string_arguments(tmp_path: Path) -> None:
+    tool = WriteTool()
 
     with pytest.raises(
         ValueError,
         match=(
-            r"write_file Validation error: path: Input should be a valid string \(received int\)\. "
+            r"write Validation error: path: Input should be a valid string \(received int\)\. "
             r"Please retry with corrected arguments that satisfy the tool schema\."
         ),
     ):
         tool.invoke(
-            ToolCall(tool_name="write_file", arguments={"path": 123, "content": "x"}),
+            ToolCall(tool_name="write", arguments={"path": 123, "content": "x"}),
             workspace=tmp_path,
         )
 
     with pytest.raises(
         ValueError,
         match=(
-            r"write_file Validation error: content: Input should be a valid string "
+            r"write Validation error: content: Input should be a valid string "
             r"\(received int\)\. "
             r"Please retry with corrected arguments that satisfy the tool schema\."
         ),
     ):
         tool.invoke(
-            ToolCall(tool_name="write_file", arguments={"path": "out.txt", "content": 123}),
+            ToolCall(tool_name="write", arguments={"path": "out.txt", "content": 123}),
             workspace=tmp_path,
         )
 
 
-def test_write_file_tool_allows_empty_content_for_new_file(tmp_path: Path) -> None:
-    tool = WriteFileTool()
+def test_write_tool_allows_empty_content_for_new_file(tmp_path: Path) -> None:
+    tool = WriteTool()
 
     result = tool.invoke(
-        ToolCall(tool_name="write_file", arguments={"path": "shader.frag", "content": ""}),
+        ToolCall(tool_name="write", arguments={"path": "shader.frag", "content": ""}),
         workspace=tmp_path,
     )
 
@@ -107,14 +107,14 @@ def test_write_file_tool_allows_empty_content_for_new_file(tmp_path: Path) -> No
     assert result.data == {"path": "shader.frag", "byte_count": 0, "diff": ""}
 
 
-def test_write_file_tool_allows_empty_content_for_existing_file(tmp_path: Path) -> None:
+def test_write_tool_allows_empty_content_for_existing_file(tmp_path: Path) -> None:
     shader_path = tmp_path / "shader.frag"
     shader_path.write_text("void main() {}\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={
                 "path": "shader.frag",
                 "content": "",
@@ -130,13 +130,13 @@ def test_write_file_tool_allows_empty_content_for_existing_file(tmp_path: Path) 
     assert result.data["diff"] == ("--- a/shader.frag\n+++ b/shader.frag\n@@ -1 +0,0 @@\n-void main() {}\n")
 
 
-def test_write_file_tool_allows_absolute_paths_outside_workspace(tmp_path: Path) -> None:
-    tool = WriteFileTool()
+def test_write_tool_allows_absolute_paths_outside_workspace(tmp_path: Path) -> None:
+    tool = WriteTool()
     outside = tmp_path.parent / "outside-write.txt"
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": str(outside), "content": "ok"},
         ),
         workspace=tmp_path,
@@ -146,7 +146,7 @@ def test_write_file_tool_allows_absolute_paths_outside_workspace(tmp_path: Path)
     assert result.data["path"] == str(outside.resolve())
 
 
-def test_write_file_tool_allows_symlink_escape_when_runtime_permission_allows(
+def test_write_tool_allows_symlink_escape_when_runtime_permission_allows(
     tmp_path: Path,
 ) -> None:
     outside_dir = tmp_path.parent / "outside_write_escape"
@@ -157,10 +157,10 @@ def test_write_file_tool_allows_symlink_escape_when_runtime_permission_allows(
     except OSError:
         pytest.skip("symlink is not available on this platform")
 
-    tool = WriteFileTool()
+    tool = WriteTool()
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "linkdir/escape.txt", "content": "ok"},
         ),
         workspace=tmp_path,
@@ -169,7 +169,7 @@ def test_write_file_tool_allows_symlink_escape_when_runtime_permission_allows(
     assert result.data["path"] == str((outside_dir / "escape.txt").resolve())
 
 
-def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
+def test_write_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
     formatter_script = tmp_path / "formatter.py"
     formatter_script.write_text(
         textwrap.dedent(
@@ -182,7 +182,7 @@ def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    tool = WriteFileTool(
+    tool = WriteTool(
         hooks_config=RuntimeHooksConfig(
             format_on_write=True,
             formatter_presets={
@@ -196,7 +196,7 @@ def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "main.py", "content": "print('raw')\n"},
         ),
         workspace=tmp_path,
@@ -214,10 +214,10 @@ def test_write_file_tool_runs_formatter_after_writing(tmp_path: Path) -> None:
     assert result.data["byte_count"] == len(b"print( 'formatted' )\n")
 
 
-def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
+def test_write_tool_keeps_write_successful_when_formatter_is_missing(
     tmp_path: Path,
 ) -> None:
-    tool = WriteFileTool(
+    tool = WriteTool(
         hooks_config=RuntimeHooksConfig(
             format_on_write=True,
             formatter_presets={
@@ -231,7 +231,7 @@ def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "main.py", "content": "print('raw')\n"},
         ),
         workspace=tmp_path,
@@ -240,7 +240,7 @@ def test_write_file_tool_keeps_write_successful_when_formatter_is_missing(
     assert result.status == "ok"
 
 
-def test_write_file_tool_skips_formatter_by_default(tmp_path: Path) -> None:
+def test_write_tool_skips_formatter_by_default(tmp_path: Path) -> None:
     formatter_marker = tmp_path / "formatter-ran.txt"
     formatter_script = tmp_path / "formatter.py"
     formatter_script.write_text(
@@ -253,7 +253,7 @@ def test_write_file_tool_skips_formatter_by_default(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    tool = WriteFileTool(
+    tool = WriteTool(
         hooks_config=RuntimeHooksConfig(
             formatter_presets={
                 "python": RuntimeFormatterPresetConfig(
@@ -266,7 +266,7 @@ def test_write_file_tool_skips_formatter_by_default(tmp_path: Path) -> None:
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "main.py", "content": "print('raw')\n"},
         ),
         workspace=tmp_path,
@@ -278,8 +278,8 @@ def test_write_file_tool_skips_formatter_by_default(tmp_path: Path) -> None:
     assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
 
 
-def test_write_file_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path: Path) -> None:
-    tool = WriteFileTool()
+def test_write_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path: Path) -> None:
+    tool = WriteTool()
 
     class _FakeLspFacade:
         def request_diagnostics(self, *, file_path: str, workspace: str) -> dict[str, object]:
@@ -312,7 +312,7 @@ def test_write_file_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path
     ):
         result = tool.invoke(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "main.py", "content": "print('raw')\n"},
             ),
             workspace=tmp_path,
@@ -329,7 +329,7 @@ def test_write_file_tool_appends_runtime_lsp_diagnostics_when_available(tmp_path
     assert result.content == "Wrote file successfully: main.py"
 
 
-def test_write_file_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
+def test_write_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path) -> None:
     formatter_marker = tmp_path / "formatter-ran.txt"
     formatter_script = tmp_path / "formatter.py"
     formatter_script.write_text(
@@ -342,7 +342,7 @@ def test_write_file_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path)
         ),
         encoding="utf-8",
     )
-    tool = WriteFileTool(
+    tool = WriteTool(
         hooks_config=RuntimeHooksConfig(
             enabled=False,
             formatter_presets={
@@ -356,7 +356,7 @@ def test_write_file_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path)
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "main.py", "content": "print('raw')\n"},
         ),
         workspace=tmp_path,
@@ -368,7 +368,7 @@ def test_write_file_tool_skips_formatter_when_hooks_are_disabled(tmp_path: Path)
     assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
 
 
-def test_write_file_tool_skips_formatter_when_formatter_is_disabled_in_runtime_config(
+def test_write_tool_skips_formatter_when_formatter_is_disabled_in_runtime_config(
     tmp_path: Path,
 ) -> None:
     formatter_marker = tmp_path / "formatter-ran.txt"
@@ -405,11 +405,11 @@ def test_write_file_tool_skips_formatter_when_formatter_is_disabled_in_runtime_c
         tmp_path,
         env={"XDG_CONFIG_HOME": str(tmp_path / "xdg-config")},
     )
-    tool = WriteFileTool(hooks_config=config.hooks)
+    tool = WriteTool(hooks_config=config.hooks)
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "main.py", "content": "print('raw')\n"},
         ),
         workspace=tmp_path,
@@ -421,15 +421,15 @@ def test_write_file_tool_skips_formatter_when_formatter_is_disabled_in_runtime_c
     assert (tmp_path / "main.py").read_text(encoding="utf-8") == "print('raw')\n"
 
 
-def test_write_file_tool_rejects_overwrite_without_expected_hash(tmp_path: Path) -> None:
+def test_write_tool_rejects_overwrite_without_expected_hash(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("old\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
 
     with pytest.raises(ToolDiagnosticError, match="expectedHash") as exc_info:
         tool.invoke(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "note.txt", "content": "new\n"},
             ),
             workspace=tmp_path,
@@ -443,15 +443,15 @@ def test_write_file_tool_rejects_overwrite_without_expected_hash(tmp_path: Path)
     assert target.read_text(encoding="utf-8") == "old\n"
 
 
-def test_write_file_tool_rejects_stale_hash_for_existing_file(tmp_path: Path) -> None:
+def test_write_tool_rejects_stale_hash_for_existing_file(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("old\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
 
     with pytest.raises(ToolDiagnosticError, match="stale write") as exc_info:
         tool.invoke(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={
                     "path": "note.txt",
                     "content": "new\n",
@@ -471,12 +471,12 @@ def test_write_file_tool_rejects_stale_hash_for_existing_file(tmp_path: Path) ->
     assert target.read_text(encoding="utf-8") == "old\n"
 
 
-def test_write_file_tool_new_file_does_not_require_hash(tmp_path: Path) -> None:
-    tool = WriteFileTool()
+def test_write_tool_new_file_does_not_require_hash(tmp_path: Path) -> None:
+    tool = WriteTool()
 
     result = tool.invoke(
         ToolCall(
-            tool_name="write_file",
+            tool_name="write",
             arguments={"path": "brand-new.txt", "content": "hello"},
         ),
         workspace=tmp_path,
@@ -486,18 +486,18 @@ def test_write_file_tool_new_file_does_not_require_hash(tmp_path: Path) -> None:
     assert (tmp_path / "brand-new.txt").read_text(encoding="utf-8") == "hello"
 
 
-def test_tools_package_and_default_registry_export_write_file_tool() -> None:
+def test_tools_package_and_default_registry_export_write_tool() -> None:
     registry = ToolRegistry.with_defaults()
 
-    assert "WriteFileTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
-    assert registry.resolve("write_file").definition.name == "write_file"
-    assert registry.resolve("write_file").definition.read_only is False
+    assert "WriteTool" in __import__("voidcode.tools", fromlist=["__all__"]).__all__
+    assert registry.resolve("write").definition.name == "write"
+    assert registry.resolve("write").definition.read_only is False
 
 
-def test_write_file_tool_allows_full_overwrite_after_full_file_read(tmp_path: Path) -> None:
+def test_write_tool_allows_full_overwrite_after_full_file_read(tmp_path: Path) -> None:
     target = tmp_path / "note.txt"
     target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
-    tool = WriteFileTool()
+    tool = WriteTool()
     resolved = target.resolve().as_posix()
 
     with bind_runtime_tool_context(
@@ -509,7 +509,7 @@ def test_write_file_tool_allows_full_overwrite_after_full_file_read(tmp_path: Pa
     ):
         result = tool.invoke(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "note.txt", "content": "replacement", "expectedHash": _content_hash(target)},
             ),
             workspace=tmp_path,

@@ -203,7 +203,7 @@ describe("ChatThread", () => {
             tools: [],
             status: "waiting",
             approval: {
-              tool: "write_file",
+              tool: "write",
               targetSummary: "note.txt",
               requestId: "approval-1",
             },
@@ -500,7 +500,7 @@ describe("ChatThread", () => {
               },
               {
                 id: "write-1",
-                name: "write_file",
+                name: "write",
                 status: "completed",
                 arguments: { path: "src/app.ts", content: "new" },
                 result: {
@@ -535,11 +535,11 @@ describe("ChatThread", () => {
       screen.queryByRole("button", { name: /show details for read/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Output")).not.toBeInTheDocument();
-    expect(screen.getByText("write_file")).toBeInTheDocument();
+    expect(screen.getByText("write")).toBeInTheDocument();
     expect(screen.getByText(/3 bytes/)).toBeInTheDocument();
     const writeRow = screen
-      .getByText("write_file")
-      .closest('[data-tool-row="write_file"]');
+      .getByText("write")
+      .closest('[data-tool-row="write"]');
     expect(writeRow).not.toBeNull();
     expect(writeRow).toHaveTextContent("path=src/app.ts");
     expect(writeRow).toHaveTextContent("+1/-0");

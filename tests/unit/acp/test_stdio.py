@@ -276,7 +276,7 @@ def test_prompt_runtime_failed_event_returns_json_rpc_error() -> None:
                     sequence=2,
                     event_type="runtime.failed",
                     source="runtime",
-                    payload={"error": "permission denied for tool: write_file"},
+                    payload={"error": "permission denied for tool: write"},
                 ),
             ),
         ]
@@ -291,7 +291,7 @@ def test_prompt_runtime_failed_event_returns_json_rpc_error() -> None:
     assert messages[-1] == {
         "jsonrpc": "2.0",
         "id": 2,
-        "error": {"code": -32603, "message": "permission denied for tool: write_file"},
+        "error": {"code": -32603, "message": "permission denied for tool: write"},
     }
     assert not any(message.get("result") == {"stopReason": "end_turn"} for message in messages)
 

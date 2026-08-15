@@ -238,9 +238,9 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
                 source="runtime",
                 payload={
                     "kind": "runtime_tool_policy_denied",
-                    "tool": "write_file",
+                    "tool": "write",
                     "tool_policy": {
-                        "tool": "write_file",
+                        "tool": "write",
                         "mode": "analyze",
                         "read_only": True,
                         "decision": "deny",
@@ -263,7 +263,7 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     assert "runtime_policy" not in loaded.session.metadata
     policy_observations = cast(dict[str, object], loaded.session.metadata["policy_observations"])
     tool_policy_denial = cast(dict[str, object], policy_observations["tool_policy_denial"])
-    assert tool_policy_denial["tool"] == "write_file"
+    assert tool_policy_denial["tool"] == "write"
     assert "raw-secret-value" not in encoded
     assert "sk-runtime-secret" not in encoded
     assert 'NPM_CONFIG_YES": "true' not in encoded
@@ -1103,7 +1103,7 @@ def test_tool_results_from_events_preserves_successful_null_content() -> None:
                 event_type="runtime.tool_completed",
                 source="runtime",
                 payload={
-                    "tool": "write_file",
+                    "tool": "write",
                     "status": "ok",
                     "content": None,
                     "error": None,
@@ -1115,11 +1115,11 @@ def test_tool_results_from_events_preserves_successful_null_content() -> None:
 
     assert tool_results == [
         {
-            "tool_name": "write_file",
+            "tool_name": "write",
             "content": None,
             "status": "ok",
             "data": {
-                "tool": "write_file",
+                "tool": "write",
                 "status": "ok",
                 "content": None,
                 "error": None,
@@ -1321,7 +1321,7 @@ def test_session_storage_reports_corrupt_pending_approval_payload(tmp_path: Path
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute(
             "UPDATE sessions SET pending_approval_json = ? WHERE session_id = ?",
-            ('{"request_id": 1, "tool_name": "write_file"}', "approval-session"),
+            ('{"request_id": 1, "tool_name": "write"}', "approval-session"),
         )
         connection.commit()
 
@@ -1633,9 +1633,9 @@ def test_session_storage_persists_pending_approval_across_store_reopen(
                 source="runtime",
                 payload={
                     "request_id": "approval-reopen-1",
-                    "tool": "write_file",
+                    "tool": "write",
                     "arguments": {"path": "danger.txt"},
-                    "target_summary": "write_file danger.txt",
+                    "target_summary": "write danger.txt",
                     "reason": "write requires approval",
                     "policy": {"mode": "ask"},
                 },
@@ -1644,9 +1644,9 @@ def test_session_storage_persists_pending_approval_across_store_reopen(
     )
     pending_approval = PendingApproval(
         request_id="approval-reopen-1",
-        tool_name="write_file",
+        tool_name="write",
         arguments={"path": "danger.txt"},
-        target_summary="write_file danger.txt",
+        target_summary="write danger.txt",
         reason="write requires approval",
         request_event_sequence=1,
     )
@@ -1989,7 +1989,7 @@ def test_session_storage_bulk_append_rejects_non_lifecycle_event_on_terminal_ses
         _ = store.append_session_events(
             workspace=tmp_path,
             session_id="sealed-session",
-            events=(("runtime.tool_started", "runtime", {"tool": "write_file"}, None),),
+            events=(("runtime.tool_started", "runtime", {"tool": "write"}, None),),
         )
 
 
@@ -2026,7 +2026,7 @@ def test_session_storage_bulk_append_seal_is_atomic_on_mixed_batch(tmp_path: Pat
             session_id="sealed-session",
             events=(
                 ("runtime.background_task_completed", "runtime", {"task_id": "task-1"}, "bt-finalize-1"),
-                ("runtime.tool_started", "runtime", {"tool": "write_file"}, None),
+                ("runtime.tool_started", "runtime", {"tool": "write"}, None),
             ),
         )
 

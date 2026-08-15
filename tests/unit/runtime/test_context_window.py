@@ -557,7 +557,7 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
             "plan_state": {
                 "status": "waiting_approval",
                 "approval_request_id": "approval-123",
-                "blocked_tool": "write_file",
+                "blocked_tool": "write",
             }
         },
         policy=_context_window_policy(model_context_window_tokens=100),
@@ -570,14 +570,14 @@ def test_assemble_provider_context_injects_pending_approval_state() -> None:
     assert pending_segments[0].content is not None
     assert "waiting_approval" in pending_segments[0].content
     assert "approval-123" in pending_segments[0].content
-    assert "write_file" in pending_segments[0].content
+    assert "write" in pending_segments[0].content
     assert "runtime resume" in pending_segments[0].content
     assert pending_segments[0].metadata == {
         "source": "runtime_pending_state",
         "tier": "task",
         "layer": "task_state",
         "status": "waiting_approval",
-        "blocked_tool": "write_file",
+        "blocked_tool": "write",
         "approval_request_id": "approval-123",
     }
 
@@ -1331,7 +1331,7 @@ def test_prepare_provider_context_older_write_edit_do_not_displace_newer_reads()
         prompt="fix code",
         tool_results=(
             ToolResult(
-                tool_name="write_file",
+                tool_name="write",
                 content="written",
                 status="ok",
                 data={"index": 1, "path": "src/app.py"},
@@ -1410,7 +1410,7 @@ def test_prepare_provider_context_protected_recent_always_kept() -> None:
         prompt="continue",
         tool_results=(
             ToolResult(
-                tool_name="write_file",
+                tool_name="write",
                 content="important write",
                 status="ok",
                 data={"index": 1, "path": "src/app.py"},

@@ -430,7 +430,7 @@ def test_provider_adapter_wraps_internal_tool_property_schema(
         ),
         available_tools=(
             ToolDefinition(
-                name="write_file",
+                name="write",
                 description="write file",
                 input_schema={
                     "path": {"type": "string"},
@@ -1110,7 +1110,7 @@ def test_provider_adapter_sanitizes_tool_arguments_and_inline_blobs(
     raw_data_uri = "data:image/png;base64," + "A" * 64
     tool_results = (
         ToolResult(
-            tool_name="write_file",
+            tool_name="write",
             status="ok",
             content="Wrote file successfully: out.txt",
             data={
@@ -1545,7 +1545,7 @@ def test_opencode_go_openai_compatible_provider_sanitizes_tool_messages(
     raw_data_uri = "data:image/png;base64," + "A" * 64
     tool_results = (
         ToolResult(
-            tool_name="write_file",
+            tool_name="write",
             status="ok",
             content="Wrote file successfully: out.txt",
             data={
@@ -3200,7 +3200,7 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
                 [
                     {
                         "index": 0,
-                        "function": {"name": "write_file", "arguments": '{"path":'},
+                        "function": {"name": "write", "arguments": '{"path":'},
                     },
                     {
                         "index": 1,
@@ -3227,9 +3227,9 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
             kind="content",
             channel="tool",
             text=(
-                '{"tool_calls": [{"tool_name": "write_file", '
+                '{"tool_calls": [{"tool_name": "write", '
                 '"arguments": {"path": "out.txt", "content": "ok"}, '
-                '"tool_call_id": "write_file_1"}, {"tool_name": "read", '
+                '"tool_call_id": "write_1"}, {"tool_name": "read", '
                 '"arguments": {"path": "sample.txt"}, '
                 '"tool_call_id": "read_2"}]}'
             ),

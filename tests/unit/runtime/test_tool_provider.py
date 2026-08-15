@@ -63,7 +63,7 @@ from voidcode.tools import (
     ToolCall,
     WebFetchTool,
     WebSearchTool,
-    WriteFileTool,
+    WriteTool,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.guidance import guidance_filename_for_tool, guidance_for_tool
@@ -252,7 +252,7 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         AstGrepTool,
         WebFetchTool,
         WebSearchTool,
-        WriteFileTool,
+        WriteTool,
         MultiEditTool,
         TodoWriteTool,
     ]
@@ -344,7 +344,7 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
         "shell_exec",
         "web_fetch",
         "web_search",
-        "write_file",
+        "write",
     }
     for tool_name in core_tools:
         assert tool_name in registry.tools, f"Missing core tool: {tool_name}"
@@ -389,7 +389,7 @@ def test_scoped_tool_registry_applies_manifest_allowlist() -> None:
 
     assert "read" in scoped.tools
     assert "grep" in scoped.tools
-    assert "write_file" not in scoped.tools
+    assert "write" not in scoped.tools
     assert "task" not in scoped.tools
     assert "question" not in scoped.tools
     assert "background_output" not in scoped.tools
@@ -417,7 +417,7 @@ def test_scoped_tool_registry_applies_agent_allowlist_and_default_filters() -> N
         agent=RuntimeAgentConfig(
             preset="leader",
             tools=RuntimeToolsConfig(
-                allowlist=("read", "grep", "write_file"),
+                allowlist=("read", "grep", "write"),
                 default=("read", "grep"),
             ),
         ),
@@ -502,7 +502,7 @@ def test_read_only_mode_direct_invocation_denies_mutating_tool_before_execution(
         workspace=tmp_path,
         graph=_ToolCallGraph(
             ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "blocked.txt", "content": "nope"},
             )
         ),
@@ -526,9 +526,9 @@ def test_read_only_mode_direct_invocation_denies_mutating_tool_before_execution(
     failed = events[-1]
     assert failed.event_type == "runtime.failed"
     assert failed.payload["kind"] == "runtime_tool_policy_denied"
-    assert failed.payload["tool"] == "write_file"
+    assert failed.payload["tool"] == "write"
     assert failed.payload["tool_policy"] == {
-        "tool": "write_file",
+        "tool": "write",
         "mode": "analyze",
         "read_only": True,
         "decision": "deny",
@@ -649,13 +649,13 @@ def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
     definitions = {definition.name: definition for definition in registry.definitions()}
 
-    assert definitions["write_file"].description.startswith("Writes a file to the local workspace.")
-    assert "new file or intentionally replacing the whole file" in definitions["write_file"].description
-    assert "a prior read is not required" in definitions["write_file"].description
-    assert "Prefer this tool when the desired file content is already known" in definitions["write_file"].description
-    assert "Provide the complete final content directly" in definitions["write_file"].description
-    assert "Do not create placeholder files" in definitions["write_file"].description
-    assert "produced or transformed by running a real program" in definitions["write_file"].description
+    assert definitions["write"].description.startswith("Writes a file to the local workspace.")
+    assert "new file or intentionally replacing the whole file" in definitions["write"].description
+    assert "a prior read is not required" in definitions["write"].description
+    assert "Prefer this tool when the desired file content is already known" in definitions["write"].description
+    assert "Provide the complete final content directly" in definitions["write"].description
+    assert "Do not create placeholder files" in definitions["write"].description
+    assert "produced or transformed by running a real program" in definitions["write"].description
     assert "Do not use this tool to start a long-lived dev server" in definitions["shell_exec"].description
     assert "When the desired file content is already known" in definitions["shell_exec"].description
     assert "Use shell execution when the work is inherently command-driven" in definitions["shell_exec"].description
@@ -684,7 +684,7 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "todo_write",
         "web_fetch",
         "web_search",
-        "write_file",
+        "write",
     }
 
     for tool_name in runtime_tool_names:
@@ -783,7 +783,7 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "shell_exec",
         "web_fetch",
         "web_search",
-        "write_file",
+        "write",
     ]
     for tool_name in core_tools:
         assert tool_name in registry.tools, f"Missing core tool: {tool_name}"

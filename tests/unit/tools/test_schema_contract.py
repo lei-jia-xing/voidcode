@@ -13,14 +13,14 @@ from voidcode.tools.read import ReadTool
 from voidcode.tools.shell_exec import ShellExecTool
 from voidcode.tools.web_fetch import WebFetchTool
 from voidcode.tools.web_search import WebSearchTool
-from voidcode.tools.write_file import WriteFileTool
+from voidcode.tools.write import WriteTool
 
 
 @pytest.mark.parametrize(
     ("tool", "required"),
     [
         (ReadTool, ["path"]),
-        (WriteFileTool, ["path", "content"]),
+        (WriteTool, ["path", "content"]),
         (EditTool, ["path", "oldString", "newString", "expectedHash"]),
         (MultiEditTool, ["path", "edits", "expectedHash"]),
         (GrepTool, ["pattern", "path"]),

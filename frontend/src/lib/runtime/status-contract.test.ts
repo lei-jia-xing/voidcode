@@ -217,12 +217,12 @@ describe("Tool Status Contract", () => {
         event_type: "graph.tool_request_created",
         source: "graph",
         payload: {
-          tool: "write_file",
+          tool: "write",
           tool_call_id: "call_write",
           arguments: { path: "note.txt", content: "new" },
           tool_status: {
             invocation_id: "call_write",
-            tool_name: "write_file",
+            tool_name: "write",
             phase: "running",
             status: "running",
             display: { kind: "file", title: "Write", summary: "note.txt" },
@@ -235,7 +235,7 @@ describe("Tool Status Contract", () => {
         event_type: "runtime.tool_completed",
         source: "tool",
         payload: {
-          tool: "write_file",
+          tool: "write",
           tool_call_id: "call_write",
           status: "ok",
           arguments: { path: "note.txt", content: "new" },
@@ -246,7 +246,7 @@ describe("Tool Status Contract", () => {
           error: null,
           tool_status: {
             invocation_id: "call_write",
-            tool_name: "write_file",
+            tool_name: "write",
             phase: "completed",
             status: "completed",
             display: { kind: "file", title: "Write", summary: "note.txt" },
@@ -261,7 +261,7 @@ describe("Tool Status Contract", () => {
     expect(assistantMessage?.tools).toHaveLength(1);
     expect(assistantMessage?.tools[0]).toMatchObject({
       id: "call_write",
-      name: "write_file",
+      name: "write",
       status: "completed",
       arguments: { path: "note.txt", content: "new" },
       result: {

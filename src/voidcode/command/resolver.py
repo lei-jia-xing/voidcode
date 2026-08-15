@@ -97,8 +97,8 @@ def resolve_tool_instruction(
             raise ValueError("request path must not be empty")
         if not content_text:
             raise ValueError("request content must not be empty")
-        _ensure_tool(available_tools, "write_file", read_only=False, suffix=unavailable_message_suffix)
-        return ToolCommandResolution(ToolCall(tool_name="write_file", arguments={"path": path_text, "content": content_text}))
+        _ensure_tool(available_tools, "write", read_only=False, suffix=unavailable_message_suffix)
+        return ToolCommandResolution(ToolCall(tool_name="write", arguments={"path": path_text, "content": content_text}))
 
     raise ValueError(UNSUPPORTED_TOOL_COMMAND_MESSAGE)
 

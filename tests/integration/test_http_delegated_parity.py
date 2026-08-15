@@ -1061,7 +1061,7 @@ def test_http_tasks_endpoints_cover_real_runtime_waiting_approval_and_cancel(
     assert message["approval_blocked"] is True
     assert cast(dict[str, object], output_payload["session_result"])["status"] == "waiting"
     assert cast(dict[str, object], output_payload["session_result"])["output"] is None
-    assert "Approval blocked on write_file: write_file child.txt" in cast(str, output_payload["output"])
+    assert "Approval blocked on write: write child.txt" in cast(str, output_payload["output"])
     assert cancel_payload["status"] == "cancelled"
     assert cancel_payload["cancellation_cause"] == "cancelled by parent while child session was waiting"
     assert cancel_payload["error"] == "cancelled by parent while child session was waiting"

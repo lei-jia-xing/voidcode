@@ -26,7 +26,7 @@ _DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher", "
 _CALLABLE_CHILD_AGENT_PRESETS = _DELEGATED_ONLY_AGENT_PRESETS
 _MUTATING_TOOL_PATTERNS = frozenset(
     {
-        "write_file",
+        "write",
         "edit",
         "multi_edit",
         "apply_patch",
@@ -208,7 +208,7 @@ def test_builtin_manifests_omit_removed_memory_tools() -> None:
 
 
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
-    write_tools = {"write_file", "edit", "multi_edit", "apply_patch"}
+    write_tools = {"write", "edit", "multi_edit", "apply_patch"}
 
     for preset in ("advisor", "explore"):
         manifest = get_builtin_agent_manifest(preset)

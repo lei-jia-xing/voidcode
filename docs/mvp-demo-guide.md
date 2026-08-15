@@ -20,7 +20,7 @@
    ```
    *预期结果*：
    - CLI 打印简洁的审批进度摘要。
-   - CLI 弹出类似于 `Approve write_file for write_file hello.txt? [y/N]: ` 的审批提示（具体的 target summary 可能包含工具名和路径）。
+   - CLI 弹出类似于 `Approve write for write hello.txt? [y/N]: ` 的审批提示（具体的 target summary 可能包含工具名和路径）。
    - 输入 `y` 后，CLI 继续执行并显示最终输出和 session id。
    - 如需完整机器可解析事件流，使用 `uv run voidcode run --json ...`；JSON 模式会把最终结果写到 stdout，并把运行进度保留在 stderr。
 

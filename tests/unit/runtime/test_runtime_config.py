@@ -149,7 +149,7 @@ def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
                 "permission": {
                     "rules": [
                         {"tool": "read", "path": "src/**", "decision": "allow"},
-                        {"tool": "write_file", "path": ".github/**", "decision": "ask"},
+                        {"tool": "write", "path": ".github/**", "decision": "ask"},
                         {"tool": "shell_exec", "command": "rm -rf *", "decision": "deny"},
                     ]
                 }
@@ -162,7 +162,7 @@ def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
 
     assert config.permission.rules == (
         PatternPermissionRule(tool="read", path="src/**", decision="allow"),
-        PatternPermissionRule(tool="write_file", path=".github/**", decision="ask"),
+        PatternPermissionRule(tool="write", path=".github/**", decision="ask"),
         PatternPermissionRule(tool="shell_exec", command="rm -rf *", decision="deny"),
     )
 

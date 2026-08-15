@@ -26,7 +26,7 @@ def _tool_definitions() -> tuple[ToolDefinition, ...]:
     return (
         ToolDefinition(name="read", description="read", input_schema={}, read_only=True),
         ToolDefinition(name="grep", description="grep", input_schema={}, read_only=True),
-        ToolDefinition(name="write_file", description="write", input_schema={}, read_only=False),
+        ToolDefinition(name="write", description="write", input_schema={}, read_only=False),
         ToolDefinition(name="shell_exec", description="run", input_schema={}, read_only=False),
     )
 

@@ -627,7 +627,7 @@ class _ProviderRuntimeParityGraph:
                 return _GraphStep(
                     events=(),
                     tool_call=tool_call_factory(
-                        tool_name="write_file",
+                        tool_name="write",
                         arguments={"path": "danger.txt", "content": content},
                     ),
                 )
@@ -1511,7 +1511,7 @@ def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(
             object,
             runtime_class(
                 workspace=tmp_path,
-                graph=_SingleToolGraph("write_file", {"path": "blocked.txt", "content": "no"}),
+                graph=_SingleToolGraph("write", {"path": "blocked.txt", "content": "no"}),
             ),
         ),
     )
@@ -1533,13 +1533,13 @@ def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(
     assert [event.event_type for event in transcript][-1:] == ["runtime.failed"]
     assert [event.event_type for event in transcript][-2:] != ["runtime.failed", "runtime.failed"]
     assert failed_event.payload["kind"] == "runtime_tool_policy_denied"
-    assert failed_event.payload["tool"] == "write_file"
+    assert failed_event.payload["tool"] == "write"
     assert replay.session.metadata["mode"] == "analyze"
     assert replay.session.metadata["read_only"] is True
     runtime_policy = cast(dict[str, object], replay.session.metadata["runtime_policy"])
     denial = cast(dict[str, object], runtime_policy["tool_policy_denial"])
     assert denial["event_sequence"] == failed_event.sequence
-    assert denial["tool"] == "write_file"
+    assert denial["tool"] == "write"
     assert denial["read_only"] is True
 
 
@@ -2238,7 +2238,7 @@ def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
         (
             "explore",
             {
-                "write_file",
+                "write",
                 "edit",
                 "multi_edit",
                 "apply_patch",
@@ -2251,7 +2251,7 @@ def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
         (
             "worker",
             {"task", "question", "background_output"},
-            {"read", "write_file", "edit", "apply_patch"},
+            {"read", "write", "edit", "apply_patch"},
         ),
     )
     for subagent_type, denied_tools, expected_tools in cases:
@@ -2302,7 +2302,7 @@ def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
 @pytest.mark.parametrize(
     ("subagent_type", "tool_name", "arguments"),
     [
-        ("explore", "write_file", {"path": "blocked.txt", "content": "blocked"}),
+        ("explore", "write", {"path": "blocked.txt", "content": "blocked"}),
         ("advisor", "apply_patch", {"patch": "*** Begin Patch\n*** End Patch"}),
         (
             "worker",
@@ -3130,8 +3130,8 @@ def test_runtime_skips_post_hook_when_tool_execution_fails(tmp_path: Path) -> No
     hooks_config = cast(Callable[..., object], config_module.RuntimeHooksConfig)
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
 
-    write_file_module = importlib.import_module("voidcode.tools.write_file")
-    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
+    write_module = importlib.import_module("voidcode.tools.write")
+    write_tool = cast(ReadToolType, write_module.WriteTool)
 
     def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -3193,9 +3193,9 @@ def test_runtime_persists_initial_allow_tool_failure_for_resume(tmp_path: Path) 
     permission_module = importlib.import_module("voidcode.runtime.permission")
     policy = cast(Callable[..., object], permission_module.PermissionPolicy)(mode="allow")
     runtime = runtime_class(workspace=tmp_path, permission_policy=policy)
-    write_file_module = importlib.import_module("voidcode.tools.write_file")
+    write_module = importlib.import_module("voidcode.tools.write")
 
-    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
+    write_tool = cast(ReadToolType, write_module.WriteTool)
 
     def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -3236,7 +3236,7 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
                     )(
-                        tool_name="write_file",
+                        tool_name="write",
                         arguments={"path": "danger.txt", "content": "broken finalize"},
                     ),
                 )
@@ -3597,7 +3597,7 @@ def test_runtime_allows_external_write_by_default_without_approval(tmp_path: Pat
                 workspace=tmp_path,
                 config=runtime_config(approval_mode="allow"),
                 graph=_SingleToolGraph(
-                    "write_file",
+                    "write",
                     {"path": str(outside_file), "content": "external default write"},
                 ),
                 permission_policy=policy,
@@ -3700,7 +3700,7 @@ def test_runtime_denies_external_write_when_permission_rule_denies(tmp_path: Pat
                     ),
                 ),
                 graph=_SingleToolGraph(
-                    "write_file",
+                    "write",
                     {"path": str(outside_file), "content": "blocked"},
                 ),
                 permission_policy=policy,
@@ -3836,8 +3836,8 @@ def test_runtime_uses_persisted_external_permission_rules_after_resume(
     second_file = denied_root / "second.txt"
     graph = _SequentialToolGraph(
         (
-            ("write_file", {"path": str(first_file), "content": "first"}),
-            ("write_file", {"path": str(second_file), "content": "second"}),
+            ("write", {"path": str(first_file), "content": "first"}),
+            ("write", {"path": str(second_file), "content": "second"}),
         )
     )
     session_id = "external-rules-stable-resume"
@@ -4500,7 +4500,7 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
             object,
             runtime_class(
                 workspace=tmp_path,
-                tool_registry=tool_registry_class.with_defaults().excluding(["write_file"]),
+                tool_registry=tool_registry_class.with_defaults().excluding(["write"]),
                 permission_policy=permission_policy(mode="ask"),
             ),
         ),
@@ -4531,11 +4531,11 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
     )
     assert [event.sequence for event in resumed.events] == list(range(1, len(resumed.events) + 1))
     assert resumed.events[-1].payload == {
-        "error": "unknown tool: write_file",
-        "error_summary": "unknown tool: write_file",
+        "error": "unknown tool: write",
+        "error_summary": "unknown tool: write",
         "error_details": {
-            "message": "unknown tool: write_file",
-            "summary": "unknown tool: write_file",
+            "message": "unknown tool: write",
+            "summary": "unknown tool: write",
         },
     }
     assert replay.session.status == "failed"
@@ -4625,9 +4625,9 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
                 json.dumps(
                     {
                         "request_id": approval_request_id,
-                        "tool_name": "write_file",
+                        "tool_name": "write",
                         "arguments": {"path": "danger.txt", "content": "stale replay"},
-                        "target_summary": "write_file danger.txt",
+                        "target_summary": "write danger.txt",
                         "reason": "non-read-only tool invocation",
                         "policy_mode": "ask",
                         "request_event_sequence": approval_event.sequence,
@@ -4675,7 +4675,7 @@ def test_runtime_rejects_stale_duplicate_approval_replay_after_resolution_even_i
 
 
 class _DivergentWriteFileGraph:
-    """Graph that returns different write_file arguments on consecutive steps."""
+    """Graph that returns different write arguments on consecutive steps."""
 
     def __init__(self) -> None:
         self._call_count = 0
@@ -4697,7 +4697,7 @@ class _DivergentWriteFileGraph:
                     ToolCallFactory,
                     importlib.import_module("voidcode.tools.contracts").ToolCall,
                 )(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={
                         "path": "divergent.txt",
                         "content": f"body-{suffix}",
@@ -4744,7 +4744,7 @@ def test_runtime_approval_resume_executes_original_pending_tool_when_graph_would
     assert [event.event_type for event in result.events].count("runtime.approval_resolved") == 1
     assert [event.event_type for event in result.events].count("runtime.tool_completed") == 1
     assert result.events[-1].event_type == "runtime.tool_completed"
-    assert result.events[-1].payload["tool"] == "write_file"
+    assert result.events[-1].payload["tool"] == "write"
     completed_arguments = cast(dict[str, object], result.events[-1].payload["arguments"])
     assert completed_arguments["path"] == "divergent.txt"
     assert (tmp_path / "divergent.txt").read_text(encoding="utf-8") == "body-first"
@@ -4785,7 +4785,7 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
     ]
     assert [event.sequence for event in waiting.events] == list(range(1, 15))
     assert waiting.events[11].payload == {
-        "tool": "write_file",
+        "tool": "write",
         "arguments": {"path": "copied.txt", "content": "copied marker"},
         "path": "copied.txt",
     }
@@ -4937,10 +4937,10 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
     assert [event.sequence for event in denied.events] == list(range(1, 17))
     assert denied.events[15].payload["permission_denied"] is True
     assert denied.events[15].payload["denied_by"] == "user"
-    assert denied.events[15].payload["error"] == "permission denied for tool: write_file"
-    assert denied.events[-1].payload["tool"] == "write_file"
+    assert denied.events[15].payload["error"] == "permission denied for tool: write"
+    assert denied.events[-1].payload["tool"] == "write"
     assert denied.events[-1].payload["status"] == "error"
-    assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
+    assert denied.events[-1].payload["error"] == "permission denied for tool: write"
     assert denied.output is None
     assert replay.output == denied.output
     assert [(event.sequence, event.event_type, event.payload) for event in replay.events] == [
@@ -4949,7 +4949,7 @@ def test_runtime_denied_multi_step_loop_returns_tool_feedback_before_follow_up_t
     assert [event.event_type for event in denied.events].count("graph.tool_request_created") == 2
     assert [cast(str, event.payload.get("tool")) for event in denied.events if event.event_type == "graph.tool_request_created"] == [
         "read",
-        "write_file",
+        "write",
     ]
     assert [summary.session.id for summary in sessions] == ["deny-loop-session"]
     assert sessions[0].status == "running"
@@ -5226,7 +5226,7 @@ def test_runtime_denies_non_read_only_tool_on_resume(tmp_path: Path) -> None:
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
     assert denied.events[-1].payload["denied_by"] == "user"
-    assert denied.events[-1].payload["error"] == "permission denied for tool: write_file"
+    assert denied.events[-1].payload["error"] == "permission denied for tool: write"
     assert denied.output is None
     assert (tmp_path / "danger.txt").exists() is False
 
@@ -5239,8 +5239,8 @@ def test_runtime_marks_resumed_approval_failure_and_clears_pending_request(tmp_p
     waiting = runtime.run(runtime_request(prompt="write danger.txt resume failure", session_id="approval-session"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
-    write_file_module = importlib.import_module("voidcode.tools.write_file")
-    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
+    write_module = importlib.import_module("voidcode.tools.write")
+    write_tool = cast(ReadToolType, write_module.WriteTool)
 
     def _failing_write_invoke(_self: object, _call: object, *, workspace: Path) -> object:
         _ = workspace
@@ -5299,7 +5299,7 @@ def test_runtime_preserves_pending_request_when_resumed_finalize_raises(tmp_path
                         ToolCallFactory,
                         importlib.import_module("voidcode.tools.contracts").ToolCall,
                     )(
-                        tool_name="write_file",
+                        tool_name="write",
                         arguments={"path": "danger.txt", "content": "finalize failure"},
                     ),
                 )
@@ -5588,7 +5588,7 @@ def test_cli_run_command_approval_allow_writes_file_under_tty_and_replays_sessio
     )
 
     assert result.returncode == 0
-    assert "Approve write_file for write_file approved.txt? [y/N]:" in transcript
+    assert "Approve write for write approved.txt? [y/N]:" in transcript
     assert "EVENT runtime.approval_requested" in transcript
     assert "EVENT runtime.approval_resolved" in transcript
     assert "decision=allow" in transcript
@@ -5634,12 +5634,12 @@ def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failur
     )
 
     assert result.returncode == 0
-    assert "Approve write_file for write_file denied.txt? [y/N]:" in transcript
+    assert "Approve write for write denied.txt? [y/N]:" in transcript
     assert "EVENT runtime.approval_requested" in transcript
     assert "EVENT runtime.approval_resolved" in transcript
     assert "decision=deny" in transcript
     assert "EVENT runtime.tool_completed" in transcript
-    assert "permission denied for tool: write_file" in transcript
+    assert "permission denied for tool: write" in transcript
     assert "RESULT" in transcript
     assert denied_file.exists() is False
 
@@ -5647,7 +5647,7 @@ def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failur
     assert "EVENT runtime.approval_requested" in resume_result.stdout
     assert "EVENT runtime.approval_resolved" in resume_result.stdout
     assert "EVENT runtime.tool_completed" in resume_result.stdout
-    assert "permission denied for tool: write_file" in resume_result.stdout
+    assert "permission denied for tool: write" in resume_result.stdout
 
 
 def test_runtime_persists_and_resumes_session_across_instances(tmp_path: Path) -> None:
@@ -6020,8 +6020,8 @@ def test_runtime_resume_stream_yields_incrementally_before_resumed_tool_completi
     waiting = runtime.run(runtime_request(prompt="write delayed.txt resumed later", session_id="resume-stream"))
     approval_request_id = cast(str, waiting.events[-1].payload["request_id"])
 
-    write_file_module = importlib.import_module("voidcode.tools.write_file")
-    write_tool = cast(ReadToolType, write_file_module.WriteFileTool)
+    write_module = importlib.import_module("voidcode.tools.write")
+    write_tool = cast(ReadToolType, write_module.WriteTool)
     original_invoke = write_tool.invoke
     tool_started = threading.Event()
     allow_tool_completion = threading.Event()

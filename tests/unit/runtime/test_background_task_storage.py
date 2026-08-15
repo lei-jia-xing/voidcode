@@ -694,7 +694,7 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
                 sequence=2,
                 event_type="runtime.approval_requested",
                 source="runtime",
-                payload={"request_id": "approval-1", "tool": "write_file"},
+                payload={"request_id": "approval-1", "tool": "write"},
             ),
         ),
     )
@@ -702,7 +702,7 @@ def test_background_task_storage_persists_approval_and_question_request_correlat
         workspace=tmp_path,
         request=approval_request,
         response=approval_response,
-        pending_approval=PendingApproval(request_id="approval-1", tool_name="write_file"),
+        pending_approval=PendingApproval(request_id="approval-1", tool_name="write"),
     )
 
     question_response = RuntimeResponse(
@@ -817,7 +817,7 @@ def test_background_task_storage_round_trips_pending_approval_owner_fields(tmp_p
     )
     pending = PendingApproval(
         request_id="approval-owner",
-        tool_name="write_file",
+        tool_name="write",
         owner_session_id="child-session",
         owner_parent_session_id="leader-session",
         delegated_task_id="task-owner",
@@ -1094,7 +1094,7 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
                 sequence=2,
                 event_type="runtime.approval_requested",
                 source="runtime",
-                payload={"request_id": "approval-1", "tool": "write_file"},
+                payload={"request_id": "approval-1", "tool": "write"},
             ),
         ),
     )
@@ -1104,7 +1104,7 @@ def test_background_task_storage_fail_incomplete_preserves_waiting_approval_task
         response=waiting_response,
         pending_approval=PendingApproval(
             request_id="approval-1",
-            tool_name="write_file",
+            tool_name="write",
         ),
     )
     store.create_background_task(
@@ -1422,7 +1422,7 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
                 sequence=2,
                 event_type="runtime.approval_requested",
                 source="runtime",
-                payload={"request_id": "approval-durable", "tool": "write_file"},
+                payload={"request_id": "approval-durable", "tool": "write"},
             ),
         ),
     )
@@ -1432,7 +1432,7 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
         response=waiting_response,
         pending_approval=PendingApproval(
             request_id="approval-durable",
-            tool_name="write_file",
+            tool_name="write",
         ),
     )
     store.create_background_task(

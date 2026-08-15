@@ -158,7 +158,7 @@ def test_runtime_policy_neutral_intent_cannot_grant_capabilities() -> None:
     assert intent["label"] == "unspecified"
     assert intent["confidence"] == 0.0
     assert intent["matched_rule_ids"] == []
-    assert "write_file" not in cast(Sequence[str], tool_policy.get("allowed", ()))
+    assert "write" not in cast(Sequence[str], tool_policy.get("allowed", ()))
     assert "task" not in cast(Sequence[str], tool_policy.get("allowed", ()))
     assert "product" in cast(Sequence[str], delegation_policy.get("allowed_presets", ()))
     intent_trace = next(entry for entry in trace if entry.get("source") == "intent_metadata")
@@ -264,7 +264,7 @@ def test_runtime_policy_child_snapshot_is_subset_of_parent_snapshot() -> None:
         agent_preset="explore",
         agent_manifest_id="explore",
         runtime_config={
-            "tools": {"allowlist": ["read", "write_file", "task"]},
+            "tools": {"allowlist": ["read", "write", "task"]},
             "policy": {
                 "delegation_policy": {"allow": ["explore", "worker"]},
                 "hook_policy": {

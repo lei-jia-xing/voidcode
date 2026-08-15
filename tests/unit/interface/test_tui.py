@@ -129,7 +129,7 @@ async def test_tui_waiting_stream_keeps_waiting_state(app_class: Any) -> None:
                 event=_runtime_event(
                     "runtime.approval_requested",
                     request_id="req-1",
-                    tool="write_file",
+                    tool="write",
                     target_summary="sample.txt",
                 ),
             ),
@@ -770,7 +770,7 @@ async def test_tui_approval_resolution_reuses_requested_tool_context(app_class: 
                     event=_runtime_event(
                         "runtime.approval_requested",
                         request_id="approval-1",
-                        tool="write_file",
+                        tool="write",
                         target_summary="README.md",
                     ),
                 )
@@ -792,7 +792,7 @@ async def test_tui_approval_resolution_reuses_requested_tool_context(app_class: 
 
         log = app.query_one("#transcript-log")
         plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
-        assert "Approval allow for tool: write_file" in plain
+        assert "Approval allow for tool: write" in plain
         assert "unknown_tool" not in plain
 
 
@@ -1412,7 +1412,7 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
                     event=_runtime_event(
                         "runtime.approval_requested",
                         request_id="req-smoke",
-                        tool="write_file",
+                        tool="write",
                         target_summary="sample.txt",
                     ),
                 )
@@ -1429,10 +1429,10 @@ async def test_tui_integration_smoke_mount_run_tool_and_approval(app_class: Any)
 
         approval_modal = app.screen
         assert isinstance(approval_modal, ApprovalModal)
-        assert approval_modal.event.payload["tool"] == "write_file"
+        assert approval_modal.event.payload["tool"] == "write"
 
         plain = "\n".join("".join(seg.text for seg in line) for line in log.lines)
-        assert "⚠ Approval requested for tool: write_file" in plain
+        assert "⚠ Approval requested for tool: write" in plain
 
 
 @pytest.mark.anyio

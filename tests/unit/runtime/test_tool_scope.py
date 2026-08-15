@@ -30,7 +30,7 @@ def _registry() -> ToolRegistry:
     return ToolRegistry.from_tools(
         (
             _Tool("read", read_only=True),
-            _Tool("write_file", read_only=False),
+            _Tool("write", read_only=False),
             _Tool("shell_exec", read_only=False),
             _Tool("memory_add", read_only=False),
         )
@@ -41,7 +41,7 @@ def test_tool_scope_resolver_applies_agent_scope_before_runtime_policy() -> None
     resolver = RuntimeToolScopeResolver(memory_enabled=True)
     agent = RuntimeAgentConfig(
         preset="leader",
-        tools=RuntimeToolsConfig(allowlist=("read", "write_file")),
+        tools=RuntimeToolsConfig(allowlist=("read", "write")),
     )
 
     scoped = resolver.scope(_registry(), agent=agent, metadata={"mode": "analyze"})
@@ -59,14 +59,14 @@ def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> Non
         registry,
         agent=None,
         metadata=metadata,
-        tool_name="write_file",
+        tool_name="write",
     )
 
-    assert "write_file" not in scoped.tools
+    assert "write" not in scoped.tools
     assert denial is not None
     assert denial.reason == "read-only runtime policy denies mutating tools"
     assert denial.metadata() == {
-        "tool": "write_file",
+        "tool": "write",
         "mode": "plan",
         "read_only": True,
         "decision": "deny",
@@ -82,7 +82,7 @@ def test_tool_scope_resolver_preserves_shell_for_command_level_classification() 
     )
 
     assert "shell_exec" in scoped.tools
-    assert "write_file" not in scoped.tools
+    assert "write" not in scoped.tools
 
     agent = RuntimeAgentConfig(
         preset="worker",
@@ -93,11 +93,11 @@ def test_tool_scope_resolver_preserves_shell_for_command_level_classification() 
         delegated_child=True,
         agent=agent,
         base_registry=_registry(),
-        tool_name="write_file",
+        tool_name="write",
     )
 
     assert denial == (
-        "delegation policy denied tool 'write_file' for child preset 'worker'; this preset may only call tools allowed by its manifest tool_allowlist"
+        "delegation policy denied tool 'write' for child preset 'worker'; this preset may only call tools allowed by its manifest tool_allowlist"
     )
 
 

@@ -36,7 +36,7 @@ _PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL = {
     "edit": frozenset({"oldString", "newString"}),
     "multi_edit": frozenset({"oldString", "newString"}),
     "todo_write": frozenset({"content"}),
-    "write_file": frozenset({"content"}),
+    "write": frozenset({"content"}),
 }
 
 

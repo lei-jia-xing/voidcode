@@ -203,7 +203,7 @@ def _approval_requested_event(
     *,
     sequence: int = 0,
     request_id: str = "req-1",
-    tool: str = "write_file",
+    tool: str = "write",
     target_summary: str = "sample.txt",
 ) -> _StubEvent:
     return _StubEvent(
@@ -1897,7 +1897,7 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
                             "runtime.tool_completed",
                             sequence=4,
                             source="tool",
-                            tool="write_file",
+                            tool="write",
                         ),
                     ),
                     _make_chunk(
@@ -1922,7 +1922,7 @@ def test_run_command_interactively_allows_inline_approval(capsys: Any) -> None:
     assert captured.out.count("EVENT runtime.approval_requested") == 1
     assert "EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1" in captured.out
     assert captured.out.rstrip().endswith("done")
-    assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
+    assert stderr.writes == ["Approve write for sample.txt? [y/N]: "]
     assert captured.err == ""
 
 
@@ -1938,7 +1938,7 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
         yield _make_chunk(session_id="demo-session", status="running", event=request_received)
         assert stdout.getvalue() == "EVENT runtime.request_received source=runtime prompt=write sample.txt hi\n"
         yield _make_chunk(session_id="demo-session", status="waiting", event=approval_requested)
-        assert "EVENT runtime.approval_requested source=runtime request_id=req-1 target_summary=sample.txt tool=write_file\n" in stdout.getvalue()
+        assert "EVENT runtime.approval_requested source=runtime request_id=req-1 target_summary=sample.txt tool=write\n" in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
 
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
@@ -1965,7 +1965,7 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
                             "runtime.tool_completed",
                             sequence=4,
                             source="tool",
-                            tool="write_file",
+                            tool="write",
                         ),
                     ),
                     _make_chunk(
@@ -1983,7 +1983,7 @@ def test_run_command_interactively_streams_initial_events_incrementally() -> Non
     assert result == 0
     assert stdout.getvalue().endswith("RESULT\ndone\n")
     assert stdout.getvalue().index("EVENT runtime.approval_requested") < stdout.getvalue().index("RESULT\n")
-    assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
+    assert stderr.writes == ["Approve write for sample.txt? [y/N]: "]
 
 
 def test_run_command_interactively_streams_resumed_events_incrementally() -> None:
@@ -2003,7 +2003,7 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
         "runtime.tool_completed",
         sequence=4,
         source="tool",
-        tool="write_file",
+        tool="write",
     )
     tool_progress = _runtime_event(
         "runtime.tool_progress",
@@ -2019,13 +2019,13 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
     def _resumed_stream() -> Any:
         yield _make_chunk(session_id="demo-session", status="running", event=approval_resolved)
         assert stdout.getvalue().count("EVENT runtime.approval_resolved source=runtime decision=allow request_id=req-1\n") == 1
-        assert "EVENT runtime.tool_completed source=tool tool=write_file\n" not in stdout.getvalue()
+        assert "EVENT runtime.tool_completed source=tool tool=write\n" not in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
         yield _make_chunk(session_id="demo-session", status="running", event=tool_progress)
         assert "EVENT runtime.tool_progress source=tool" in stdout.getvalue()
         assert "chunk=alpha" in stdout.getvalue()
         yield _make_chunk(session_id="demo-session", status="completed", event=tool_completed)
-        assert "EVENT runtime.tool_completed source=tool tool=write_file\n" in stdout.getvalue()
+        assert "EVENT runtime.tool_completed source=tool tool=write\n" in stdout.getvalue()
         assert "RESULT\n" not in stdout.getvalue()
         yield _make_chunk(session_id="demo-session", status="completed", output="done\n")
 
@@ -2052,7 +2052,7 @@ def test_run_command_interactively_streams_resumed_events_incrementally() -> Non
     assert stdout.getvalue().index("EVENT runtime.approval_resolved") < stdout.getvalue().index("EVENT runtime.tool_progress")
     assert stdout.getvalue().index("EVENT runtime.tool_progress") < stdout.getvalue().index("EVENT runtime.tool_completed")
     assert stdout.getvalue().index("EVENT runtime.tool_completed") < stdout.getvalue().index("RESULT\n")
-    assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
+    assert stderr.writes == ["Approve write for sample.txt? [y/N]: "]
     runtime.resume_stream.assert_called_once_with(
         session_id="demo-session",
         approval_request_id="req-1",
@@ -2101,10 +2101,10 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
                             "runtime.tool_completed",
                             sequence=4,
                             source="tool",
-                            tool="write_file",
+                            tool="write",
                             status="error",
                             permission_denied=True,
-                            error="permission denied for tool: write_file",
+                            error="permission denied for tool: write",
                         ),
                     ),
                 ),
@@ -2122,9 +2122,9 @@ def test_run_command_interactively_denies_on_empty_input(capsys: Any) -> None:
         approval_decision="deny",
     )
     assert "EVENT runtime.approval_resolved source=runtime decision=deny request_id=req-1" in captured.out
-    assert "EVENT runtime.tool_completed source=tool error=permission denied for tool: write_file" in captured.out
+    assert "EVENT runtime.tool_completed source=tool error=permission denied for tool: write" in captured.out
     assert captured.out.rstrip().endswith("RESULT")
-    assert stderr.writes == ["Approve write_file for sample.txt? [y/N]: "]
+    assert stderr.writes == ["Approve write for sample.txt? [y/N]: "]
     assert captured.err == ""
 
 
@@ -2171,10 +2171,10 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
                             "runtime.tool_completed",
                             sequence=4,
                             source="tool",
-                            tool="write_file",
+                            tool="write",
                             status="error",
                             permission_denied=True,
-                            error="permission denied for tool: write_file",
+                            error="permission denied for tool: write",
                         ),
                     ),
                     _make_chunk(
@@ -2221,7 +2221,7 @@ def test_run_command_keeps_new_approval_tail_after_denied_tool_feedback(
     assert result == 0
     assert runtime.resume_stream.call_count == 2
     assert stderr.writes == [
-        "Approve write_file for sample.txt? [y/N]: ",
+        "Approve write for sample.txt? [y/N]: ",
         "Approve shell_exec for build.sh? [y/N]: ",
     ]
     assert captured.out.count("EVENT runtime.tool_completed source=tool error=permission denied") == 1
@@ -2271,7 +2271,7 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
                             "runtime.tool_completed",
                             sequence=4,
                             source="tool",
-                            tool="write_file",
+                            tool="write",
                         ),
                     ),
                     _make_chunk(
@@ -2322,13 +2322,13 @@ def test_run_command_interactively_handles_repeated_approval_requests(capsys: An
     assert result == 0
     assert runtime.resume_stream.call_count == 2
     assert stderr.writes == [
-        "Approve write_file for sample.txt? [y/N]: ",
+        "Approve write for sample.txt? [y/N]: ",
         "Approve shell_exec for build.sh? [y/N]: ",
     ]
     assert captured.out.count("EVENT runtime.request_received") == 1
     assert captured.out.count("EVENT runtime.approval_requested") == 2
     assert captured.out.count("EVENT runtime.approval_resolved") == 2
-    assert captured.out.count("EVENT runtime.tool_completed source=tool tool=write_file") == 1
+    assert captured.out.count("EVENT runtime.tool_completed source=tool tool=write") == 1
     assert captured.out.count("EVENT runtime.tool_completed source=tool tool=shell_exec") == 1
     assert captured.out.index("request_id=req-1") < captured.out.index("request_id=req-2")
     assert captured.out.rstrip().endswith("done")
@@ -2385,7 +2385,7 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
     runtime.resume_stream.assert_not_called()
     assert captured.out == ""
     assert stderr.writes == [
-        "error: approval required for write_file for sample.txt; resume session demo-session with approval request req-1",
+        "error: approval required for write for sample.txt; resume session demo-session with approval request req-1",
         "\n",
     ]
     assert captured.err == ""
@@ -2436,7 +2436,7 @@ def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) ->
         "request_id": "req-1",
         "session_id": "demo-session",
         "target_summary": "sample.txt",
-        "tool": "write_file",
+        "tool": "write",
     }
     assert stderr.writes == []
     assert captured.err == ""

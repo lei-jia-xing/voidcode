@@ -61,7 +61,7 @@ MVP 契约应至少支持一个如下形状的 `runtime.approval_requested` 运�
   "sequence": 4,
   "payload": {
     "request_id": "approval-1",
-    "tool": "write_file",
+    "tool": "write",
     "decision": "ask",
     "arguments": {
       "path": "README.md"

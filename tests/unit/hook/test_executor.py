@@ -32,7 +32,7 @@ def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
             hooks=hooks,
             workspace=tmp_path,
             session_id="hook-session",
-            tool_name="write_file",
+            tool_name="write",
             phase="pre",
             recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
             environment={},
@@ -48,7 +48,7 @@ def test_run_tool_hooks_executes_configured_pre_commands_and_reports_success(
     assert event.event_type == "runtime.tool_hook_pre"
     assert event.payload == {
         "phase": "pre",
-        "tool_name": "write_file",
+        "tool_name": "write",
         "session_id": "hook-session",
         "status": "ok",
         "hook_policy": {"outcome": "allowed", "mode": "normal", "read_only": False},
@@ -65,7 +65,7 @@ def test_run_tool_hooks_treats_default_hooks_config_as_enabled(tmp_path: Path) -
             hooks=hooks,
             workspace=tmp_path,
             session_id="hook-session",
-            tool_name="write_file",
+            tool_name="write",
             phase="pre",
             recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
             environment={},
@@ -90,7 +90,7 @@ def test_run_tool_hooks_reads_cancel_action_from_stdout(tmp_path: Path) -> None:
             hooks=hooks,
             workspace=tmp_path,
             session_id="hook-session",
-            tool_name="write_file",
+            tool_name="write",
             phase="pre",
             recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
             environment={},
@@ -681,7 +681,7 @@ def test_run_tool_hooks_times_out_long_running_command(tmp_path: Path) -> None:
             hooks=hooks,
             workspace=tmp_path,
             session_id="hook-session",
-            tool_name="write_file",
+            tool_name="write",
             phase="pre",
             recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
             environment={},
@@ -690,6 +690,6 @@ def test_run_tool_hooks_times_out_long_running_command(tmp_path: Path) -> None:
     )
 
     assert outcome.failed_error is not None
-    assert "tool pre-hook failed for write_file" in outcome.failed_error
+    assert "tool pre-hook failed for write" in outcome.failed_error
     assert "timed out" in outcome.failed_error
     assert outcome.events[0].payload["status"] == "error"

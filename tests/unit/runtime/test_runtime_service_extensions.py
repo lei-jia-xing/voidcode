@@ -607,7 +607,7 @@ class _ApprovalThenCaptureSkillGraph:
         _ = session
         type(self).last_request = request
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}))
+            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
         if session.session.parent_id is not None:
             return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
@@ -625,7 +625,7 @@ class _GithubWorkflowWriteGraph:
         if not tool_results:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": ".github/workflows/ci.yml", "content": "name: CI\n"},
                 )
             )
@@ -647,7 +647,7 @@ class _ExternalWriteGraph:
         if not tool_results:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": self._target.as_posix(), "content": "blocked"},
                 )
             )
@@ -668,7 +668,7 @@ class _BlockingApprovalResumeGraph:
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}))
+            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
         self.resume_started.set()
         if not self.release_resume.wait(timeout=2.0):
             raise RuntimeError("resume was not released")
@@ -686,7 +686,7 @@ class _DivergentApprovalReplayGraph:
         _ = request, tool_results, session
         return _StubStep(
             tool_call=ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "danger.txt", "content": "divergent"},
             )
         )
@@ -702,13 +702,13 @@ class _AbortSignalApprovalGraph:
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={}))
+            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={}))
         return _StubStep(output="captured", is_finished=True)
 
 
 class _AbortCaptureTool:
     definition = ToolDefinition(
-        name="write_file",
+        name="write",
         description="Capture runtime abort signal during approval resume",
         input_schema={"type": "object"},
         read_only=False,
@@ -748,7 +748,7 @@ class _AbortCaptureTool:
 
 class _AbortBeforeInvokeTool:
     definition = ToolDefinition(
-        name="write_file",
+        name="write",
         description="Probe that must not run after a started-tool abort",
         input_schema={"type": "object"},
         read_only=False,
@@ -841,7 +841,7 @@ class _QuestionThenApprovalGraph:
         if len(tool_results) == 1:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
@@ -928,14 +928,14 @@ class _TwoApprovalThenDoneGraph:
         if len(tool_results) == 0:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "first.txt", "content": "1"},
                 )
             )
         if len(tool_results) == 1:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "second.txt", "content": "2"},
                 )
             )
@@ -954,14 +954,14 @@ class _TwoRulePathGraph:
         if len(tool_results) == 0:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "src/app.py", "content": "1"},
                 )
             )
         if len(tool_results) == 1:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "docs/readme.md", "content": "2"},
                 )
             )
@@ -1193,7 +1193,7 @@ class _WriteThenResultAwareTurnProvider:
             return ProviderTurnResult(output="done")
         return ProviderTurnResult(
             tool_call=ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "allowed.txt", "content": "allowed"},
             )
         )
@@ -1264,7 +1264,7 @@ class _DeniedWriteThenReadTurnProvider:
         if not turn_request.tool_results:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "denied.txt", "content": "blocked"},
                 )
             )
@@ -1296,7 +1296,7 @@ class _EmptyWriteThenResultAwareTurnProvider:
         if not turn_request.tool_results:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "shader.frag", "content": ""},
                 )
             )
@@ -1436,7 +1436,7 @@ class _UnreadWriteThenReadTurnProvider:
         if not turn_request.tool_results:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "safe.txt", "content": "updated"},
                 )
             )
@@ -1451,7 +1451,7 @@ class _UnreadWriteThenReadTurnProvider:
                 write_arguments["expectedHash"] = content_hash
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments=write_arguments,
                 )
             )
@@ -1539,7 +1539,7 @@ class _ApprovalResumeFallbackTurnProvider:
         if not turn_request.tool_results:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
@@ -1578,7 +1578,7 @@ class _BackgroundTaskApprovalGraph:
             return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
         return _StubStep(
             tool_call=ToolCall(
-                tool_name="write_file",
+                tool_name="write",
                 arguments={"path": "alpha.txt", "content": "1"},
             )
         )
@@ -1867,7 +1867,7 @@ class _ApprovalThenRateLimitTurnProvider:
         if not turn_request.tool_results:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
@@ -4380,7 +4380,7 @@ def test_runtime_session_debug_snapshot_reports_pending_approval_state(tmp_path:
     assert snapshot.terminal is False
     assert snapshot.resume_checkpoint_kind == "approval_wait"
     assert snapshot.pending_approval is not None
-    assert snapshot.pending_approval.tool_name == "write_file"
+    assert snapshot.pending_approval.tool_name == "write"
     assert snapshot.pending_approval.request_id == waiting.events[-1].payload["request_id"]
     assert snapshot.pending_question is None
     assert snapshot.last_relevant_event is not None
@@ -4457,7 +4457,7 @@ def test_runtime_does_not_wait_on_failed_question_tool_result(tmp_path: Path, mo
     assert tool_completed.payload["error"] == "question requires a non-empty questions array"
 
 
-def test_runtime_write_file_allows_empty_content_and_returns_success_payload(
+def test_runtime_write_allows_empty_content_and_returns_success_payload(
     tmp_path: Path,
 ) -> None:
     created_providers: list[_EmptyWriteThenResultAwareTurnProvider] = []
@@ -4482,7 +4482,7 @@ def test_runtime_write_file_allows_empty_content_and_returns_success_payload(
     assert (tmp_path / "shader.frag").read_text(encoding="utf-8") == ""
     tool_completed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
     assert tool_completed.payload["status"] == "ok"
-    assert tool_completed.payload["tool"] == "write_file"
+    assert tool_completed.payload["tool"] == "write"
     assert tool_completed.payload["path"] == "shader.frag"
     assert tool_completed.payload["content"] == "Wrote file successfully: shader.frag"
     successful_tool_result = created_providers[-1].requests[-1].tool_results[-1]
@@ -4585,12 +4585,12 @@ def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_
     assert snapshot.terminal is False
     assert snapshot.failure is not None
     assert snapshot.failure.classification == "tool_execution_failure"
-    assert snapshot.failure.message == "permission denied for tool: write_file"
+    assert snapshot.failure.message == "permission denied for tool: write"
     assert snapshot.last_failure_event is None
     assert snapshot.last_relevant_event is not None
     assert snapshot.last_relevant_event.event_type == "runtime.tool_completed"
     assert snapshot.last_tool is not None
-    assert snapshot.last_tool.tool_name == "write_file"
+    assert snapshot.last_tool.tool_name == "write"
     assert snapshot.last_tool.status == "error"
     assert snapshot.suggested_operator_action == "inspect_session"
     assert snapshot.operator_guidance == "Inspect the persisted session state."
@@ -4645,9 +4645,9 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
     )
     pending = PendingApproval(
         request_id="approval-original",
-        tool_name="write_file",
+        tool_name="write",
         arguments={"path": "danger.txt", "content": "original"},
-        target_summary="write_file danger.txt",
+        target_summary="write danger.txt",
         reason="non-read-only tool invocation",
         policy_mode="ask",
     )
@@ -4691,7 +4691,7 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
     assert events[-2].payload == {"request_id": "approval-original", "decision": "deny"}
     assert events[-1].payload["status"] == "error"
     assert events[-1].payload["permission_denied"] is True
-    assert events[-1].payload["error"] == "permission denied for tool: write_file"
+    assert events[-1].payload["error"] == "permission denied for tool: write"
     assert chunks[-1].session.status == "running"
     assert (tmp_path / "danger.txt").exists() is False
 
@@ -4729,7 +4729,7 @@ def test_runtime_provider_recovers_after_permission_denial_feedback(tmp_path: Pa
         event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("permission_denied") is True
     )
     assert denial_feedback.payload["status"] == "error"
-    assert denial_feedback.payload["error"] == "permission denied for tool: write_file"
+    assert denial_feedback.payload["error"] == "permission denied for tool: write"
     read_feedback = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read")
     assert read_feedback.payload["status"] == "ok"
     assert len(created_providers[-1].requests) == 3
@@ -4773,7 +4773,7 @@ def test_runtime_provider_recovers_after_read_before_write_feedback(tmp_path: Pa
     feedback = next(
         event
         for event in response.events
-        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "write_file" and event.payload.get("status") == "error"
+        if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "write" and event.payload.get("status") == "error"
     )
     assert feedback.payload["error_kind"] == "tool_input_mismatch"
     error_details = cast(dict[str, object], feedback.payload["error_details"])
@@ -4816,7 +4816,7 @@ def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path
         workspace=tmp_path,
         graph=_GithubWorkflowWriteGraph(),
         config=RuntimeConfig(
-            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write_file", path=".github/**", decision="ask"),))
+            permission=ExternalDirectoryPermissionConfig(rules=(PatternPermissionRule(tool="write", path=".github/**", decision="ask"),))
         ),
         permission_policy=PermissionPolicy(mode="allow"),
     )
@@ -4827,7 +4827,7 @@ def test_runtime_pattern_permission_rule_asks_for_workspace_write(tmp_path: Path
     assert response.session.status == "waiting"
     assert approval_event.event_type == "runtime.approval_requested"
     assert approval_event.payload["policy_surface"] == "permission.rules"
-    assert approval_event.payload["matched_rule"] == ("permission.rules[0] tool='write_file' path='.github/**' decision='ask'")
+    assert approval_event.payload["matched_rule"] == ("permission.rules[0] tool='write' path='.github/**' decision='ask'")
 
 
 def test_runtime_pattern_permission_rule_denies_shell_command(tmp_path: Path) -> None:
@@ -4890,7 +4890,7 @@ def test_runtime_pattern_permission_rule_cannot_bypass_external_write_policy(
                 write=ExternalDirectoryPolicy(rules=(("*", "deny"),)),
                 rules=(
                     PatternPermissionRule(
-                        tool="write_file",
+                        tool="write",
                         path=external_path.as_posix(),
                         decision="allow",
                     ),
@@ -5060,7 +5060,7 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     assert result.status == "interrupted"
     assert tool.invoke_count == 0
     assert event_types.index("runtime.tool_started") < event_types.index("runtime.tool_completed") < event_types.index("runtime.failed")
-    assert completed_events[-1].payload["tool"] == "write_file"
+    assert completed_events[-1].payload["tool"] == "write"
     assert completed_events[-1].payload["status"] == "error"
     assert completed_events[-1].payload["error"] == "run interrupted"
     tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
@@ -5264,7 +5264,7 @@ def test_runtime_cancel_after_approved_tool_started_skips_invoke_and_closes_tool
     assert result.status == "interrupted"
     assert tool.invoke_count == 0
     assert event_types.index("runtime.tool_started") < event_types.index("runtime.tool_completed") < event_types.index("runtime.failed")
-    assert completed_events[-1].payload["tool"] == "write_file"
+    assert completed_events[-1].payload["tool"] == "write"
     assert completed_events[-1].payload["status"] == "error"
     assert completed_events[-1].payload["error"] == "run interrupted"
     tool_status = cast(dict[str, object], completed_events[-1].payload["tool_status"])
@@ -6988,7 +6988,7 @@ def test_runtime_load_background_task_result_marks_waiting_child_as_approval_blo
     assert result.child_session_id == child_session_id
     assert result.status == "running"
     assert result.approval_blocked is True
-    assert result.summary_output == "Approval blocked on write_file: write_file alpha.txt"
+    assert result.summary_output == "Approval blocked on write: write alpha.txt"
     assert result.error is None
     assert result.result_available is True
 
@@ -7659,7 +7659,7 @@ def test_runtime_background_task_waiting_approval_emits_parent_session_event_onc
         "message": {
             "kind": "delegated_lifecycle",
             "status": "waiting_approval",
-            "summary_output": "Approval blocked on write_file: write_file alpha.txt",
+            "summary_output": "Approval blocked on write: write alpha.txt",
             "error": None,
             "approval_blocked": True,
             "result_available": True,
@@ -7941,9 +7941,9 @@ def test_runtime_resume_rejects_stale_duplicate_approval_replay_when_pending_sta
         approval_event = next(event for event in resolved.events if event.event_type == "runtime.approval_requested")
         stale_pending = {
             "request_id": approval_request_id,
-            "tool_name": "write_file",
+            "tool_name": "write",
             "arguments": {"path": "alpha.txt", "content": "1"},
-            "target_summary": "write_file alpha.txt",
+            "target_summary": "write alpha.txt",
             "reason": "non-read-only tool invocation",
             "policy_mode": "ask",
             "request_event_sequence": approval_event.sequence,
@@ -8533,7 +8533,7 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
     assert result.child_session_id == child_session_id
     assert result.status == "running"
     assert result.approval_blocked is True
-    assert result.summary_output == "Approval blocked on write_file: write_file alpha.txt"
+    assert result.summary_output == "Approval blocked on write: write alpha.txt"
     assert result.result_available is True
     assert len(waiting_events) == 1
     waiting_delegated = waiting_events[0].delegated_lifecycle
@@ -8569,7 +8569,7 @@ def test_runtime_fresh_parent_result_reconciles_waiting_background_task_lineage_
         "message": {
             "kind": "delegated_lifecycle",
             "status": "waiting_approval",
-            "summary_output": "Approval blocked on write_file: write_file alpha.txt",
+            "summary_output": "Approval blocked on write: write alpha.txt",
             "error": None,
             "approval_blocked": True,
             "result_available": True,
@@ -11512,9 +11512,9 @@ class _MultiStepStubGraph:
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={"path": "alpha.txt", "content": "1"}))
+            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
         if len(tool_results) == 1:
-            return _StubStep(tool_call=ToolCall(tool_name="write_file", arguments={"path": "beta.txt", "content": "2"}))
+            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "beta.txt", "content": "2"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -11530,7 +11530,7 @@ class _TaggedWriteGraph:
         if not tool_results:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="write_file",
+                    tool_name="write",
                     arguments={
                         "path": "tagged.txt",
                         "content": "\n".join(
@@ -11555,7 +11555,7 @@ def test_runtime_resumes_with_subsequent_tool_calls_properly(tmp_path: Path) -> 
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
-    # Run first, expects pending approval for write_file alpha.txt
+    # Run first, expects pending approval for write alpha.txt
     response = runtime.run(RuntimeRequest(prompt="go", session_id="test-resume"))
     assert response.session.status == "waiting"
 
@@ -11747,7 +11747,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
                     ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
-                            "write_file",
+                            "write",
                             {"path": "beta.txt", "content": "2"},
                         )
                     ),
@@ -11832,7 +11832,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert memory_refreshed_events[0].payload["projection"] == initial_continuity
     assert memory_refreshed_events[-1].payload["projection"] == expected_resumed_continuity
     tool_completed_events = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
-    assert tool_completed_events[-1].payload["tool"] == "write_file"
+    assert tool_completed_events[-1].payload["tool"] == "write"
     assert tool_completed_events[-1].payload["path"] == "beta.txt"
     assert (tmp_path / "beta.txt").read_text(encoding="utf-8") == "2"
 
@@ -11852,7 +11852,7 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
                     ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
                     ProviderTurnResult(
                         tool_call=ToolCall(
-                            "write_file",
+                            "write",
                             {"path": "beta.txt", "content": "2"},
                         )
                     ),
@@ -14531,7 +14531,7 @@ def test_runtime_agent_tool_default_set_further_narrows_allowlist(tmp_path: Path
                 model="opencode/gpt-5.4",
                 tools=RuntimeToolsConfig(
                     allowlist=("read", "grep"),
-                    default=("grep", "write_file"),
+                    default=("grep", "write"),
                 ),
             )
         ),
@@ -15187,7 +15187,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
                 outcomes=(
                     ProviderTurnResult(
                         tool_call=ToolCall(
-                            tool_name="write_file",
+                            tool_name="write",
                             arguments={"path": "blocked.txt", "content": "blocked"},
                         )
                     ),
@@ -15207,7 +15207,7 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
         model_provider_registry=registry,
     )
 
-    with pytest.raises(ValueError, match="unknown tool: write_file"):
+    with pytest.raises(ValueError, match="unknown tool: write"):
         _ = runtime.run(RuntimeRequest(prompt="write blocked", session_id="agent-tools-block"))
 
     assert not target.exists()
@@ -15221,7 +15221,7 @@ def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -
             agent=RuntimeAgentConfig(
                 preset="leader",
                 model="opencode/gpt-5.4",
-                tools=RuntimeToolsConfig(allowlist=("write_file",)),
+                tools=RuntimeToolsConfig(allowlist=("write",)),
             )
         ),
         model_provider_registry=registry,
@@ -15852,7 +15852,7 @@ def test_answered_question_does_not_override_later_pending_approval(tmp_path: Pa
         session_id="question-then-approval",
     )
     assert pending_approval is not None
-    assert pending_approval.tool_name == "write_file"
+    assert pending_approval.tool_name == "write"
 
 
 def test_answer_question_resume_does_not_retrigger_session_start_hook(tmp_path: Path) -> None:
@@ -16518,7 +16518,7 @@ def test_runtime_resume_rejects_malformed_persisted_checkpoint_tool_result_entry
         checkpoint = cast(dict[str, object], json.loads(str(row[0])))
         checkpoint["tool_results"] = [
             {
-                "tool_name": "write_file",
+                "tool_name": "write",
                 "status": "ok",
                 "data": "not-an-object",
                 "content": None,
@@ -16665,7 +16665,7 @@ def test_runtime_downgrades_to_next_provider_target_on_provider_failures(
     }
 
 
-def test_runtime_tool_completed_summarizes_write_file_tagged_content(tmp_path: Path) -> None:
+def test_runtime_tool_completed_summarizes_write_tagged_content(tmp_path: Path) -> None:
     tagged_content = "\n".join(
         [
             "<path>sample.txt</path>",
@@ -16685,7 +16685,7 @@ def test_runtime_tool_completed_summarizes_write_file_tagged_content(tmp_path: P
     response = runtime.run(RuntimeRequest(prompt="go", session_id="non-readfile-tagged-content"))
 
     tool_completed_event = next(event for event in response.events if event.event_type == "runtime.tool_completed")
-    assert tool_completed_event.payload["tool"] == "write_file"
+    assert tool_completed_event.payload["tool"] == "write"
     assert tool_completed_event.payload["content"] == "Wrote file successfully: tagged.txt"
     assert (tmp_path / "tagged.txt").read_text(encoding="utf-8") == tagged_content
 

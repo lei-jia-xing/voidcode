@@ -24,7 +24,7 @@ def _request(prompt: str) -> GraphRunRequest:
         available_tools=(
             ToolDefinition(name="read", description="Read file", read_only=True),
             ToolDefinition(name="grep", description="Grep files", read_only=True),
-            ToolDefinition(name="write_file", description="Write file", read_only=False),
+            ToolDefinition(name="write", description="Write file", read_only=False),
             ToolDefinition(name="shell_exec", description="Run shell command", read_only=False),
         ),
     )
