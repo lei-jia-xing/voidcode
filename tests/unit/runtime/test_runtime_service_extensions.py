@@ -83,6 +83,7 @@ from voidcode.runtime.context_window import (
 )
 from voidcode.runtime.contracts import RuntimeRequestError, validate_runtime_request_metadata
 from voidcode.runtime.events import (
+    REASONING_PERSISTED_LIMIT_CHARS,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
@@ -16814,6 +16815,85 @@ def test_runtime_provider_streaming_persists_reasoning_as_runtime_part(
     assert persisted_reasoning[0].payload["text"] == "private chain"
     # Provider metadata other than the allowlisted source must not persist.
     assert "raw_secret" not in json.dumps(persisted_reasoning[0].payload)
+
+
+def test_runtime_non_streaming_persists_reasoning_as_runtime_part(tmp_path: Path) -> None:
+    # Background child sessions run non-streaming (provider_stream=False); their
+    # turns must persist the same runtime.reasoning_part as streamed turns so the
+    # child transcript carries thinking.
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="answer", reasoning="private chain"),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="think"))
+
+    assert response.session.status == "completed"
+    assert response.output == "answer"
+    reasoning_events = [event for event in response.events if event.event_type == "runtime.reasoning_part"]
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0].payload["text"] == "private chain"
+    assert reasoning_events[0].payload["preview"] == "private chain"
+    # No live provider_stream deltas exist on the non-streaming path: the
+    # persisted aggregate is the only reasoning representation (nothing to dedupe).
+    streamed_reasoning = [
+        event for event in response.events if event.event_type == "graph.provider_stream" and event.payload.get("channel") == "reasoning"
+    ]
+    assert len(streamed_reasoning) == 0
+    result = runtime.session_result(session_id=response.session.session.id)
+    persisted_reasoning = [event for event in result.transcript if event.event_type == "runtime.reasoning_part"]
+    assert len(persisted_reasoning) == 1
+    assert persisted_reasoning[0].payload["text"] == "private chain"
+    # The reasoning output diagnostic reflects the observed non-streaming reasoning.
+    diagnostics = [
+        event
+        for event in response.events
+        if event.event_type == "runtime.reasoning_diagnostic" and event.payload.get("category") == "reasoning_output"
+    ]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].payload["reasoning_output_observed"] is True
+    assert diagnostics[0].payload["reason"] == "reasoning_output_observed"
+
+
+def test_runtime_non_streaming_reasoning_is_bounded_like_streaming(tmp_path: Path) -> None:
+    oversized_reasoning = "x" * (REASONING_PERSISTED_LIMIT_CHARS + 10_000)
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(ProviderTurnResult(output="answer", reasoning=oversized_reasoning),),
+            ),
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="opencode/gpt-5.4",
+            providers=RuntimeProvidersConfig(opencode=LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))),
+        ),
+        model_provider_registry=registry,
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="think"))
+
+    reasoning_events = [event for event in response.events if event.event_type == "runtime.reasoning_part"]
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0].payload["truncated"] is True
+    assert reasoning_events[0].payload["text"] == "x" * REASONING_PERSISTED_LIMIT_CHARS
 
 
 def test_runtime_does_not_persist_show_thinking_request_metadata(tmp_path: Path) -> None:

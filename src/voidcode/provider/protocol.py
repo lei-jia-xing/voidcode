@@ -227,6 +227,10 @@ class ProviderTurnResult:
     tool_calls: tuple[ToolCall, ...] = ()
     output: str | None = None
     usage: ProviderTokenUsage | None = None
+    # Non-streaming reasoning content (e.g. message.reasoning_content /
+    # message.reasoning / thinking_blocks) so non-streaming turns can persist
+    # the same runtime.reasoning_part the streaming path aggregates.
+    reasoning: str | None = None
 
     def __post_init__(self) -> None:
         if self.tool_call is not None and not self.tool_calls:

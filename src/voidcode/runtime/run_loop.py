@@ -1519,6 +1519,16 @@ class RuntimeRunLoopCoordinator:
                         tool_results=tuple(tool_results),
                         session=session,
                     )
+                    # Non-streaming turns (background children) carry the turn's
+                    # reasoning on the step; aggregate it like the streamed deltas
+                    # so one bounded runtime.reasoning_part is persisted below.
+                    non_stream_reasoning = getattr(graph_step, "reasoning", None)
+                    if isinstance(non_stream_reasoning, str) and non_stream_reasoning:
+                        reasoning_capture_state.stream_observed = True
+                        reasoning_capture_state.reasoning_observed = True
+                        reasoning_capture_state.part_count += 1
+                        reasoning_capture_state.text_char_count += len(non_stream_reasoning)
+                        streamed_reasoning_texts.append(non_stream_reasoning)
                 provider_retry_attempt = 0
             except Exception as exc:
                 current_provider_attempt = runtime._provider_attempt_from_metadata({"provider_attempt": provider_attempt})
@@ -1710,10 +1720,11 @@ class RuntimeRunLoopCoordinator:
 
             if streamed_reasoning_texts:
                 # The live provider_stream reasoning deltas above are client-only
-                # (not persisted). Persist one aggregated runtime.reasoning_part so
-                # replay of a completed session still shows the turn's thinking.
-                # The client already rendered the streamed deltas, so the aggregate
-                # is deduplicated on the frontend when it equals the streamed text.
+                # (not persisted), and non-streaming turns capture reasoning on the
+                # step. Persist one aggregated runtime.reasoning_part so replay of
+                # a completed session still shows the turn's thinking. The client
+                # already rendered the streamed deltas, so the aggregate is
+                # deduplicated on the frontend when it equals the streamed text.
                 reasoning_text = "".join(streamed_reasoning_texts)
                 reasoning_truncated = len(reasoning_text) > REASONING_PERSISTED_LIMIT_CHARS
                 if reasoning_truncated:

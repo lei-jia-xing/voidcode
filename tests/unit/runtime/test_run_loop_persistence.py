@@ -20,6 +20,7 @@ class _GraphStep:
     tool_call: ToolCall | None = None
     output: str | None = None
     is_finished: bool = False
+    reasoning: str | None = None
 
 
 def _create_session_row(store: SqliteSessionStore, *, workspace: Path, session_id: str) -> None:
@@ -311,6 +312,57 @@ def test_execute_graph_loop_streaming_persists_aggregated_reasoning(tmp_path: Pa
     assert reasoning.payload["text"] == "first thought second thought"
     assert reasoning.payload["preview"] == "first thought second thought"
     assert reasoning.payload["source"] == "provider_stream"
+
+
+def test_execute_graph_loop_non_streaming_persists_step_reasoning(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    _create_session_row(store, workspace=tmp_path, session_id="session-1")
+    runtime = _runtime_with_store(tmp_path, store)
+
+    class _NonStreamingReasoningGraph:
+        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _GraphStep:
+            _ = request, tool_results, session
+            return _GraphStep(
+                events=(GraphEvent(event_type="graph.response_ready", source="graph", payload={"output_preview": "done"}),),
+                output="done",
+                is_finished=True,
+                reasoning="background child thought",
+            )
+
+        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState):
+            _ = request, tool_results, session
+            raise AssertionError("non-streaming branch must not call stream_step")
+
+    session, request, tool_registry = _graph_request(runtime, session_id="session-1")
+
+    chunks = list(
+        runtime._execute_graph_loop(
+            graph=_NonStreamingReasoningGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            graph_request=request,
+            tool_results=[],
+        )
+    )
+
+    # No live provider_stream deltas on the non-streaming path: the turn persists
+    # one aggregated runtime.reasoning_part so replay keeps the child's thinking.
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    assert "graph.provider_stream" not in event_types
+    persisted = _loaded_events(store, workspace=tmp_path, session_id="session-1")
+    persisted_types = [event.event_type for event in persisted]
+    assert persisted_types.count("runtime.reasoning_part") == 1
+    assert persisted_types[-2:] == [
+        "graph.response_ready",
+        "runtime.reasoning_diagnostic",
+    ]
+    reasoning = next(event for event in persisted if event.event_type == "runtime.reasoning_part")
+    assert reasoning.payload["text"] == "background child thought"
+    diagnostic = next(event for event in persisted if event.event_type == "runtime.reasoning_diagnostic")
+    assert diagnostic.payload["reasoning_output_observed"] is True
+    assert diagnostic.payload["captured_part_count"] == 1
+    assert diagnostic.payload["captured_text_char_count"] == len("background child thought")
 
 
 def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) -> None:

@@ -289,19 +289,24 @@ class _StubCompletionResponse:
         content: str | None = "hello world",
         tool_calls: list[dict[str, object]] | None = None,
         usage: dict[str, object] | None = None,
+        message_extra: dict[str, object] | None = None,
     ) -> None:
         self._content = content
         self._tool_calls = tool_calls
         self._usage = usage
+        self._message_extra = message_extra
 
     def model_dump(self) -> dict[str, object]:
+        message: dict[str, object] = {
+            "content": self._content,
+            "tool_calls": self._tool_calls,
+        }
+        if self._message_extra is not None:
+            message.update(self._message_extra)
         payload: dict[str, object] = {
             "choices": [
                 {
-                    "message": {
-                        "content": self._content,
-                        "tool_calls": self._tool_calls,
-                    }
+                    "message": message,
                 }
             ]
         }
@@ -328,6 +333,7 @@ def _patch_litellm_completion(
     api_error: _StubAPIError | None = None,
     tool_calls: list[dict[str, object]] | None = None,
     usage: dict[str, object] | None = None,
+    message_extra: dict[str, object] | None = None,
 ) -> None:
     import voidcode.provider.litellm_backend as backend_module
 
@@ -358,6 +364,7 @@ def _patch_litellm_completion(
             content=completion_content,
             tool_calls=tool_calls,
             usage=usage,
+            message_extra=message_extra,
         )
 
     monkeypatch.setattr(backend_module, "APIError", _PatchedAPIError)
@@ -2873,6 +2880,77 @@ def test_litellm_backend_propose_turn_forwards_ssl_verify(monkeypatch: pytest.Mo
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["ssl_verify"] is False
+
+
+def test_litellm_backend_propose_turn_extracts_reasoning_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    request = _build_turn_request(model_name="custom")
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="answer",
+        message_extra={"reasoning_content": "private chain"},
+    )
+
+    result = provider.propose_turn(request)
+
+    assert result.output == "answer"
+    assert result.reasoning == "private chain"
+
+
+def test_litellm_backend_propose_turn_extracts_thinking_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    request = _build_turn_request(model_name="custom")
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="answer",
+        message_extra={
+            "thinking_blocks": [
+                {"type": "thinking", "thinking": "first thought "},
+                {"type": "thinking", "thinking": "second thought"},
+            ]
+        },
+    )
+
+    result = provider.propose_turn(request)
+
+    assert result.output == "answer"
+    assert result.reasoning == "first thought second thought"
+
+
+def test_litellm_backend_propose_turn_carries_reasoning_on_tool_call_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    request = _build_turn_request(model_name="custom")
+    tool_calls = [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "read", "arguments": '{"path": "sample.txt"}'},
+        }
+    ]
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        tool_calls=tool_calls,
+        message_extra={"reasoning": "planned the read"},
+    )
+
+    result = provider.propose_turn(request)
+
+    assert result.tool_calls and result.tool_calls[0].tool_name == "read"
+    assert result.reasoning == "planned the read"
+
+
+def test_litellm_backend_propose_turn_omits_reasoning_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="custom", config=None)
+    request = _build_turn_request(model_name="custom")
+    _patch_litellm_completion(monkeypatch, mode="completion", completion_content="answer")
+
+    result = provider.propose_turn(request)
+
+    assert result.output == "answer"
+    assert result.reasoning is None
 
 
 def test_litellm_backend_omits_ssl_verify_when_not_configured(

@@ -177,6 +177,32 @@ def _reasoning_content_from_tool_data(segment: object) -> str | None:
     return None
 
 
+def _extract_non_stream_reasoning(message: Mapping[str, object]) -> str | None:
+    """Extract reasoning from a non-stream completion message.
+
+    Mirrors the delta fields consumed by ``stream_turn`` (``reasoning_content`` /
+    ``reasoning`` first, then ``thinking_blocks``) so non-streaming turns persist
+    the same reasoning the streaming path aggregates into ``runtime.reasoning_part``.
+    """
+    reasoning_obj = message.get("reasoning_content") or message.get("reasoning")
+    if isinstance(reasoning_obj, str) and reasoning_obj:
+        return reasoning_obj
+    raw_thinking_blocks = message.get("thinking_blocks")
+    if not isinstance(raw_thinking_blocks, list):
+        return None
+    thinking_parts: list[str] = []
+    for block_obj in cast(list[object], raw_thinking_blocks):
+        if not isinstance(block_obj, dict):
+            continue
+        block = cast(dict[str, object], block_obj)
+        if block.get("type") != "thinking":
+            continue
+        thinking_text = block.get("thinking")
+        if isinstance(thinking_text, str) and thinking_text:
+            thinking_parts.append(thinking_text)
+    return "".join(thinking_parts) or None
+
+
 def _model_requires_reasoning_content_with_tool_calls(
     *,
     provider_name: str,
@@ -794,18 +820,19 @@ class LiteLLMBackendSingleAgentProvider:
             if not isinstance(message_obj, dict):
                 return ProviderTurnResult(output="", usage=usage)
             message = cast(dict[str, object], message_obj)
+            reasoning = _extract_non_stream_reasoning(message)
 
             tool_calls = self._extract_tool_calls(
                 message,
                 provider_to_original=provider_to_original,
             )
             if tool_calls:
-                return ProviderTurnResult(tool_calls=tool_calls, usage=usage)
+                return ProviderTurnResult(tool_calls=tool_calls, usage=usage, reasoning=reasoning)
 
             content_obj = message.get("content")
             if isinstance(content_obj, str):
-                return ProviderTurnResult(output=content_obj, usage=usage)
-            return ProviderTurnResult(output="", usage=usage)
+                return ProviderTurnResult(output=content_obj, usage=usage, reasoning=reasoning)
+            return ProviderTurnResult(output="", usage=usage, reasoning=reasoning)
         except Exception as exc:
             raise self._map_exception(
                 exc,

@@ -32,6 +32,10 @@ class ProviderStep:
     output: str | None = None
     is_finished: bool = False
     provider_usage: ProviderTokenUsage | None = None
+    # Non-streaming reasoning content carried from the provider turn result so
+    # the run loop can persist it as runtime.reasoning_part (mirrors the
+    # aggregated streamed reasoning deltas on the streaming path).
+    reasoning: str | None = None
 
     def __post_init__(self) -> None:
         if self.tool_call is not None and not self.tool_calls:
@@ -224,6 +228,7 @@ class ProviderGraph:
                 tool_call=first_tool_call,
                 tool_calls=turn_result.tool_calls,
                 provider_usage=turn_result.usage,
+                reasoning=turn_result.reasoning,
             )
 
         if turn_result.output is not None and turn_result.output.strip():
@@ -239,6 +244,7 @@ class ProviderGraph:
                 output=turn_result.output,
                 is_finished=True,
                 provider_usage=turn_result.usage,
+                reasoning=turn_result.reasoning,
             )
 
         if not turn_result.tool_calls:
