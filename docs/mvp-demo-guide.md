@@ -142,7 +142,7 @@
 当前版本（v1）的执行模型仍然是 **runtime-owned single-agent path**，而不是任意拓扑的多代理编排。明确说明：
 
 - 顶层 active run 默认使用 `leader`；规划通过 `/plan` 命令（保持 leader 为活动 agent）或由 leader 经 `task` 委托 `product` plan subagent 完成。
-- runtime-owned delegation path 已经可以启动 `worker`、`advisor`、`explore`、`researcher`、`product` 这些 child preset（`product` 是只读 plan subagent，`subagent_type=product` 或 `category=plan`/`planning`），并通过 background task / child session / notification / result retrieval surfaces 暴露生命周期真相。
+- runtime-owned delegation path 已经可以启动 `worker`、`advisor`、`explore`、`researcher`、`product` 这些 child preset（`product` 是只读 plan subagent，`subagent_type=product`），并通过 background task / child session / notification / result retrieval surfaces 暴露生命周期真相。
 - 文档中不得把当前状态描述成“任意多代理平台”或“ACP 已经接管完整协作控制面”；但也不得再把 delegated child execution 描述成完全不存在。
 
 ### 凭证处理原则

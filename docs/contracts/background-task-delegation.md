@@ -95,7 +95,7 @@ runtime 已有的基础能力：
 - result retrieval 不会把完整 child transcript 自动复制进 parent session
 - retry 是显式 runtime operation，不能引入无限自动重试；旧 terminal task 保持不可变，retry 会创建新的 queued task handle
 - MCP 只按 runtime/session scope 管理，不声明 workspace-scoped lifecycle
-- `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product` or `category=plan`/`planning`) is allowed, and the child returns its plan to the leader via `submit_result`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
+- `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product`) is allowed, and the child returns its plan to the leader via `submit_result`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
 
 ## 所有权边界
 
@@ -397,8 +397,8 @@ approval-blocked 不是 terminal task status，但它对 leader 是重要事件�
 
 Delegated child execution 必须先经过 runtime-owned routing 与 tool scope enforcement：
 
-- `task` 工具会校验 `subagent_type` 或 category mapping，只允许受支持的 child presets。
-- 当前顶层 active preset 是 `leader`；delegated child presets 是 `advisor`、`explore`、`researcher`、`worker`、`product`（`product` 是只读 plan subagent，`plan`/`planning` 类别路由到它）。
+- `task` 工具会校验 `subagent_type`，只允许受支持的 child presets。
+- 当前顶层 active preset 是 `leader`；delegated child presets 是 `advisor`、`explore`、`researcher`、`worker`、`product`（`product` 是只读 plan subagent）。
 - provider 可见工具 schema 会被 agent manifest allowlist 和 request tool config 收窄。
 - 即使 provider 伪造 raw tool call，runtime tool lookup 仍必须拒绝 denied built-in tools。
 - `worker` 当前不默认获得再次 delegation 的 `task` 工具；这避免形成无控制的 nested delegation。
@@ -409,7 +409,7 @@ Delegated child execution 必须先经过 runtime-owned routing 与 tool scope e
 
 Before any child-session allocation, background-task row creation, queueing, lifecycle hook notification, or provider/tool execution side effect, delegated execution must pass the parent `RuntimePolicySnapshot.delegation_policy`. The child snapshot is derived from the parent snapshot plus the selected child manifest and can only be a subset of parent tools, skills, hooks, MCP bindings, prompt activations, and delegation rights.
 
-The product plan preset is a delegated read-only child preset at this gate. Direct `subagent_type="product"`, configured aliases that resolve to product, and `category=plan`/`planning` mappings route to the product subagent, which returns its plan to the leader via `submit_result`. Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. This contract does not add product delegation helpers beyond the existing `task` routing, and the product subagent stays read-only (no task/shell/write). Delegation allow/deny state is visible through the bounded `runtime.request_received.payload.runtime_policy` projection and through delegated/background lifecycle or explicit runtime failure payloads; clients must not infer delegation authority from prompt text.
+The product plan preset is a delegated read-only child preset at this gate. Direct `subagent_type="product"` and configured aliases that resolve to product route to the product subagent, which returns its plan to the leader via `submit_result`. Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. This contract does not add product delegation helpers beyond the existing `task` routing, and the product subagent stays read-only (no task/shell/write). Delegation allow/deny state is visible through the bounded `runtime.request_received.payload.runtime_policy` projection and through delegated/background lifecycle or explicit runtime failure payloads; clients must not infer delegation authority from prompt text.
 
 ## MCP scope 与测试立场
 

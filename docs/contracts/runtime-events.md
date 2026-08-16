@@ -47,7 +47,7 @@ EventEnvelope(
 以下事件当前属于稳定的运行时事件契约，与 `src/voidcode/runtime/events.py` 的 `CoreEventType`（即 `EMITTED_EVENT_TYPES`）一致。它们覆盖当前 deterministic 与 provider 两条 execution engine 路径：
 
 - 请求与技能：`runtime.request_received`、`runtime.skills_loaded`、`runtime.skills_applied`、`runtime.hook_presets_loaded`
-- provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`、`runtime.category_model_diagnostic`
+- provider 治理：`runtime.provider_fallback`、`runtime.provider_transient_retry`
 - ACP：`runtime.acp_connected`、`runtime.acp_disconnected`、`runtime.acp_failed`、`runtime.acp_delegated_lifecycle`
 - LSP：`runtime.lsp_server_started`、`runtime.lsp_server_reused`、`runtime.lsp_server_startup_rejected`、`runtime.lsp_server_stopped`、`runtime.lsp_server_failed`
 - MCP：`runtime.mcp_server_started`、`runtime.mcp_server_reused`、`runtime.mcp_server_acquired`、`runtime.mcp_server_released`、`runtime.mcp_server_stopped`、`runtime.mcp_server_idle_cleaned`、`runtime.mcp_server_failed`

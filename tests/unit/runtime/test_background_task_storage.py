@@ -114,7 +114,7 @@ def test_background_task_storage_persists_delegated_correlation_and_routing_colu
             metadata={
                 "delegation": {
                     "mode": "background",
-                    "category": "quick",
+                    "subagent_type": "worker",
                     "description": "Review quickly",
                     "command": "pytest tests/unit",
                 }
@@ -128,7 +128,7 @@ def test_background_task_storage_persists_delegated_correlation_and_routing_colu
     with closing(sqlite3.connect(database_path)) as connection:
         row = connection.execute(
             """
-            SELECT requested_child_session_id, routing_mode, routing_category,
+            SELECT requested_child_session_id, routing_mode,
                    routing_subagent_type, routing_description, routing_command,
                    approval_request_id, question_request_id, cancellation_cause,
                    result_available
@@ -141,8 +141,7 @@ def test_background_task_storage_persists_delegated_correlation_and_routing_colu
     assert row == (
         "child-requested",
         "background",
-        "quick",
-        None,
+        "worker",
         "Review quickly",
         "pytest tests/unit",
         None,
@@ -163,7 +162,7 @@ def test_background_task_storage_persists_delegated_reminder_episode_state(
         request=BackgroundTaskRequestSnapshot(
             prompt="delegate work",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "background", "category": "quick"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
         ),
         session_id="child-session",
     )
@@ -214,7 +213,7 @@ def test_background_task_storage_stops_delegated_reminder_on_terminal_state(
             request=BackgroundTaskRequestSnapshot(
                 prompt="delegate work",
                 parent_session_id="leader-session",
-                metadata={"delegation": {"mode": "background", "category": "quick"}},
+                metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
             ),
             session_id="child-session",
         ),
@@ -250,7 +249,7 @@ def test_background_task_storage_mark_sent_preserves_stronger_stop_condition(
             request=BackgroundTaskRequestSnapshot(
                 prompt="delegate work",
                 parent_session_id="leader-session",
-                metadata={"delegation": {"mode": "background", "category": "quick"}},
+                metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
             ),
             session_id="child-session",
         ),
@@ -875,7 +874,7 @@ def test_background_task_storage_enriches_parent_visible_delegated_event_payload
                 metadata={
                     "delegation": {
                         "mode": "background",
-                        "category": "quick",
+                        "subagent_type": "worker",
                         "description": "Quick delegated run",
                     }
                 },
@@ -911,7 +910,7 @@ def test_background_task_storage_enriches_parent_visible_delegated_event_payload
         "child_session_id": "child-session",
         "approval_request_id": "approval-42",
         "routing_mode": "background",
-        "routing_category": "quick",
+        "routing_subagent_type": "worker",
         "routing_description": "Quick delegated run",
     }
 
@@ -944,7 +943,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
                 metadata={
                     "delegation": {
                         "mode": "background",
-                        "category": "brain",
+                        "subagent_type": "advisor",
                     }
                 },
             ),
@@ -976,7 +975,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
                 "delegated_task_id": "task-completed-event",
                 "approval_request_id": None,
                 "question_request_id": None,
-                "routing": {"mode": "background", "category": "brain"},
+                "routing": {"mode": "background", "subagent_type": "advisor"},
                 "selected_preset": "advisor",
                 "selected_execution_engine": "provider",
                 "lifecycle_status": "completed",
@@ -994,7 +993,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
     assert appended.payload["child_session_id"] == "child-session"
     assert appended.payload["status"] == "completed"
     assert appended.payload["result_available"] is True
-    assert appended.payload["routing_category"] == "brain"
+    assert appended.payload["routing_subagent_type"] == "advisor"
     assert appended.payload["delegation"] == {
         "parent_session_id": "leader-session",
         "requested_child_session_id": "child-requested",
@@ -1002,7 +1001,7 @@ def test_background_task_storage_preserves_supervisor_completed_event_payload_fi
         "delegated_task_id": "task-completed-event",
         "approval_request_id": None,
         "question_request_id": None,
-        "routing": {"mode": "background", "category": "brain"},
+        "routing": {"mode": "background", "subagent_type": "advisor"},
         "selected_preset": "advisor",
         "selected_execution_engine": "provider",
         "lifecycle_status": "completed",
@@ -1499,7 +1498,6 @@ def test_runtime_events_define_delegated_background_task_durability_fields() -> 
     )
     assert DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS == (
         "routing_mode",
-        "routing_category",
         "routing_subagent_type",
         "routing_description",
         "routing_command",

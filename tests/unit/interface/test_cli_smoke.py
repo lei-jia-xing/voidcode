@@ -74,32 +74,6 @@ class _StubNonInteractiveInput:
         raise AssertionError("readline should not be called for non-interactive runs")
 
 
-def _expected_category_models(
-    global_model: str | None,
-    *,
-    overrides: dict[str, str] | None = None,
-) -> dict[str, dict[str, object]]:
-    configured_overrides = overrides or {}
-    presets = {
-        "brain": "advisor",
-        "deep": "worker",
-        "high": "worker",
-        "low": "worker",
-        "quick": "worker",
-        "visual-engineering": "worker",
-        "writing": "worker",
-    }
-    return {
-        category: {
-            "model": configured_overrides.get(category),
-            "fallback_models": [],
-            "effective_model": configured_overrides.get(category, global_model),
-            "selected_preset": preset,
-        }
-        for category, preset in presets.items()
-    }
-
-
 def _expected_agent_models(global_model: str | None) -> dict[str, dict[str, object]]:
     return {
         agent_id: {
@@ -2614,7 +2588,6 @@ def test_config_show_outputs_workspace_effective_config() -> None:
         "reasoning_effort": "medium",
         "agent": None,
         "agents": _expected_agent_models("repo/model"),
-        "categories": _expected_category_models("repo/model"),
         "resolved_provider": {
             "active_target": {
                 "raw_model": "repo/model",
@@ -2677,20 +2650,20 @@ def test_config_show_outputs_json_by_default() -> None:
     assert payload["execution_engine"] == "deterministic"
 
 
-def test_config_show_outputs_effective_category_models_without_secrets() -> None:
+def test_config_show_outputs_effective_agent_models_without_secrets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         (workspace / ".voidcode.json").write_text(
             json.dumps(
                 {
                     "model": "openai/global-model",
-                    "categories": {"quick": {"model": "openai/category-model"}},
+                    "agents": {"worker": {"model": "openai/worker-model"}},
                 }
             ),
             encoding="utf-8",
         )
         env = with_src_pythonpath(os.environ.copy())
-        env["OPENAI_API_KEY"] = "category-secret"
+        env["OPENAI_API_KEY"] = "agent-secret"
 
         result = _run_module_cli(
             "config",
@@ -2702,12 +2675,10 @@ def test_config_show_outputs_effective_category_models_without_secrets() -> None
 
     payload = json.loads(result.stdout)
     assert result.returncode == 0
-    assert payload["categories"] == _expected_category_models(
-        "openai/global-model",
-        overrides={"quick": "openai/category-model"},
-    )
-    assert payload["agents"] == _expected_agent_models("openai/global-model")
-    assert "category-secret" not in result.stdout
+    assert payload["agents"]["worker"]["model"] == "openai/worker-model"
+    assert payload["agents"]["worker"]["effective_model"] == "openai/worker-model"
+    assert "categories" not in payload
+    assert "agent-secret" not in result.stdout
 
 
 def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
@@ -2763,7 +2734,7 @@ def test_config_show_uses_opencode_go_environment_without_leaking_key() -> None:
     assert payload["agent"]["preset"] == "leader"
     assert payload["agent"]["prompt_profile"] == "leader"
     assert payload["agents"] == _expected_agent_models("opencode-go/glm-5")
-    assert payload["categories"] == _expected_category_models("opencode-go/glm-5")
+    assert "categories" not in payload
     assert payload["resolved_provider"] == {
         "active_target": {
             "raw_model": "opencode-go/glm-5",
@@ -2820,7 +2791,6 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                     "model": "changed/model",
                     "reasoning_effort": "medium",
                     "fallback_models": ["changed/workspace-fallback"],
-                    "categories": {"quick": {"model": "changed/category"}},
                     "agents": {"worker": {"model": "changed/worker"}},
                 }
             ),
@@ -2864,7 +2834,6 @@ def test_config_show_outputs_resumed_session_effective_config() -> None:
                 "product",
             )
         },
-        "categories": _expected_category_models("repo/model"),
         "resolved_provider": {
             "active_target": {
                 "raw_model": "repo/model",
@@ -2941,7 +2910,6 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         workspace = Path(tmp)
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.effective_runtime_config.return_value = runtime_config
-            runtime_class.return_value.effective_category_model_config.return_value = {}
             runtime_class.return_value.effective_agent_model_config.return_value = {}
             readiness = cli.ProviderReadinessResult(
                 provider="runtime",
@@ -2972,7 +2940,6 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
     runtime_class.assert_called_once_with(workspace=workspace)
     runtime_class.return_value.effective_runtime_config.assert_called_once_with(session_id="config-session")
     runtime_class.return_value.effective_agent_model_config.assert_called_once_with(session_id="config-session")
-    runtime_class.return_value.effective_category_model_config.assert_called_once_with(session_id="config-session")
     runtime_class.return_value.current_status.assert_called_once_with()
     assert json.loads(captured.out) == {
         "workspace": str(workspace),
@@ -2985,7 +2952,6 @@ def test_config_show_delegates_to_runtime_effective_config(capsys: Any) -> None:
         "reasoning_effort": "high",
         "agent": None,
         "agents": {},
-        "categories": {},
         "resolved_provider": {
             "active_target": {
                 "raw_model": "runtime/model",

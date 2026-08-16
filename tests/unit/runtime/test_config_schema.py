@@ -13,7 +13,6 @@ from voidcode.runtime.config_schema import (
     generate_starter_runtime_config,
     runtime_config_json_schema,
 )
-from voidcode.runtime.task import supported_subagent_categories
 
 
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
@@ -44,11 +43,10 @@ def test_runtime_config_json_schema_exposes_core_fields() -> None:
     agent_map_properties = cast(dict[str, object], agents["properties"])
     assert agent_map_properties["worker"] == {"$ref": "#/$defs/agentConfig"}
     assert agents["additionalProperties"] == {"$ref": "#/$defs/customAgentConfig"}
-    categories = cast(dict[str, object], properties["categories"])
-    category_names = cast(dict[str, object], categories["propertyNames"])
-    assert category_names["enum"] == list(supported_subagent_categories())
+    assert "categories" not in properties
     defs = cast(dict[str, object], schema["$defs"])
     assert isinstance(defs, dict)
+    assert "categoryConfig" not in defs
     agent_config = cast(dict[str, object], defs["agentConfig"])
     assert agent_config["additionalProperties"] is False
     agent_properties = cast(dict[str, object], agent_config["properties"])

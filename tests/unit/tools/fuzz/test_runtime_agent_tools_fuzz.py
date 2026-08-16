@@ -330,7 +330,7 @@ def test_task_tool_rejects_invalid_prompt_values(
                         "prompt": prompt,
                         "run_in_background": run_in_background,
                         "load_skills": [],
-                        "category": "quick",
+                        "subagent_type": "worker",
                     },
                 ),
                 workspace=Path(temp_dir),
@@ -360,23 +360,21 @@ def test_task_tool_rejects_invalid_load_skills_entries(
                         "prompt": "Investigate this",
                         "run_in_background": run_in_background,
                         "load_skills": [skill_name],
-                        "category": "quick",
+                        "subagent_type": "worker",
                     },
                 ),
                 workspace=Path(temp_dir),
             )
 
 
-def test_task_tool_rejects_ambiguous_or_missing_routing_arguments() -> None:
+def test_task_tool_rejects_missing_subagent_type() -> None:
     tool = TaskTool(runtime=_UnusedTaskRuntime())
     routing_error = (
-        r"task Validation error: arguments: Value error, "
-        r"provide exactly one of category or subagent_type \(received dict\)\. "
+        r"task Validation error: subagent_type: Field required \(received dict\)\. "
         r"Please retry with corrected arguments that satisfy the tool schema\."
     )
 
     with TemporaryDirectory() as temp_dir:
-        workspace = Path(temp_dir)
         with pytest.raises(ValueError, match=routing_error):
             tool.invoke(
                 ToolCall(
@@ -387,19 +385,5 @@ def test_task_tool_rejects_ambiguous_or_missing_routing_arguments() -> None:
                         "load_skills": [],
                     },
                 ),
-                workspace=workspace,
-            )
-        with pytest.raises(ValueError, match=routing_error):
-            tool.invoke(
-                ToolCall(
-                    tool_name="task",
-                    arguments={
-                        "prompt": "Investigate this",
-                        "run_in_background": True,
-                        "load_skills": [],
-                        "category": "quick",
-                        "subagent_type": "explore",
-                    },
-                ),
-                workspace=workspace,
+                workspace=Path(temp_dir),
             )

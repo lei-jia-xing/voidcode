@@ -57,14 +57,9 @@ def _normalized_optional_string(
 @dataclass(frozen=True, slots=True)
 class SubagentRoutingIdentity:
     mode: SubagentExecutionMode
-    category: str | None = None
-    subagent_type: str | None = None
+    subagent_type: str
     description: str | None = None
     command: str | None = None
-
-    def __post_init__(self) -> None:
-        if bool(self.category) == bool(self.subagent_type):
-            raise ValueError("subagent routing must provide exactly one of category or subagent_type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,25 +74,11 @@ class ResolvedSubagentRoute:
             "preset": self.selected_preset,
             "mode": "subagent",
             "requested_mode": self.requested.mode,
-            **({"requested_category": self.requested.category} if self.requested.category is not None else {}),
             **({"requested_subagent_type": self.requested.subagent_type} if self.requested.subagent_type is not None else {}),
             **({"description": self.requested.description} if self.requested.description is not None else {}),
             **({"command": self.requested.command} if self.requested.command is not None else {}),
         }
 
-
-_CATEGORY_TO_SUBAGENT_PRESET: dict[str, SubagentExecutablePreset] = {
-    "quick": "worker",
-    "low": "worker",
-    "deep": "worker",
-    "brain": "advisor",
-    "writing": "worker",
-    "visual-engineering": "worker",
-    "high": "worker",
-    "plan": "product",
-    "planning": "product",
-}
-SUPPORTED_SUBAGENT_CATEGORIES: tuple[str, ...] = tuple(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
 
 _CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker", "product"})
 _BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
@@ -118,33 +99,21 @@ _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[Backg
 }
 
 
-def supported_subagent_categories() -> tuple[str, ...]:
-    return SUPPORTED_SUBAGENT_CATEGORIES
-
-
 def resolve_subagent_route(
     requested: SubagentRoutingIdentity,
     *,
     callable_subagent_presets: frozenset[str] | None = None,
 ) -> ResolvedSubagentRoute:
     callable_presets = callable_subagent_presets or _CALLABLE_SUBAGENT_PRESETS
-    if requested.subagent_type is not None:
-        if requested.subagent_type == "leader":
-            raise ValueError("subagent_type 'leader' is not a callable child preset")
-        if requested.subagent_type not in callable_presets:
-            valid_presets = ", ".join(sorted(callable_presets))
-            raise ValueError(f"unknown subagent_type '{requested.subagent_type}'; valid child presets are: {valid_presets}")
-        return ResolvedSubagentRoute(
-            requested=requested,
-            selected_preset=requested.subagent_type,
-        )
-
-    assert requested.category is not None
-    selected_preset = _CATEGORY_TO_SUBAGENT_PRESET.get(requested.category)
-    if selected_preset is None:
-        valid_categories = ", ".join(sorted(_CATEGORY_TO_SUBAGENT_PRESET))
-        raise ValueError(f"unsupported task category '{requested.category}'; valid categories are: {valid_categories}")
-    return ResolvedSubagentRoute(requested=requested, selected_preset=selected_preset)
+    if requested.subagent_type == "leader":
+        raise ValueError("subagent_type 'leader' is not a callable child preset")
+    if requested.subagent_type not in callable_presets:
+        valid_presets = ", ".join(sorted(callable_presets))
+        raise ValueError(f"unknown subagent_type '{requested.subagent_type}'; valid child presets are: {valid_presets}")
+    return ResolvedSubagentRoute(
+        requested=requested,
+        selected_preset=requested.subagent_type,
+    )
 
 
 def is_background_task_terminal(status: BackgroundTaskStatus) -> bool:
@@ -203,17 +172,14 @@ def parse_subagent_routing_identity(metadata: object) -> SubagentRoutingIdentity
 
     mode = _parse_subagent_routing_mode(routing_metadata.get("mode"))
 
-    category = routing_metadata.get("category")
     subagent_type = routing_metadata.get("subagent_type")
-    normalized_category = _normalized_optional_string(category, field_name="delegation.category") if category is not None else None
-    normalized_subagent_type = (
-        _normalized_optional_string(subagent_type, field_name="delegation.subagent_type") if subagent_type is not None else None
-    )
+    if subagent_type is None:
+        raise ValueError("delegation.subagent_type is required")
+    normalized_subagent_type = _normalized_optional_string(subagent_type, field_name="delegation.subagent_type")
     description = routing_metadata.get("description")
     command = routing_metadata.get("command")
     return SubagentRoutingIdentity(
         mode=mode,
-        category=normalized_category,
         subagent_type=normalized_subagent_type,
         description=(_normalized_optional_string(description, field_name="delegation.description") if description is not None else None),
         command=(_normalized_optional_string(command, field_name="delegation.command") if command is not None else None),

@@ -14,7 +14,7 @@ def test_request_and_task_metadata_share_delegation_identity_parser() -> None:
     metadata: dict[str, object] = {
         "delegation": {
             "mode": "background",
-            "category": "quick",
+            "subagent_type": "worker",
             "description": "Inspect the runtime",
             "depth": 2,
         }
@@ -26,9 +26,9 @@ def test_request_and_task_metadata_share_delegation_identity_parser() -> None:
 @pytest.mark.parametrize(
     "delegation",
     [
-        {"mode": "invalid", "category": "quick"},
-        {"mode": "sync", "category": "quick", "subagent_type": "worker"},
-        {"mode": "sync", "category": ""},
+        {"mode": "invalid", "subagent_type": "worker"},
+        {"mode": "sync", "subagent_type": ""},
+        {"mode": "sync"},
     ],
 )
 def test_request_and_task_metadata_reject_the_same_invalid_identity(
@@ -48,18 +48,23 @@ def test_request_boundary_still_rejects_unknown_delegation_fields() -> None:
             {
                 "delegation": {
                     "mode": "sync",
-                    "category": "quick",
+                    "subagent_type": "worker",
                     "unexpected": True,
                 }
             }
         )
 
 
+def test_request_boundary_rejects_missing_subagent_type() -> None:
+    with pytest.raises(RuntimeRequestError, match="delegation.subagent_type"):
+        runtime_subagent_routing_from_metadata({"delegation": {"mode": "background", "description": "No preset"}})
+
+
 def test_parallel_group_fields_are_accepted_and_normalized() -> None:
     # Given: delegation metadata carrying the parallel-group fields the task tool emits
     delegation: dict[str, object] = {
         "mode": "background",
-        "category": "worker",
+        "subagent_type": "worker",
         "parallel_group_id": "alpha-beta-writers",
         "parallel_group_size": "2",
     }
@@ -75,7 +80,7 @@ def test_parallel_group_fields_are_accepted_and_normalized() -> None:
 def test_parallel_group_size_must_be_a_positive_integer() -> None:
     delegation: dict[str, object] = {
         "mode": "background",
-        "category": "worker",
+        "subagent_type": "worker",
         "parallel_group_size": "0",
     }
 

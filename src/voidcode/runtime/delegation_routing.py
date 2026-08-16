@@ -2,23 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .config import RuntimeAgentConfig, RuntimeCategoryConfig, RuntimeProviderFallbackConfig
+from .config import RuntimeAgentConfig, RuntimeProviderFallbackConfig
 
 
 def delegated_model_for_route_from_configs(
     *,
-    category: str | None,
     selected_preset: str,
     request_agent: RuntimeAgentConfig | None,
-    categories: Mapping[str, RuntimeCategoryConfig],
     agents: Mapping[str, RuntimeAgentConfig],
     base_model: str | None,
 ) -> str | None:
     if request_agent is not None and request_agent.model is not None:
         return request_agent.model
-    category_config = categories.get(category) if category is not None else None
-    if category_config is not None and category_config.model is not None:
-        return category_config.model
     preset_agent = agents.get(selected_preset)
     if preset_agent is not None and preset_agent.model is not None:
         return preset_agent.model

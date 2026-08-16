@@ -13,7 +13,6 @@ from voidcode.runtime.task import (
     BackgroundTaskState,
     SubagentRoutingIdentity,
     resolve_subagent_route,
-    supported_subagent_categories,
 )
 from voidcode.tools import TaskTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
@@ -68,19 +67,21 @@ def test_task_tool_exposes_agent_friendly_json_schema_contract() -> None:
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
-    assert schema["required"] == ["prompt", "run_in_background", "load_skills"]
+    assert schema["required"] == ["prompt", "run_in_background", "load_skills", "subagent_type"]
 
     properties = cast(dict[str, object], schema["properties"])
     run_in_background = cast(dict[str, object], properties["run_in_background"])
     load_skills = cast(dict[str, object], properties["load_skills"])
+    subagent_type = cast(dict[str, object], properties["subagent_type"])
 
     assert run_in_background["type"] == "boolean"
     assert "Required." in cast(str, run_in_background["description"])
     assert load_skills["type"] == "array"
     assert "Pass []" in cast(str, load_skills["description"])
+    assert subagent_type["type"] == "string"
+    assert "Required." in cast(str, subagent_type["description"])
 
-    one_of = cast(list[object], schema["oneOf"])
-    assert len(one_of) == 2
+    assert "oneOf" not in schema
     examples = cast(list[object], schema["examples"])
     assert cast(dict[str, object], examples[0])["run_in_background"] is True
     assert cast(dict[str, object], examples[1])["run_in_background"] is False
@@ -98,7 +99,7 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
                     "prompt": "Investigate this",
                     "run_in_background": True,
                     "load_skills": ["demo"],
-                    "category": "quick",
+                    "subagent_type": "worker",
                 },
             ),
             workspace=tmp_path,
@@ -116,11 +117,11 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
     assert "background_output(block=true)" in result.content
     assert result.retry_guidance is not None
     assert "Continue other safe work now" in result.retry_guidance
-    assert result.data["delegation"] == {"mode": "background", "category": "quick"}
+    assert result.data["delegation"] == {"mode": "background", "subagent_type": "worker"}
     assert runtime.requests[0].parent_session_id == "leader-session"
     assert runtime.requests[0].metadata == {
         "force_load_skills": ["demo"],
-        "delegation": {"mode": "background", "category": "quick"},
+        "delegation": {"mode": "background", "subagent_type": "worker"},
     }
 
 
@@ -192,8 +193,8 @@ def test_task_tool_guidance_frontloads_required_arguments() -> None:
 
     guidance = guidance_for_tool("task")
 
-    assert "Always include `prompt`, `run_in_background`, and `load_skills`" in guidance
-    assert "Provide exactly one of `category` or `subagent_type`" in guidance
+    assert "Always include `prompt`, `run_in_background`, `load_skills`, and `subagent_type`" in guidance
+    assert "`subagent_type` is required" in guidance
     assert "Prefer `run_in_background=true`" in guidance
     assert "Do not call `background_output` immediately" in guidance
     assert "background_output(block=true)" in guidance
@@ -297,12 +298,12 @@ def test_task_tool_rejects_invalid_direct_child_subagent_presets_before_dispatch
     assert runtime.requests == []
 
 
-def test_task_tool_rejects_unsupported_category_before_dispatch(tmp_path: Path) -> None:
+def test_task_tool_requires_subagent_type_before_dispatch(tmp_path: Path) -> None:
     runtime = _StubTaskRuntime()
     tool = TaskTool(runtime=runtime)
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
-        with pytest.raises(ValueError, match="unsupported task category 'slow'"):
+        with pytest.raises(ValueError) as exc_info:
             tool.invoke(
                 ToolCall(
                     tool_name="task",
@@ -310,40 +311,26 @@ def test_task_tool_rejects_unsupported_category_before_dispatch(tmp_path: Path) 
                         "prompt": "Handle delegated work",
                         "run_in_background": True,
                         "load_skills": [],
-                        "category": "slow",
                     },
                 ),
                 workspace=tmp_path,
             )
 
+    assert "task Validation error" in str(exc_info.value)
+    assert "subagent_type" in str(exc_info.value)
     assert runtime.requests == []
 
 
-def test_task_category_mapping_contract_is_exact() -> None:
-    assert set(supported_subagent_categories()) == {
-        "quick",
-        "low",
-        "deep",
-        "high",
-        "brain",
-        "writing",
-        "visual-engineering",
-        "plan",
-        "planning",
-    }
+def test_task_direct_subagent_preset_mapping_is_exact() -> None:
     assert {
-        category: resolve_subagent_route(SubagentRoutingIdentity(mode="background", category=category)).selected_preset
-        for category in supported_subagent_categories()
+        preset: resolve_subagent_route(SubagentRoutingIdentity(mode="background", subagent_type=preset)).selected_preset
+        for preset in ("advisor", "explore", "researcher", "worker", "product")
     } == {
-        "quick": "worker",
-        "low": "worker",
-        "deep": "worker",
-        "high": "worker",
-        "brain": "advisor",
-        "writing": "worker",
-        "visual-engineering": "worker",
-        "plan": "product",
-        "planning": "product",
+        "advisor": "advisor",
+        "explore": "explore",
+        "researcher": "researcher",
+        "worker": "worker",
+        "product": "product",
     }
 
 
@@ -388,7 +375,7 @@ def test_task_tool_requires_runtime_context(tmp_path: Path) -> None:
                     "prompt": "Do it now",
                     "run_in_background": True,
                     "load_skills": [],
-                    "category": "quick",
+                    "subagent_type": "worker",
                 },
             ),
             workspace=tmp_path,

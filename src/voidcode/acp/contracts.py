@@ -31,7 +31,6 @@ class AcpDelegatedExecution:
     approval_request_id: str | None = None
     question_request_id: str | None = None
     routing_mode: Literal["sync", "background"] | None = None
-    routing_category: str | None = None
     routing_subagent_type: str | None = None
     routing_description: str | None = None
     routing_command: str | None = None
@@ -51,7 +50,6 @@ class AcpDelegatedExecution:
             "approval_request_id": self.approval_request_id,
             "question_request_id": self.question_request_id,
             "routing_mode": self.routing_mode,
-            "routing_category": self.routing_category,
             "routing_subagent_type": self.routing_subagent_type,
             "routing_description": self.routing_description,
             "routing_command": self.routing_command,

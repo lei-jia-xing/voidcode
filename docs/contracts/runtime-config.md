@@ -122,7 +122,6 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 默认使用 builtin `leader`，也可显式选择 builtin `product` 或本地自定义 `mode: primary` markdown manifest；runtime-owned delegation path 上的 child run 可执行 builtin child preset 或本地自定义 `mode: subagent` manifest。
 - `policy`：Runtime Harness Policy v1 配置入口，只能提供 schema-bounded narrowing/default intent；runtime hard denials、persisted snapshot、agent manifest 与 request/session 边界仍按固定优先级收口。
 - `agents`：按 agent preset 配置 model / fallback defaults。这里是“已发现 preset 的配置覆盖/别名入口”，不是 manifest 定义入口；内置 preset key 与已发现本地 manifest key 可省略 `preset`，其他 alias key 必须显式声明 `preset`。
-- `categories`：按 task category 配置 delegated child model override。
 - `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`），透传给当前 active provider；当前 model metadata 显式 `supports_reasoning_effort=false` 时 runtime 会 fail-fast，未知能力按 best-effort 透传。
 
 ### Execution engine 生命周期决策
@@ -214,8 +213,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `agent.provider_fallback`：与顶层 `provider_fallback` 相同的配置 shape；对 active agent 覆盖顶层 provider fallback
 - `agent.fallback_models`：agent-scoped shorthand；必须同时配置 `agent.model`，runtime 会把 `agent.model` 作为 `provider_fallback.preferred_model`，并把该数组作为 fallback chain。不能与同一 agent 的 `provider_fallback` 同时出现。
 - `agents.<preset>`：按 preset 配置 delegated child / primary agent defaults；builtin key 与已发现本地 manifest key 可省略 `preset`，alias key 必须显式声明 `preset`。
-- `agents.<preset>.fallback_models`：与 `agent.fallback_models` 相同的 shorthand；delegation path 会把选中 preset 的 fallback chain 持久化到 child session metadata，category model override 只替换 preferred model，不丢弃 preset fallback chain。
-- `categories.<category>.model`：字符串；对该 task category 的 delegated child 覆盖 preferred model，优先级高于 agent preset model、低于 request agent model。
+- `agents.<preset>.fallback_models`：与 `agent.fallback_models` 相同的 shorthand；delegation path 会把选中 preset 的 fallback chain 持久化到 child session metadata。
 - `tui.leader_key`：字符串
 - `tui.keymap`：对象，值当前仅允许 `command_palette`、`session_new`、`session_resume`
 - `tui.preferences.theme.name`：字符串

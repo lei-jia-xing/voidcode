@@ -91,7 +91,7 @@ Sessions must contain a stored v1 runtime policy snapshot on replay and debug su
 
 ### Product non-delegation invariant
 
-`product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, category mapping, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
+`product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
 
 ### v1 non-goals
 

@@ -1,9 +1,9 @@
 Delegate work to a child runtime session or background task.
 
 Usage:
-- Always include `prompt`, `run_in_background`, and `load_skills` on every `task` call.
+- Always include `prompt`, `run_in_background`, `load_skills`, and `subagent_type` on every `task` call.
 - `load_skills` must be an array of strings. Pass `[]` when no extra skills are needed.
-- Provide exactly one of `category` or `subagent_type`. Never send both.
+- `subagent_type` is required: one of `advisor`, `explore`, `researcher`, `worker`, or `product`.
 - Prefer `run_in_background=true` for delegated work unless you intentionally need a synchronous child session result in the same turn.
 - Use this tool when the work should be split into a delegated child run rather than handled inline.
 - When `run_in_background` is true, this tool starts a real background task and returns a `task_id`.
@@ -13,6 +13,5 @@ Usage:
 - Do not guess or fabricate a background task's result before the runtime delivers it. Report current status only, or continue other independent work.
 - Use `background_output` to read status/results and `background_cancel` to cancel a task by id.
 - Example background call: `task(prompt="Inspect the auth flow", run_in_background=true, load_skills=[], subagent_type="explore")`
-- Example sync call: `task(prompt="Summarize these findings", run_in_background=false, load_skills=[], category="writing")`
-- The current runtime preserves parent/child lineage, requested skills, and delegated task correlation. Top-level active runs execute as `leader` by default. Delegated child runs can execute the `advisor`, `explore`, `researcher`, `worker`, or `product` presets through the runtime-owned delegation path. The `product` agent produces an implementation plan without user interaction; delegate planning with `subagent_type="product"` or `category="plan"` (alias `"planning"`) and read the plan back through its `submit_result` handoff.
-- Supported `category` values: `plan`/`planning` (product agent), `brain` (advisor), and `quick`/`low`/`deep`/`high`/`writing`/`visual-engineering` (worker).
+- Example sync call: `task(prompt="Summarize these findings", run_in_background=false, load_skills=[], subagent_type="advisor")`
+- The current runtime preserves parent/child lineage, requested skills, and delegated task correlation. Top-level active runs execute as `leader` by default. Delegated child runs can execute the `advisor`, `explore`, `researcher`, `worker`, or `product` presets through the runtime-owned delegation path. The `product` agent produces an implementation plan without user interaction; delegate planning with `subagent_type="product"` and read the plan back through its `submit_result` handoff.

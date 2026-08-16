@@ -2136,8 +2136,6 @@ class RuntimeTransportApp:
         if routing is None:
             return None
         payload: dict[str, object] = {"mode": routing.mode}
-        if routing.category is not None:
-            payload["category"] = routing.category
         if routing.subagent_type is not None:
             payload["subagent_type"] = routing.subagent_type
         if routing.description is not None:

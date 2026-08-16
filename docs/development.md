@@ -119,7 +119,7 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 当前 delegated child execution 是 runtime-owned surface，不是 CLI、HTTP 或 ACP 各自维护的执行路径。排查这类问题时按以下边界验证：
 
 - `docs/contracts/background-task-delegation.md` 是 parent/child linkage、notification、result、retry/cancel 语义的权威文档。
-- `task` 工具负责 category / `subagent_type` routing 校验；runtime 负责 child session、tool allowlist guardrail、hooks、MCP lifecycle 与持久化。
+- `task` 工具负责 `subagent_type` routing 校验；runtime 负责 child session、tool allowlist guardrail、hooks、MCP lifecycle 与持久化。
 - `background_output` 可以读取摘要，也可以用 bounded `full_session=true` 查看 child transcript；`message_limit` 被限制在 1 到 100，失败结果只建议在用户明确要求时用 `session_id` 继续或重试。
 - `background_cancel` 对 unknown、running、completed、cancelled 等状态返回确定性 payload，不应被包装成未验证的文本约定。
 - CI 与本地测试使用 fake provider 和 fake MCP 覆盖 delegated/MCP lifecycle；不需要 live provider，也不需要真实 `npx @playwright/mcp` 才能验证这些契约。

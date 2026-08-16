@@ -302,24 +302,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "additionalProperties": {"$ref": "#/$defs/customAgentConfig"},
                 "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
             },
-            "categories": {
-                "type": "object",
-                "description": "Per task-category runtime model overrides for delegated sessions.",
-                "additionalProperties": {"$ref": "#/$defs/categoryConfig"},
-                "propertyNames": {
-                    "enum": [
-                        "brain",
-                        "deep",
-                        "high",
-                        "low",
-                        "plan",
-                        "planning",
-                        "quick",
-                        "visual-engineering",
-                        "writing",
-                    ]
-                },
-            },
         },
         "$defs": {
             "commandList": {
@@ -607,17 +589,6 @@ def runtime_config_json_schema() -> dict[str, object]:
                         "type": "array",
                         "items": {"type": "string", "minLength": 1},
                         "uniqueItems": True,
-                    },
-                },
-            },
-            "categoryConfig": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "model": {"type": "string", "minLength": 1},
-                    "fallback_models": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
                     },
                 },
             },

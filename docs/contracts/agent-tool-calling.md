@@ -551,7 +551,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 - 分组：delegated execution
 - 只读：是
-- 用途：委托工作给子 runtime session；需提供 `prompt`、`run_in_background`、`load_skills`，并给出 `category` 或 `subagent_type` 之一。
+- 用途：委托工作给子 runtime session；需提供 `prompt`、`run_in_background`、`load_skills`，并给出 `subagent_type`。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
 #### `question`

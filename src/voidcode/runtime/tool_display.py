@@ -255,7 +255,7 @@ def build_tool_display(
     elif tool_name == "task":
         desc = _first_primitive(arguments, "description")
         summary = desc if desc else "Task"
-        args = _extract_primitive_args(arguments, "category", "subagent_type", "description")
+        args = _extract_primitive_args(arguments, "subagent_type", "description")
         if desc:
             # description is already shown as summary; keep args cleaner
             pass

@@ -14,7 +14,6 @@ type CoreEventType = Literal[
     "runtime.hook_presets_loaded",
     "runtime.provider_fallback",
     "runtime.provider_transient_retry",
-    "runtime.category_model_diagnostic",
     "runtime.acp_connected",
     "runtime.acp_disconnected",
     "runtime.acp_failed",
@@ -132,7 +131,6 @@ RUNTIME_SKILLS_APPLIED: Final[CoreEventType] = "runtime.skills_applied"
 RUNTIME_HOOK_PRESETS_LOADED: Final[CoreEventType] = "runtime.hook_presets_loaded"
 RUNTIME_PROVIDER_FALLBACK: Final[CoreEventType] = "runtime.provider_fallback"
 RUNTIME_PROVIDER_TRANSIENT_RETRY: Final[CoreEventType] = "runtime.provider_transient_retry"
-RUNTIME_CATEGORY_MODEL_DIAGNOSTIC: Final[CoreEventType] = "runtime.category_model_diagnostic"
 RUNTIME_ACP_CONNECTED: Final[CoreEventType] = "runtime.acp_connected"
 RUNTIME_ACP_DISCONNECTED: Final[CoreEventType] = "runtime.acp_disconnected"
 RUNTIME_ACP_FAILED: Final[CoreEventType] = "runtime.acp_failed"
@@ -208,7 +206,6 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_PROVIDER_FALLBACK,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
-    RUNTIME_CATEGORY_MODEL_DIAGNOSTIC,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DISCONNECTED,
     RUNTIME_ACP_FAILED,
@@ -513,7 +510,6 @@ DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS: Final[tuple[str, ...]] = (
 )
 DELEGATED_BACKGROUND_TASK_ROUTING_FIELDS: Final[tuple[str, ...]] = (
     "routing_mode",
-    "routing_category",
     "routing_subagent_type",
     "routing_description",
     "routing_command",
@@ -582,7 +578,6 @@ def _delegated_lifecycle_message_payload(
 @dataclass(frozen=True, slots=True)
 class DelegatedRoutingPayload:
     mode: Literal["sync", "background"] | None = None
-    category: str | None = None
     subagent_type: str | None = None
     description: str | None = None
     command: str | None = None
@@ -591,8 +586,6 @@ class DelegatedRoutingPayload:
         payload: dict[str, object] = {}
         if self.mode is not None:
             payload["mode"] = self.mode
-        if self.category is not None:
-            payload["category"] = self.category
         if self.subagent_type is not None:
             payload["subagent_type"] = self.subagent_type
         if self.description is not None:
@@ -608,7 +601,6 @@ class DelegatedRoutingPayload:
         mode = _parse_delegated_routing_mode(payload.get("mode"))
         routing = cls(
             mode=mode,
-            category=_string_or_none(payload.get("category")),
             subagent_type=_string_or_none(payload.get("subagent_type")),
             description=_string_or_none(payload.get("description")),
             command=_string_or_none(payload.get("command")),

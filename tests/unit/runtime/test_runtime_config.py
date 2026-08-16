@@ -33,7 +33,6 @@ from voidcode.runtime.config import (
     TOOL_TIMEOUT_ENV_VAR,
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
-    RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
@@ -60,7 +59,6 @@ from voidcode.runtime.config import (
     save_workspace_tui_preferences,
     serialize_runtime_agent_config,
     serialize_runtime_background_task_config,
-    serialize_runtime_categories_config,
     serialize_runtime_context_window_config,
     user_runtime_config_path,
 )
@@ -1747,13 +1745,11 @@ def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> N
     )
 
 
-def test_runtime_config_parses_category_model_overrides(tmp_path: Path) -> None:
+def test_runtime_config_rejects_removed_categories_field(tmp_path: Path) -> None:
     runtime_config_path(tmp_path).write_text(
         json.dumps(
             {
                 "categories": {
-                    "brain": {"model": "openai/o3"},
-                    "low": {"model": "openai/gpt-4o-mini"},
                     "quick": {"model": "openai/gpt-4o-mini"},
                 }
             }
@@ -1761,49 +1757,7 @@ def test_runtime_config_parses_category_model_overrides(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    config = load_runtime_config(tmp_path, env={})
-
-    assert config.categories == {
-        "brain": RuntimeCategoryConfig(model="openai/o3"),
-        "low": RuntimeCategoryConfig(model="openai/gpt-4o-mini"),
-        "quick": RuntimeCategoryConfig(model="openai/gpt-4o-mini"),
-    }
-    assert serialize_runtime_categories_config(config.categories) == {
-        "brain": {"model": "openai/o3"},
-        "low": {"model": "openai/gpt-4o-mini"},
-        "quick": {"model": "openai/gpt-4o-mini"},
-    }
-
-
-def test_runtime_config_rejects_unknown_category_model_override(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"categories": {"mystery": {"model": "openai/gpt-4o"}}}),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="categories.mystery"):
-        _ = load_runtime_config(tmp_path, env={})
-
-
-def test_runtime_config_rejects_duplicate_category_fallback_models(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "categories": {
-                    "quick": {
-                        "model": "opencode/gpt-5.4",
-                        "fallback_models": ["opencode/gpt-5.4", "openai/gpt-4.1"],
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="provider fallback chain must not contain duplicate models",
-    ):
+    with pytest.raises(ValueError, match="categories"):
         _ = load_runtime_config(tmp_path, env={})
 
 

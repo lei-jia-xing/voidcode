@@ -433,7 +433,7 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 8
+    _SCHEMA_VERSION = 9
     _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(("project", "preference", "feedback", "reference", "decision"))
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _sqlite_policy = _SQLitePolicy()
@@ -485,7 +485,6 @@ class SqliteSessionStore:
             ("request_metadata_json", "TEXT", 1, None, 0),
             ("requested_child_session_id", "TEXT", 0, None, 0),
             ("routing_mode", "TEXT", 0, None, 0),
-            ("routing_category", "TEXT", 0, None, 0),
             ("routing_subagent_type", "TEXT", 0, None, 0),
             ("routing_description", "TEXT", 0, None, 0),
             ("routing_command", "TEXT", 0, None, 0),
@@ -749,7 +748,6 @@ class SqliteSessionStore:
                 request_metadata_json TEXT NOT NULL,
                 requested_child_session_id TEXT,
                 routing_mode TEXT,
-                routing_category TEXT,
                 routing_subagent_type TEXT,
                 routing_description TEXT,
                 routing_command TEXT,
@@ -1574,7 +1572,6 @@ class SqliteSessionStore:
             ("approval_request_id", "approval_request_id"),
             ("question_request_id", "question_request_id"),
             ("routing_mode", "routing_mode"),
-            ("routing_category", "routing_category"),
             ("routing_subagent_type", "routing_subagent_type"),
             ("routing_description", "routing_description"),
             ("routing_command", "routing_command"),
@@ -2695,7 +2692,6 @@ class SqliteSessionStore:
             UPDATE background_tasks
             SET requested_child_session_id = COALESCE(requested_child_session_id, ?),
                 routing_mode = COALESCE(routing_mode, ?),
-                routing_category = COALESCE(routing_category, ?),
                 routing_subagent_type = COALESCE(routing_subagent_type, ?),
                 routing_description = COALESCE(routing_description, ?),
                 routing_command = COALESCE(routing_command, ?),
@@ -2709,7 +2705,6 @@ class SqliteSessionStore:
             (
                 request.session_id,
                 routing.mode if routing is not None else None,
-                routing.category if routing is not None else None,
                 routing.subagent_type if routing is not None else None,
                 routing.description if routing is not None else None,
                 routing.command if routing is not None else None,
@@ -3450,7 +3445,7 @@ class SqliteSessionStore:
                 INSERT INTO background_tasks (
                     task_id, workspace_id, status, prompt, request_session_id,
                     request_parent_session_id, request_metadata_json, requested_child_session_id,
-                    routing_mode, routing_category, routing_subagent_type,
+                    routing_mode, routing_subagent_type,
                     routing_description, routing_command, approval_request_id,
                     question_request_id, cancellation_cause, result_available,
                     delegated_reminder_json, allocate_session_id, session_id,
@@ -3458,7 +3453,7 @@ class SqliteSessionStore:
                     created_at, updated_at, started_at, finished_at,
                     created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
@@ -3472,7 +3467,6 @@ class SqliteSessionStore:
                     json.dumps(task.request.metadata, sort_keys=True),
                     task.request.session_id,
                     routing.mode if routing is not None else None,
-                    routing.category if routing is not None else None,
                     routing.subagent_type if routing is not None else None,
                     routing.description if routing is not None else None,
                     routing.command if routing is not None else None,

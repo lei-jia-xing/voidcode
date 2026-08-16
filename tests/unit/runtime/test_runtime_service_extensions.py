@@ -56,7 +56,6 @@ from voidcode.runtime.config import (
     RuntimeAcpConfig,
     RuntimeAgentConfig,
     RuntimeBackgroundTaskConfig,
-    RuntimeCategoryConfig,
     RuntimeConfig,
     RuntimeContextWindowConfig,
     RuntimeHooksConfig,
@@ -1896,7 +1895,7 @@ class _TaskToolGraph:
                         "prompt": "delegated child prompt",
                         "run_in_background": True,
                         "load_skills": ["demo"],
-                        "category": "quick",
+                        "subagent_type": "worker",
                     },
                 )
             )
@@ -1981,7 +1980,7 @@ class _NestedDelegationGraph:
                         "prompt": "nested delegated child prompt",
                         "run_in_background": True,
                         "load_skills": [],
-                        "category": "quick",
+                        "subagent_type": "worker",
                     },
                 )
             )
@@ -5471,7 +5470,7 @@ def test_runtime_task_tool_starts_background_task_with_skill_metadata(tmp_path: 
         "force_load_skills": ["demo"],
         "delegation": {
             "mode": "background",
-            "category": "quick",
+            "subagent_type": "worker",
             "depth": 1,
             "remaining_spawn_budget": 3,
             "selected_preset": "worker",
@@ -5792,55 +5791,6 @@ def test_hook_preset_snapshot_cannot_grant_denied_tools_or_policy_authority(
     assert hook_capability["materialization"] == "guidance_only"
 
 
-def test_runtime_category_routing_resolves_real_child_agent_and_persists_identity(
-    tmp_path: Path,
-) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-
-    started = runtime.start_background_task(
-        RuntimeRequest(
-            prompt="delegated child",
-            parent_session_id="leader-session",
-            allocate_session_id=True,
-            metadata={
-                "delegation": {
-                    "mode": "background",
-                    "category": "quick",
-                }
-            },
-        )
-    )
-    completed = _wait_for_background_task(runtime, started.task.id)
-    child_session_id = cast(str, completed.session_id)
-    child_response = runtime.resume(child_session_id)
-    result = runtime.load_background_task_result(started.task.id)
-
-    assert started.request.metadata["delegation"] == {
-        "mode": "background",
-        "category": "quick",
-        "depth": 1,
-        "remaining_spawn_budget": 3,
-        "selected_preset": "worker",
-        "selected_execution_engine": "provider",
-    }
-    assert started.request.metadata["agent"] == {
-        "preset": "worker",
-        "prompt_profile": "worker",
-        "prompt_materialization": _prompt_materialization_payload("worker"),
-    }
-    runtime_config = cast(dict[str, object], child_response.session.metadata["runtime_config"])
-    assert runtime_config["agent"] == {
-        "preset": "worker",
-        "prompt_profile": "worker",
-        "prompt_materialization": _prompt_materialization_payload("worker"),
-    }
-    assert result.routing is not None
-    assert result.routing.category == "quick"
-    assert result.routing.subagent_type is None
-    assert result.requested_child_session_id == child_session_id
-
-
 def test_runtime_subagent_type_routing_resolves_real_child_agent_and_persists_identity(
     tmp_path: Path,
 ) -> None:
@@ -6014,7 +5964,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
     }
 
 
-def test_runtime_category_model_override_precedes_agent_preset_and_global_model(
+def test_runtime_agent_preset_model_precedes_global_model_for_delegated_child(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -6022,7 +5972,6 @@ def test_runtime_category_model_override_precedes_agent_preset_and_global_model(
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             model="openai/global-model",
-            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
             agents={
                 "worker": RuntimeAgentConfig(
                     preset="worker",
@@ -6039,17 +5988,17 @@ def test_runtime_category_model_override_precedes_agent_preset_and_global_model(
         RuntimeRequest(
             prompt="delegated child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
 
     agent = cast(dict[str, object], response.session.metadata["agent"])
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    assert agent["model"] == "openai/category-model"
-    assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/category-model"
+    assert agent["model"] == "openai/worker-model"
+    assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/worker-model"
 
 
-def test_runtime_delegated_child_preserves_preset_fallback_chain_with_category_model(
+def test_runtime_delegated_child_preserves_preset_fallback_chain(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -6057,7 +6006,6 @@ def test_runtime_delegated_child_preserves_preset_fallback_chain_with_category_m
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             model="openai/global-model",
-            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
             agents={
                 "worker": RuntimeAgentConfig(
                     preset="worker",
@@ -6078,7 +6026,7 @@ def test_runtime_delegated_child_preserves_preset_fallback_chain_with_category_m
         RuntimeRequest(
             prompt="delegated child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
 
@@ -6087,7 +6035,7 @@ def test_runtime_delegated_child_preserves_preset_fallback_chain_with_category_m
     assert runtime_config["fallback_models"] == ["openai/worker-fallback", "custom/demo"]
     assert agent["fallback_models"] == ["openai/worker-fallback", "custom/demo"]
     assert runtime.effective_runtime_config(session_id=response.session.session.id).provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="openai/category-model",
+        preferred_model="openai/worker-model",
         fallback_models=("openai/worker-fallback", "custom/demo"),
     )
 
@@ -6099,7 +6047,6 @@ def test_runtime_delegated_child_rebases_duplicate_fallback_model(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
-            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
             agents={
                 "worker": RuntimeAgentConfig(
                     preset="worker",
@@ -6108,7 +6055,7 @@ def test_runtime_delegated_child_rebases_duplicate_fallback_model(
                     execution_engine="provider",
                     provider_fallback=RuntimeProviderFallbackConfig(
                         preferred_model="openai/worker-model",
-                        fallback_models=("openai/category-model", "custom/demo"),
+                        fallback_models=("openai/request-model", "custom/demo"),
                     ),
                 )
             },
@@ -6120,17 +6067,22 @@ def test_runtime_delegated_child_rebases_duplicate_fallback_model(
         RuntimeRequest(
             prompt="delegated child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={
+                "delegation": {"mode": "sync", "subagent_type": "worker"},
+                "agent": {"preset": "worker", "model": "openai/request-model"},
+            },
         )
     )
 
     assert runtime.effective_runtime_config(session_id=response.session.session.id).provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="openai/category-model",
+        preferred_model="openai/request-model",
         fallback_models=("custom/demo",),
     )
 
 
-def test_runtime_category_delegation_prefers_category_fallback_models(tmp_path: Path) -> None:
+def test_runtime_delegated_child_prefers_preset_fallback_models_over_global(
+    tmp_path: Path,
+) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
@@ -6139,16 +6091,6 @@ def test_runtime_category_delegation_prefers_category_fallback_models(tmp_path: 
                 preferred_model="openai/global-model",
                 fallback_models=("openai/global-fallback",),
             ),
-            categories={
-                "quick": RuntimeCategoryConfig(
-                    model="openai/category-model",
-                    fallback_models=(
-                        "openai/category-model",
-                        "openai/category-fallback",
-                        "custom/demo",
-                    ),
-                )
-            },
             agents={
                 "worker": RuntimeAgentConfig(
                     preset="worker",
@@ -6169,13 +6111,13 @@ def test_runtime_category_delegation_prefers_category_fallback_models(tmp_path: 
         RuntimeRequest(
             prompt="delegated child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
 
     assert runtime.effective_runtime_config(session_id=response.session.session.id).provider_fallback == RuntimeProviderFallbackConfig(
-        preferred_model="openai/category-model",
-        fallback_models=("openai/category-fallback", "custom/demo"),
+        preferred_model="openai/worker-model",
+        fallback_models=("openai/worker-fallback",),
     )
 
 
@@ -6187,7 +6129,6 @@ def test_runtime_subagent_type_uses_agent_preset_model_before_global_model(
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             model="openai/global-model",
-            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
             agents={
                 "explore": RuntimeAgentConfig(
                     preset="explore",
@@ -6224,7 +6165,7 @@ def test_runtime_delegated_child_falls_back_to_global_model(tmp_path: Path) -> N
         RuntimeRequest(
             prompt="delegated child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
 
@@ -6232,13 +6173,20 @@ def test_runtime_delegated_child_falls_back_to_global_model(tmp_path: Path) -> N
     assert cast(dict[str, object], runtime_config["agent"])["model"] == "openai/global-model"
 
 
-def test_runtime_request_agent_model_override_precedes_category_model(tmp_path: Path) -> None:
+def test_runtime_request_agent_model_override_precedes_preset_model(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
         config=RuntimeConfig(
             model="openai/global-model",
-            categories={"quick": RuntimeCategoryConfig(model="openai/category-model")},
+            agents={
+                "worker": RuntimeAgentConfig(
+                    preset="worker",
+                    prompt_profile="worker",
+                    model="openai/worker-model",
+                    execution_engine="provider",
+                )
+            },
         ),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -6248,7 +6196,7 @@ def test_runtime_request_agent_model_override_precedes_category_model(tmp_path: 
             prompt="delegated child",
             parent_session_id="leader-session",
             metadata={
-                "delegation": {"mode": "sync", "category": "quick"},
+                "delegation": {"mode": "sync", "subagent_type": "worker"},
                 "agent": {"preset": "worker", "model": "openai/request-model"},
             },
         )
@@ -6395,49 +6343,6 @@ def test_runtime_allows_reasoning_effort_when_metadata_unknown(tmp_path: Path) -
     assert runtime_config_metadata["reasoning_effort"] == "medium"
 
 
-def test_runtime_brain_warns_when_resolved_model_lacks_reasoning_support(
-    tmp_path: Path,
-) -> None:
-    registry = ModelProviderRegistry.with_defaults()
-    registry.model_catalog = {
-        "openai": ProviderModelCatalog(
-            provider="openai",
-            models=("gpt-4o",),
-            refreshed=True,
-            model_metadata={"gpt-4o": ProviderModelMetadata(supports_reasoning=False)},
-        )
-    }
-    runtime = VoidCodeRuntime(
-        workspace=tmp_path,
-        graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(
-            model="openai/gpt-4o",
-            categories={"brain": RuntimeCategoryConfig(model="openai/gpt-4o")},
-        ),
-        model_provider_registry=registry,
-    )
-    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-
-    response = runtime.run(
-        RuntimeRequest(
-            prompt="delegated child",
-            parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "brain"}},
-        )
-    )
-
-    diagnostic = next(event for event in response.events if event.event_type == "runtime.category_model_diagnostic")
-    assert diagnostic.payload == {
-        "severity": "warning",
-        "category": "model_capability_mismatch",
-        "capability": "reasoning",
-        "requested_category": "brain",
-        "provider": "openai",
-        "model": "gpt-4o",
-        "message": ("task category 'brain' resolved to a model whose provider metadata does not support reasoning"),
-    }
-
-
 def test_runtime_background_delegation_executes_on_real_provider_child_path(
     tmp_path: Path,
 ) -> None:
@@ -6476,7 +6381,7 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
             prompt="Investigate delegated execution path",
             parent_session_id="leader-session",
             allocate_session_id=True,
-            metadata={"delegation": {"mode": "background", "category": "quick"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
         )
     )
     completed = _wait_for_background_task(runtime, started.task.id)
@@ -6569,28 +6474,6 @@ def test_runtime_rejects_leader_as_delegated_child_preset(tmp_path: Path) -> Non
         )
 
 
-def test_runtime_rejects_unsupported_delegated_category(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
-    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
-
-    with pytest.raises(
-        RuntimeRequestError,
-        match="unsupported task category 'mystery'",
-    ):
-        _ = runtime.run(
-            RuntimeRequest(
-                prompt="delegated child",
-                parent_session_id="leader-session",
-                metadata={
-                    "delegation": {
-                        "mode": "background",
-                        "category": "mystery",
-                    }
-                },
-            )
-        )
-
-
 def test_runtime_rejects_mismatched_delegated_agent_override(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
@@ -6666,7 +6549,7 @@ def test_runtime_enforces_delegation_depth_limit(tmp_path: Path) -> None:
             prompt="depth-1",
             session_id="child-depth-1",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
     second = runtime.run(
@@ -6674,7 +6557,7 @@ def test_runtime_enforces_delegation_depth_limit(tmp_path: Path) -> None:
             prompt="depth-2",
             session_id="child-depth-2",
             parent_session_id="child-depth-1",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
     third = runtime.run(
@@ -6682,7 +6565,7 @@ def test_runtime_enforces_delegation_depth_limit(tmp_path: Path) -> None:
             prompt="depth-3",
             session_id="child-depth-3",
             parent_session_id="child-depth-2",
-            metadata={"delegation": {"mode": "sync", "category": "quick"}},
+            metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
         )
     )
 
@@ -6694,7 +6577,7 @@ def test_runtime_enforces_delegation_depth_limit(tmp_path: Path) -> None:
             RuntimeRequest(
                 prompt="depth-4",
                 parent_session_id="child-depth-3",
-                metadata={"delegation": {"mode": "sync", "category": "quick"}},
+                metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
             )
         )
 
@@ -6719,7 +6602,7 @@ def test_runtime_enforces_task_budget(tmp_path: Path) -> None:
                     "workspace": str(tmp_path),
                     "delegation": {
                         "mode": "sync",
-                        "category": "quick",
+                        "subagent_type": "worker",
                         "depth": 1,
                         "remaining_spawn_budget": 0,
                     },
@@ -6735,7 +6618,7 @@ def test_runtime_enforces_task_budget(tmp_path: Path) -> None:
             RuntimeRequest(
                 prompt="child-over-budget",
                 parent_session_id="budget-root",
-                metadata={"delegation": {"mode": "sync", "category": "quick"}},
+                metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
             )
         )
 
@@ -6750,7 +6633,7 @@ def test_runtime_nested_task_tool_is_blocked_by_child_tool_scope(tmp_path: Path)
                 prompt="delegate from child",
                 session_id="child-session",
                 parent_session_id="leader-session",
-                metadata={"delegation": {"mode": "sync", "category": "quick"}},
+                metadata={"delegation": {"mode": "sync", "subagent_type": "worker"}},
             )
         )
 
@@ -8796,7 +8679,7 @@ def test_runtime_retries_failed_background_task_as_fresh_queued_task(
             metadata={
                 "delegation": {
                     "mode": "background",
-                    "category": "quick",
+                    "subagent_type": "worker",
                     "description": "Retry me",
                     "command": "test retry",
                 },
@@ -9446,7 +9329,7 @@ def test_runtime_request_delegated_acp_carries_runtime_owned_correlation(tmp_pat
         RuntimeRequest(
             prompt="background child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "background", "category": "deep"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
         )
     )
     running = _wait_for_background_task_session(runtime, started.task.id)
@@ -9465,7 +9348,7 @@ def test_runtime_request_delegated_acp_carries_runtime_owned_correlation(tmp_pat
     assert response.delegation is not None
     assert response.delegation.parent_session_id == "leader-session"
     assert response.delegation.delegated_task_id == started.task.id
-    assert response.delegation.routing_category == "deep"
+    assert response.delegation.routing_subagent_type == "worker"
     assert response.delegation.selected_preset == "worker"
     assert response.delegation.selected_execution_engine == "provider"
     assert runtime.current_acp_state().last_request_id == started.task.id
@@ -9488,7 +9371,7 @@ def test_runtime_request_delegated_acp_reconnects_once_after_disconnect_race(
         RuntimeRequest(
             prompt="background child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "background", "category": "deep"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
         )
     )
     running = _wait_for_background_task_session(runtime, started.task.id)
@@ -9509,7 +9392,7 @@ def test_runtime_request_delegated_acp_reconnects_once_after_disconnect_race(
     assert response.delegation is not None
     assert response.delegation.parent_session_id == "leader-session"
     assert response.delegation.delegated_task_id == started.task.id
-    assert response.delegation.routing_category == "deep"
+    assert response.delegation.routing_subagent_type == "worker"
     assert response.delegation.selected_preset == "worker"
     assert response.delegation.selected_execution_engine == "provider"
     assert runtime.current_acp_state().status == "connected"
@@ -9532,7 +9415,7 @@ def test_runtime_background_task_waiting_approval_publishes_acp_delegated_lifecy
         RuntimeRequest(
             prompt="background child",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "background", "category": "deep"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
         )
     )
     running = _wait_for_background_task_session(runtime, started.task.id)
@@ -9551,7 +9434,7 @@ def test_runtime_background_task_waiting_approval_publishes_acp_delegated_lifecy
     assert acp_events[0].payload["parent_session_id"] == "leader-session"
     delegation_payload = cast(dict[str, object], acp_events[0].payload["delegation"])
     assert delegation_payload["delegated_task_id"] == started.task.id
-    assert delegation_payload["routing_category"] == "deep"
+    assert delegation_payload["routing_subagent_type"] == "worker"
     assert delegation_payload["lifecycle_status"] == "waiting_approval"
     assert delegation_payload["approval_blocked"] is True
     assert runtime.current_acp_state().status == "disconnected"
@@ -9574,7 +9457,7 @@ def test_runtime_background_task_completion_updates_acp_runtime_state_with_resul
         RuntimeRequest(
             prompt="background hello",
             parent_session_id="leader-session",
-            metadata={"delegation": {"mode": "background", "category": "deep"}},
+            metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
         )
     )
     _ = _wait_for_background_task(runtime, started.task.id)
@@ -11022,7 +10905,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
             lsp=RuntimeLspConfig(enabled=True),
             mcp=RuntimeMcpConfig(enabled=True),
             agents={"leader": RuntimeAgentConfig(preset="leader", model="opencode/gpt-5.4")},
-            categories={"quick": RuntimeCategoryConfig(model="opencode/gpt-5.4")},
         ),
     )
 
@@ -11047,7 +10929,6 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
         "tools",
         "agent",
         "agents",
-        "categories",
         "context_window",
         "lsp",
         "mcp",
@@ -15087,7 +14968,7 @@ def test_runtime_child_empty_force_load_preserves_manifest_skill_refs_without_bo
             session_id="child-empty-force-load-skills",
             metadata={
                 "force_load_skills": [],
-                "delegation": {"mode": "background", "category": "quick"},
+                "delegation": {"mode": "background", "subagent_type": "worker"},
             },
         )
     )

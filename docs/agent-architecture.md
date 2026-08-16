@@ -4,7 +4,7 @@
 
 **状态：proposed**
 
-> **已过时 / superseded (2026-08-15)**：`product` 不再是顶层可执行 planning preset（顶层可执行 preset 现仅 `leader`，`_EXECUTABLE_AGENT_PRESETS = {"leader"}`）。`product` 已改为 `mode=subagent`、`top_level_selectable=False` 的只读 plan subagent，由 leader 通过 `task`（`subagent_type=product` 或 `category=plan`/`planning`）委托，child 以 `submit_result` 交回 plan；`/plan` 命令不再切换 active agent（leader 保持活动，`workflow_mode=product` 保留）。本文档中凡把 `product` 描述为“顶层可执行 / 顶层规划 preset / 顶层 planning path”的表述均已过时。
+> **已过时 / superseded (2026-08-15)**：`product` 不再是顶层可执行 planning preset（顶层可执行 preset 现仅 `leader`，`_EXECUTABLE_AGENT_PRESETS = {"leader"}`）。`product` 已改为 `mode=subagent`、`top_level_selectable=False` 的只读 plan subagent，由 leader 通过 `task`（`subagent_type=product`）委托，child 以 `submit_result` 交回 plan；`/plan` 命令不再切换 active agent（leader 保持活动，`workflow_mode=product` 保留）。本文档中凡把 `product` 描述为“顶层可执行 / 顶层规划 preset / 顶层 planning path”的表述均已过时。
 
 本文档定义 VoidCode 后续的 agent 架构方向，但它不是当前仓库已经实现的功能说明。当前仓库的现实基线是 **runtime-centric：顶层 active execution 由 `leader` 拥有；runtime-owned delegation path 已能执行受支持的 child presets（含只读 plan subagent `product`）**；真正任意拓扑的 multi-agent execution semantics 仍未落地。
 
@@ -153,7 +153,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 
 `product` 不应成为新的 orchestrator，也不应替代 `leader`；它是一个偏只读/近只读的产品判断角色，负责需求讨论、范围收敛、验收标准与 issue 草拟，确保任务没有在技术实现中偏离用户真正想要的结果。
 
-在当前 shipped truth 中，`product` 是 runtime-owned delegation path 上的只读 plan child preset：leader 通过 `task` 工具（`subagent_type=product` 或 `category=plan`/`planning`）委托规划，child 以 `submit_result` 交回 plan。`voidcode run --agent product "..."` 已不可用（顶层可执行 preset 仅 `leader`）；`/plan` 命令保持 leader 为 active agent 并设置 `workflow_mode=product`。这依然不意味着系统已经进入成熟的任意拓扑 multi-agent orchestration 阶段，因为 session truth、tool enforcement、approval、resume 与 provider invocation 仍全部由 runtime 持有。
+在当前 shipped truth 中，`product` 是 runtime-owned delegation path 上的只读 plan child preset：leader 通过 `task` 工具（`subagent_type=product`）委托规划，child 以 `submit_result` 交回 plan。`voidcode run --agent product "..."` 已不可用（顶层可执行 preset 仅 `leader`）；`/plan` 命令保持 leader 为 active agent 并设置 `workflow_mode=product`。这依然不意味着系统已经进入成熟的任意拓扑 multi-agent orchestration 阶段，因为 session truth、tool enforcement、approval、resume 与 provider invocation 仍全部由 runtime 持有。
 
 ## 为什么保留这六类角色
 
@@ -285,7 +285,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 - `researcher` 承接外部资料与公开实现调研；
 - `advisor` 承接只读判断与 review；
 - `worker` 承接受限的 focused execution，当前默认不获得再次 delegation 的 `task` 工具；
-- `product` 承接只读规划（`subagent_type=product` 或 `category=plan`/`planning`），以 `submit_result` 交回 plan。
+- `product` 承接只读规划（`subagent_type=product`），以 `submit_result` 交回 plan。
 
 在这一阶段，已经交付的目标是**同步或受限的 delegated child execution baseline**，而不是任意拓扑 multi-agent orchestration。其中：
 
@@ -302,7 +302,7 @@ hook 在这里很重要，但它更多是通知与干预层，而不是异步 ag
 本文档明确**不**主张：
 
 - 当前已经实现多 agent 协作
-- 当前已经拥有成熟完备的多 agent category-routing orchestration runtime
+- 当前已经拥有成熟完备的多 agent routing orchestration runtime
 - 当前 ACP 已经能承载 agent handoff
 - 让 `agent/` 吞掉 runtime 的治理职责
 - 在当前阶段就定义十几个角色 preset

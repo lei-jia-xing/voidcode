@@ -98,7 +98,6 @@ type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeReq
 
 class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     mode: Literal["sync", "background"]
-    category: str
     subagent_type: str
     description: str
     command: str
@@ -369,7 +368,6 @@ def validate_runtime_subagent_routing_metadata(
 
     allowed_keys = {
         "mode",
-        "category",
         "subagent_type",
         "description",
         "command",
@@ -391,8 +389,6 @@ def validate_runtime_subagent_routing_metadata(
         raise RuntimeRequestError(str(exc)) from exc
 
     normalized: RuntimeSubagentRoutingMetadata = {"mode": identity.mode}
-    if identity.category is not None:
-        normalized["category"] = identity.category
     if identity.subagent_type is not None:
         normalized["subagent_type"] = identity.subagent_type
     if identity.description is not None:
@@ -446,10 +442,12 @@ def runtime_subagent_routing_from_metadata(
     mode = normalized.get("mode")
     if mode is None:
         raise RuntimeRequestError("request metadata 'delegation.mode' is required")
+    subagent_type = normalized.get("subagent_type")
+    if subagent_type is None:
+        raise RuntimeRequestError("request metadata 'delegation.subagent_type' is required")
     return SubagentRoutingIdentity(
         mode=mode,
-        category=normalized.get("category"),
-        subagent_type=normalized.get("subagent_type"),
+        subagent_type=subagent_type,
         description=normalized.get("description"),
         command=normalized.get("command"),
     )
@@ -1156,7 +1154,6 @@ class BackgroundTaskResult:
                 {
                     "delegation": {
                         "mode": self.routing.mode,
-                        **({"category": self.routing.category} if self.routing.category is not None else {}),
                         **({"subagent_type": self.routing.subagent_type} if self.routing.subagent_type is not None else {}),
                         **({"description": self.routing.description} if self.routing.description is not None else {}),
                         **({"command": self.routing.command} if self.routing.command is not None else {}),
@@ -1173,7 +1170,6 @@ class BackgroundTaskResult:
             return None
         return DelegatedRoutingPayload(
             mode=self.routing.mode,
-            category=self.routing.category,
             subagent_type=self.routing.subagent_type,
             description=self.routing.description,
             command=self.routing.command,
@@ -1189,7 +1185,6 @@ class BackgroundTaskResult:
                 {
                     "delegation": {
                         "mode": self.routing.mode,
-                        **({"category": self.routing.category} if self.routing.category is not None else {}),
                         **({"subagent_type": self.routing.subagent_type} if self.routing.subagent_type is not None else {}),
                         **({"description": self.routing.description} if self.routing.description is not None else {}),
                         **({"command": self.routing.command} if self.routing.command is not None else {}),

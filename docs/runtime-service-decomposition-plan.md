@@ -166,7 +166,7 @@ Generation 没有使用进程内自增计数：该计数跨 restart 不稳定，
 
 **提取候选**
 
-- Pure parsing of persisted `runtime_config` fields, including unknown-key rejection, provider config parse errors, fallback model parse, context window parse, tools parse, agent/category parse, LSP/MCP snapshot projection and workflow snapshot projection.
+- Pure parsing of persisted `runtime_config` fields, including unknown-key rejection, provider config parse errors, fallback model parse, context window parse, tools parse, agent parse, LSP/MCP snapshot projection and workflow snapshot projection.
 
 **行为保护测试计划**
 

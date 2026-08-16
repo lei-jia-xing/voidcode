@@ -51,7 +51,6 @@ from .permission import (
 from .policy import (
     validate_runtime_policy_config_payload,
 )
-from .task import supported_subagent_categories
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
 RuntimeProvidersConfig = provider_config.ProviderConfigs
@@ -120,7 +119,6 @@ _REPO_CONFIG_KEYS = frozenset(
         "providers",
         "agent",
         "agents",
-        "categories",
     }
 )
 _USER_CONFIG_KEYS = frozenset({"$schema", "tui", "web", "providers"})
@@ -475,12 +473,6 @@ class RuntimeAgentConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeCategoryConfig:
-    model: str | None = None
-    fallback_models: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     permission: ExternalDirectoryPermissionConfig = field(default_factory=ExternalDirectoryPermissionConfig)
@@ -505,7 +497,6 @@ class RuntimeConfig:
     providers: RuntimeProvidersConfig | None = None
     agent: RuntimeAgentConfig | None = None
     agents: Mapping[str, RuntimeAgentConfig] | None = None
-    categories: Mapping[str, RuntimeCategoryConfig] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -534,7 +525,6 @@ class RuntimeConfigOverrides:
     providers: RuntimeProvidersConfig | None = None
     agent: RuntimeAgentConfig | None = None
     agents: Mapping[str, RuntimeAgentConfig] | None = None
-    categories: Mapping[str, RuntimeCategoryConfig] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -689,7 +679,6 @@ def load_runtime_config(
         providers=resolved_providers,
         agent=resolved_agent,
         agents=repo_local.agents,
-        categories=repo_local.categories,
     )
 
 
@@ -791,8 +780,6 @@ def _load_repo_local_config(
     agent = _parse_agent_config(raw_agent, hooks=hooks, agent_registry=agent_registry)
     raw_agents = payload.get("agents")
     agents = _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
-    raw_categories = payload.get("categories")
-    categories = _parse_categories_config(raw_categories)
     raw_approval_mode = payload.get("approval_mode")
     parsed_approval_mode = _parse_approval_mode(
         raw_approval_mode,
@@ -825,7 +812,6 @@ def _load_repo_local_config(
         providers=providers,
         agent=agent,
         agents=agents,
-        categories=categories,
     )
 
 
@@ -2720,74 +2706,6 @@ def _parse_agents_config(
     return parsed
 
 
-def _parse_categories_config(
-    raw_categories: object,
-) -> Mapping[str, RuntimeCategoryConfig] | None:
-    if raw_categories is None:
-        return None
-    if not isinstance(raw_categories, dict):
-        raise ValueError("runtime config field 'categories' must be an object when provided")
-
-    supported_categories = set(supported_subagent_categories())
-    raw_payload = cast(dict[object, object], raw_categories)
-    parsed: dict[str, RuntimeCategoryConfig] = {}
-    for key, value in raw_payload.items():
-        if not isinstance(key, str) or not key:
-            raise ValueError("runtime config field 'categories' keys must be non-empty strings")
-        if key not in supported_categories:
-            valid_categories = ", ".join(sorted(supported_categories))
-            raise ValueError(f"runtime config field 'categories.{key}' uses unsupported task category; valid categories are: {valid_categories}")
-        if not isinstance(value, dict):
-            raise ValueError(f"runtime config field 'categories.{key}' must be an object when provided")
-        category_payload = cast(dict[str, object], value)
-        _reject_unknown_config_keys(
-            category_payload,
-            allowed_keys=frozenset({"model", "fallback_models"}),
-            field_path=f"categories.{key}",
-        )
-        model = category_payload.get("model")
-        if model is not None and (not isinstance(model, str) or not model.strip()):
-            raise ValueError(f"runtime config field 'categories.{key}.model' must be a non-empty string")
-        normalized_model = model.strip() if isinstance(model, str) else None
-        fallback_models = _parse_string_list(
-            category_payload.get("fallback_models"),
-            field_path=f"categories.{key}.fallback_models",
-        )
-        if fallback_models:
-            if normalized_model is None:
-                raise ValueError(f"runtime config field 'categories.{key}.model' is required when 'categories.{key}.fallback_models' is provided")
-            validated_fallback = parse_provider_fallback_payload(
-                {
-                    "preferred_model": normalized_model,
-                    "fallback_models": list(fallback_models),
-                },
-                source=f"runtime config field 'categories.{key}.fallback_models'",
-            )
-            assert validated_fallback is not None
-            fallback_models = validated_fallback.fallback_models
-        parsed[key] = RuntimeCategoryConfig(
-            model=normalized_model,
-            fallback_models=fallback_models,
-        )
-    return parsed
-
-
-def serialize_runtime_categories_config(
-    categories: Mapping[str, RuntimeCategoryConfig] | None,
-) -> dict[str, object] | None:
-    if categories is None:
-        return None
-    serialized: dict[str, object] = {}
-    for category_name, category in categories.items():
-        payload: dict[str, object] = {}
-        if category.model is not None:
-            payload["model"] = category.model
-        if category.fallback_models:
-            payload["fallback_models"] = list(category.fallback_models)
-        serialized[category_name] = payload
-    return serialized
-
-
 def serialize_runtime_agents_config(
     agents: Mapping[str, RuntimeAgentConfig] | None,
 ) -> dict[str, object] | None:
@@ -2826,17 +2744,6 @@ def parse_runtime_agents_payload(
 ) -> Mapping[str, RuntimeAgentConfig] | None:
     try:
         return _parse_agents_config(raw_agents, hooks=hooks, agent_registry=agent_registry)
-    except ValueError as exc:
-        raise ValueError(f"{source}: {exc}") from exc
-
-
-def parse_runtime_categories_payload(
-    raw_categories: object,
-    *,
-    source: str,
-) -> Mapping[str, RuntimeCategoryConfig] | None:
-    try:
-        return _parse_categories_config(raw_categories)
     except ValueError as exc:
         raise ValueError(f"{source}: {exc}") from exc
 

@@ -82,7 +82,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "Workflow: produce an implementation plan, acceptance criteria, risks, and a "
             "verification strategy for the requested goal. Arguments describe the planning "
             "target: $ARGUMENTS. You stay the active agent; you may delegate planning to the "
-            "product agent through the task tool (subagent_type=product or category=plan) and "
+            "product agent through the task tool (subagent_type=product) and "
             "read its plan back, or plan directly. Read-only by default: do not write "
             "code or modify files unless explicitly instructed after the plan is accepted. "
             "Use todo_write only for session planning/progress state; it is runtime state, not "

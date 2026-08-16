@@ -787,8 +787,7 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
         error=None,
         routing_identity=SimpleNamespace(
             mode="background",
-            category="quick",
-            subagent_type=None,
+            subagent_type="worker",
             description="Investigate",
             command=None,
         ),
@@ -808,7 +807,7 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
     assert "child_session_id=child-session" in captured.out
     assert "approval_request_id=approval-1" in captured.out
     assert "delegation_mode=background" in captured.out
-    assert "category=quick" in captured.out
+    assert "subagent_type=worker" in captured.out
     assert "NEXT" in captured.out
     assert "voidcode sessions resume child-session" in captured.out
     assert "--approval-request-id approval-1 --approval-decision allow" in captured.out
@@ -830,7 +829,6 @@ def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
         error="provider execution requires a configured provider/model",
         routing_identity=SimpleNamespace(
             mode="background",
-            category=None,
             subagent_type="worker",
             description="Run child",
             command=None,
@@ -981,7 +979,6 @@ def test_cli_tasks_output_delegates_to_runtime_and_prints_child_result(capsys: A
         error=None,
         routing=SimpleNamespace(
             mode="background",
-            category=None,
             subagent_type="explore",
             description="Inspect logs",
             command=None,

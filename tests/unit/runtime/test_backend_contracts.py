@@ -349,7 +349,7 @@ def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:
                 "parent_session_id": "leader-session",
                 "child_session_id": "child-session",
                 "requested_child_session_id": "child-requested",
-                "routing": {"mode": "background", "category": "quick"},
+                "routing": {"mode": "background", "subagent_type": "worker"},
                 "lifecycle_status": "completed",
                 "result_available": True,
                 "approval_blocked": False,
@@ -375,6 +375,6 @@ def test_event_envelope_exposes_typed_delegated_lifecycle_payload() -> None:
     assert delegated is not None
     assert delegated.delegation.delegated_task_id == "task-1"
     assert delegated.delegation.routing is not None
-    assert delegated.delegation.routing.category == "quick"
+    assert delegated.delegation.routing.subagent_type == "worker"
     assert delegated.message.summary_output == "Completed: delegated work"
     assert delegated.message.status == "completed"

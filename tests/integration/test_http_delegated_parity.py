@@ -617,7 +617,7 @@ def test_http_background_task_status_endpoint_returns_runtime_state() -> None:
                     prompt="delegate this",
                     session_id="child-requested",
                     parent_session_id="leader-session",
-                    metadata={"delegation": {"mode": "background", "category": "quick"}},
+                    metadata={"delegation": {"mode": "background", "subagent_type": "worker"}},
                 ),
                 session_id="child-session",
                 approval_request_id="approval-1",
@@ -638,7 +638,7 @@ def test_http_background_task_status_endpoint_returns_runtime_state() -> None:
     assert payload["status"] == "running"
     assert payload["child_session_id"] == "child-session"
     assert payload["approval_request_id"] == "approval-1"
-    assert payload["routing"] == {"mode": "background", "category": "quick"}
+    assert payload["routing"] == {"mode": "background", "subagent_type": "worker"}
 
 
 def test_http_background_task_cancel_endpoint_returns_cancelled_state() -> None:

@@ -1178,8 +1178,6 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
     routing = task.routing_identity
     if routing is not None:
         fields.append(("delegation_mode", routing.mode))
-        if routing.category is not None:
-            fields.append(("category", routing.category))
         if routing.subagent_type is not None:
             fields.append(("subagent_type", routing.subagent_type))
         if routing.description is not None:
@@ -1196,7 +1194,6 @@ def _background_task_routing_payload(routing: object | None) -> dict[str, object
         key: value
         for key, value in {
             "mode": getattr(routing, "mode", None),
-            "category": getattr(routing, "category", None),
             "subagent_type": getattr(routing, "subagent_type", None),
             "description": getattr(routing, "description", None),
             "command": getattr(routing, "command", None),
@@ -1413,8 +1410,6 @@ def _background_task_result_fields(result: BackgroundTaskResult) -> list[tuple[s
     routing = result.routing
     if routing is not None:
         fields.append(("delegation_mode", routing.mode))
-        if routing.category is not None:
-            fields.append(("category", routing.category))
         if routing.subagent_type is not None:
             fields.append(("subagent_type", routing.subagent_type))
         if routing.description is not None:
@@ -2103,7 +2098,6 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
         try:
             effective_config = runtime.effective_runtime_config(session_id=session_id)
             readiness = runtime.provider_readiness(session_id=session_id)
-            categories = runtime.effective_category_model_config(session_id=session_id)
             agents = runtime.effective_agent_model_config(session_id=session_id)
             status = runtime.current_status()
         except ValueError as exc:
@@ -2121,7 +2115,6 @@ def _handle_config_show_command(args: ConfigArgs) -> int:
             "reasoning_effort": getattr(effective_config, "reasoning_effort", None),
             "agent": serialize_runtime_agent_config(getattr(effective_config, "agent", None)),
             "agents": agents,
-            "categories": categories,
             "resolved_provider": resolved_provider_snapshot(getattr(effective_config, "resolved_provider", None)),
             "provider_readiness": _provider_readiness_payload(readiness),
             "context_budget": {

@@ -1168,7 +1168,6 @@ def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuat
         "error": None,
         "session_id": child_session_id,
         "parent_session_id": "leader-session",
-        "requested_category": None,
         "requested_subagent_type": "explore",
         "load_skills": [],
         "output": "child final",

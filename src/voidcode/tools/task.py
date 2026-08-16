@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from ..runtime.contracts import (
     BackgroundTaskResult,
@@ -38,8 +38,7 @@ class _TaskArgs(BaseModel):
     prompt: str
     run_in_background: bool
     load_skills: list[str]
-    category: str | None = None
-    subagent_type: str | None = None
+    subagent_type: str
     description: str | None = None
     session_id: str | None = None
     command: str | None = None
@@ -79,7 +78,6 @@ class _TaskArgs(BaseModel):
         return normalized
 
     @field_validator(
-        "category",
         "subagent_type",
         "description",
         "session_id",
@@ -101,21 +99,12 @@ class _TaskArgs(BaseModel):
             raise ValueError("parallel_group_size must be at least 1")
         return value
 
-    @model_validator(mode="after")
-    def _validate_route(self) -> _TaskArgs:
-        if bool(self.category) == bool(self.subagent_type):
-            raise ValueError("provide exactly one of category or subagent_type")
-        return self
-
 
 def _delegation_metadata(args: _TaskArgs) -> dict[str, str]:
     metadata: dict[str, str] = {
         "mode": "background" if args.run_in_background else "sync",
     }
-    if args.category is not None:
-        metadata["category"] = args.category
-    if args.subagent_type is not None:
-        metadata["subagent_type"] = args.subagent_type
+    metadata["subagent_type"] = args.subagent_type
     if args.description is not None:
         metadata["description"] = args.description
     if args.command is not None:
@@ -132,11 +121,10 @@ class TaskTool:
         name="task",
         description=(
             "Delegate work to a child runtime session. Always include prompt, "
-            "run_in_background, and load_skills. Provide exactly one of category or "
-            "subagent_type. Prefer run_in_background=true for delegated work that can "
-            "run independently. Each background task emits a completion event to its parent; "
-            "when launching several tasks for one deliverable, wait for all known tasks to finish "
-            "before synthesizing the final answer."
+            "run_in_background, load_skills, and subagent_type. Prefer run_in_background=true "
+            "for delegated work that can run independently. Each background task emits a "
+            "completion event to its parent; when launching several tasks for one deliverable, "
+            "wait for all known tasks to finish before synthesizing the final answer."
         ),
         input_schema={
             "type": "object",
@@ -163,20 +151,9 @@ class TaskTool:
                         "minLength": 1,
                     },
                 },
-                "category": {
-                    "type": "string",
-                    "description": (
-                        "Runtime-selected child route. Provide this or subagent_type, but not both. "
-                        "Supported categories: plan/planning (product agent), brain (advisor), "
-                        "quick/low/deep/high/writing/visual-engineering (worker)."
-                    ),
-                    "minLength": 1,
-                },
                 "subagent_type": {
                     "type": "string",
-                    "description": (
-                        "Explicit child preset: advisor, explore, researcher, worker, or product. Provide this or category, but not both."
-                    ),
+                    "description": ("Required. Explicit child preset: advisor, explore, researcher, worker, or product."),
                     "minLength": 1,
                 },
                 "description": {
@@ -205,11 +182,7 @@ class TaskTool:
                     "minimum": 1,
                 },
             },
-            "required": ["prompt", "run_in_background", "load_skills"],
-            "oneOf": [
-                {"required": ["category"], "not": {"required": ["subagent_type"]}},
-                {"required": ["subagent_type"], "not": {"required": ["category"]}},
-            ],
+            "required": ["prompt", "run_in_background", "load_skills", "subagent_type"],
             "examples": [
                 {
                     "prompt": "Find where background task cancellation is implemented.",
@@ -221,7 +194,7 @@ class TaskTool:
                     "prompt": "Review the architecture tradeoffs and summarize them.",
                     "run_in_background": False,
                     "load_skills": [],
-                    "category": "writing",
+                    "subagent_type": "advisor",
                 },
             ],
         },
@@ -299,7 +272,6 @@ class TaskTool:
                     "child_session_id": task.session_id,
                     "delegation": dict(delegation_payload),
                     "result_available": task.result_available,
-                    "requested_category": args.category,
                     "requested_subagent_type": args.subagent_type,
                     "load_skills": list(args.load_skills),
                     "waiting_reason": waiting_reason,
@@ -320,7 +292,6 @@ class TaskTool:
                 "session_id": child_session.id,
                 "parent_session_id": context.session_id,
                 "status": status,
-                "requested_category": args.category,
                 "requested_subagent_type": args.subagent_type,
                 "load_skills": list(args.load_skills),
                 **({"output": output} if output is not None else {}),
