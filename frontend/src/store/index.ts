@@ -783,10 +783,13 @@ export const useAppStore = create<AppState>()(
         set({ sessionsStatus: "loading", sessionsError: null });
         try {
           const sessions = await RuntimeClient.listSessions();
-          const { currentSessionId } = get();
+          const { currentSessionId, childSessionParentId } = get();
 
           if (
             currentSessionId &&
+            // Delegated child sessions are not part of the flat session list;
+            // while one is being browsed its absence must not reset the app.
+            childSessionParentId === null &&
             !sessions.some((s) => s.session.id === currentSessionId)
           ) {
             set({
@@ -817,6 +820,20 @@ export const useAppStore = create<AppState>()(
           childParentSessionId !== null &&
           sessionId === childParentSessionId;
         if (isRunLocked(get().runStatus) && !allowChildParentReturn) {
+          return;
+        }
+
+        if (
+          sessionId === get().currentSessionId &&
+          get().selectedBackgroundTaskOutputId &&
+          childParentSessionId !== null
+        ) {
+          // Already browsing this delegated child session: refresh its output
+          // in place instead of clearing the child view and re-fetching the
+          // context, which would make the transcript flash between views.
+          await get().loadBackgroundTaskOutput(
+            get().selectedBackgroundTaskOutputId,
+          );
           return;
         }
 

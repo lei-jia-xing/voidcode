@@ -183,6 +183,16 @@ function App() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageCountRef = useRef(0);
   const sessionEventCursorRef = useRef(0);
+  // Mirrors selectedBackgroundTaskOutputId for the follow-stream effect. The
+  // effect must NOT depend on that state directly: its own body refreshes the
+  // selected child output, which would mutate the dependency and tear the
+  // stream down/re-establish it in a cycle.
+  const selectedBackgroundTaskOutputIdRef = useRef(
+    selectedBackgroundTaskOutputId,
+  );
+  useEffect(() => {
+    selectedBackgroundTaskOutputIdRef.current = selectedBackgroundTaskOutputId;
+  }, [selectedBackgroundTaskOutputId]);
 
   const isRunning = runStatus === "running" || runStatus === "cancelling";
   const isReplayLoading = replayStatus === "loading";
@@ -359,12 +369,21 @@ function App() {
         )) {
           if (chunk.event?.event_type.startsWith("runtime.background_task_")) {
             await loadBackgroundTasks();
-            if (selectedBackgroundTaskOutputId) {
-              await loadBackgroundTaskOutput(selectedBackgroundTaskOutputId);
+            const outputId = selectedBackgroundTaskOutputIdRef.current;
+            if (outputId) {
+              await loadBackgroundTaskOutput(outputId);
             }
           }
         }
-        await selectSession(currentSessionId);
+        const outputId = selectedBackgroundTaskOutputIdRef.current;
+        if (outputId) {
+          // The user is browsing a delegated child session: refresh its output
+          // in place. Re-selecting the underlying session here would clear the
+          // child view state and flip the transcript back to the parent.
+          await loadBackgroundTaskOutput(outputId);
+        } else {
+          await selectSession(currentSessionId);
+        }
       } catch (error) {
         if (!controller.signal.aborted)
           console.warn("Session event stream failed", error);
@@ -376,7 +395,6 @@ function App() {
     isRunning,
     loadBackgroundTaskOutput,
     loadBackgroundTasks,
-    selectedBackgroundTaskOutputId,
     selectSession,
   ]);
 

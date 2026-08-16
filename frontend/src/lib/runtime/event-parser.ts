@@ -621,12 +621,21 @@ export function deriveChatMessages(
           currentAssistant.thinkingUpdatedAt = event.received_at;
         }
         if (hasReasoningPayload) {
-          currentAssistant.thinking.push(reasoningText);
-          appendReasoningDeltaPart(
-            currentAssistant,
-            event.sequence,
-            reasoningText,
-          );
+          // The backend persists one aggregated runtime.reasoning_part per
+          // streamed turn so replay stays faithful. While the live stream is
+          // still open the same content was already accumulated delta by delta,
+          // so skip the aggregate when it duplicates the streamed text.
+          const alreadyStreamed =
+            event.event_type === "runtime.reasoning_part" &&
+            currentAssistant.thinking.join("") === reasoningText;
+          if (!alreadyStreamed) {
+            currentAssistant.thinking.push(reasoningText);
+            appendReasoningDeltaPart(
+              currentAssistant,
+              event.sequence,
+              reasoningText,
+            );
+          }
         }
       }
     } else if (

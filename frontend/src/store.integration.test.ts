@@ -1609,6 +1609,158 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("parent output");
   });
 
+  it("refreshes an already-browsed delegated child session in place without clearing the child view", async () => {
+    const childOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-child",
+        status: "completed",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "child summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: {
+          ...makeSessionState("child-session", "completed"),
+          session: { id: "child-session", parent_id: "session-parent" },
+        },
+        prompt: "child prompt",
+        status: "completed",
+        summary: "child summary",
+        output: "child output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "child prompt" },
+            "runtime",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    };
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce(
+      childOutput,
+    );
+    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValueOnce(
+      childOutput,
+    );
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([
+      {
+        task: { id: "task-child" },
+        status: "completed",
+        prompt: "child prompt",
+        session_id: "child-session",
+        error: null,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+
+    await useAppStore.getState().selectSession("child-session");
+
+    const before = useAppStore.getState();
+    expect(before.currentSessionId).toBe("child-session");
+    expect(before.childSessionParentId).toBe("session-parent");
+    expect(before.selectedBackgroundTaskOutputId).toBe("task-child");
+
+    // Re-selecting the already-browsed child must refresh in place instead of
+    // clearing the child view (which made the transcript flip on its own).
+    await useAppStore.getState().selectSession("child-session");
+
+    const after = useAppStore.getState();
+    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
+      "task-child",
+    );
+    expect(runtimeClientMocks.getChildSessionContextMock).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(after.currentSessionId).toBe("child-session");
+    expect(after.childSessionParentId).toBe("session-parent");
+    expect(after.selectedBackgroundTaskOutputId).toBe("task-child");
+    expect(after.replayStatus).toBe("success");
+    expect(after.backgroundTaskOutputStatus).toBe("success");
+  });
+
+  it("keeps the delegated child view when the flat session list omits child sessions", async () => {
+    const childOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-child",
+        status: "completed",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "child summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: {
+          ...makeSessionState("child-session", "completed"),
+          session: { id: "child-session", parent_id: "session-parent" },
+        },
+        prompt: "child prompt",
+        status: "completed",
+        summary: "child summary",
+        output: "child output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "child prompt" },
+            "runtime",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    };
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce(
+      childOutput,
+    );
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([
+      {
+        task: { id: "task-child" },
+        status: "completed",
+        prompt: "child prompt",
+        session_id: "child-session",
+        error: null,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary("session-parent", "completed", "parent prompt"),
+    ]);
+
+    await useAppStore.getState().selectSession("child-session");
+    await useAppStore.getState().loadSessions();
+
+    const state = useAppStore.getState();
+    expect(state.currentSessionId).toBe("child-session");
+    expect(state.childSessionParentId).toBe("session-parent");
+    expect(state.selectedBackgroundTaskOutputId).toBe("task-child");
+  });
+
   it("surfaces approval lookup failure when no pending request exists", async () => {
     const sessionId = "broken-session";
     const requestReceived = makeEvent(

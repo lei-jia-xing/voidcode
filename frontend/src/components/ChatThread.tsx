@@ -166,37 +166,14 @@ function toolDisplayTitle(tool: ChatTool, fallback: string) {
   );
 }
 
-function toolDisplayTitleFallback(tool: ChatTool): string {
-  const precise: Record<string, string> = {
-    bash: "bash",
-    shell_exec: "shell_exec",
-    interactive_shell: "interactive_shell",
-    web_fetch: "web_fetch",
-    web_search: "web_search",
-    todo_write: "todo_write",
-    background_process_start: "background_process_start",
-    background_process_stop: "background_process_stop",
-    background_process_logs: "background_process_logs",
-    background_process_send: "background_process_send",
-    background_output: "background_output",
-    background_cancel: "background_cancel",
-    background_retry: "background_retry",
-    memory_add: "memory_add",
-    memory_delete: "memory_delete",
-    memory_list: "memory_list",
-    memory_search: "memory_search",
-  };
-  if (precise[tool.name]) return precise[tool.name];
-  if (tool.display?.title) return tool.display.title;
+function toolDisplayName(tool: ChatTool): string {
+  // The tool name is the informative label; the kind-based display title
+  // ("Read", "Context", "Search", ...) is too vague on its own.
   return tool.name;
 }
 
-function toolDisplayName(tool: ChatTool): string {
-  return toolDisplayTitleFallback(tool);
-}
-
 function toolDisplaySubtitle(tool: ChatTool, fallback?: string) {
-  const subtitle = tool.display?.title ?? fallback;
+  const subtitle = fallback;
   const title = toolDisplayTitle(tool, tool.name);
   return subtitle && subtitle !== title ? subtitle : undefined;
 }
@@ -830,6 +807,7 @@ function ReadToolActivity({ tool }: { tool: ChatTool }) {
   const limit = toolValue(tool.arguments?.limit) ?? toolValue(data?.limit);
   if (offset) args.push(`offset=${offset}`);
   if (limit) args.push(`limit=${limit}`);
+  const output = toolOutputSummary(tool);
   return (
     <ToolDisclosureRow
       tool={tool}
@@ -845,6 +823,8 @@ function ReadToolActivity({ tool }: { tool: ChatTool }) {
           copyValue={tool.error}
           tone="error"
         />
+      ) : output ? (
+        <ToolDetailBlock label="Output" value={output} copyValue={output} />
       ) : null}
     </ToolDisclosureRow>
   );

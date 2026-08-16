@@ -445,6 +445,62 @@ describe("ChatThread", () => {
     expect(secondPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("does not duplicate thinking when the persisted aggregated reasoning_part follows streamed deltas", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "think hard" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "reasoning", text: "step one " },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "reasoning", text: "step two" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: {
+          type: "reasoning",
+          text: "step one step two",
+          source: "provider_stream",
+          visibility: "showable",
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 5,
+        event_type: "graph.response_ready",
+        source: "graph",
+        payload: { output: "done" },
+      },
+    ];
+
+    const [, assistant] = deriveChatMessages(events, null);
+
+    expect(assistant.thinking).toEqual(["step one ", "step two"]);
+    const reasoningParts = (assistant.parts ?? []).filter(
+      (part) => part.kind === "reasoning",
+    );
+    expect(reasoningParts).toHaveLength(1);
+    expect(
+      reasoningParts[0].kind === "reasoning" && reasoningParts[0].text,
+    ).toBe("step one step two");
+  });
+
   it("merges consecutive same-kind deltas into one part", () => {
     const events: EventEnvelope[] = [
       {
@@ -1394,10 +1450,10 @@ describe("Tool Card Display Contract", () => {
 
     expect(container.querySelector('[data-tool-row="read"]')).not.toBeNull();
     expect(container.querySelector('[data-tool-row="grep"]')).not.toBeNull();
-    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("read")).toBeInTheDocument();
     expect(screen.getByText("grep")).toBeInTheDocument();
     const groupedReadRow = screen
-      .getByText("Read")
+      .getByText("read")
       .closest('[data-tool-row="read"]');
     const groupedGrepRow = screen
       .getByText("grep")
@@ -1581,16 +1637,11 @@ describe("Tool Card Display Contract", () => {
       <ChatThread {...baseProps} messages={messages} />,
     );
 
-    expect(screen.getByText("Read")).toBeInTheDocument();
+    expect(screen.getByText("read")).toBeInTheDocument();
     expect(screen.getByText("grep")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", {
-        name: /show details for read readme\.md/i,
-      }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /show details for search todo/i }),
-    ).not.toBeInTheDocument();
+    // Read-only rows are now expandable to show their result when present.
+    fireEvent.click(getDisclosureToggle(/show details for read/i));
+    expect(screen.getByText(/# README/)).toBeInTheDocument();
 
     expect(screen.getByText("shell_exec")).toBeInTheDocument();
     expect(screen.getByText(/failed with exit 2/)).toBeInTheDocument();
