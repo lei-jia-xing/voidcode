@@ -1761,6 +1761,105 @@ describe("useAppStore integration flow", () => {
     expect(state.selectedBackgroundTaskOutputId).toBe("task-child");
   });
 
+  it("shows an interrupted delegated child session once and refreshes it in place", async () => {
+    const interruptedChildOutput: BackgroundTaskOutput = {
+      task: {
+        task_id: "task-child",
+        status: "completed",
+        parent_session_id: "session-parent",
+        requested_child_session_id: "requested-child",
+        delegated_prompt: "child prompt",
+        child_session_id: "child-session",
+        approval_request_id: null,
+        question_request_id: null,
+        approval_blocked: false,
+        summary_output: "child summary",
+        error: null,
+        result_available: true,
+        cancellation_cause: null,
+        routing: { mode: "subagent", subagent_type: "explore" },
+      },
+      session_result: {
+        session: {
+          ...makeSessionState("child-session", "interrupted"),
+          session: { id: "child-session", parent_id: "session-parent" },
+        },
+        prompt: "child prompt",
+        status: "interrupted",
+        summary: "child summary",
+        output: "child output",
+        error: null,
+        last_event_sequence: 2,
+        transcript: [
+          makeEvent(
+            1,
+            "runtime.request_received",
+            { prompt: "child prompt" },
+            "runtime",
+            "child-session",
+          ),
+          makeEvent(
+            2,
+            "graph.response_ready",
+            { output: "child output" },
+            "graph",
+            "child-session",
+          ),
+        ],
+      },
+      output: "child output",
+    };
+    runtimeClientMocks.getChildSessionContextMock.mockResolvedValueOnce(
+      interruptedChildOutput,
+    );
+    runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValueOnce(
+      interruptedChildOutput,
+    );
+    runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([
+      {
+        task: { id: "task-child" },
+        status: "completed",
+        prompt: "child prompt",
+        session_id: "child-session",
+        error: null,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+
+    await useAppStore.getState().selectSession("child-session");
+
+    const state = useAppStore.getState();
+    expect(state.currentSessionId).toBe("child-session");
+    expect(state.childSessionParentId).toBe("session-parent");
+    expect(state.selectedBackgroundTaskOutputId).toBe("task-child");
+    expect(state.backgroundTaskOutput).toBe(interruptedChildOutput);
+    expect(state.replayStatus).toBe("success");
+    // An interrupted (unsealed) child is terminal for display: it must not be
+    // treated as a live run.
+    expect(state.runStatus).toBe("idle");
+    expect(state.currentSessionEvents).toHaveLength(2);
+    expect(state.currentSessionEvents[1].event_type).toBe(
+      "graph.response_ready",
+    );
+
+    // Re-selecting the already-browsed interrupted child refreshes in place
+    // instead of clearing the child view and re-fetching the context.
+    await useAppStore.getState().selectSession("child-session");
+
+    expect(runtimeClientMocks.getChildSessionContextMock).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(runtimeClientMocks.getBackgroundTaskOutputMock).toHaveBeenCalledWith(
+      "task-child",
+    );
+    const after = useAppStore.getState();
+    expect(after.currentSessionId).toBe("child-session");
+    expect(after.childSessionParentId).toBe("session-parent");
+    expect(after.selectedBackgroundTaskOutputId).toBe("task-child");
+    expect(after.backgroundTaskOutputStatus).toBe("success");
+  });
+
   it("surfaces approval lookup failure when no pending request exists", async () => {
     const sessionId = "broken-session";
     const requestReceived = makeEvent(

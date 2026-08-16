@@ -3,7 +3,8 @@ export type SessionStatus =
   | "running"
   | "waiting"
   | "completed"
-  | "failed";
+  | "failed"
+  | "interrupted";
 export type EventSource = "runtime" | "graph" | "tool";
 export type ApprovalDecision = "allow" | "deny";
 export type GitStatusState = "git_ready" | "not_git_repo" | "git_error";

@@ -57,6 +57,16 @@ function SubsessionTimelineHeader({
   );
 }
 
+// Statuses after which the session transcript is static for display. The
+// backend only closes the session-event follow stream for {completed, failed};
+// an `interrupted` (unsealed) row would otherwise keep the stream polling
+// forever, so the frontend must stop following it on its own.
+const TERMINAL_DISPLAY_SESSION_STATUSES: Record<string, true> = {
+  completed: true,
+  failed: true,
+  interrupted: true,
+};
+
 function SubsessionLiveStatus({
   taskStatus,
   childStatus,
@@ -367,6 +377,18 @@ function App() {
           afterSequence,
           controller.signal,
         )) {
+          // The first chunk is the session snapshot. The backend only closes
+          // the follow stream for {completed, failed}; an `interrupted`
+          // (unsealed) row would otherwise keep it polling forever. Once the
+          // session is terminal-for-display the transcript is static, so stop
+          // following instead of leaving a dangling stream open.
+          if (
+            chunk.kind === "session" &&
+            chunk.session &&
+            TERMINAL_DISPLAY_SESSION_STATUSES[chunk.session.status] === true
+          ) {
+            break;
+          }
           if (chunk.event?.event_type.startsWith("runtime.background_task_")) {
             await loadBackgroundTasks();
             const outputId = selectedBackgroundTaskOutputIdRef.current;
@@ -381,7 +403,10 @@ function App() {
           // in place. Re-selecting the underlying session here would clear the
           // child view state and flip the transcript back to the parent.
           await loadBackgroundTaskOutput(outputId);
-        } else {
+        } else if (useAppStore.getState().replayStatus !== "loading") {
+          // A selectSession for this session is already in flight (its fetch
+          // has not resolved yet). Re-selecting now would clear the view and
+          // discard the in-flight result, flashing the transcript.
           await selectSession(currentSessionId);
         }
       } catch (error) {
