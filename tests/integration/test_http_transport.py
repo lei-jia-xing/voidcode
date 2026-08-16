@@ -1370,6 +1370,35 @@ def test_transport_returns_not_found_for_missing_session_debug_snapshot(tmp_path
     assert response.json() == {"error": "unknown session: missing-session"}
 
 
+def test_transport_debug_endpoint_does_not_shut_down_shared_runtime_background_tasks(
+    tmp_path: Path,
+) -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    workspace_module = importlib.import_module("voidcode.runtime.workspace")
+    runtime_request, runtime_class = _load_runtime_types()
+
+    RuntimeTransportApp = runtime_http.RuntimeTransportApp
+    SingleWorkspaceRuntimeCoordinator = workspace_module.SingleWorkspaceRuntimeCoordinator
+
+    coordinator = SingleWorkspaceRuntimeCoordinator(
+        initial_workspace=tmp_path,
+        runtime_factory=cast(Any, lambda workspace: runtime_class(workspace=workspace)),
+    )
+    app = RuntimeTransportApp(
+        runtime_factory=lambda: coordinator.runtime(),
+        workspace_coordinator=coordinator,
+    )
+
+    shared_runtime = coordinator.runtime()
+    _ = (tmp_path / "sample.txt").write_text("debug payload\n", encoding="utf-8")
+    _ = shared_runtime.run(runtime_request(prompt="read sample.txt", session_id="shared-debug-session"))
+
+    response = _run_app(app, method="GET", path="/api/sessions/shared-debug-session/debug")
+
+    assert response.status == 200
+    assert shared_runtime._background_task_supervisor.shutdown_requested is False
+
+
 def test_transport_resolves_pending_approval_allow_over_http(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()

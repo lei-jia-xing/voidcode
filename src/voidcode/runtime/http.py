@@ -1797,7 +1797,7 @@ class RuntimeTransportApp:
             await self._json_response(send, status=404, payload={"error": str(exc)})
             return
         finally:
-            self._close_runtime(runtime)
+            self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(
             send,
             status=200,
