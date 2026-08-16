@@ -289,6 +289,94 @@ def test_mcp_manager_accepts_remote_http_transport_metadata(
     assert [tool.tool_name for tool in tools] == ["search"]
 
 
+def test_mcp_manager_retries_discovery_once_after_connection_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A remote-http endpoint that drops the FIRST tools/list POST (surfacing
+    # as MCPError CONNECTION_CLOSED, -32000) and succeeds on a fresh
+    # connection: discovery must retry once and succeed without recording a
+    # runtime.mcp_server_failed event.
+    from mcp.shared.exceptions import MCPError
+
+    import voidcode.runtime.mcp as runtime_mcp
+
+    list_tools_calls: list[int] = []
+
+    class FakeTransportContext:
+        def __init__(self, url: str) -> None:
+            self.url = url
+            self.closed = False
+
+        async def __aenter__(self) -> tuple[object, object, object]:
+            return object(), object(), lambda: "session-123"
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            _ = exc_type, exc, traceback
+            self.closed = True
+
+    class FakeClientSession:
+        def __init__(self, read_stream: object, write_stream: object, **kwargs: object) -> None:
+            self.read_stream = read_stream
+            self.write_stream = write_stream
+            self.kwargs = kwargs
+
+        async def __aenter__(self) -> FakeClientSession:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            _ = exc_type, exc, traceback
+            return None
+
+        async def initialize(self) -> InitializeResult:
+            return InitializeResult(
+                protocolVersion="2025-11-25",
+                capabilities=ServerCapabilities(),
+                serverInfo=Implementation(name="remote", version="0.1.0"),
+            )
+
+        async def list_tools(self) -> ListToolsResult:
+            list_tools_calls.append(1)
+            if len(list_tools_calls) == 1:
+                raise MCPError(-32000, "Connection closed")
+            return ListToolsResult(
+                tools=[
+                    Tool(
+                        name="search",
+                        description="Search code",
+                        inputSchema={"type": "object", "properties": {}},
+                    )
+                ]
+            )
+
+    requested_urls: list[str] = []
+
+    def fake_streamable_http_client(url: str) -> FakeTransportContext:
+        requested_urls.append(url)
+        return FakeTransportContext(url)
+
+    monkeypatch.setattr(runtime_mcp, "ClientSession", FakeClientSession)
+    monkeypatch.setattr(runtime_mcp, "streamable_http_client", fake_streamable_http_client)
+    manager = build_mcp_manager(
+        RuntimeMcpConfig(
+            enabled=True,
+            servers={
+                "remote": RuntimeMcpServerConfig(
+                    transport="remote-http",
+                    url="https://mcp.example.test",
+                )
+            },
+        )
+    )
+
+    tools = manager.list_tools(workspace=tmp_path)
+
+    assert [tool.tool_name for tool in tools] == ["search"]
+    assert len(list_tools_calls) == 2
+    assert requested_urls == ["https://mcp.example.test", "https://mcp.example.test"]
+    assert "runtime.mcp_server_failed" not in {event.event_type for event in manager.drain_events()}
+
+
 def test_mcp_manager_reports_clean_diagnostic_for_unreachable_remote_http(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

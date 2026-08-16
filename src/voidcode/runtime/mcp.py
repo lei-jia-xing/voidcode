@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -129,6 +130,17 @@ def _is_connection_error(exc: BaseException) -> bool:
     if isinstance(exc, MCPError):
         return getattr(exc.error, "code", None) == _MCP_CONNECTION_CLOSED_CODE
     return False
+
+
+def _is_discovery_connection_closed(exc: BaseException) -> bool:
+    """True when a discovery call failed because the connection was dropped.
+
+    The streamable-http transport resolves an in-flight request with the SDK's
+    CONNECTION_CLOSED error (-32000) when the underlying connection dies (e.g.
+    a Cloudflare-flapped remote-http endpoint). That is transient, so the
+    runtime retries ``tools/list`` once with a fresh connection before failing.
+    """
+    return isinstance(exc, MCPError) and _is_connection_error(exc)
 
 
 def _validate_call_arguments_against_schema(
@@ -782,6 +794,7 @@ class ManagedMcpManager:
         method: str,
         operation: Any,
         tool_name: str | None = None,
+        suppress_failure_event_when: Callable[[Exception], bool] | None = None,
     ) -> object:
         try:
             with running.call_lock:
@@ -800,18 +813,19 @@ class ManagedMcpManager:
                 exc,
                 fallback=f"MCP[{running.server_name}]: {method} failed",
             )
-            self._record_failure_event(
-                key=_McpServerKey(
-                    server_name=running.server_name,
-                    scope=running.scope,
-                    owner_session_id=(running.owner_session_id if running.scope == "session" else None),
-                ),
-                workspace_root=running.workspace_root,
-                stage=stage,
-                error=message,
-                method=method,
-                diagnostic=diagnostic,
-            )
+            if suppress_failure_event_when is None or not suppress_failure_event_when(exc):
+                self._record_failure_event(
+                    key=_McpServerKey(
+                        server_name=running.server_name,
+                        scope=running.scope,
+                        owner_session_id=(running.owner_session_id if running.scope == "session" else None),
+                    ),
+                    workspace_root=running.workspace_root,
+                    stage=stage,
+                    error=message,
+                    method=method,
+                    diagnostic=diagnostic,
+                )
             if self._should_stop_running_server(exc, stage=stage):
                 self._stop_running_server_by_name(
                     server_name=running.server_name,
@@ -904,12 +918,40 @@ class ManagedMcpManager:
             workspace=workspace,
             owner_session_id=owner_session_id,
         )
-        result = self._call_sdk(
-            running,
-            stage="discovery",
-            method="tools/list",
-            operation=lambda session=running.session: session.list_tools(),
-        )
+        try:
+            result = self._call_sdk(
+                running,
+                stage="discovery",
+                method="tools/list",
+                operation=lambda session=running.session: session.list_tools(),
+                suppress_failure_event_when=_is_discovery_connection_closed,
+            )
+        except ValueError as exc:
+            underlying = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
+            if not _is_discovery_connection_closed(underlying):
+                raise
+            # The streamable-http transport resolved the in-flight tools/list
+            # POST with CONNECTION_CLOSED (-32000): the upstream connection
+            # dropped mid-request (e.g. a Cloudflare-flapped remote-http
+            # endpoint). That is transient, so retry once with a fresh
+            # connection before failing. The failure event was suppressed on
+            # the probe attempt and is only recorded if the retry also fails.
+            self._stop_running_server_by_name(
+                server_name=server_name,
+                scope=key.scope,
+                owner_session_id=key.owner_session_id,
+            )
+            running = self._ensure_running(
+                server_name=server_name,
+                workspace=workspace,
+                owner_session_id=owner_session_id,
+            )
+            result = self._call_sdk(
+                running,
+                stage="discovery",
+                method="tools/list",
+                operation=lambda session=running.session: session.list_tools(),
+            )
         list_result = cast(ListToolsResult, result)
         server_descriptors: dict[str, McpToolDescriptor] = {}
         descriptors: list[McpToolDescriptor] = []
