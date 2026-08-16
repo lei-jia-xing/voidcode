@@ -44,6 +44,7 @@ from voidcode.runtime.task import (
     BackgroundTaskState,
     is_background_task_terminal,
 )
+from voidcode.tools.contracts import ToolCall
 
 
 def _completed_response(session_id: str) -> RuntimeResponse:
@@ -92,10 +93,10 @@ class _BlockingTaskGraph:
 
 
 class _StubStep:
-    def __init__(self, *, output: str, is_finished: bool) -> None:
+    def __init__(self, *, output: str | None = None, is_finished: bool = False, tool_call: Any | None = None) -> None:
         self.output = output
         self.is_finished = is_finished
-        self.tool_call = None
+        self.tool_call = tool_call
 
 
 def _wait_for_terminal(runtime: VoidCodeRuntime, task_id: str, *, timeout: float = 5.0) -> BackgroundTaskState:
@@ -479,3 +480,291 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
     assert dead.status == "interrupted"
     assert dead.error == "background task worker exited before a terminal update"
     assert waiting.status == "running"
+
+
+# ── 7. completed children are sealed completed; interrupted rows with a
+#       submit_result handoff are repaired ───────────────────────────────────
+
+
+class _SubmitResultChildGraph:
+    """Top-level runs finish immediately; delegated children call submit_result."""
+
+    def step(
+        self,
+        request: Any,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> Any:
+        _ = request, tool_results
+        if session.session.parent_id is not None:
+            return _StubStep(
+                output=None,
+                is_finished=False,
+                tool_call=ToolCall(tool_name="submit_result", arguments={"summary": request.prompt}),
+            )
+        return _StubStep(output=request.prompt, is_finished=True)
+
+
+def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session") -> RuntimeRequest:
+    return RuntimeRequest(
+        prompt=prompt,
+        parent_session_id=parent_session_id,
+        metadata={
+            "delegation": {
+                "mode": "background",
+                "subagent_type": "worker",
+                "selected_preset": "worker",
+                "selected_execution_engine": "provider",
+            }
+        },
+    )
+
+
+def _seed_unsealed_completed_child(
+    store: SqliteSessionStore,
+    *,
+    workspace: Path,
+    task_id: str,
+    parent_session_id: str,
+    child_session_id: str,
+) -> tuple[EventEnvelope, ...]:
+    """Seed a task + child whose ROW is ``interrupted`` but whose transcript
+    proves a successful ``submit_result`` handoff (the unsealed-seal state the
+    run loop can leave behind when its generator-driven seal is skipped)."""
+    store.save_interrupted_checkpoint(
+        workspace=workspace,
+        session_id=child_session_id,
+        prompt="child probe",
+        session_metadata={
+            "background_run": True,
+            "background_task_id": task_id,
+        },
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    appended = store.append_session_events(
+        workspace=workspace,
+        session_id=child_session_id,
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
+            (
+                "runtime.tool_completed",
+                "tool",
+                {
+                    "tool": "submit_result",
+                    "status": "ok",
+                    "arguments": {"summary": "done"},
+                    "handoff": {"summary": "done", "completed_work": ["completed the probe"]},
+                },
+                None,
+            ),
+            ("graph.response_ready", "graph", {"output_preview": "done", "source": "submit_result"}, None),
+        ),
+    )
+    store.create_background_task(
+        workspace=workspace,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="interrupted",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="child probe",
+                parent_session_id=parent_session_id,
+            ),
+            session_id=child_session_id,
+            error="background task worker exited before a terminal update",
+        ),
+    )
+    return appended
+
+
+def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) -> None:
+    """A delegated child that finishes with submit_result is persisted
+    ``completed`` with ``last_event_sequence`` equal to its actual event-log
+    max — never left ``interrupted`` at a stale checkpoint."""
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SubmitResultChildGraph(),  # type: ignore[arg-type]
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            mcp=RuntimeMcpConfig(enabled=False),
+        ),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+
+    started = runtime.start_background_task(_delegated_request("child probe"))
+    task = _wait_for_terminal(runtime, started.task.id)
+    assert task.status == "completed"
+    assert task.session_id is not None
+
+    store = runtime._session_store
+    child = store.load_session(workspace=tmp_path, session_id=task.session_id)
+    assert child.session.status == "completed"
+    assert child.session.session.parent_id == "leader-session"
+    # The seal watermark references the actual persisted event log, not a
+    # stale mid-run checkpoint.
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=task.session_id)
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "terminal"
+    assert checkpoint["last_event_sequence"] == max(event.sequence for event in child.events)
+    assert store.load_session_status(workspace=tmp_path, session_id=task.session_id) == "completed"
+
+
+def test_interrupted_child_with_submit_result_handoff_is_repaired_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``interrupted`` child whose transcript proves a successful
+    ``submit_result`` handoff is repaired: the task is finalized ``completed``
+    AND the unsealed session row is sealed ``completed`` (watermark = max)."""
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+    task_id = "task-repair-handoff"
+    child_session_id = "child-repair-handoff"
+
+    appended = _seed_unsealed_completed_child(
+        store,
+        workspace=tmp_path,
+        task_id=task_id,
+        parent_session_id="leader-session",
+        child_session_id=child_session_id,
+    )
+    # The seeded state must actually mirror the bug: task interrupted AND the
+    # session row still interrupted with the transcript already durable.
+    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        session_store=store,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
+    )
+    supervisor = runtime._background_task_supervisor
+
+    task = store.load_background_task(workspace=tmp_path, task_id=task_id)
+    repaired = supervisor.repair_interrupted_task_from_child_terminal_session(task)
+
+    assert repaired.status == "completed"
+    assert repaired.error is None
+
+    repaired_child = store.load_session(workspace=tmp_path, session_id=child_session_id)
+    assert repaired_child.session.status == "completed"
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=child_session_id)
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "terminal"
+    assert checkpoint["last_event_sequence"] == appended[-1].sequence
+
+
+def test_finalize_completed_task_repairs_unsealed_child_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finalizing a task as ``completed`` also seals the child session row
+    when the run's own seal was skipped: the row is repaired to ``completed``
+    at the actual event-log max instead of staying ``interrupted``."""
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+    task_id = "task-finalize-repair"
+    child_session_id = "child-finalize-repair"
+
+    appended = _seed_unsealed_completed_child(
+        store,
+        workspace=tmp_path,
+        task_id=task_id,
+        parent_session_id="leader-session",
+        child_session_id=child_session_id,
+    )
+    # Task already finalized ``completed`` while the child row stayed
+    # ``interrupted`` (the seal was skipped/downgraded on the worker path).
+    store.mark_background_task_terminal(
+        workspace=tmp_path,
+        task_id=task_id,
+        status="completed",
+    )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        session_store=store,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
+    )
+    supervisor = runtime._background_task_supervisor
+    task = store.load_background_task(workspace=tmp_path, task_id=task_id)
+    child_response = supervisor.load_background_task_child_response(task=task)
+    assert child_response is not None
+    assert child_response.session.status == "interrupted"
+
+    supervisor.finalize_background_task_from_session_response(session_response=child_response)
+
+    repaired_child = store.load_session(workspace=tmp_path, session_id=child_session_id)
+    assert repaired_child.session.status == "completed"
+    checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id=child_session_id)
+    assert checkpoint is not None
+    assert checkpoint["kind"] == "terminal"
+    assert checkpoint["last_event_sequence"] == appended[-1].sequence
+    # The already-terminal task row is untouched.
+    assert store.load_background_task(workspace=tmp_path, task_id=task_id).status == "completed"
+
+
+def test_interrupted_child_without_handoff_stays_resumable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely resumable interrupted child (no submit_result handoff) is
+    never sealed ``completed`` nor its task terminalized by the repair path."""
+    store = SqliteSessionStore()
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
+    task_id = "task-resumable"
+    child_session_id = "child-resumable"
+
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id=child_session_id,
+        prompt="child probe",
+        session_metadata={
+            "background_run": True,
+            "background_task_id": task_id,
+        },
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    # Mid-flight transcript: a tool ran but no submit_result handoff, no
+    # graph.response_ready — the run is genuinely resumable.
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id=child_session_id,
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
+            ("runtime.tool_completed", "tool", {"tool": "read", "status": "ok", "content": "probe"}, None),
+        ),
+    )
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="interrupted",
+            request=BackgroundTaskRequestSnapshot(
+                prompt="child probe",
+                parent_session_id="leader-session",
+            ),
+            session_id=child_session_id,
+            error="background task worker exited before a terminal update",
+        ),
+    )
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        session_store=store,
+        config=RuntimeConfig(mcp=RuntimeMcpConfig(enabled=False)),
+    )
+    supervisor = runtime._background_task_supervisor
+
+    task = store.load_background_task(workspace=tmp_path, task_id=task_id)
+    repaired = supervisor.repair_interrupted_task_from_child_terminal_session(task)
+
+    assert repaired.status == "interrupted"
+    assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
