@@ -717,6 +717,7 @@ class RuntimeTransportApp:
             is_revert_route = session_path.endswith("/revert")
             is_unrevert_route = session_path.endswith("/unrevert")
             is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
+            is_resume_route = session_path.endswith("/resume")
             session_id = (
                 session_path.removesuffix("/events")
                 if is_events_route
@@ -742,6 +743,8 @@ class RuntimeTransportApp:
                 if session_path.endswith("/cancel")
                 else session_path.removesuffix("/interrupt")
                 if session_path.endswith("/interrupt")
+                else session_path.removesuffix("/resume")
+                if is_resume_route
                 else session_path
             )
             try:
@@ -801,6 +804,8 @@ class RuntimeTransportApp:
                 if session_path.endswith("/cancel")
                 else session_path.removesuffix("/interrupt")
                 if session_path.endswith("/interrupt")
+                else session_path.removesuffix("/resume")
+                if is_resume_route
                 else session_path
             )
             if is_cancel_route:
@@ -931,6 +936,23 @@ class RuntimeTransportApp:
                     return
                 await self._handle_session_unrevert(session_id=session_id, send=send)
                 return
+            if is_resume_route:
+                # Explicit resume of an interrupted/failed-retryable session is
+                # a POST-only surface. It re-enters the graph loop (provider
+                # re-execution) and must never be triggered by a read.
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_resume(
+                    session_id=session_id,
+                    send=send,
+                    show_thinking=show_thinking,
+                )
+                return
             if method != "GET":
                 await self._json_response(
                     send,
@@ -938,7 +960,11 @@ class RuntimeTransportApp:
                     payload={"error": "method not allowed"},
                 )
                 return
-            await self._handle_resume(
+            # Session replay (frontend getSessionReplay) is READ-ONLY: it must
+            # never route into runtime.resume, which would re-execute the model
+            # for any row whose persisted checkpoint is 'interrupted' (which
+            # includes every session while it is running).
+            await self._handle_session_replay(
                 session_id=session_id,
                 send=send,
                 show_thinking=show_thinking,
@@ -1799,6 +1825,28 @@ class RuntimeTransportApp:
             runtime = self._runtime_factory()
             try:
                 response = runtime.resume(session_id)
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload=self._serialize_runtime_response(response, show_thinking=show_thinking),
+        )
+
+    async def _handle_session_replay(
+        self,
+        *,
+        session_id: str,
+        send: Send,
+        show_thinking: bool = False,
+    ) -> None:
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                response = runtime.replay_session(session_id=session_id)
             except ValueError as exc:
                 await self._json_response(send, status=404, payload={"error": str(exc)})
                 return

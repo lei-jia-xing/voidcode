@@ -1018,6 +1018,96 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
     )
 
 
+def test_transport_get_session_replay_is_read_only_for_interrupted_session(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("replay read only\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="interrupted-replay-session"))
+    original_events = cast(Any, stored).events
+    original_count = len(original_events)
+    store = runtime._session_store
+    loaded = store.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
+    # Un-seal the terminal row into the mid-run "interrupted" state (the same
+    # state every session row has while it is running) with an interrupted
+    # checkpoint at the end of the persisted transcript.
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="interrupted-replay-session",
+        prompt="read sample.txt",
+        session_metadata=loaded.session.metadata,
+        tool_results=(),
+        last_event_sequence=original_count,
+    )
+    interrupted = store.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
+    assert interrupted.session.status == "interrupted"
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(app, method="GET", path="/api/sessions/interrupted-replay-session")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert cast(dict[str, object], payload["session"])["status"] == "interrupted"
+    replay_events = cast(list[dict[str, object]], payload["events"])
+    assert len(replay_events) == original_count
+    assert sum(1 for event in replay_events if event["event_type"] == "graph.model_turn") == 1
+    # The persisted transcript must be untouched: no truncation, no re-run, no
+    # new provider turn appended.
+    after = store.load_session(workspace=tmp_path, session_id="interrupted-replay-session")
+    assert len(after.events) == original_count
+    assert [event.sequence for event in after.events] == [event.sequence for event in original_events]
+    assert [event.event_type for event in after.events] == [event.event_type for event in original_events]
+
+
+def test_transport_post_session_resume_reexecutes_interrupted_session(tmp_path: Path) -> None:
+    sample_file = tmp_path / "sample.txt"
+    _ = sample_file.write_text("resume reexecutes\n", encoding="utf-8")
+    runtime_request, runtime_class = _load_runtime_types()
+    create_runtime_app = _load_transport_app_factory()
+
+    runtime = runtime_class(workspace=tmp_path)
+    stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="resume-session"))
+    original_count = len(cast(Any, stored).events)
+    store = runtime._session_store
+    loaded = store.load_session(workspace=tmp_path, session_id="resume-session")
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="resume-session",
+        prompt="read sample.txt",
+        session_metadata=loaded.session.metadata,
+        tool_results=(),
+        last_event_sequence=original_count,
+    )
+
+    app = create_runtime_app(workspace=tmp_path)
+    response = _run_app(app, method="POST", path="/api/sessions/resume-session/resume")
+    payload = cast(dict[str, object], response.json())
+
+    assert response.status == 200
+    assert cast(dict[str, object], payload["session"])["status"] == "completed"
+    # The explicit resume re-executes the graph loop from the checkpoint: new
+    # events are appended past the original transcript and the row is sealed.
+    after = store.load_session(workspace=tmp_path, session_id="resume-session")
+    assert len(after.events) > original_count
+    assert [event.sequence for event in after.events] == list(range(1, len(after.events) + 1))
+    assert after.events[-1].event_type == "graph.response_ready"
+    assert sum(1 for event in after.events if event.event_type == "graph.model_turn") >= 2
+    # GET after the explicit resume is again read-only replay.
+    replay_response = _run_app(
+        create_runtime_app(workspace=tmp_path),
+        method="GET",
+        path="/api/sessions/resume-session",
+    )
+    replay_payload = cast(dict[str, object], replay_response.json())
+    assert replay_response.status == 200
+    assert cast(dict[str, object], replay_payload["session"])["status"] == "completed"
+    assert len(cast(list[dict[str, object]], replay_payload["events"])) == len(after.events)
+    replay_after = store.load_session(workspace=tmp_path, session_id="resume-session")
+    assert len(replay_after.events) == len(after.events)
+
+
 def test_transport_reads_session_result_with_transcript(tmp_path: Path) -> None:
     sample_file = tmp_path / "sample.txt"
     _ = sample_file.write_text("result payload\n", encoding="utf-8")
@@ -1136,7 +1226,7 @@ def test_transport_session_result_redacts_reasoning_until_query_opt_in() -> None
     assert shown_reasoning["preview"] == "private chain"
 
 
-def test_transport_resume_response_redacts_reasoning_until_query_opt_in() -> None:
+def test_transport_replay_response_redacts_reasoning_until_query_opt_in() -> None:
     runtime_http = importlib.import_module("voidcode.runtime.http")
     runtime_contracts = importlib.import_module("voidcode.runtime.contracts")
     runtime_events = importlib.import_module("voidcode.runtime.events")
@@ -1161,7 +1251,7 @@ def test_transport_resume_response_redacts_reasoning_until_query_opt_in() -> Non
     )
 
     class ReasoningResumeRuntime:
-        def resume(self, session_id: str) -> object:
+        def replay_session(self, *, session_id: str) -> object:
             assert session_id == "reasoning-session"
             return response
 
