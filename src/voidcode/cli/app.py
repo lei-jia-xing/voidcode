@@ -90,6 +90,7 @@ from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState, StoredSessionSummary
+from ..runtime.storage import SqliteSessionStore
 from ..runtime.task import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
@@ -2058,8 +2059,12 @@ def _handle_storage_prune_command(args: StorageArgs) -> int:
 
 def _handle_storage_reset_command(args: StorageArgs) -> int:
     workspace = args.workspace
-    with _runtime_session(workspace) as runtime:
-        result = runtime.reset_runtime_storage()
+    # Reset is a pure file-deletion operation on the global store. It must NOT
+    # boot a full runtime: runtime teardown reconnects to the session store
+    # (background-task shutdown terminalizes queued tasks), which would
+    # recreate the database files that were just deleted.
+    store = SqliteSessionStore()
+    result = store.reset_runtime_storage(workspace=workspace)
     print_json({"storage": result})
     return EXIT_SUCCESS
 
@@ -3339,7 +3344,7 @@ def prune(
 
 
 @storage.command(help="Delete the runtime SQLite database and WAL/SHM files.")
-@_workspace_option("Workspace root used to bootstrap the runtime; the database itself is global.")
+@_workspace_option("Workspace root accepted for CLI parity; the database itself is global.")
 def reset(workspace: Path) -> int:
     return _handle_storage_reset_command(
         StorageArgs(
