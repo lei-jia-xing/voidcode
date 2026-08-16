@@ -138,6 +138,7 @@ _HOOKS_CONFIG_KEYS = frozenset(
         "on_background_task_completed",
         "on_background_task_failed",
         "on_background_task_cancelled",
+        "on_background_task_interrupted",
         "on_background_task_notification_enqueued",
         "on_background_task_result_read",
         "on_delegated_result_available",
@@ -1015,6 +1016,10 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         hooks_payload.get("on_background_task_cancelled"),
         field_path="hooks.on_background_task_cancelled",
     )
+    on_background_task_interrupted = _parse_command_list(
+        hooks_payload.get("on_background_task_interrupted"),
+        field_path="hooks.on_background_task_interrupted",
+    )
     on_background_task_notification_enqueued = _parse_command_list(
         hooks_payload.get("on_background_task_notification_enqueued"),
         field_path="hooks.on_background_task_notification_enqueued",
@@ -1055,6 +1060,7 @@ def _parse_hooks_config(raw_hooks: object) -> RuntimeHooksConfig | None:
         on_background_task_completed=on_background_task_completed,
         on_background_task_failed=on_background_task_failed,
         on_background_task_cancelled=on_background_task_cancelled,
+        on_background_task_interrupted=on_background_task_interrupted,
         on_background_task_notification_enqueued=on_background_task_notification_enqueued,
         on_background_task_result_read=on_background_task_result_read,
         on_delegated_result_available=on_delegated_result_available,

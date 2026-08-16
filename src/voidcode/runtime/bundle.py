@@ -1273,6 +1273,7 @@ def apply_session_bundle(
             last_event_sequence=0,
             create_if_missing=True,
             turn=session.turn,
+            parent_session_id=rebound_session.parent_id,
         )
         assigned_events = session_store.append_session_events(
             workspace=workspace,

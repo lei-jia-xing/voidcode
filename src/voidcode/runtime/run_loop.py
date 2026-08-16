@@ -15,8 +15,6 @@ from ..provider.errors import (
     ProviderExecutionError,
     SingleAgentContextLimitError,
     classify_provider_error,
-    format_fallback_exhausted_error,
-    format_provider_retry_exhausted_error,
 )
 from ..provider.protocol import (
     ProviderAbortSignal,
@@ -48,21 +46,24 @@ from .context_window import (
 )
 from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
 from .events import (
+    REASONING_PERSISTED_LIMIT_CHARS,
     RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
+    RUNTIME_REASONING_PART,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_TOOL_STARTED,
     EventEnvelope,
     EventSource,
+    runtime_reasoning_part_from_provider_stream,
+    runtime_reasoning_part_payload,
 )
 from .execution_seams import RuntimeGraphSelection
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
 from .provider_fallback import (
-    PROVIDER_TRANSIENT_RETRYABLE_KINDS,
     ProviderFallbackDecision,
     ProviderTerminalDecision,
     ProviderTransientRetryDecision,
@@ -556,6 +557,7 @@ class RuntimeRunLoopCoordinator:
             last_event_sequence=last_event_sequence,
             output=None,
             create_if_missing=False,
+            parent_session_id=session.session.parent_id,
         )
 
     def _started_tool_abort_chunks(
@@ -1439,6 +1441,7 @@ class RuntimeRunLoopCoordinator:
                     sequence = envelope.sequence
                     yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
             tool_exception_recovery_enabled = effective_runtime_config.execution_engine == "provider"
+            streamed_reasoning_texts: list[str] = []
             try:
                 if _is_abort_requested(active_graph_request):
                     failed_chunk, _ = self._persist_chunk(
@@ -1479,6 +1482,22 @@ class RuntimeRunLoopCoordinator:
                             # they must not advance the persisted-sequence cursor.
                             # They share the current cursor value; the renumbered
                             # batch persisted after this loop continues monotonically.
+                            # Reasoning deltas are additionally accumulated so the
+                            # turn can persist one aggregated runtime.reasoning_part
+                            # below, keeping replay faithful after the live stream
+                            # ends (mirrors renumber_events capture semantics).
+                            if streamed_item.event_type == "graph.provider_stream":
+                                reasoning_capture_state.stream_observed = True
+                                reasoning_payload = runtime_reasoning_part_from_provider_stream(streamed_item.payload)
+                                if reasoning_payload is not None:
+                                    reasoning_capture_state.reasoning_observed = True
+                                    captured_text = reasoning_payload.get("text")
+                                    if isinstance(captured_text, str) and captured_text:
+                                        streamed_reasoning_texts.append(captured_text)
+                                    reasoning_capture_state.part_count += 1
+                                    text_char_count = reasoning_payload.get("text_char_count")
+                                    if isinstance(text_char_count, int):
+                                        reasoning_capture_state.text_char_count += text_char_count
                             yield RuntimeStreamChunk(
                                 kind="event",
                                 session=session,
@@ -1653,19 +1672,11 @@ class RuntimeRunLoopCoordinator:
                             runtime._failed_chunk(
                                 session=session,
                                 sequence=sequence + 1,
-                                error=(
-                                    format_provider_retry_exhausted_error(
-                                        provider_name=provider_error.provider_name,
-                                        model_name=provider_error.model_name,
-                                        retry_attempts=provider_retry_attempt,
-                                    )
-                                    if provider_error.kind in PROVIDER_TRANSIENT_RETRYABLE_KINDS
-                                    else format_fallback_exhausted_error(
-                                        provider_name=provider_error.provider_name,
-                                        model_name=provider_error.model_name,
-                                        attempt=current_provider_attempt + 1,
-                                    )
-                                ),
+                                # Surface the raw provider error message verbatim; the
+                                # retry/fallback exhaustion context stays available as
+                                # structured payload flags (fallback_exhausted,
+                                # provider_retry_exhausted, provider_retry_attempts).
+                                error=provider_error.message,
                                 payload=provider_decision.payload,
                             )
                         )
@@ -1696,6 +1707,34 @@ class RuntimeRunLoopCoordinator:
                 if isinstance(classified_error, SingleAgentContextLimitError):
                     return
                 raise
+
+            if streamed_reasoning_texts:
+                # The live provider_stream reasoning deltas above are client-only
+                # (not persisted). Persist one aggregated runtime.reasoning_part so
+                # replay of a completed session still shows the turn's thinking.
+                # The client already rendered the streamed deltas, so the aggregate
+                # is deduplicated on the frontend when it equals the streamed text.
+                reasoning_text = "".join(streamed_reasoning_texts)
+                reasoning_truncated = len(reasoning_text) > REASONING_PERSISTED_LIMIT_CHARS
+                if reasoning_truncated:
+                    reasoning_text = reasoning_text[:REASONING_PERSISTED_LIMIT_CHARS]
+                reasoning_part_payload = runtime_reasoning_part_payload(
+                    text=reasoning_text,
+                )
+                if reasoning_truncated:
+                    reasoning_part_payload["truncated"] = True
+                reasoning_part_envelope = self._persist_event(
+                    session_id=session.session.id,
+                    event_type=RUNTIME_REASONING_PART,
+                    source="runtime",
+                    payload=reasoning_part_payload,
+                )
+                sequence = reasoning_part_envelope.sequence
+                yield RuntimeStreamChunk(
+                    kind="event",
+                    session=session,
+                    event=reasoning_part_envelope,
+                )
 
             is_final_step = getattr(graph_step, "is_finished", False) or getattr(graph_step, "output", None) is not None
             if is_final_step and session.session.parent_id is not None:

@@ -26,6 +26,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
+    RUNTIME_BACKGROUND_TASK_INTERRUPTED,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_PROVIDER_FALLBACK,
@@ -810,6 +811,51 @@ class RuntimeBackgroundTaskSupervisor:
             ]
         ] = []
         with self._queue_lock:
+            if self._reconciled:
+                # Deterministic convergence for tasks stuck ``running``: a
+                # ``running`` row must be owned by a live worker thread. A row
+                # without one means the worker exited without a terminal update
+                # (crashed thread, failed finalization, or a process restart
+                # already handled by reconcile) — terminalize it as
+                # ``interrupted`` (retryable/repairable) instead of leaving it
+                # ``running`` forever. Tasks whose child session is durably
+                # ``waiting`` on approval/question are exempt: they survive
+                # process restarts by design so the user can still answer.
+                # Uses the status-indexed running scan (bounded by concurrency)
+                # so single-task loads never scan full task history.
+                for summary in runtime._session_store.list_running_background_tasks(workspace=runtime._workspace):
+                    if summary.task.id in self._threads:
+                        continue
+                    orphan_task = runtime._session_store.load_background_task(
+                        workspace=runtime._workspace,
+                        task_id=summary.task.id,
+                    )
+                    # Exemption mirroring ``fail_incomplete_background_tasks``:
+                    # a running task whose child is durably waiting on a pending
+                    # approval/question survives process restarts (the user must
+                    # still answer). A bare ``waiting`` row without a pending
+                    # payload is non-canonical and gets terminalized.
+                    child_response = self.load_background_task_child_response(task=orphan_task)
+                    if child_response is not None and child_response.session.status == "waiting" and orphan_task.session_id is not None:
+                        store = runtime._session_store
+                        pending_approval = store.load_pending_approval(
+                            workspace=runtime._workspace,
+                            session_id=orphan_task.session_id,
+                        )
+                        pending_question = store.load_pending_question(
+                            workspace=runtime._workspace,
+                            session_id=orphan_task.session_id,
+                        )
+                        if pending_approval is not None or pending_question is not None:
+                            continue
+                    terminal_orphan = runtime._session_store.mark_background_task_terminal(
+                        workspace=runtime._workspace,
+                        task_id=summary.task.id,
+                        status="interrupted",
+                        error="background task worker exited before a terminal update",
+                    )
+                    self._queued_waiting_reasons.pop(summary.task.id, None)
+                    failed_tasks.append(terminal_orphan)
             summaries = sorted(
                 runtime._session_store.list_queued_background_tasks(workspace=runtime._workspace),
                 key=lambda summary: (summary.created_at, summary.task.id),
@@ -1275,7 +1321,7 @@ class RuntimeBackgroundTaskSupervisor:
             "completed": RUNTIME_BACKGROUND_TASK_COMPLETED,
             "failed": RUNTIME_BACKGROUND_TASK_FAILED,
             "cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
-            "interrupted": RUNTIME_BACKGROUND_TASK_FAILED,
+            "interrupted": RUNTIME_BACKGROUND_TASK_INTERRUPTED,
         }
         event_type = event_type_by_status[task.status]
         result, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
@@ -1740,7 +1786,7 @@ class RuntimeBackgroundTaskSupervisor:
             "completed": "background_task_completed",
             "failed": "background_task_failed",
             "cancelled": "background_task_cancelled",
-            "interrupted": "background_task_failed",
+            "interrupted": "background_task_interrupted",
         }
         surface = surface_by_status.get(task.status)
         if surface is None:

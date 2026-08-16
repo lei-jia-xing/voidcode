@@ -66,6 +66,7 @@ type RuntimeEventType = Literal[
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
+    "runtime.background_task_interrupted",
     "runtime.background_task_group_completed",
     "runtime.background_task_notification_enqueued",
     "runtime.background_task_result_read",
@@ -84,6 +85,7 @@ type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
+    "runtime.background_task_interrupted",
     "runtime.background_task_group_completed",
     "runtime.delegated_result_available",
 ]
@@ -182,6 +184,7 @@ RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[RuntimeEventType] = "runtime.bac
 RUNTIME_BACKGROUND_TASK_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_completed"
 RUNTIME_BACKGROUND_TASK_FAILED: Final[RuntimeEventType] = "runtime.background_task_failed"
 RUNTIME_BACKGROUND_TASK_CANCELLED: Final[RuntimeEventType] = "runtime.background_task_cancelled"
+RUNTIME_BACKGROUND_TASK_INTERRUPTED: Final[RuntimeEventType] = "runtime.background_task_interrupted"
 RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_group_completed"
 RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED: Final[RuntimeEventType] = "runtime.background_task_notification_enqueued"
 RUNTIME_BACKGROUND_TASK_RESULT_READ: Final[RuntimeEventType] = "runtime.background_task_result_read"
@@ -195,6 +198,10 @@ RUNTIME_TURN_PROGRESS: Final[RuntimeEventType] = "runtime.turn_progress"
 RUNTIME_STUCK_DETECTED: Final[RuntimeEventType] = "runtime.stuck_detected"
 
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
+# Upper bound for the aggregated reasoning text persisted per streamed turn.
+# Live deltas are unbounded; the persisted runtime.reasoning_part keeps replay
+# faithful for realistic chains while bounding the session event payload.
+REASONING_PERSISTED_LIMIT_CHARS: Final[int] = 100_000
 _SAFE_PROVIDER_REASONING_METADATA_KEYS: Final[frozenset[str]] = frozenset({"source"})
 POLICY_OBSERVABILITY_LIST_LIMIT: Final[int] = 32
 POLICY_OBSERVABILITY_TRACE_LIMIT: Final[int] = 16
@@ -258,6 +265,7 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_INTERRUPTED,
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
     RUNTIME_BACKGROUND_TASK_RESULT_READ,
@@ -497,6 +505,7 @@ DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventT
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
+    RUNTIME_BACKGROUND_TASK_INTERRUPTED,
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_DELEGATED_RESULT_AVAILABLE,
 )
@@ -535,6 +544,7 @@ _DELEGATED_EVENT_STATUS_BY_TYPE: Final[dict[DelegatedBackgroundTaskEventType | C
     RUNTIME_BACKGROUND_TASK_COMPLETED: "completed",
     RUNTIME_BACKGROUND_TASK_FAILED: "failed",
     RUNTIME_BACKGROUND_TASK_CANCELLED: "cancelled",
+    RUNTIME_BACKGROUND_TASK_INTERRUPTED: "interrupted",
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED: "completed",
     RUNTIME_DELEGATED_RESULT_AVAILABLE: "completed",
     RUNTIME_ACP_DELEGATED_LIFECYCLE: "running",

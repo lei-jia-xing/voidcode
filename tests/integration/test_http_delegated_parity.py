@@ -383,7 +383,7 @@ def test_http_run_stream_accepts_parent_session_id_for_delegation() -> None:
     assert cast(dict[str, object], session_ref_payload)["parent_id"] == "leader-session"
 
 
-def test_http_sessions_list_shows_child_session_parent_id(tmp_path: Path) -> None:
+def test_http_sessions_list_excludes_child_session_parent_id(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     create_runtime_app = _load_transport_app_factory()
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
@@ -397,8 +397,11 @@ def test_http_sessions_list_shows_child_session_parent_id(tmp_path: Path) -> Non
 
     assert status == 200
     sessions = cast(list[dict[str, object]], json.loads(body.decode("utf-8")))
-    child_sessions = [s for s in sessions if cast(dict[str, object], s["session"]).get("parent_id") == "leader-session"]
-    assert len(child_sessions) >= 1
+    # The flat main-session list must not surface delegated child sessions; the
+    # parent session is listed, and the child stays reachable via the
+    # task/delegated-context endpoints.
+    assert len(sessions) == 1
+    assert cast(dict[str, object], sessions[0]["session"])["id"] == "leader-session"
 
 
 def test_http_session_replay_returns_child_session_status(tmp_path: Path) -> None:

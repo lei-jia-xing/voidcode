@@ -58,6 +58,7 @@ def test_builtin_hook_presets_carry_guidance_metadata() -> None:
     assert delegated_retry.event_scopes == (
         "runtime.background_task_failed",
         "runtime.background_task_cancelled",
+        "runtime.background_task_interrupted",
         "runtime.delegated_result_available",
     )
     assert delegated_retry.allowed_actions == ("observe", "report", "guidance")

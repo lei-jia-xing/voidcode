@@ -239,12 +239,78 @@ def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
     assert "graph.provider_stream" in event_types  # live client-only delta still streamed
     # The live raw provider_stream chunk is client-only: not persisted, not DB-sequenced.
+    # Streaming turns additionally report the reasoning output diagnostic.
     persisted = _loaded_events(store, workspace=tmp_path, session_id="session-1")
-    assert [event.event_type for event in persisted] == ["graph.response_ready"]
-    assert [event.sequence for event in persisted] == [1]
+    assert [event.event_type for event in persisted] == [
+        "graph.response_ready",
+        "runtime.reasoning_diagnostic",
+    ]
+    assert [event.sequence for event in persisted] == [1, 2]
     # The renumbered batch yields the DB-assigned sequence.
     response_ready_chunk = next(chunk for chunk in chunks if chunk.event is not None and chunk.event.event_type == "graph.response_ready")
     assert response_ready_chunk.event is not None and response_ready_chunk.event.sequence == 1
+
+
+def test_execute_graph_loop_streaming_persists_aggregated_reasoning(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    _create_session_row(store, workspace=tmp_path, session_id="session-1")
+    runtime = _runtime_with_store(tmp_path, store)
+
+    class _StreamingReasoningGraph:
+        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _GraphStep:
+            _ = request, tool_results, session
+            raise AssertionError("streaming branch must not call step")
+
+        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState):
+            _ = request, tool_results, session
+            yield GraphEvent(
+                event_type="graph.provider_stream",
+                source="graph",
+                payload={"kind": "delta", "channel": "reasoning", "text": "first thought "},
+            )
+            yield GraphEvent(
+                event_type="graph.provider_stream",
+                source="graph",
+                payload={"kind": "delta", "channel": "reasoning", "text": "second thought"},
+            )
+            yield _GraphStep(
+                events=(GraphEvent(event_type="graph.response_ready", source="graph", payload={"output_preview": "done"}),),
+                output="done",
+                is_finished=True,
+            )
+
+    session, request, tool_registry = _graph_request(runtime, session_id="session-1", provider_stream=True)
+
+    chunks = list(
+        runtime._execute_graph_loop(
+            graph=_StreamingReasoningGraph(),
+            tool_registry=tool_registry,
+            session=session,
+            sequence=0,
+            graph_request=request,
+            tool_results=[],
+        )
+    )
+
+    # Live deltas still stream to the client...
+    event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    assert "graph.provider_stream" in event_types
+    # ...but are not persisted: the turn persists one aggregated reasoning_part
+    # so replay of a completed session keeps the thinking.
+    persisted = _loaded_events(store, workspace=tmp_path, session_id="session-1")
+    persisted_types = [event.event_type for event in persisted]
+    assert "graph.provider_stream" not in persisted_types
+    assert persisted_types.count("runtime.reasoning_part") == 1
+    # The aggregated reasoning part lands before the terminal response, with the
+    # reasoning output diagnostic after it (same tail as non-streaming turns).
+    assert persisted_types[-2:] == [
+        "graph.response_ready",
+        "runtime.reasoning_diagnostic",
+    ]
+    reasoning = next(event for event in persisted if event.event_type == "runtime.reasoning_part")
+    assert reasoning.payload["text"] == "first thought second thought"
+    assert reasoning.payload["preview"] == "first thought second thought"
+    assert reasoning.payload["source"] == "provider_stream"
 
 
 def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) -> None:

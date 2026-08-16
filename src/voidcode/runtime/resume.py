@@ -1329,6 +1329,7 @@ class RuntimeResumeCoordinator:
             last_event_sequence=max_stored_sequence,
             output=None,
             create_if_missing=False,
+            parent_session_id=session.session.parent_id,
         )
         try:
             for chunk in runtime._execute_graph_loop(

@@ -43,6 +43,7 @@ _LEADER_HOOK_PRESET_SNAPSHOT = {
         "runtime.background_task_cancelled",
         "runtime.background_task_completed",
         "runtime.background_task_failed",
+        "runtime.background_task_interrupted",
         "runtime.background_task_result_read",
         "runtime.delegated_result_available",
         "runtime.permission_resolved",
@@ -296,6 +297,7 @@ class SessionStoreLike(Protocol):
         output: str | None = None,
         create_if_missing: bool = True,
         turn: int = 1,
+        parent_session_id: str | None = None,
     ) -> None: ...
 
     def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
@@ -5403,6 +5405,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
             output: str | None = None,
             create_if_missing: bool = True,
             turn: int = 1,
+            parent_session_id: str | None = None,
         ) -> None:
             base_store.save_interrupted_checkpoint(
                 workspace=workspace,
@@ -5414,6 +5417,7 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
                 output=output,
                 create_if_missing=create_if_missing,
                 turn=turn,
+                parent_session_id=parent_session_id,
             )
 
         def list_sessions(self, *, workspace: Path) -> tuple[object, ...]:

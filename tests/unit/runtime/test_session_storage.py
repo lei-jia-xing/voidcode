@@ -100,6 +100,25 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
         output="done",
     )
 
+    # Canonical seal flow: the event log is appended incrementally BEFORE the
+    # terminal seal-writer ``save_run`` snapshots the row (the seal never writes
+    # events itself). The row must therefore carry at least one persisted event;
+    # event-less terminal rows are treated as fabrication residue by pruning.
+    store.save_interrupted_checkpoint(
+        workspace=tmp_path,
+        session_id="child-session",
+        prompt="child task",
+        session_metadata={},
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+        parent_session_id="leader-session",
+    )
+    store.append_session_events(
+        workspace=tmp_path,
+        session_id="child-session",
+        events=(("graph.response_ready", "graph", {"summary": "child done"}, None),),
+    )
     store.save_run(workspace=tmp_path, request=request, response=response)
 
     loaded = store.load_session(workspace=tmp_path, session_id="child-session")
@@ -1239,10 +1258,10 @@ def test_session_storage_append_session_event_assigns_sequence_and_dedupes(
     loaded = store.load_session(workspace=tmp_path, session_id="leader-session")
 
     assert first_event is not None
-    assert first_event.sequence == 2
+    assert first_event.sequence == 1
     assert duplicate_event is None
     assert loaded.events[-1] == first_event
-    assert loaded.events[-1].sequence == 2
+    assert loaded.events[-1].sequence == 1
 
 
 def test_session_storage_deduped_session_event_does_not_advance_session_order(
@@ -1411,8 +1430,8 @@ def test_session_storage_append_session_event_allocates_sequences_atomically(
 
     assert errors == []
     assert len(events) == 2
-    assert {event.sequence for event in events} == {2, 3}
-    assert [event.sequence for event in loaded.events[-2:]] == [2, 3]
+    assert {event.sequence for event in events} == {1, 2}
+    assert [event.sequence for event in loaded.events[-2:]] == [1, 2]
 
 
 def test_session_storage_prunes_terminal_sessions_and_dependent_rows(tmp_path: Path) -> None:
@@ -2006,7 +2025,7 @@ def test_session_storage_bulk_append_allows_lifecycle_event_on_terminal_session(
         events=(("runtime.background_task_completed", "runtime", {"task_id": "task-1"}, "bt-finalize-1"),),
     )
 
-    assert [envelope.sequence for envelope in envelopes] == [2]
+    assert [envelope.sequence for envelope in envelopes] == [1]
     assert [envelope.event_type for envelope in envelopes] == ["runtime.background_task_completed"]
 
 

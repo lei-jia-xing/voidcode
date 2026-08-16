@@ -3417,6 +3417,7 @@ def test_runtime_provider_retry_exhausted_without_fallback_emits_terminal_payloa
     assert [event.event_type for event in response.events].count(RUNTIME_PROVIDER_TRANSIENT_RETRY) == 1
     assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
     failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
+    assert failed_event.payload["error"] == "second transient failure"
     assert failed_event.payload["provider_error_kind"] == "transient_failure"
     assert failed_event.payload["provider"] == "primary"
     assert failed_event.payload["model"] == "model-a"
@@ -3464,11 +3465,65 @@ def test_runtime_provider_fallback_exhausted_preserves_error_details_payload(
     assert response.session.status == "failed"
     assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
     failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
+    assert failed_event.payload["error"] == "missing provider auth"
     assert failed_event.payload["provider_error_kind"] == "missing_auth"
     assert failed_event.payload["provider"] == "primary"
     assert failed_event.payload["model"] == "model-a"
     assert failed_event.payload["fallback_exhausted"] is True
     assert failed_event.payload["provider_error_details"] == auth_details
+
+
+def test_runtime_insufficient_balance_failure_carries_raw_provider_message(
+    tmp_path: Path,
+) -> None:
+    # Mirrors the DeepSeek "Insufficient Balance" report: the provider API
+    # error text must reach the runtime.failed payload verbatim so the web
+    # frontend's runtimeFailureMessage (payload.provider_error_details
+    # .exception_message -> payload.error) renders the real message, not a
+    # fabricated "fallback exhausted" summary.
+    raw_provider_message = "DeepseekException - Insufficient Balance"
+    api_details: dict[str, object] = {
+        "source": "api",
+        "status_code": 402,
+        "message": raw_provider_message,
+    }
+    primary = _RecordingScriptedModelProvider(
+        name="primary",
+        outcomes=(
+            ProviderExecutionError(
+                kind="invalid_model",
+                provider_name="primary",
+                model_name="model-a",
+                message=raw_provider_message,
+                details=api_details,
+            ),
+        ),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(providers={"primary": primary}),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=(),
+            ),
+        ),
+    )
+
+    response = runtime.run(RuntimeRequest(prompt="insufficient balance"))
+
+    assert response.session.status == "failed"
+    assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
+    failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
+    assert failed_event.payload["error"] == raw_provider_message
+    assert failed_event.payload["error_summary"] == raw_provider_message
+    assert failed_event.payload["provider_error_kind"] == "invalid_model"
+    assert failed_event.payload["provider"] == "primary"
+    assert failed_event.payload["model"] == "model-a"
+    assert failed_event.payload["fallback_exhausted"] is True
+    assert failed_event.payload["provider_error_details"] == api_details
 
 
 @pytest.mark.parametrize(
@@ -4042,6 +4097,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                     "runtime.background_task_completed",
                     "runtime.background_task_failed",
                     "runtime.background_task_cancelled",
+                    "runtime.background_task_interrupted",
                     "runtime.background_task_result_read",
                     "runtime.delegated_result_available",
                 ],
@@ -4062,6 +4118,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "event_scopes": [
                     "runtime.background_task_failed",
                     "runtime.background_task_cancelled",
+                    "runtime.background_task_interrupted",
                     "runtime.delegated_result_available",
                 ],
                 "allowed_actions": ["observe", "report", "guidance"],
@@ -5675,6 +5732,7 @@ def test_runtime_snapshots_manifest_default_hook_refs(tmp_path: Path) -> None:
             "runtime.background_task_cancelled",
             "runtime.background_task_completed",
             "runtime.background_task_failed",
+            "runtime.background_task_interrupted",
             "runtime.background_task_result_read",
             "runtime.delegated_result_available",
             "runtime.permission_resolved",
@@ -6723,8 +6781,9 @@ def test_runtime_uses_has_session_instead_of_missing_session_error_text(tmp_path
             output: str | None = None,
             create_if_missing: bool = True,
             turn: int = 1,
+            parent_session_id: str | None = None,
         ) -> None:
-            _ = workspace, session_id, prompt, session_metadata, tool_results, last_event_sequence, output, create_if_missing, turn
+            _ = workspace, session_id, prompt, session_metadata, tool_results, last_event_sequence, output, create_if_missing, turn, parent_session_id
 
         def append_session_events(
             self,
@@ -16742,14 +16801,19 @@ def test_runtime_provider_streaming_persists_reasoning_as_runtime_part(
 
     events = [chunk.event for chunk in chunks if chunk.event is not None]
     reasoning_events = [event for event in events if event.event_type == "runtime.reasoning_part"]
-    assert reasoning_events == []
+    # The turn persists one aggregated runtime.reasoning_part (also yielded live).
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0].payload["text"] == "private chain"
+    assert reasoning_events[0].payload["preview"] == "private chain"
     provider_reasoning = [event for event in events if event.event_type == "graph.provider_stream" and event.payload.get("channel") == "reasoning"]
     assert len(provider_reasoning) == 1
     assert [chunk.output for chunk in chunks if chunk.kind == "output"] == ["answer"]
-
     result = runtime.session_result(session_id=chunks[-1].session.session.id)
     persisted_reasoning = [event for event in result.transcript if event.event_type == "runtime.reasoning_part"]
-    assert persisted_reasoning == []
+    assert len(persisted_reasoning) == 1
+    assert persisted_reasoning[0].payload["text"] == "private chain"
+    # Provider metadata other than the allowlisted source must not persist.
+    assert "raw_secret" not in json.dumps(persisted_reasoning[0].payload)
 
 
 def test_runtime_does_not_persist_show_thinking_request_metadata(tmp_path: Path) -> None:
@@ -16793,8 +16857,14 @@ def test_runtime_reasoning_capture_preserves_all_provider_parts(tmp_path: Path) 
     limit_events = [
         event for event in events if event.event_type == "runtime.reasoning_diagnostic" and event.payload.get("category") == "reasoning_capture_limit"
     ]
-    assert len(reasoning_parts) == 0
+    # One bounded aggregate is persisted per streamed turn; oversized chains are
+    # capped instead of dropped (all live provider_stream deltas still stream).
+    assert len(reasoning_parts) == 1
+    assert reasoning_parts[0].payload["truncated"] is True
+    assert reasoning_parts[0].payload["text"] == "x" * 100_000
     assert len(limit_events) == 0
+    streamed_reasoning = [event for event in events if event.event_type == "graph.provider_stream" and event.payload.get("channel") == "reasoning"]
+    assert len(streamed_reasoning) == 40
 
 
 def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_path: Path) -> None:
@@ -16841,7 +16911,12 @@ def test_runtime_reasoning_capture_preserves_parts_across_provider_turns(tmp_pat
     limit_events = [
         event for event in events if event.event_type == "runtime.reasoning_diagnostic" and event.payload.get("category") == "reasoning_capture_limit"
     ]
-    assert len(reasoning_parts) == 0
+    # Each streamed turn persists its own aggregated reasoning part.
+    assert len(reasoning_parts) == 2
+    assert {part.payload["text"] for part in reasoning_parts} == {
+        "x" * 12_000,
+        "y" * 12_000,
+    }
     assert len(limit_events) == 0
 
 
@@ -16884,7 +16959,10 @@ def test_runtime_reports_reasoning_output_diagnostic_for_reasoning_capable_model
         and chunk.event.event_type == "runtime.reasoning_diagnostic"
         and chunk.event.payload.get("category") == "reasoning_output"
     ]
-    assert diagnostics == []
+    # Streaming turns now report the reasoning output diagnostic too.
+    assert len(diagnostics) == 1
+    assert diagnostics[0].payload["reasoning_output_observed"] is False
+    assert diagnostics[0].payload["reason"] == "reasoning_capable_model_returned_no_reasoning_output"
 
 
 def test_runtime_reports_reasoning_output_observed_diagnostic(tmp_path: Path) -> None:
@@ -16929,7 +17007,9 @@ def test_runtime_reports_reasoning_output_observed_diagnostic(tmp_path: Path) ->
         and chunk.event.event_type == "runtime.reasoning_diagnostic"
         and chunk.event.payload.get("category") == "reasoning_output"
     ]
-    assert diagnostics == []
+    assert len(diagnostics) == 1
+    assert diagnostics[0].payload["reasoning_output_observed"] is True
+    assert diagnostics[0].payload["reason"] == "reasoning_output_observed"
 
 
 def test_runtime_run_stream_preserves_streamed_tool_requests(tmp_path: Path) -> None:
@@ -18241,15 +18321,15 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
         "attempt": 2,
     }
     assert response.events[-1].event_type == "runtime.failed"
-    assert response.events[-1].payload["error"] == ("provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3")
+    assert response.events[-1].payload["error"] == "third target not available"
     assert response.events[-1].payload["provider_error_kind"] == "invalid_model"
     assert response.events[-1].payload["provider"] == "anthropic"
     assert response.events[-1].payload["model"] == "claude-3-7-sonnet"
     assert response.events[-1].payload["fallback_exhausted"] is True
-    assert response.events[-1].payload["error_summary"] == ("provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3")
+    assert response.events[-1].payload["error_summary"] == "third target not available"
     assert response.events[-1].payload["error_details"] == {
-        "message": ("provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"),
-        "summary": ("provider fallback exhausted after anthropic/claude-3-7-sonnet failed at attempt 3"),
+        "message": "third target not available",
+        "summary": "third target not available",
         "provider_error_kind": "invalid_model",
     }
     assert response.events[-1].payload["retry_guidance"] == ("Check the configured provider/model name and model access permissions.")

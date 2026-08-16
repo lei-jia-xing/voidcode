@@ -1165,11 +1165,26 @@ class RuntimeTransportApp:
                             chunk = next_chunk_task.result()
                         except StopAsyncIteration:
                             break
-                        chunk_failed = await self._send_runtime_stream_chunk(
-                            send,
-                            chunk,
-                            show_thinking=show_thinking,
-                        )
+                        try:
+                            chunk_failed = await self._send_runtime_stream_chunk(
+                                send,
+                                chunk,
+                                show_thinking=show_thinking,
+                            )
+                        except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                            # Client went away mid-stream (e.g. navigated away or
+                            # dropped the connection). Stop streaming immediately
+                            # instead of pushing bytes into a dead socket; this is
+                            # a normal disconnect, not a server failure.
+                            logger.debug(
+                                "client disconnected while streaming run chunks for session %s",
+                                session_id,
+                            )
+                            try:
+                                runtime.cancel_session(session_id, reason="client_disconnected")
+                            except Exception:
+                                logger.exception("failed to cancel run after client disconnect")
+                            break
                         emitted_failed_chunk = emitted_failed_chunk or chunk_failed
                 except Exception:
                     if not emitted_failed_chunk:
@@ -1221,12 +1236,28 @@ class RuntimeTransportApp:
         await self._send_session_snapshot_chunk(send, replay.session)
 
         cursor = after_sequence
+        # Watch for client disconnects while we write the replay so a burst of
+        # events is not pushed into a dead socket (which the ASGI server then
+        # reports as repeated send failures).
+        disconnect_task = asyncio.ensure_future(self._await_client_disconnect(receive))
         try:
             while True:
                 for event in replay.events:
                     if event.sequence <= cursor:
                         continue
-                    await self._send_session_event_chunk(send, event, show_thinking=show_thinking)
+                    send_task = asyncio.ensure_future(self._send_session_event_chunk(send, event, show_thinking=show_thinking))
+                    done, _ = await asyncio.wait(
+                        (send_task, disconnect_task),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if disconnect_task in done:
+                        send_task.cancel()
+                        logger.debug(
+                            "client disconnected during session event replay for %s",
+                            session_id,
+                        )
+                        return
+                    send_task.result()
                     cursor = event.sequence
                 if not follow or replay.session.status in _SESSION_TERMINAL_STATUSES:
                     break
@@ -1236,14 +1267,28 @@ class RuntimeTransportApp:
                     replay = runtime.replay_session(session_id=session_id)
                     continue
                 if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
+                    logger.debug(
+                        "client disconnected during session event follow for %s",
+                        session_id,
+                    )
                     return
         except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+            logger.debug(
+                "client disconnected while streaming session events for %s",
+                session_id,
+            )
             return
         finally:
+            if not disconnect_task.done():
+                disconnect_task.cancel()
             self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         try:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
         except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+            logger.debug(
+                "client disconnected before session event stream close for %s",
+                session_id,
+            )
             return
 
     async def _send_stream_start(self, send: Send) -> None:
@@ -1318,7 +1363,11 @@ class RuntimeTransportApp:
         with self._active_request_scope():
             runtime = self._runtime_factory()
             try:
-                payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions()]
+                # The flat session list is the main-session surface: delegated
+                # child sessions belong only to the child-session view and are
+                # reachable through the task/delegated-context endpoints, so
+                # exclude them here.
+                payload = [self._serialize_stored_session_summary(item) for item in runtime.list_sessions() if item.session.parent_id is None]
             finally:
                 self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         await self._json_response(send, status=200, payload=payload)

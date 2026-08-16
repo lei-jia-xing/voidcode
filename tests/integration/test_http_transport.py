@@ -569,6 +569,49 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
     }
 
 
+def test_transport_list_sessions_excludes_delegated_child_sessions(tmp_path: Path) -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+
+    class _ParentChildListRuntime:
+        def list_sessions(self) -> tuple[object, ...]:
+            return (
+                runtime_session.StoredSessionSummary(
+                    session=runtime_session.SessionRef(id="parent-session"),
+                    status="completed",
+                    turn=1,
+                    prompt="parent prompt",
+                    updated_at=1,
+                ),
+                runtime_session.StoredSessionSummary(
+                    session=runtime_session.SessionRef(
+                        id="child-session",
+                        parent_id="parent-session",
+                    ),
+                    status="completed",
+                    turn=1,
+                    prompt="child prompt",
+                    updated_at=2,
+                ),
+            )
+
+        def web_settings(self) -> dict[str, object]:
+            return {}
+
+        def update_web_settings(self, **_: object) -> dict[str, object]:
+            return {}
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _ParentChildListRuntime))
+    response = _run_app(app, method="GET", path="/api/sessions")
+
+    assert response.status == 200
+    payload = cast(list[dict[str, object]], response.json())
+    assert [row["session"]["id"] for row in payload] == ["parent-session"]
+
+
 def test_transport_reads_runtime_web_settings_as_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
     service_module = importlib.import_module("voidcode.runtime.service")
@@ -2584,6 +2627,131 @@ def test_transport_run_stream_cancels_run_on_client_disconnect() -> None:
     data_parts = [part for part in body_parts if part.startswith(b"data: ")]
     assert len(data_parts) < 30
     assert cancelled == [("disconnect-session", "client_disconnected")]
+
+
+def test_transport_session_events_stops_replay_burst_on_client_disconnect() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+
+    replay_calls: list[int] = []
+
+    class _DisconnectRuntime:
+        def replay_session(self, *, session_id: str) -> object:
+            replay_calls.append(len(replay_calls) + 1)
+            events = tuple(
+                runtime_events.EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"sequence": sequence},
+                )
+                for sequence in range(1, 100)
+            )
+            return contracts_module.RuntimeResponse(
+                session=runtime_session.SessionState(
+                    session=runtime_session.SessionRef(id=session_id),
+                    status="running",
+                    turn=1,
+                    metadata={},
+                ),
+                events=events,
+                output=None,
+            )
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _DisconnectRuntime))
+
+    sent: list[dict[str, object]] = []
+
+    async def _receive() -> dict[str, object]:
+        return {"type": "http.disconnect"}
+
+    async def _send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/sessions/disconnect-session/events",
+        "query_string": b"after_sequence=0&follow=true",
+    }
+    asyncio.run(app(scope, _receive, _send))
+
+    start_message = next(message for message in sent if cast(str, message["type"]) == "http.response.start")
+    assert cast(int, start_message["status"]) == 200
+    body_parts = [cast(bytes, message.get("body", b"")) for message in sent if cast(str, message["type"]) == "http.response.body"]
+    data_parts = [part for part in body_parts if part.startswith(b"data: ")]
+    # A 99-event replay must not be pushed into a disconnected socket: the
+    # disconnect is observed within at most one chunk, and the follow loop must
+    # not keep replaying on the dead connection.
+    assert len(data_parts) <= 2
+    assert len(replay_calls) == 1
+
+
+def test_transport_session_events_stops_cleanly_when_send_raises_during_replay() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_events = importlib.import_module("voidcode.runtime.events")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+
+    class _DeadSocketRuntime:
+        def replay_session(self, *, session_id: str) -> object:
+            events = tuple(
+                runtime_events.EventEnvelope(
+                    session_id=session_id,
+                    sequence=sequence,
+                    event_type="runtime.request_received",
+                    source="runtime",
+                    payload={"sequence": sequence},
+                )
+                for sequence in range(1, 100)
+            )
+            return contracts_module.RuntimeResponse(
+                session=runtime_session.SessionState(
+                    session=runtime_session.SessionRef(id=session_id),
+                    status="running",
+                    turn=1,
+                    metadata={},
+                ),
+                events=events,
+                output=None,
+            )
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _DeadSocketRuntime))
+
+    sent: list[dict[str, object]] = []
+    send_count = 0
+
+    async def _receive() -> dict[str, object]:
+        await asyncio.sleep(3600)  # half-open socket: no http.disconnect arrives
+
+    async def _send(message: dict[str, object]) -> None:
+        nonlocal send_count
+        send_count += 1
+        if send_count > 3:  # response.start + snapshot + first chunk, then the socket dies
+            raise ConnectionResetError("socket closed by peer")
+        sent.append(message)
+
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/sessions/disconnect-session/events",
+        "query_string": b"after_sequence=0&follow=true",
+    }
+    # Must terminate cleanly (no exception propagates out of the app) once the
+    # send starts failing, instead of replaying into the dead socket.
+    asyncio.run(app(scope, _receive, _send))
+
+    data_parts = [part for part in sent if cast(bytes, part.get("body", b"")).startswith(b"data: ")]
+    assert len(data_parts) == 2  # snapshot + first chunk only
 
 
 def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_steps() -> None:

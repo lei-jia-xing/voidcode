@@ -2413,6 +2413,7 @@ class VoidCodeRuntime:
             output=None,
             create_if_missing=True,
             turn=session.turn,
+            parent_session_id=request.parent_session_id,
         )
 
         runtime_policy_snapshot = session.metadata.get("runtime_policy")

@@ -1485,6 +1485,7 @@ def test_runtime_events_define_delegated_background_task_durability_fields() -> 
         "runtime.background_task_completed",
         "runtime.background_task_failed",
         "runtime.background_task_cancelled",
+        "runtime.background_task_interrupted",
         "runtime.background_task_group_completed",
         "runtime.delegated_result_available",
     )

@@ -17,6 +17,7 @@ from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
+    RUNTIME_BACKGROUND_TASK_INTERRUPTED,
     RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
     RUNTIME_BACKGROUND_TASK_PROGRESS,
     RUNTIME_BACKGROUND_TASK_REGISTERED,
@@ -99,6 +100,7 @@ def test_future_additive_event_types_cover_async_lifecycle_surfaces() -> None:
         RUNTIME_BACKGROUND_TASK_COMPLETED,
         RUNTIME_BACKGROUND_TASK_FAILED,
         RUNTIME_BACKGROUND_TASK_CANCELLED,
+        RUNTIME_BACKGROUND_TASK_INTERRUPTED,
         RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
         RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
         RUNTIME_BACKGROUND_TASK_RESULT_READ,
@@ -303,11 +305,14 @@ def test_acp_delegated_lifecycle_rejects_missing_message_object() -> None:
         _ = event.delegated_lifecycle
 
 
-def test_delegated_lifecycle_preserves_interrupted_status_on_failed_event() -> None:
+def test_delegated_lifecycle_parses_interrupted_status_on_interrupted_event() -> None:
+    """Terminal status ↔ event canonical mapping: ``interrupted`` tasks emit
+    ``runtime.background_task_interrupted`` (not ``background_task_failed``), so
+    the persisted status always matches the emitted event type."""
     event = EventEnvelope(
         session_id="leader-session",
         sequence=1,
-        event_type=RUNTIME_BACKGROUND_TASK_FAILED,
+        event_type=RUNTIME_BACKGROUND_TASK_INTERRUPTED,
         source="runtime",
         payload={
             "session_id": "child-session",

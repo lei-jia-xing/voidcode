@@ -307,6 +307,7 @@ def test_runtime_config_json_schema_exposes_policy_config_contract() -> None:
         "background_task_completed",
         "background_task_failed",
         "background_task_cancelled",
+        "background_task_interrupted",
         "background_task_notification_enqueued",
         "background_task_result_read",
         "delegated_result_available",

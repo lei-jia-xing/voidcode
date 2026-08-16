@@ -23,6 +23,7 @@ type RuntimeHookSurface = Literal[
     "background_task_completed",
     "background_task_failed",
     "background_task_cancelled",
+    "background_task_interrupted",
     "background_task_notification_enqueued",
     "background_task_result_read",
     "delegated_result_available",
@@ -51,6 +52,7 @@ class RuntimeHooksConfig:
     on_background_task_completed: tuple[tuple[str, ...], ...] = ()
     on_background_task_failed: tuple[tuple[str, ...], ...] = ()
     on_background_task_cancelled: tuple[tuple[str, ...], ...] = ()
+    on_background_task_interrupted: tuple[tuple[str, ...], ...] = ()
     on_background_task_notification_enqueued: tuple[tuple[str, ...], ...] = ()
     on_background_task_result_read: tuple[tuple[str, ...], ...] = ()
     on_delegated_result_available: tuple[tuple[str, ...], ...] = ()
@@ -71,6 +73,7 @@ class RuntimeHooksConfig:
             "background_task_completed": self.on_background_task_completed,
             "background_task_failed": self.on_background_task_failed,
             "background_task_cancelled": self.on_background_task_cancelled,
+            "background_task_interrupted": self.on_background_task_interrupted,
             "background_task_notification_enqueued": self.on_background_task_notification_enqueued,
             "background_task_result_read": self.on_background_task_result_read,
             "delegated_result_available": self.on_delegated_result_available,

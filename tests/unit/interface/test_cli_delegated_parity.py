@@ -516,7 +516,7 @@ def test_cli_sessions_resume_replays_completed_session_after_restart(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_cli_sessions_list_omits_child_that_failed_required_handoff(tmp_path: Path) -> None:
+def test_cli_sessions_list_omits_child_that_failed_required_handoff(tmp_path: Path, capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = tmp_path
     runtime_module = importlib.import_module("voidcode.runtime")
@@ -532,12 +532,23 @@ def test_cli_sessions_list_omits_child_that_failed_required_handoff(tmp_path: Pa
             )
         )
 
-    result = cli.main(["sessions", "list", "--workspace", str(workspace)])
+    result = cli.main(["sessions", "list", "--workspace", str(workspace), "--json"])
+    captured = capsys.readouterr()
 
     assert result == 0
-    listed = runtime.list_sessions()
-    child_ids = {s.session.id for s in listed if s.session.parent_id == "leader-session"}
+    payload = cast(dict[str, object], json.loads(captured.out))
+    listed = cast(list[dict[str, object]], payload["sessions"])
+    # The flat main-session list must not surface the failed-handoff child.
+    child_ids = {
+        cast(dict[str, object], row["session"]).get("parent_id")
+        for row in listed
+        if cast(dict[str, object], row["session"]).get("parent_id") == "leader-session"
+    }
     assert child_ids == set()
+    # The child persists with its parent lineage (the interrupted checkpoint
+    # carries the parent) and stays reachable via the child-session surface.
+    stored_child_ids = {summary.session.id for summary in runtime.list_sessions() if summary.session.parent_id == "leader-session"}
+    assert len(stored_child_ids) == 1
 
 
 # ---------------------------------------------------------------------------

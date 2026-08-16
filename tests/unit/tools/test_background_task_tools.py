@@ -170,7 +170,7 @@ class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
             prompt="delegated",
             status="failed",
             summary="failed delegated child",
-            error="provider fallback exhausted after deepseek/deepseek-v4-pro failed at attempt 1",
+            error="network interrupted",
             transcript=(
                 EventEnvelope(
                     session_id="child-session",
@@ -178,7 +178,7 @@ class _InterruptedBackgroundRuntime(_StubBackgroundRuntime):
                     event_type="runtime.failed",
                     source="runtime",
                     payload={
-                        "error": ("provider fallback exhausted after deepseek/deepseek-v4-pro failed at attempt 1"),
+                        "error": "network interrupted",
                         "provider_error_kind": "transient_failure",
                         "provider": "deepseek",
                         "model": "deepseek-v4-pro",

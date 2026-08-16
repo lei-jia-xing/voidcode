@@ -57,10 +57,27 @@ def test_parse_provider_api_error_maps_429_to_rate_limit() -> None:
 
 
 def test_parse_provider_api_error_maps_insufficient_balance_without_retry() -> None:
-    parsed = parse_provider_api_error({"status_code": 400, "message": "DeepseekException - Insufficient Balance"})
+    raw_message = "DeepseekException - Insufficient Balance"
+    parsed = parse_provider_api_error({"status_code": 400, "message": raw_message})
 
     assert parsed.kind == "invalid_model"
+    assert parsed.message == raw_message
     assert parsed.retryable is False
+
+
+def test_provider_execution_error_from_api_payload_preserves_raw_message() -> None:
+    raw_message = "DeepseekException - Insufficient Balance"
+    error = provider_execution_error_from_api_payload(
+        provider_name="deepseek",
+        model_name="deepseek-chat",
+        payload={"status_code": 402, "message": raw_message},
+    )
+
+    assert error.kind == "invalid_model"
+    assert error.message == raw_message
+    assert str(error) == raw_message
+    assert error.details["message"] == raw_message
+    assert error.details["status_code"] == 402
 
 
 def test_parse_provider_api_error_maps_401_to_missing_auth() -> None:

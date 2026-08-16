@@ -924,7 +924,11 @@ def _print_noninteractive_blocked(result: RuntimeStreamResult, event: EventEnvel
 def _handle_sessions_list_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     with _runtime_session(workspace) as runtime:
-        sessions = runtime.list_sessions()
+        # The flat session list is the main-session surface: delegated child
+        # sessions belong only to the child-session view and stay reachable
+        # through the task/delegated-context endpoints, so exclude them here
+        # (mirrors the HTTP transport list filter).
+        sessions = [summary for summary in runtime.list_sessions() if summary.session.parent_id is None]
 
     def _print_sessions() -> None:
         for session in sessions:

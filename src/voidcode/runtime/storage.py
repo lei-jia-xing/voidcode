@@ -212,6 +212,7 @@ class SessionStore(Protocol):
         output: str | None = None,
         create_if_missing: bool = True,
         turn: int = 1,
+        parent_session_id: str | None = None,
     ) -> None: ...
 
     def list_sessions(self, *, workspace: Path) -> tuple[StoredSessionSummary, ...]: ...
@@ -274,6 +275,8 @@ class SessionStore(Protocol):
     def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def list_queued_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+
+    def list_running_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
@@ -1404,13 +1407,25 @@ class SqliteSessionStore:
         if created_at_unix_ms is None:
             created_at_unix_ms = int(time() * 1000)
         updated_at = self._next_timestamp(connection=connection)
+        # The row watermark (maintained by every incremental
+        # ``append_session_events``) IS the persisted truth. Clamp the sealed
+        # value to the actual ``session_events`` max so a response whose
+        # trailing events were only locally sequenced (resume paths resequence
+        # client-only events like MCP/hook/release chunks that are never
+        # appended) can never inflate the watermark beyond the durable event
+        # log — a phantom sequence would break replay, resume truncation, and
+        # notification reference-integrity.
         last_event_sequence = max(
             self._read_last_event_sequence(
                 connection=connection,
                 workspace=workspace,
                 session_id=session_id,
             ),
-            self._session_last_event_sequence(events),
+            self._max_persisted_event_sequence(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            ),
         )
         status = response.session.status if seal_terminal_status else "interrupted"
         _ = connection.execute(
@@ -1465,6 +1480,7 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         kind: str,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object]:
         snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(response.session.metadata)
         return {
@@ -1480,7 +1496,7 @@ class SqliteSessionStore:
             "skill_snapshot_version": snapshot_version,
             "skill_binding_snapshot": binding_snapshot,
             "tool_results": cls._tool_results_from_events(response.events),
-            "last_event_sequence": cls._session_last_event_sequence(response.events),
+            "last_event_sequence": (cls._session_last_event_sequence(response.events) if last_event_sequence is None else last_event_sequence),
             "output": response.output,
         }
 
@@ -1702,6 +1718,14 @@ class SqliteSessionStore:
         """
         session_id = response.session.session.id
         with self._write_connect(workspace) as connection:
+            # The durable event-log watermark — see ``_write_session_snapshot``.
+            # The resume checkpoint and the terminal notification must reference
+            # this persisted truth, never a locally-resequenced response tail.
+            persisted_last_sequence = self._max_persisted_event_sequence(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
             updated_at = self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -1720,6 +1744,7 @@ class SqliteSessionStore:
                 resume_checkpoint=self._run_resume_checkpoint(
                     request=request,
                     response=response,
+                    last_event_sequence=persisted_last_sequence,
                 ),
                 seal_terminal_status=seal_terminal_status,
             )
@@ -1736,6 +1761,7 @@ class SqliteSessionStore:
                 response=response,
                 pending_approval=None,
                 notification_run_id=updated_at,
+                last_event_sequence=persisted_last_sequence,
             )
             connection.commit()
 
@@ -1989,6 +2015,11 @@ class SqliteSessionStore:
         pending_approval: PendingApproval,
     ) -> None:
         with self._write_connect(workspace) as connection:
+            persisted_last_sequence = self._max_persisted_event_sequence(
+                connection=connection,
+                workspace=workspace,
+                session_id=response.session.session.id,
+            )
             updated_at = self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -2000,6 +2031,7 @@ class SqliteSessionStore:
                     request=request,
                     response=response,
                     pending_approval=pending_approval,
+                    last_event_sequence=persisted_last_sequence,
                 ),
             )
             self._sync_background_task_durable_state(
@@ -2016,6 +2048,7 @@ class SqliteSessionStore:
                 response=response,
                 pending_approval=pending_approval,
                 notification_run_id=updated_at,
+                last_event_sequence=persisted_last_sequence,
             )
             connection.commit()
 
@@ -2130,6 +2163,11 @@ class SqliteSessionStore:
         pending_question: PendingQuestion,
     ) -> None:
         with self._write_connect(workspace) as connection:
+            persisted_last_sequence = self._max_persisted_event_sequence(
+                connection=connection,
+                workspace=workspace,
+                session_id=response.session.session.id,
+            )
             updated_at = self._write_session_snapshot(
                 connection=connection,
                 workspace=workspace,
@@ -2141,6 +2179,7 @@ class SqliteSessionStore:
                     request=request,
                     response=response,
                     pending_question=pending_question,
+                    last_event_sequence=persisted_last_sequence,
                 ),
             )
             self._sync_background_task_durable_state(
@@ -2158,6 +2197,7 @@ class SqliteSessionStore:
                 pending_approval=None,
                 pending_question=pending_question,
                 notification_run_id=updated_at,
+                last_event_sequence=persisted_last_sequence,
             )
             connection.commit()
 
@@ -2532,6 +2572,7 @@ class SqliteSessionStore:
         output: str | None = None,
         create_if_missing: bool = True,
         turn: int = 1,
+        parent_session_id: str | None = None,
     ) -> None:
         """Persist a lightweight ``interrupted`` resume checkpoint to the sessions row.
 
@@ -2544,6 +2585,12 @@ class SqliteSessionStore:
         ``create_if_missing`` is set (mandatory: ``append_session_events`` raises
         ``UnknownSessionError`` when the row is absent, so the row must exist
         before the first event append).
+
+        ``parent_session_id`` is persisted on both the insert and update paths so
+        a child session's first (un-sealed) row already carries its parent — the
+        child must reference its parent even when the run ends before a terminal
+        seal (``_write_session_snapshot`` is the only other writer of
+        ``parent_session_id``, and it only runs at seal time).
 
         ``tool_results`` must be the serialized ``ToolResult`` form produced by
         ``_tool_results_from_events`` and accepted by
@@ -2589,10 +2636,11 @@ class SqliteSessionStore:
                         metadata_json, pending_approval_json, pending_question_json,
                         resume_checkpoint_json, created_at, updated_at,
                         last_event_sequence, created_at_unix_ms
-                    ) VALUES (?, NULL, ?, 'interrupted', ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, 'interrupted', ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_id,
+                        parent_session_id,
                         str(workspace),
                         turn,
                         prompt,
@@ -2614,6 +2662,7 @@ class SqliteSessionStore:
                         metadata_json = ?,
                         prompt = ?,
                         output = COALESCE(?, output),
+                        parent_session_id = COALESCE(?, parent_session_id),
                         updated_at = ?,
                         last_event_sequence = MAX(last_event_sequence, ?)
                     WHERE workspace_id = ? AND session_id = ?
@@ -2623,6 +2672,7 @@ class SqliteSessionStore:
                         metadata_json,
                         prompt,
                         output,
+                        parent_session_id,
                         self._next_timestamp(connection=connection),
                         last_event_sequence,
                         str(workspace),
@@ -2786,12 +2836,14 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_approval: PendingApproval,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object]:
         return {
             **SqliteSessionStore._resume_checkpoint_base(
                 request=request,
                 response=response,
                 kind="approval_wait",
+                last_event_sequence=last_event_sequence,
             ),
             "pending_approval_request_id": pending_approval.request_id,
             "pending_approval_tool_name": pending_approval.tool_name,
@@ -2804,13 +2856,18 @@ class SqliteSessionStore:
 
     @staticmethod
     def _question_wait_resume_checkpoint(
-        *, request: RuntimeRequest, response: RuntimeResponse, pending_question: PendingQuestion
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        pending_question: PendingQuestion,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object]:
         return {
             **SqliteSessionStore._resume_checkpoint_base(
                 request=request,
                 response=response,
                 kind="question_wait",
+                last_event_sequence=last_event_sequence,
             ),
             "pending_question_request_id": pending_question.request_id,
             "pending_question_tool_name": pending_question.tool_name,
@@ -2833,7 +2890,7 @@ class SqliteSessionStore:
 
     @staticmethod
     def _provider_failure_retryable_resume_checkpoint(
-        *, request: RuntimeRequest, response: RuntimeResponse, failure_event: EventEnvelope
+        *, request: RuntimeRequest, response: RuntimeResponse, failure_event: EventEnvelope, last_event_sequence: int | None = None
     ) -> dict[str, object]:
         payload = failure_event.payload
         last_tool: dict[str, object] = next(
@@ -2849,6 +2906,7 @@ class SqliteSessionStore:
                 request=request,
                 response=response,
                 kind="provider_failure_retryable",
+                last_event_sequence=last_event_sequence,
             ),
             "provider_error_kind": payload.get("provider_error_kind"),
             "provider": payload.get("provider"),
@@ -2861,19 +2919,31 @@ class SqliteSessionStore:
         }
 
     @staticmethod
-    def _terminal_resume_checkpoint(*, request: RuntimeRequest, response: RuntimeResponse) -> dict[str, object]:
+    def _terminal_resume_checkpoint(
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        last_event_sequence: int | None = None,
+    ) -> dict[str, object]:
         return SqliteSessionStore._resume_checkpoint_base(
             request=request,
             response=response,
             kind="terminal",
+            last_event_sequence=last_event_sequence,
         )
 
     @staticmethod
-    def _run_resume_checkpoint(*, request: RuntimeRequest, response: RuntimeResponse) -> dict[str, object]:
+    def _run_resume_checkpoint(
+        *,
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+        last_event_sequence: int | None = None,
+    ) -> dict[str, object]:
         if response.session.status != "failed":
             return SqliteSessionStore._terminal_resume_checkpoint(
                 request=request,
                 response=response,
+                last_event_sequence=last_event_sequence,
             )
         failure_event = next(
             (event for event in reversed(response.events) if event.event_type == "runtime.failed"),
@@ -2883,21 +2953,25 @@ class SqliteSessionStore:
             return SqliteSessionStore._terminal_resume_checkpoint(
                 request=request,
                 response=response,
+                last_event_sequence=last_event_sequence,
             )
         if failure_event.payload.get("provider_error_kind") != "transient_failure":
             return SqliteSessionStore._terminal_resume_checkpoint(
                 request=request,
                 response=response,
+                last_event_sequence=last_event_sequence,
             )
         if not any(event.event_type == "runtime.tool_completed" and event.payload.get("status") != "error" for event in response.events):
             return SqliteSessionStore._terminal_resume_checkpoint(
                 request=request,
                 response=response,
+                last_event_sequence=last_event_sequence,
             )
         return SqliteSessionStore._provider_failure_retryable_resume_checkpoint(
             request=request,
             response=response,
             failure_event=failure_event,
+            last_event_sequence=last_event_sequence,
         )
 
     @classmethod
@@ -3535,6 +3609,29 @@ class SqliteSessionStore:
                     FROM background_tasks
                     WHERE workspace_id = ? AND status = 'queued'
                     ORDER BY created_at ASC, task_id ASC
+                    """,
+                    (str(workspace),),
+                ).fetchall(),
+            )
+        return tuple(self._background_task_summary_from_row(row) for row in rows)
+
+    def list_running_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
+        """Status-indexed running-task summaries for worker-liveness reconciliation.
+
+        Bounded by the task concurrency limit; unlike ``list_background_tasks``
+        this never scans terminal history, so hot read paths (task loads,
+        observability) can check worker liveness without a full-history pass.
+        """
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                           , created_at_unix_ms
+                    FROM background_tasks
+                    WHERE workspace_id = ? AND status = 'running'
+                    ORDER BY updated_at ASC, task_id ASC
                     """,
                     (str(workspace),),
                 ).fetchall(),
@@ -5038,6 +5135,15 @@ class SqliteSessionStore:
         workspace: Path,
     ) -> int:
         age_cutoff_ms = int((time() - self._DEFAULT_MAX_SESSION_AGE_DAYS * 86_400) * 1000)
+        # Child sessions referenced by a background task must survive count/age
+        # pruning: ``load_background_task_child_result`` / parent-terminal event
+        # backfill read them long after the task finished. Mirrors the explicit
+        # ``prune_runtime_storage`` protection via ``_retained_background_task_session_ids``.
+        protected_task_session_ids = self._retained_background_task_session_ids(
+            connection=connection,
+            workspace=workspace,
+            pruned_task_ids=(),
+        )
         age_rows = cast(
             list[sqlite3.Row],
             connection.execute(
@@ -5052,17 +5158,39 @@ class SqliteSessionStore:
                 (str(workspace), age_cutoff_ms),
             ).fetchall(),
         )
-        age_ids = tuple(cast(str, row["session_id"]) for row in age_rows)
+        age_ids = tuple(
+            session_id for session_id in (cast(str, row["session_id"]) for row in age_rows) if session_id not in protected_task_session_ids
+        )
 
         count_ids = self._prunable_session_ids(
             connection=connection,
             workspace=workspace,
             keep_sessions=self._DEFAULT_MAX_SESSIONS_PER_WORKSPACE,
             older_than=None,
-            protected_session_ids=(),
+            protected_session_ids=protected_task_session_ids,
         )
-        pruned_ids = tuple(dict.fromkeys(count_ids + age_ids))
-        if not pruned_ids:
+        # Dangling-parent terminal children: a child session whose parent row is
+        # gone (pruned, or a synthetic parent that was never persisted) and that
+        # no background task references can never be reached again — prune them
+        # so the ``child.parent_id must exist`` linkage invariant converges
+        # instead of accumulating orphans forever.
+        dangling_child_ids = self._dangling_parent_terminal_session_ids(
+            connection=connection,
+            workspace=workspace,
+            protected_session_ids=protected_task_session_ids,
+        )
+        pruned_ids = tuple(dict.fromkeys((*count_ids, *age_ids, *dangling_child_ids)))
+        # Orphaned terminal background tasks: tasks that reached a terminal
+        # status without ever allocating a child session (e.g. shutdown
+        # terminalization of still-queued tasks) and whose parent session is
+        # terminal or missing are pure garbage — no result, no child session, no
+        # repair path. Delete them here (the existing list-triggered prune path)
+        # so they cannot accumulate unbounded across shutdowns.
+        orphaned_task_ids = self._orphaned_terminal_background_task_ids(
+            connection=connection,
+            workspace=workspace,
+        )
+        if not pruned_ids and not orphaned_task_ids:
             return 0
 
         for table in (
@@ -5079,7 +5207,104 @@ class SqliteSessionStore:
                 ids=pruned_ids,
                 workspace=workspace,
             )
-        return len(pruned_ids)
+        if orphaned_task_ids:
+            self._delete_for_ids(
+                connection=connection,
+                table="background_tasks",
+                column="task_id",
+                ids=orphaned_task_ids,
+                workspace=workspace,
+            )
+        return len(pruned_ids) + len(orphaned_task_ids)
+
+    @staticmethod
+    def _dangling_parent_terminal_session_ids(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        protected_session_ids: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        """Event-less terminal children whose parent row is gone and no task references.
+
+        Every real run persists at least one event before a terminal seal
+        (request_received / the terminal failure), so a terminal session with an
+        EMPTY event log is pure fabrication residue (direct store writes, stale
+        bundle rows) — it has no transcript, no result, and no repair path.
+        Combined with a dangling parent and no task reference, it can never be
+        reached again; prune it so the ``child.parent_id must exist`` linkage
+        converges instead of accumulating orphans forever.
+        """
+        protected_clause = ""
+        parameters: list[object] = [str(workspace)]
+        if protected_session_ids:
+            protected_placeholders = ", ".join("?" for _ in protected_session_ids)
+            protected_clause = f"AND session_id NOT IN ({protected_placeholders})"
+            parameters.extend(protected_session_ids)
+        rows = connection.execute(
+            f"""
+            SELECT session_id
+            FROM sessions
+            WHERE workspace_id = ?
+              AND status IN ('completed', 'failed')
+              AND parent_session_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM session_events event
+                  WHERE event.workspace_id = sessions.workspace_id
+                    AND event.session_id = sessions.session_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM sessions parent
+                  WHERE parent.workspace_id = sessions.workspace_id
+                    AND parent.session_id = sessions.parent_session_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM background_tasks task
+                  WHERE task.workspace_id = sessions.workspace_id
+                    AND task.session_id = sessions.session_id
+              )
+              {protected_clause}
+            ORDER BY updated_at ASC, session_id ASC
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return tuple(cast(str, row["session_id"]) for row in cast(list[sqlite3.Row], rows))
+
+    @staticmethod
+    def _orphaned_terminal_background_task_ids(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+    ) -> tuple[str, ...]:
+        """Terminal tasks with no child session whose parent is terminal or gone.
+
+        These arise from shutdown terminalization of still-queued tasks and from
+        restart reconciliation of running tasks whose worker died before any
+        child session persisted. They have no result, no child session, and no
+        repair path (``repair_interrupted_task_from_child_terminal_session``
+        requires ``session_id``), so they are safe to prune; a terminal parent
+        (or missing parent) guarantees no future dispatch can own them.
+        """
+        rows = connection.execute(
+            """
+            SELECT task_id
+            FROM background_tasks
+            WHERE workspace_id = ?
+              AND status IN ('completed', 'failed', 'cancelled', 'interrupted')
+              AND session_id IS NULL
+              AND (
+                  request_parent_session_id IS NULL
+                  OR NOT EXISTS (
+                      SELECT 1 FROM sessions parent
+                      WHERE parent.workspace_id = background_tasks.workspace_id
+                        AND parent.session_id = background_tasks.request_parent_session_id
+                        AND parent.status NOT IN ('completed', 'failed')
+                  )
+              )
+            ORDER BY updated_at ASC, task_id ASC
+            """,
+            (str(workspace),),
+        ).fetchall()
+        return tuple(cast(str, row["task_id"]) for row in cast(list[sqlite3.Row], rows))
 
     @staticmethod
     def _result_summary(*, response: RuntimeResponse, prompt: str) -> tuple[str, str | None]:
@@ -5121,14 +5346,25 @@ class SqliteSessionStore:
         pending_approval: PendingApproval | None,
         pending_question: PendingQuestion | None = None,
         notification_run_id: int,
+        last_event_sequence: int | None = None,
     ) -> None:
         session_id = response.session.session.id
+        if last_event_sequence is None:
+            # Callers that do not pass the durable watermark (none in-tree) fall
+            # back to the persisted event-log max so notification references can
+            # never point at a phantom (locally-resequenced) sequence.
+            last_event_sequence = self._max_persisted_event_sequence(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+            )
         notification = self._notification_candidate(
             request=request,
             response=response,
             pending_approval=pending_approval,
             pending_question=pending_question,
             notification_run_id=notification_run_id,
+            last_event_sequence=last_event_sequence,
         )
         if pending_approval is None:
             _ = connection.execute(
@@ -5234,23 +5470,27 @@ class SqliteSessionStore:
         pending_approval: PendingApproval | None,
         pending_question: PendingQuestion | None,
         notification_run_id: int,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object] | None:
         if pending_approval is not None:
             return self._approval_notification_candidate(
                 request=request,
                 response=response,
                 pending_approval=pending_approval,
+                last_event_sequence=last_event_sequence,
             )
         if pending_question is not None:
             return self._question_notification_candidate(
                 request=request,
                 response=response,
                 pending_question=pending_question,
+                last_event_sequence=last_event_sequence,
             )
         return self._terminal_notification_candidate(
             request=request,
             response=response,
             notification_run_id=notification_run_id,
+            last_event_sequence=last_event_sequence,
         )
 
     def _approval_notification_candidate(
@@ -5259,10 +5499,11 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_approval: PendingApproval,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object]:
         session_id = response.session.session.id
         summary, _ = self._result_summary(response=response, prompt=request.prompt)
-        event_sequence = self._session_last_event_sequence(response.events)
+        event_sequence = self._session_last_event_sequence(response.events) if last_event_sequence is None else last_event_sequence
         dedupe_key = f"{session_id}:approval_blocked:{pending_approval.request_id}"
         return {
             "notification_id": dedupe_key,
@@ -5285,10 +5526,11 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         pending_question: PendingQuestion,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object]:
         session_id = response.session.session.id
         summary, _ = self._result_summary(response=response, prompt=request.prompt)
-        event_sequence = self._session_last_event_sequence(response.events)
+        event_sequence = self._session_last_event_sequence(response.events) if last_event_sequence is None else last_event_sequence
         dedupe_key = f"{session_id}:question_blocked:{pending_question.request_id}"
         return {
             "notification_id": dedupe_key,
@@ -5316,9 +5558,10 @@ class SqliteSessionStore:
         request: RuntimeRequest,
         response: RuntimeResponse,
         notification_run_id: int,
+        last_event_sequence: int | None = None,
     ) -> dict[str, object] | None:
         session_id = response.session.session.id
-        event_sequence = self._session_last_event_sequence(response.events)
+        event_sequence = self._session_last_event_sequence(response.events) if last_event_sequence is None else last_event_sequence
         if response.session.status == "completed":
             summary, _ = self._result_summary(response=response, prompt=request.prompt)
             dedupe_key = f"{session_id}:completion:{notification_run_id}"
@@ -5396,6 +5639,16 @@ class SqliteSessionStore:
         if row is not None:
             return cast(int, row["last_event_sequence"])
         return 0
+
+    @staticmethod
+    def _max_persisted_event_sequence(*, connection: sqlite3.Connection, workspace: Path, session_id: str) -> int:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row[0])
 
     @staticmethod
     def _next_sequence_value(*, connection: sqlite3.Connection, scope: str) -> int:

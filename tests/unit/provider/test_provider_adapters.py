@@ -607,12 +607,12 @@ def test_provider_adapter_wraps_task_tool_description_argument(
 
     assert parameters["type"] == "object"
     assert parameters["additionalProperties"] is False
-    assert parameters["required"] == ["prompt", "run_in_background", "load_skills"]
-    one_of = cast(list[object], parameters["oneOf"])
-    assert len(one_of) == 2
+    assert parameters["required"] == ["prompt", "run_in_background", "load_skills", "subagent_type"]
     examples = cast(list[object], parameters["examples"])
     assert cast(dict[str, object], examples[0])["run_in_background"] is True
+    assert cast(dict[str, object], examples[0])["subagent_type"] == "explore"
     assert cast(dict[str, object], examples[1])["run_in_background"] is False
+    assert cast(dict[str, object], examples[1])["subagent_type"] == "advisor"
     description_property = cast(dict[str, object], properties["description"])
     prompt_property = cast(dict[str, object], properties["prompt"])
     assert description_property["type"] == "string"
