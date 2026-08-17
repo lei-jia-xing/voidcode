@@ -205,7 +205,8 @@ class RuntimeBackgroundTaskSupervisor:
         """
         self._shutdown_requested = True
         deadline = time.monotonic() + max(timeout_seconds, 0.0)
-        while True:
+        timed_out = False
+        while not timed_out:
             with self._queue_lock:
                 threads = tuple(self._threads.items())
             if not threads:
@@ -214,6 +215,7 @@ class RuntimeBackgroundTaskSupervisor:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._fail_unfinished_shutdown_threads(threads)
+                    timed_out = True
                     break
                 thread.join(timeout=min(remaining, 0.1))
                 if not thread.is_alive():

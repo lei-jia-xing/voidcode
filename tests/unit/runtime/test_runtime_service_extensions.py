@@ -2674,20 +2674,31 @@ def test_runtime_shutdown_terminalizes_unfinished_background_worker(
     runtime._session_store.create_background_task(workspace=tmp_path, task=task)
     worker_started = threading.Event()
     release_worker = threading.Event()
+    worker_released: list[bool] = []
 
     def blocking_worker(task_id: str) -> None:
         assert task_id == "task-exit-unfinished-worker"
         worker_started.set()
-        assert release_worker.wait(timeout=2.0)
+        # Record the wait outcome instead of asserting inside the worker
+        # thread: an in-thread assert failure is only surfaced by pytest as
+        # an unhandled-thread-exception warning after teardown, never as a
+        # test failure. The main thread asserts on the recorded outcome.
+        worker_released.append(release_worker.wait(timeout=2.0))
 
     monkeypatch.setattr(supervisor, "run_background_task_worker", blocking_worker)
 
     supervisor._drain_background_task_queue()
     assert worker_started.wait(timeout=2.0)
     runtime.shutdown_background_tasks(timeout_seconds=0.01)
-    failed = runtime.load_background_task("task-exit-unfinished-worker")
+    # shutdown() returns promptly after terminalizing the still-running
+    # worker; release it afterwards so the worker thread cleans itself up.
     release_worker.set()
+    worker_thread = supervisor.threads.get("task-exit-unfinished-worker")
+    if worker_thread is not None:
+        worker_thread.join(timeout=2.0)
+    failed = runtime.load_background_task("task-exit-unfinished-worker")
 
+    assert worker_released == [True]
     assert failed.status == "failed"
     assert failed.error == ("background task stopped because parent runtime exited before completion")
     assert failed.result_available is True
