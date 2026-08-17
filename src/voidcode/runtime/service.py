@@ -360,6 +360,7 @@ from .skills import (
 )
 from .storage import SessionEventAppender, SessionSealedError, SessionStore, SqliteSessionStore
 from .task import (
+    BACKGROUND_TASK_TERMINAL_STATUSES,
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
     validate_background_task_id,
@@ -390,7 +391,6 @@ _ACTIVE_SESSION_TYPES = (
 )
 
 _EXECUTABLE_AGENT_PRESETS = frozenset({"leader"})
-_EXECUTABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker", "product"})
 
 
 def _agent_effective_execution_engine(
@@ -2096,6 +2096,7 @@ class VoidCodeRuntime:
                     persisted_session_policy=persisted_runtime_policy,
                     agent_preset=effective_config.agent.preset if effective_config.agent is not None else "leader",
                     agent_manifest_id=effective_config.agent.preset if effective_config.agent is not None else "leader",
+                    callable_subagent_presets=self._agent_registry.executable_subagent_ids(),
                     runtime_config={
                         **self._runtime_config_metadata(
                             effective_config,
@@ -4205,7 +4206,7 @@ class VoidCodeRuntime:
                 active_worker_slots=self._background_task_supervisor.active_worker_slots(),
                 queued_count=background_status_counts.get("queued", 0),
                 running_count=background_status_counts.get("running", 0),
-                terminal_count=sum(background_status_counts.get(status, 0) for status in ("completed", "failed", "cancelled", "interrupted")),
+                terminal_count=sum(background_status_counts.get(status, 0) for status in BACKGROUND_TASK_TERMINAL_STATUSES),
                 default_concurrency=self._config.background_task.default_concurrency,
                 provider_concurrency=dict(self._config.background_task.provider_concurrency),
                 model_concurrency=dict(self._config.background_task.model_concurrency),

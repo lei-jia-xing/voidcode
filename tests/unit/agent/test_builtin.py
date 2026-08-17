@@ -5,6 +5,7 @@ from typing import Protocol, cast
 import pytest
 
 from voidcode.agent import (
+    AgentManifestRegistry,
     get_builtin_agent_manifest,
     is_agent_top_level_selectable,
     is_builtin_prompt_profile,
@@ -181,10 +182,15 @@ def test_builtin_delegated_only_agent_manifests_are_not_top_level_selectable() -
 
 
 def test_builtin_callable_child_presets_align_with_runtime_delegation_routes() -> None:
-    executable_subagent_presets = cast(
-        frozenset[str],
-        vars(runtime_service_module)["_EXECUTABLE_SUBAGENT_PRESETS"],
+    # The runtime authority for executable child presets is manifest-driven:
+    # agent_registry.executable_subagent_ids() (builtin-only here, so it
+    # covers exactly the builtin subagent manifests). The resolver's built-in
+    # fallback default must stay consistent with it.
+    registry = AgentManifestRegistry(
+        builtin={manifest.id: manifest for manifest in list_builtin_agent_manifests()},
+        custom={},
     )
+    executable_subagent_presets = registry.executable_subagent_ids()
 
     assert executable_subagent_presets == set(_CALLABLE_CHILD_AGENT_PRESETS)
     for preset in _CALLABLE_CHILD_AGENT_PRESETS:

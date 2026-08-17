@@ -68,8 +68,15 @@ class ResolvedSubagentRoute:
         }
 
 
-_CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker", "product"})
-_BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+# Built-in callable child presets: the no-arg default for ``resolve_subagent_route``
+# and the policy/capability default allow set. The runtime AUTHORITY for
+# executable child presets is manifest-driven
+# (``agent_registry.executable_subagent_ids()``); this tuple is only the fallback
+# when no registry result is passed in. Order is canonical for deterministic
+# snapshot projections and is asserted against the manifest authority in
+# ``tests/unit/agent/test_builtin.py``.
+CALLABLE_SUBAGENT_PRESETS: tuple[str, ...] = ("advisor", "explore", "researcher", "worker", "product")
+BACKGROUND_TASK_TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[BackgroundTaskStatus]] = {
     "queued": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
     "running": frozenset({"completed", "failed", "cancelled", "interrupted", "idle"}),
@@ -84,9 +91,9 @@ _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[Backg
 def resolve_subagent_route(
     requested: SubagentRoutingIdentity,
     *,
-    callable_subagent_presets: frozenset[str] | None = None,
+    callable_subagent_presets: frozenset[str] | tuple[str, ...] | None = None,
 ) -> ResolvedSubagentRoute:
-    callable_presets = callable_subagent_presets or _CALLABLE_SUBAGENT_PRESETS
+    callable_presets = callable_subagent_presets or CALLABLE_SUBAGENT_PRESETS
     if requested.subagent_type == "leader":
         raise ValueError("subagent_type 'leader' is not a callable child preset")
     if requested.subagent_type not in callable_presets:
@@ -99,7 +106,7 @@ def resolve_subagent_route(
 
 
 def is_background_task_terminal(status: BackgroundTaskStatus) -> bool:
-    return status in _BACKGROUND_TASK_TERMINAL_STATUSES
+    return status in BACKGROUND_TASK_TERMINAL_STATUSES
 
 
 def is_background_task_transition_allowed(

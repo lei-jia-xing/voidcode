@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
+from .task import CALLABLE_SUBAGENT_PRESETS
 
 POLICY_SCHEMA_VERSION = 1
 POLICY_VERSION = "v1"
-_ALLOWED_CHILD_PRESETS = ("advisor", "explore", "researcher", "worker", "product")
 _ALLOWED_HOOK_ACTIONS = frozenset({"observe", "report", "cancel", "guidance"})
 _ALLOWED_HOOK_SCOPES = (
     "session_start",
@@ -364,7 +364,13 @@ def materialize_runtime_policy_snapshot(**inputs: Any) -> RuntimePolicySnapshot:
     mode = runtime_mode_from_metadata(request_metadata)
     read_only = runtime_read_only_from_metadata(request_metadata)
     tool_allowed = _tool_allowed(runtime_config, policy_config)
-    delegation_allowed = _delegation_allowed(policy_config)
+    delegation_allowed = _delegation_allowed(
+        policy_config,
+        callable_subagent_presets=cast(
+            frozenset[str] | tuple[str, ...] | None,
+            inputs.get("callable_subagent_presets"),
+        ),
+    )
     hook_policy_request = _mapping(inputs.get("hook_policy_request"))
     hook_actions = _hook_actions(policy_config, hook_policy_request)
     denied: list[dict[str, object]] = []
@@ -635,12 +641,27 @@ def _tool_allowed(
     return tuple(dict.fromkeys((*config_allowed, *policy_allowed)))
 
 
-def _delegation_allowed(policy_config: Mapping[str, object]) -> tuple[str, ...]:
+def _delegation_allowed(
+    policy_config: Mapping[str, object],
+    *,
+    callable_subagent_presets: frozenset[str] | tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """Project the effective delegation allow list from policy config.
+
+    Semantics: when ``delegation_policy.allow`` is absent, the built-in
+    ``CALLABLE_SUBAGENT_PRESETS`` is the default allow set; when present, the
+    configured entries are validated against the executable child-preset set.
+    The whitelist is the manifest-driven authority
+    (``agent_registry.executable_subagent_ids()``) when the caller provides it,
+    so a manifest-added child preset configured by the user is never silently
+    dropped; ``CALLABLE_SUBAGENT_PRESETS`` is only the no-registry fallback.
+    """
     delegation = _mapping(policy_config.get("delegation_policy"))
     allowed = _string_tuple(delegation.get("allow"), source="policy.delegation_policy.allow")
+    allowed_presets = callable_subagent_presets or CALLABLE_SUBAGENT_PRESETS
     if not allowed:
-        allowed = _ALLOWED_CHILD_PRESETS
-    return tuple(item for item in allowed if item in _ALLOWED_CHILD_PRESETS)
+        allowed = allowed_presets
+    return tuple(item for item in allowed if item in allowed_presets)
 
 
 def _hook_actions(

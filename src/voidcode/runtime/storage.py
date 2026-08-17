@@ -44,6 +44,7 @@ from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import OperationClass, PathScope, PendingApproval, PermissionDecision
 from .question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from .session import (
+    SESSION_STORAGE_SEAL_STATUSES,
     SessionRef,
     SessionState,
     SessionStatus,
@@ -135,7 +136,7 @@ def _assert_terminal_session_events_allowed(
     runtime-level guard (``VoidCodeRuntime._sealed_session_status``) extends
     sealing to ``interrupted`` rows once no run is active.
     """
-    if status not in {"completed", "failed"}:
+    if status not in SESSION_STORAGE_SEAL_STATUSES:
         return
     for event_type, _source, _payload, _dedupe_key in events:
         if event_type not in _TERMINAL_ALLOWED_EVENT_TYPES:
@@ -3658,7 +3659,7 @@ class SqliteSessionStore:
         status: BackgroundTaskStatus,
         error: str | None = None,
     ) -> BackgroundTaskState:
-        if status not in ("completed", "failed", "cancelled", "interrupted"):
+        if not is_background_task_terminal(status):
             raise ValueError("background task terminal status must be completed, failed, cancelled, or interrupted")
         task_id = validate_background_task_id(task_id)
         with self._write_connect(workspace) as connection:

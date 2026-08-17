@@ -39,6 +39,7 @@ from .events import (
 from .session import SessionState
 from .storage import SessionEventAppender, SessionSealedError
 from .task import (
+    BACKGROUND_TASK_TERMINAL_STATUSES,
     BackgroundTaskConcurrencyObservability,
     BackgroundTaskObservability,
     BackgroundTaskRef,
@@ -1634,7 +1635,7 @@ class RuntimeBackgroundTaskSupervisor:
         appender = runtime._session_store
         if not isinstance(appender, SessionEventAppender):
             return
-        counts = {status: sum(item.status == status for item in group_tasks) for status in ("completed", "failed", "cancelled", "interrupted")}
+        counts = {status: sum(item.status == status for item in group_tasks) for status in BACKGROUND_TASK_TERMINAL_STATUSES}
         try:
             appender.append_session_event(
                 workspace=runtime._workspace,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from .config import RuntimeAgentConfig
+from .task import CALLABLE_SUBAGENT_PRESETS
 from .tool_provider import BUILTIN_TOOL_NAMES
 from .tool_registry import ToolRegistry
 
@@ -134,9 +135,9 @@ def agent_capability_delegation_snapshot(
     allowed_parent_presets = (
         tuple(item for item in cast(list[object], parent_allowed) if isinstance(item, str))
         if isinstance(parent_allowed, list)
-        else ("advisor", "explore", "researcher", "worker", "product")
+        else CALLABLE_SUBAGENT_PRESETS
     )
-    allowed_child_presets = [preset for preset in ("advisor", "explore", "researcher", "worker", "product") if preset in allowed_parent_presets]
+    allowed_child_presets = [preset for preset in CALLABLE_SUBAGENT_PRESETS if preset in allowed_parent_presets]
     return {
         "selected_preset": selected_preset if isinstance(selected_preset, str) else None,
         "allowed_child_presets": allowed_child_presets,

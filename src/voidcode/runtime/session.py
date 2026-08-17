@@ -21,6 +21,12 @@ type SessionKind = Literal["top_level", "child"]
 # active-run registry so a live run's own appends are never misclassified as
 # late events.
 SESSION_TERMINAL_STATUSES: frozenset[SessionStatus] = frozenset({"completed", "failed", "interrupted"})
+# Narrow half of the terminal-seal split: rows in these statuses are sealed at
+# the storage layer (``storage._assert_terminal_session_events_allowed``) and
+# reject late events. ``interrupted`` rows are the live in-flight state of a
+# running session and are sealed only by the runtime-level guard
+# (``VoidCodeRuntime._sealed_session_status``), never by the storage layer.
+SESSION_STORAGE_SEAL_STATUSES: frozenset[SessionStatus] = frozenset({"completed", "failed"})
 
 
 def is_session_status_terminal(status: SessionStatus) -> bool:
