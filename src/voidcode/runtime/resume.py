@@ -10,7 +10,6 @@ from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
-from .command_effects import session_with_command_artifacts
 from .config import serialize_runtime_agent_config
 from .context_continuity import verified_checkpoint_session_metadata
 from .contracts import (
@@ -485,10 +484,7 @@ class RuntimeResumeCoordinator:
             events=stored_response.events + tuple(streamed_events),
             output=output,
         )
-        return self._response_with_refreshed_workflow_plan(
-            stored_response=stored_response,
-            response=response,
-        )
+        return response
 
     def _persist_resumed_response(
         self,
@@ -501,38 +497,8 @@ class RuntimeResumeCoordinator:
             stored_response=stored_response,
             prompt=prompt,
         )
-        refreshed_response = self._response_with_refreshed_workflow_plan(
-            request=request,
-            response=response,
-        )
-        self._runtime._persist_response(request=request, response=refreshed_response)
-        return refreshed_response
-
-    def _response_with_refreshed_workflow_plan(
-        self,
-        *,
-        request: RuntimeRequest | None = None,
-        stored_response: Any | None = None,
-        response: RuntimeResponse,
-    ) -> RuntimeResponse:
-        if request is None:
-            if stored_response is None:
-                return response
-            stored_prompt = getattr(stored_response, "prompt", None)
-            prompt = stored_prompt if isinstance(stored_prompt, str) else self._runtime._prompt_from_events(stored_response.events)
-            _ = self._resumed_runtime_request(
-                stored_response=stored_response,
-                prompt=prompt,
-            )
-        session = session_with_command_artifacts(
-            response.session,
-            output=response.output,
-        )
-        return RuntimeResponse(
-            session=session,
-            events=response.events,
-            output=response.output,
-        )
+        self._runtime._persist_response(request=request, response=response)
+        return response
 
     @staticmethod
     def _resumed_runtime_request(*, stored_response: Any, prompt: str) -> RuntimeRequest:

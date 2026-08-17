@@ -9,7 +9,6 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
-from uuid import uuid4
 
 from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
@@ -121,7 +120,6 @@ from .bundle import (
     read_session_bundle,
     write_session_bundle,
 )
-from .command_effects import apply_runtime_command_effects, session_with_command_artifacts
 from .config import (
     ExecutionEngineName,
     RuntimeAgentConfig,
@@ -362,14 +360,8 @@ from .skills import (
 from .storage import SessionEventAppender, SessionSealedError, SessionStore, SqliteSessionStore
 from .task import (
     BackgroundTaskState,
-    ContinuationLoopRef,
-    ContinuationLoopState,
-    ContinuationLoopStatus,
-    ContinuationLoopStrategy,
     StoredBackgroundTaskSummary,
-    StoredContinuationLoopSummary,
     validate_background_task_id,
-    validate_continuation_loop_id,
 )
 from .tool_execution import RuntimeToolExecutor
 from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
@@ -2073,10 +2065,6 @@ class VoidCodeRuntime:
                 final_session,
                 events=tuple(events),
             )
-            final_session = session_with_command_artifacts(
-                final_session,
-                output=output,
-            )
 
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
             self._persist_response(request=request, response=response)
@@ -2131,10 +2119,6 @@ class VoidCodeRuntime:
         final_session = self._session_with_loaded_skill_metadata(
             final_session,
             events=tuple(events),
-        )
-        final_session = session_with_command_artifacts(
-            final_session,
-            output=output,
         )
 
         return RuntimeResponse(session=final_session, events=tuple(events), output=output)
@@ -3502,107 +3486,6 @@ class VoidCodeRuntime:
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._background_task_supervisor.retry_background_task(task_id)
-
-    def start_continuation_loop(
-        self,
-        *,
-        prompt: str,
-        session_id: str | None = None,
-        completion_promise: str = "DONE",
-        max_iterations: int = 100,
-        intensive: bool = False,
-        strategy: ContinuationLoopStrategy = "continue",
-    ) -> ContinuationLoopState:
-        if not prompt.strip():
-            raise ValueError("continuation loop prompt must be a non-empty string")
-        if not completion_promise.strip():
-            raise ValueError("continuation loop completion_promise must be non-empty")
-        if max_iterations < 1:
-            raise ValueError("continuation loop max_iterations must be positive")
-        if session_id is not None:
-            session_id = validate_session_reference_id(session_id, field_name="session_id")
-        loop_id = f"loop-{uuid4().hex}"
-        loop = ContinuationLoopState(
-            loop=ContinuationLoopRef(id=loop_id),
-            prompt=prompt,
-            session_id=session_id,
-            completion_promise=completion_promise,
-            max_iterations=max_iterations,
-            intensive=intensive,
-            strategy=strategy,
-            verification_status="pending" if intensive else "not_required",
-        )
-        self._session_store.create_continuation_loop(workspace=self._workspace, loop=loop)
-        return self._session_store.load_continuation_loop(
-            workspace=self._workspace,
-            loop_id=loop_id,
-        )
-
-    def load_continuation_loop(self, loop_id: str) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.load_continuation_loop(
-            workspace=self._workspace,
-            loop_id=loop_id,
-        )
-
-    def list_continuation_loops(self) -> tuple[StoredContinuationLoopSummary, ...]:
-        return self._session_store.list_continuation_loops(workspace=self._workspace)
-
-    def record_continuation_loop_iteration(self, loop_id: str) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.record_continuation_loop_iteration(
-            workspace=self._workspace,
-            loop_id=loop_id,
-        )
-
-    def mark_continuation_loop_verification_pending(self, loop_id: str) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.mark_continuation_loop_verification_pending(
-            workspace=self._workspace,
-            loop_id=loop_id,
-        )
-
-    def mark_continuation_loop_verified(self, loop_id: str) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.mark_continuation_loop_verified(
-            workspace=self._workspace,
-            loop_id=loop_id,
-        )
-
-    def mark_continuation_loop_verification_failed(
-        self,
-        loop_id: str,
-        *,
-        error: str | None = None,
-    ) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.mark_continuation_loop_verification_failed(
-            workspace=self._workspace,
-            loop_id=loop_id,
-            error=error,
-        )
-
-    def mark_continuation_loop_terminal(
-        self,
-        loop_id: str,
-        *,
-        status: ContinuationLoopStatus,
-        error: str | None = None,
-    ) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.mark_continuation_loop_terminal(
-            workspace=self._workspace,
-            loop_id=loop_id,
-            status=status,
-            error=error,
-        )
-
-    def cancel_continuation_loop(self, loop_id: str) -> ContinuationLoopState:
-        validate_continuation_loop_id(loop_id)
-        return self._session_store.cancel_continuation_loop(
-            workspace=self._workspace,
-            loop_id=loop_id,
-        )
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         delegated_task = self._session_store.load_background_task_by_child_session(
@@ -6040,11 +5923,7 @@ class VoidCodeRuntime:
             return prompt, metadata
 
         normalized = dict(cast(dict[str, object], metadata))
-        prompt, normalized = apply_runtime_command_effects(
-            host=self,
-            resolution=resolution,
-            metadata=normalized,
-        )
+        prompt = resolution.invocation.rendered_prompt
         command_metadata: dict[str, object] = {
             "name": resolution.invocation.name,
             "source": resolution.invocation.source,

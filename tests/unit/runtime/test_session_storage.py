@@ -656,7 +656,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 9
+    assert schema_version == 10
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -802,7 +802,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 9 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 10 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 

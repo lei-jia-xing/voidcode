@@ -34,14 +34,8 @@ from .task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     BackgroundTaskStatus,
-    ContinuationLoopRef,
-    ContinuationLoopState,
-    ContinuationLoopStatus,
-    ContinuationLoopStrategy,
     StoredBackgroundTaskSummary,
-    StoredContinuationLoopSummary,
     validate_background_task_id,
-    validate_continuation_loop_id,
 )
 
 if TYPE_CHECKING:
@@ -63,10 +57,6 @@ __all__ = [
     "BackgroundTaskState",
     "BackgroundTaskStatus",
     "ActiveRunInterruptResult",
-    "ContinuationLoopRef",
-    "ContinuationLoopState",
-    "ContinuationLoopStatus",
-    "ContinuationLoopStrategy",
     "PendingApproval",
     "PermissionDecision",
     "PermissionPolicy",
@@ -88,12 +78,10 @@ __all__ = [
     "SessionStore",
     "StoredSessionSummary",
     "StoredBackgroundTaskSummary",
-    "StoredContinuationLoopSummary",
     "ToolRegistry",
     "VoidCodeRuntime",
     "create_runtime_app",
     "validate_background_task_id",
-    "validate_continuation_loop_id",
 ]
 
 

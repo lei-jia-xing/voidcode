@@ -49,30 +49,10 @@ class RuntimeCommandMetadata(TypedDict, total=False):
     workflow_mode: str
 
 
-class RuntimeContinuationLoopMetadata(TypedDict, total=False):
-    loop_id: str
-    status: str
-    prompt: str
-    session_id: str | None
-    completion_promise: str
-    max_iterations: int
-    iteration: int
-    intensive: bool
-    strategy: str
-    verification_status: str
-    verification_promise: str
-    created_at: int
-    updated_at: int
-    finished_at: int | None
-    cancel_requested_at: int | None
-    error: str | None
-
-
 class RuntimeRequestMetadata(TypedDict, total=False):
     abort_requested: bool
     agent: dict[str, object]
     command: RuntimeCommandMetadata
-    continuation_loop: RuntimeContinuationLoopMetadata
     delegation: RuntimeSubagentRoutingMetadata
     mode: runtime_mode.RuntimeMode
     read_only: bool
@@ -115,7 +95,6 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "agent",
         "command",
         "context_transform_refs",
-        "continuation_loop",
         "delegation",
         "mode",
         "read_only",
@@ -264,91 +243,6 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         normalized["workflow_mode"] = workflow_mode
-    return normalized
-
-
-def validate_runtime_continuation_loop_metadata(
-    metadata: object,
-) -> RuntimeContinuationLoopMetadata:
-    if not isinstance(metadata, dict):
-        raise RuntimeRequestError("request metadata 'continuation_loop' must be an object when provided")
-    payload = cast(dict[object, object], metadata)
-    non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
-    if non_string_keys:
-        joined = ", ".join(non_string_keys)
-        raise RuntimeRequestError(f"request metadata 'continuation_loop' keys must be strings; received invalid key(s): {joined}")
-    loop_payload = cast(dict[str, object], payload)
-    allowed_keys = {
-        "loop_id",
-        "status",
-        "prompt",
-        "session_id",
-        "completion_promise",
-        "max_iterations",
-        "iteration",
-        "intensive",
-        "strategy",
-        "verification_status",
-        "verification_promise",
-        "created_at",
-        "updated_at",
-        "finished_at",
-        "cancel_requested_at",
-        "error",
-    }
-    unknown_keys = sorted(key for key in loop_payload if key not in allowed_keys)
-    if unknown_keys:
-        joined = ", ".join(unknown_keys)
-        raise RuntimeRequestError(f"unsupported request metadata 'continuation_loop' field(s): {joined}")
-    normalized: RuntimeContinuationLoopMetadata = {
-        "loop_id": _validate_optional_runtime_metadata_string(loop_payload.get("loop_id"), field_name="continuation_loop.loop_id"),
-        "status": _validate_optional_runtime_metadata_string(loop_payload.get("status"), field_name="continuation_loop.status"),
-        "prompt": _validate_optional_runtime_metadata_string(loop_payload.get("prompt"), field_name="continuation_loop.prompt"),
-        "completion_promise": _validate_optional_runtime_metadata_string(
-            loop_payload.get("completion_promise"),
-            field_name="continuation_loop.completion_promise",
-        ),
-        "strategy": _validate_optional_runtime_metadata_string(loop_payload.get("strategy"), field_name="continuation_loop.strategy"),
-        "verification_status": _validate_optional_runtime_metadata_string(
-            loop_payload.get("verification_status"),
-            field_name="continuation_loop.verification_status",
-        ),
-        "verification_promise": _validate_optional_runtime_metadata_string(
-            loop_payload.get("verification_promise"),
-            field_name="continuation_loop.verification_promise",
-        ),
-    }
-    optional_string_fields = ("session_id", "error")
-    for field_name in optional_string_fields:
-        if field_name in loop_payload:
-            value = loop_payload[field_name]
-            normalized[field_name] = (
-                None
-                if value is None
-                else _validate_optional_runtime_metadata_string(
-                    value,
-                    field_name=f"continuation_loop.{field_name}",
-                )
-            )
-    required_integer_fields = ("max_iterations", "iteration", "created_at", "updated_at")
-    for field_name in required_integer_fields:
-        value = loop_payload.get(field_name)
-        if not isinstance(value, int):
-            raise RuntimeRequestError(f"request metadata 'continuation_loop.{field_name}' must be an integer")
-        normalized[field_name] = value
-    nullable_integer_fields = ("finished_at", "cancel_requested_at")
-    for field_name in nullable_integer_fields:
-        value = loop_payload.get(field_name)
-        if value is None:
-            normalized[field_name] = None
-            continue
-        if not isinstance(value, int):
-            raise RuntimeRequestError(f"request metadata 'continuation_loop.{field_name}' must be an integer")
-        normalized[field_name] = value
-    intensive = loop_payload.get("intensive")
-    if not isinstance(intensive, bool):
-        raise RuntimeRequestError("request metadata 'continuation_loop.intensive' must be a boolean")
-    normalized["intensive"] = intensive
     return normalized
 
 
@@ -526,9 +420,6 @@ def validate_runtime_request_metadata(
 
     if "command" in metadata:
         normalized["command"] = validate_runtime_command_metadata(metadata["command"])
-
-    if "continuation_loop" in metadata:
-        normalized["continuation_loop"] = validate_runtime_continuation_loop_metadata(metadata["continuation_loop"])
 
     if "delegation" in metadata:
         normalized["delegation"] = validate_runtime_subagent_routing_metadata(metadata["delegation"])

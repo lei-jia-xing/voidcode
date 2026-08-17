@@ -12,19 +12,6 @@ type BackgroundTaskStatus = Literal[
     "cancelled",
     "interrupted",
 ]
-type ContinuationLoopStatus = Literal[
-    "active",
-    "completed",
-    "cancelled",
-    "exhausted",
-]
-type ContinuationLoopVerificationStatus = Literal[
-    "not_required",
-    "pending",
-    "verified",
-    "failed",
-]
-type ContinuationLoopStrategy = Literal["continue", "reset"]
 type SubagentExecutionMode = Literal["sync", "background"]
 type SubagentExecutablePreset = str
 type DelegatedReminderStopCondition = Literal[
@@ -82,13 +69,6 @@ class ResolvedSubagentRoute:
 
 _CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "worker", "product"})
 _BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
-_CONTINUATION_LOOP_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "exhausted"})
-_CONTINUATION_LOOP_ALLOWED_TRANSITIONS: dict[ContinuationLoopStatus, frozenset[ContinuationLoopStatus]] = {
-    "active": frozenset({"completed", "cancelled", "exhausted"}),
-    "completed": frozenset(),
-    "cancelled": frozenset(),
-    "exhausted": frozenset(),
-}
 _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[BackgroundTaskStatus]] = {
     "queued": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
     "running": frozenset({"completed", "failed", "cancelled", "interrupted"}),
@@ -128,20 +108,6 @@ def is_background_task_transition_allowed(
     if current_status == next_status:
         return True
     return next_status in _BACKGROUND_TASK_ALLOWED_TRANSITIONS[current_status]
-
-
-def is_continuation_loop_terminal(status: ContinuationLoopStatus) -> bool:
-    return status in _CONTINUATION_LOOP_TERMINAL_STATUSES
-
-
-def is_continuation_loop_transition_allowed(
-    *,
-    current_status: ContinuationLoopStatus,
-    next_status: ContinuationLoopStatus,
-) -> bool:
-    if current_status == next_status:
-        return True
-    return next_status in _CONTINUATION_LOOP_ALLOWED_TRANSITIONS[current_status]
 
 
 def subagent_routing_identity_from_metadata(
@@ -398,80 +364,9 @@ class StoredBackgroundTaskSummary:
     observability: BackgroundTaskObservability | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class ContinuationLoopRef:
-    id: str
-
-
-@dataclass(frozen=True, slots=True)
-class ContinuationLoopState:
-    loop: ContinuationLoopRef
-    prompt: str
-    status: ContinuationLoopStatus = "active"
-    session_id: str | None = None
-    completion_promise: str = "DONE"
-    max_iterations: int = 100
-    iteration: int = 0
-    intensive: bool = False
-    strategy: ContinuationLoopStrategy = "continue"
-    verification_status: ContinuationLoopVerificationStatus = "not_required"
-    verification_promise: str = "VERIFIED"
-    created_at: int = 0
-    updated_at: int = 0
-    finished_at: int | None = None
-    cancel_requested_at: int | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StoredContinuationLoopSummary:
-    loop: ContinuationLoopRef
-    status: ContinuationLoopStatus
-    prompt: str
-    session_id: str | None
-    iteration: int
-    max_iterations: int
-    intensive: bool
-    verification_status: ContinuationLoopVerificationStatus
-    verification_promise: str
-    created_at: int
-    updated_at: int
-    error: str | None = None
-
-
 def validate_background_task_id(task_id: str) -> str:
     if not task_id:
         raise ValueError("task_id must be a non-empty string")
     if "/" in task_id:
         raise ValueError("task_id must not contain '/'")
     return task_id
-
-
-def validate_continuation_loop_id(loop_id: str) -> str:
-    if not loop_id:
-        raise ValueError("loop_id must be a non-empty string")
-    if "/" in loop_id:
-        raise ValueError("loop_id must not contain '/'")
-    return loop_id
-
-
-def parse_continuation_loop_strategy(value: str) -> ContinuationLoopStrategy:
-    if value == "continue":
-        return "continue"
-    if value == "reset":
-        return "reset"
-    raise ValueError("continuation loop strategy must be 'continue' or 'reset'")
-
-
-def parse_continuation_loop_verification_status(
-    value: str,
-) -> ContinuationLoopVerificationStatus:
-    if value == "not_required":
-        return "not_required"
-    if value == "pending":
-        return "pending"
-    if value == "verified":
-        return "verified"
-    if value == "failed":
-        return "failed"
-    raise ValueError("continuation loop verification_status must be not_required, pending, verified, or failed")
