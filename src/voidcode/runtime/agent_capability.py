@@ -6,7 +6,7 @@ from .config import RuntimeAgentConfig
 from .tool_provider import BUILTIN_TOOL_NAMES
 from .tool_registry import ToolRegistry
 
-AGENT_CAPABILITY_SNAPSHOT_VERSION = 2
+AGENT_CAPABILITY_SNAPSHOT_VERSION = 3
 
 
 class AgentCapabilitySnapshotVersionError(ValueError):

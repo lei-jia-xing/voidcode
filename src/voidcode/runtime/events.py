@@ -63,6 +63,7 @@ type RuntimeEventType = Literal[
     "runtime.background_task_idle_reminder",
     "runtime.tool_progress",
     "runtime.background_task_waiting_approval",
+    "runtime.background_task_awaiting_steer",
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
@@ -82,6 +83,7 @@ type RuntimeEventType = Literal[
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_waiting_approval",
     "runtime.background_task_idle_reminder",
+    "runtime.background_task_awaiting_steer",
     "runtime.background_task_completed",
     "runtime.background_task_failed",
     "runtime.background_task_cancelled",
@@ -184,6 +186,7 @@ RUNTIME_BACKGROUND_TASK_PROGRESS: Final[RuntimeEventType] = "runtime.background_
 RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: Final[RuntimeEventType] = "runtime.background_task_idle_reminder"
 RUNTIME_TOOL_PROGRESS: Final[RuntimeEventType] = "runtime.tool_progress"
 RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: Final[RuntimeEventType] = "runtime.background_task_waiting_approval"
+RUNTIME_BACKGROUND_TASK_AWAITING_STEER: Final[RuntimeEventType] = "runtime.background_task_awaiting_steer"
 RUNTIME_BACKGROUND_TASK_COMPLETED: Final[RuntimeEventType] = "runtime.background_task_completed"
 RUNTIME_BACKGROUND_TASK_FAILED: Final[RuntimeEventType] = "runtime.background_task_failed"
 RUNTIME_BACKGROUND_TASK_CANCELLED: Final[RuntimeEventType] = "runtime.background_task_cancelled"
@@ -265,6 +268,7 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    RUNTIME_BACKGROUND_TASK_AWAITING_STEER,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
@@ -505,6 +509,7 @@ KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
 DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventType, ...]] = (
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
+    RUNTIME_BACKGROUND_TASK_AWAITING_STEER,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
@@ -544,6 +549,7 @@ ACP_DELEGATED_EXECUTION_FIELDS: Final[tuple[str, ...]] = (
 _DELEGATED_EVENT_STATUS_BY_TYPE: Final[dict[DelegatedBackgroundTaskEventType | CoreEventType, DelegatedLifecycleStatus]] = {
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL: "waiting_approval",
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER: "running",
+    RUNTIME_BACKGROUND_TASK_AWAITING_STEER: "idle",
     RUNTIME_BACKGROUND_TASK_COMPLETED: "completed",
     RUNTIME_BACKGROUND_TASK_FAILED: "failed",
     RUNTIME_BACKGROUND_TASK_CANCELLED: "cancelled",

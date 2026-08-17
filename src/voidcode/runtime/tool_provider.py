@@ -43,8 +43,9 @@ BUILTIN_TOOL_NAMES = frozenset(
         "read",
         "question",
         "shell_exec",
-        "submit_result",
         "skill",
+        "steer_task",
+        "submit_result",
         "task",
         "todo_write",
         "web_fetch",
@@ -195,6 +196,7 @@ class BuiltinToolProvider:
     _skill_tool: Tool | None
     _task_tool: Tool | None
     _question_tool: Tool | None
+    _steer_task_tool: Tool | None
     _background_output_tool: Tool | None
     _background_cancel_tool: Tool | None
     _background_process_start_tool: Tool | None
@@ -212,6 +214,7 @@ class BuiltinToolProvider:
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
         question_tool: Tool | None = None,
+        steer_task_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
         background_process_start_tool: Tool | None = None,
@@ -226,6 +229,7 @@ class BuiltinToolProvider:
         self._skill_tool = skill_tool
         self._task_tool = task_tool
         self._question_tool = question_tool
+        self._steer_task_tool = steer_task_tool
         self._background_output_tool = background_output_tool
         self._background_cancel_tool = background_cancel_tool
         self._background_process_start_tool = background_process_start_tool
@@ -264,6 +268,9 @@ class BuiltinToolProvider:
             tools.append(self._question_tool)
         elif _QuestionTool is not None:
             tools.append(_QuestionTool())
+
+        if self._steer_task_tool is not None:
+            tools.append(self._steer_task_tool)
 
         if self._background_output_tool is not None:
             tools.append(self._background_output_tool)

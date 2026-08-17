@@ -1748,7 +1748,11 @@ class RuntimeRunLoopCoordinator:
                 )
 
             is_final_step = getattr(graph_step, "is_finished", False) or getattr(graph_step, "output", None) is not None
-            if is_final_step and session.session.parent_id is not None:
+            # Keep-alive delegated turns (internal ``keep_alive_turn`` metadata
+            # set by the background-task worker) are intermediate turns of a
+            # resumable worker and must not be forced to submit_result; the
+            # one-shot child contract (no such metadata key) is unchanged.
+            if is_final_step and session.session.parent_id is not None and session.metadata.get("keep_alive_turn") is not True:
                 if not tool_results or tool_results[-1].tool_name != "submit_result" or tool_results[-1].status != "ok":
                     raise ValueError("delegated child must call submit_result before completing")
             if _is_abort_requested(active_graph_request):
@@ -1781,14 +1785,18 @@ class RuntimeRunLoopCoordinator:
                 session = _session_without_provider_attempt(session)
             current_chunk_session = session
             if is_final_step:
+                # Keep-alive turns park as ``interrupted`` (resumable child,
+                # no handoff) so the background-task worker can park the task
+                # idle awaiting steer; one-shot children keep ``completed``.
+                final_step_status = "interrupted" if session.metadata.get("keep_alive_turn") is True else "completed"
                 current_chunk_session = runtime._session_with_plan_state(
                     SessionState(
                         session=session.session,
-                        status="completed",
+                        status=final_step_status,
                         turn=session.turn,
                         metadata=session.metadata,
                     ),
-                    status="completed",
+                    status=final_step_status,
                 )
 
             renumbered_events = runtime._renumber_events(

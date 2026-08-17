@@ -93,6 +93,8 @@ class RuntimeTransport(Protocol):
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
+    def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState: ...
+
     def cancel_session(
         self,
         session_id: str,
@@ -641,6 +643,7 @@ class RuntimeTransportApp:
             is_cancel_route = task_path.endswith("/cancel")
             is_output_route = task_path.endswith("/output")
             is_retry_route = task_path.endswith("/retry")
+            is_steer_route = task_path.endswith("/steer")
             task_id = (
                 task_path.removesuffix("/cancel")
                 if is_cancel_route
@@ -648,6 +651,8 @@ class RuntimeTransportApp:
                 if is_output_route
                 else task_path.removesuffix("/retry")
                 if is_retry_route
+                else task_path.removesuffix("/steer")
+                if is_steer_route
                 else task_path
             )
             try:
@@ -678,6 +683,16 @@ class RuntimeTransportApp:
                     )
                     return
                 await self._handle_retry_background_task(task_id=task_id, send=send)
+                return
+            if is_steer_route:
+                if method != "POST":
+                    await self._json_response(
+                        send,
+                        status=405,
+                        payload={"error": "method not allowed"},
+                    )
+                    return
+                await self._handle_steer_background_task(task_id=task_id, receive=receive, send=send)
                 return
             if is_output_route:
                 if method != "GET":
@@ -1595,6 +1610,46 @@ class RuntimeTransportApp:
             },
         )
 
+    async def _handle_steer_background_task(self, *, task_id: str, receive: Receive, send: Send) -> None:
+        try:
+            body = await self._read_body(receive)
+            raw_payload = _parse_json_body(body)
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        if not isinstance(raw_payload, dict):
+            await self._json_response(
+                send,
+                status=400,
+                payload={"error": "request body must be a JSON object with a 'prompt' field"},
+            )
+            return
+        prompt = raw_payload.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            await self._json_response(
+                send,
+                status=400,
+                payload={"error": "request body 'prompt' must be a non-empty string"},
+            )
+            return
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                task = runtime.steer_background_task(task_id, prompt)
+            except ValueError as exc:
+                await self._json_response(send, status=400, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload={
+                "steer_prompt": prompt,
+                "task": self._serialize_background_task_state(task),
+            },
+        )
+
     async def _handle_cancel_session(
         self,
         *,
@@ -2263,6 +2318,8 @@ class RuntimeTransportApp:
             "finished_at": task.finished_at,
             "finished_at_unix_ms": task.finished_at_unix_ms,
             "cancel_requested_at": task.cancel_requested_at,
+            "keep_alive": task.keep_alive,
+            "steer_prompt": task.steer_prompt,
             "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
             "observability": (None if task.observability is None else task.observability.as_payload()),
         }
@@ -2278,6 +2335,8 @@ class RuntimeTransportApp:
             "created_at": task.created_at,
             "updated_at": task.updated_at,
             "created_at_unix_ms": task.created_at_unix_ms,
+            "keep_alive": task.keep_alive,
+            "steer_prompt": task.steer_prompt,
             "observability": (None if task.observability is None else task.observability.as_payload()),
         }
 

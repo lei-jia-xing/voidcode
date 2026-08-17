@@ -85,6 +85,7 @@ from ..tools.output import (
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
+from ..tools.steer_task import SteerTaskTool
 from ..tools.task import TaskTool
 from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
 from .active_session import (
@@ -850,6 +851,7 @@ class VoidCodeRuntime:
             ),
             task_tool=TaskTool(runtime=self),
             question_tool=QuestionTool(),
+            steer_task_tool=SteerTaskTool(runtime=self),
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
             background_process_start_tool=BackgroundProcessStartTool(runtime=self),
@@ -3212,6 +3214,15 @@ class VoidCodeRuntime:
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._background_task_supervisor.retry_background_task(task_id)
+
+    def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
+        """Steer a keep-alive background task with a new instruction.
+
+        Delegates to the background-task supervisor; the task must be
+        keep-alive and currently ``idle`` (or ``interrupted``, treated as a
+        resumable breakpoint) and the content must be non-empty.
+        """
+        return self._background_task_supervisor.steer_background_task(task_id, content)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         delegated_task = self._session_store.load_background_task_by_child_session(
@@ -5694,6 +5705,11 @@ class VoidCodeRuntime:
             if remaining_spawn_budget < 1:
                 raise RuntimeRequestError("delegation spawn budget exhausted for parent session")
             remaining_spawn_budget -= 1
+        # Spawn-budget invariant: the budget is debited exactly once per *new*
+        # child session (``existing_session_id is None``). Keep-alive re-entry
+        # reuses the same child session (``task.session_id``), so every steer
+        # turn is an existing-session run and never re-debits the budget;
+        # depth is recomputed from the parent on each turn and does not drift.
 
         delegation["depth"] = request_depth
         delegation["remaining_spawn_budget"] = remaining_spawn_budget
@@ -5701,7 +5717,10 @@ class VoidCodeRuntime:
         validated = validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=(
-                "background_run" in normalized or "background_rate_limit_retry" in normalized or "background_task_id" in normalized
+                "background_run" in normalized
+                or "background_rate_limit_retry" in normalized
+                or "background_task_id" in normalized
+                or "keep_alive_turn" in normalized
             ),
         )
         return validated

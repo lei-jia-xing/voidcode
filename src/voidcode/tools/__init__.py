@@ -36,6 +36,7 @@ from .question import QuestionTool
 from .read import ReadTool
 from .shell_exec import ShellExecTool
 from .skill import SkillTool
+from .steer_task import SteerTaskTool
 from .task import TaskTool
 from .todo_write import TodoWriteTool
 from .web_fetch import WebFetchTool
@@ -66,6 +67,7 @@ __all__ = [
     "QuestionTool",
     "ShellExecTool",
     "SkillTool",
+    "SteerTaskTool",
     "TaskTool",
     "TodoWriteTool",
     "WebFetchTool",

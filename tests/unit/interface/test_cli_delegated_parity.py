@@ -779,7 +779,7 @@ def test_cli_parser_has_tasks_subcommand() -> None:
 def test_cli_parser_has_tasks_lifecycle_subcommands() -> None:
     cli = importlib.import_module("voidcode.cli.app")
     tasks_command = cli.root_cli.commands["tasks"]
-    assert set(tasks_command.commands) == {"status", "output", "cancel", "retry", "list"}
+    assert set(tasks_command.commands) == {"status", "output", "cancel", "retry", "list", "steer"}
 
 
 def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any) -> None:
@@ -794,6 +794,8 @@ def test_cli_tasks_status_delegates_to_runtime_load_background_task(capsys: Any)
         approval_request_id="approval-1",
         question_request_id=None,
         result_available=False,
+        keep_alive=False,
+        steer_prompt=None,
         cancellation_cause=None,
         error=None,
         routing_identity=SimpleNamespace(
@@ -836,6 +838,8 @@ def test_cli_tasks_status_supports_json_guidance(capsys: Any) -> None:
         approval_request_id=None,
         question_request_id=None,
         result_available=True,
+        keep_alive=False,
+        steer_prompt=None,
         cancellation_cause=None,
         error="provider execution requires a configured provider/model",
         routing_identity=SimpleNamespace(
@@ -875,6 +879,8 @@ def test_cli_tasks_guidance_quotes_workspace_with_spaces(capsys: Any) -> None:
         approval_request_id="approval-1",
         question_request_id=None,
         result_available=False,
+        keep_alive=False,
+        steer_prompt=None,
         cancellation_cause=None,
         error=None,
         routing_identity=None,
@@ -903,6 +909,8 @@ def test_cli_tasks_json_guidance_quotes_workspace_with_shell_metacharacters(
         approval_request_id=None,
         question_request_id=None,
         result_available=True,
+        keep_alive=False,
+        steer_prompt=None,
         cancellation_cause=None,
         error=None,
         routing_identity=None,
@@ -1215,6 +1223,8 @@ def test_cli_tasks_cancel_delegates_to_runtime_cancel_background_task(capsys: An
         approval_request_id=None,
         question_request_id=None,
         result_available=False,
+        keep_alive=False,
+        steer_prompt=None,
         cancellation_cause="parent_cancelled",
         error="cancelled before start",
         routing_identity=None,
@@ -1244,6 +1254,8 @@ def test_cli_tasks_retry_delegates_to_runtime_retry_background_task(capsys: Any)
         approval_request_id=None,
         question_request_id=None,
         result_available=False,
+        keep_alive=False,
+        steer_prompt=None,
         cancellation_cause=None,
         error=None,
         routing_identity=None,
@@ -1271,6 +1283,8 @@ def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
             created_at=1,
             updated_at=2,
             prompt="Investigate",
+            keep_alive=False,
+            steer_prompt=None,
         ),
         SimpleNamespace(
             task=SimpleNamespace(id="task-2"),
@@ -1279,6 +1293,8 @@ def test_cli_tasks_list_lists_all_background_tasks(capsys: Any) -> None:
             created_at=3,
             updated_at=4,
             prompt="Summarize",
+            keep_alive=False,
+            steer_prompt=None,
         ),
     )
 
@@ -1307,6 +1323,8 @@ def test_cli_tasks_list_supports_json(capsys: Any) -> None:
             updated_at=2,
             prompt="Investigate",
             error=None,
+            keep_alive=False,
+            steer_prompt=None,
         ),
         SimpleNamespace(
             task=SimpleNamespace(id="task-2"),
@@ -1316,6 +1334,8 @@ def test_cli_tasks_list_supports_json(capsys: Any) -> None:
             updated_at=4,
             prompt="Summarize",
             error="runtime failed",
+            keep_alive=False,
+            steer_prompt=None,
         ),
     )
 
@@ -1344,6 +1364,8 @@ def test_cli_tasks_list_filters_by_parent_session(capsys: Any) -> None:
             created_at=5,
             updated_at=6,
             prompt="Review",
+            keep_alive=False,
+            steer_prompt=None,
         ),
     )
 

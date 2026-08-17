@@ -1482,6 +1482,7 @@ def test_runtime_events_define_delegated_background_task_durability_fields() -> 
     assert DELEGATED_BACKGROUND_TASK_EVENT_TYPES == (
         "runtime.background_task_waiting_approval",
         "runtime.background_task_idle_reminder",
+        "runtime.background_task_awaiting_steer",
         "runtime.background_task_completed",
         "runtime.background_task_failed",
         "runtime.background_task_cancelled",

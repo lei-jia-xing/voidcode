@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from ..runtime.contracts import (
     BackgroundTaskResult,
@@ -44,6 +44,13 @@ class _TaskArgs(BaseModel):
     command: str | None = None
     parallel_group_id: str | None = None
     parallel_group_size: int | None = None
+    keep_alive: bool = False
+
+    @model_validator(mode="after")
+    def _validate_keep_alive(self) -> _TaskArgs:
+        if self.keep_alive and not self.run_in_background:
+            raise ValueError("keep_alive=true requires run_in_background=true (sync delegation has no suspend/resume semantics)")
+        return self
 
     @field_validator("prompt", mode="after")
     @classmethod
@@ -181,6 +188,15 @@ class TaskTool:
                     "description": "Expected number of tasks in the parallel group.",
                     "minimum": 1,
                 },
+                "keep_alive": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional. true keeps the delegated child session alive across steer "
+                        "turns: after each turn without a handoff the task parks as idle "
+                        "(awaiting_steer) and the leader resumes it with steer_task. Requires "
+                        "run_in_background=true."
+                    ),
+                },
             },
             "required": ["prompt", "run_in_background", "load_skills", "subagent_type"],
             "examples": [
@@ -217,6 +233,8 @@ class TaskTool:
             "force_load_skills": list(args.load_skills),
             "delegation": delegation_metadata,
         }
+        if args.keep_alive:
+            request_metadata["keep_alive"] = True
         if context.delegation_depth > 0 or context.remaining_spawn_budget is not None:
             delegation_metadata["depth"] = context.delegation_depth + 1
             if context.remaining_spawn_budget is not None:
@@ -245,6 +263,14 @@ class TaskTool:
                 "want to wait in the current turn."
             )
             waiting_reason = task.observability.waiting_reason if task.observability is not None else None
+            keep_alive_guidance = (
+                " This task is keep-alive: after each turn without a final result the worker "
+                "parks as idle and emits runtime.background_task_awaiting_steer; dispatch the "
+                "next instruction with steer_task(task_id=..., prompt=...) and repeat until "
+                "the worker submits its final result."
+                if args.keep_alive
+                else ""
+            )
             if task.status == "queued":
                 queued_reason = waiting_reason or "queued"
                 content = (
@@ -253,6 +279,7 @@ class TaskTool:
                     "do not call background_output immediately unless you truly need a status check. "
                     "Wait for a completion reminder, or use background_output(block=true) when you "
                     "intentionally need to wait."
+                    f"{keep_alive_guidance}"
                 )
             else:
                 content = (
@@ -260,6 +287,7 @@ class TaskTool:
                     "do not call background_output immediately unless you truly need a "
                     "status check. Wait for a completion reminder, or use "
                     "background_output(block=true) when you intentionally need to wait."
+                    f"{keep_alive_guidance}"
                 )
             return ToolResult(
                 tool_name=self.definition.name,
@@ -275,6 +303,7 @@ class TaskTool:
                     "requested_subagent_type": args.subagent_type,
                     "load_skills": list(args.load_skills),
                     "waiting_reason": waiting_reason,
+                    "keep_alive": args.keep_alive,
                 },
                 retry_guidance=retry_guidance,
             )

@@ -73,8 +73,8 @@
 
 runtime 已有的基础能力：
 
-- `BackgroundTaskState`，包含 `queued/running/completed/failed/cancelled/interrupted` 状态
-- `start_background_task` / `load_background_task` / `list_background_tasks` / `cancel_background_task` / `retry_background_task`
+- `BackgroundTaskState`，包含 `queued/running/idle/completed/failed/cancelled/interrupted` 状态（`idle` 表示 keep-alive 任务 turn 结束、等待 leader steer；它不是 terminal 状态）
+- `start_background_task` / `load_background_task` / `list_background_tasks` / `cancel_background_task` / `retry_background_task` / `steer_background_task`
 - 用户全局 XDG SQLite 中以 `workspace_id` scoped rows 保存的后台任务持久化
 - 已有的 session truth，以及通过 `resume(session_id)` 恢复 transcript 的路径
 
@@ -155,6 +155,7 @@ class BackgroundTaskResult:
     status: Literal[
         "queued",
         "running",
+        "idle",
         "completed",
         "failed",
         "cancelled",
@@ -200,6 +201,46 @@ def load_background_task_result(task_id: str) -> BackgroundTaskResult: ...
 - parent session 拥有 leader 可见通知
 - child session 拥有 delegated execution history
 
+## Keep-alive 委托与 steer 契约
+
+`task` 工具的 `keep_alive: true` 参数（要求 `run_in_background=true`）创建可重入 worker：child session 跨 turn 累积上下文，leader 反复驱动同一个 child，直到 worker 提交最终结果。
+
+### 状态模型
+
+- 新增 `idle`（awaiting_steer）状态：keep-alive turn 结束、无 handoff 时任务从 `running` 转入 `idle`，worker 线程退出。`idle` **不是 terminal**（`is_background_task_terminal("idle")` 为 false），不参与孤儿扫描（只扫 queued/running）。
+- 允许转移：`running → idle`（turn 结束无 handoff）；`idle → running`（收到 steer）；`idle → cancelled|interrupted`（idle 期间 cancel / 进程 shutdown）；`interrupted → running`（keep-alive 断点续跑，仅 keep-alive 任务开放）。
+- 并发 slot 只在 turn 在飞时占用；idle 期间释放，steer 派发时重新取 slot（drain 同款路径）。
+
+### 生命周期语义（进程生命周期概念）
+
+- 挂起时：child session 行以 `interrupted` 封印（resumable），task 行 `idle`——两层观察一致：会话可续、任务在等指令。
+- 重启后：reconcile 把存活的 keep-alive 任务（`idle`/`running`）terminalize 为 `interrupted`，error 注明 runtime 在等待 steer 时退出；child session 与完整 transcript 保留。续接走现有 `task` 工具 `session_id=<child>` 或 `tasks retry`（keep-alive metadata 随 request metadata 复制）。
+- shutdown：idle 的 keep-alive 任务 terminalize 为 `interrupted`（"runtime exited while awaiting steer"）；在飞 turn 标 `interrupted` 而非 `failed`。
+- cancel：idle 任务无线程，cancel 直接 terminalize 为 `cancelled`。
+
+### steer surface
+
+```python
+def steer_background_task(task_id: str, content: str) -> BackgroundTaskState: ...
+```
+
+- 按 `task_id` 路由；child session id 由 task 行派生，steer 方无需知道 session id。
+- 校验：任务必须 `keep_alive == 1`；状态必须 `idle`（或 keep-alive 的 `interrupted`，视为断点续跑）；content 非空；`running`（turn 在飞）时拒绝——v1 无 steer 流水线。
+- 派发：`mark_background_task_steered`（`idle|interrupted → running`，写入 `steer_prompt` 列）→ 取 slot → spawn 新 worker 线程；worker 以 `task.steer_prompt` 作为本 turn prompt，`session_id=task.session_id` 重入同一 child session，metadata 打内部 `keep_alive_turn: true`（run_loop 据此跳过 one-shot submit_result 强制检查并以 `interrupted` 结束 turn）。
+- **不走 `queue_steering`**：turn 结束后 child 行处于封印态，session 队列无法投递；task 行是唯一不受 session seal 管辖的持久化面。
+- 中间 turn 不强制 `submit_result`（run_loop gating 在内部 metadata `keep_alive_turn` 上，one-shot child 契约不变）；最终 turn 由 worker 主动 `submit_result`，transcript 有 handoff 证据 → 任务 `completed`、child row 修成 `completed`。
+
+### 事件
+
+- turn 完成（进入 idle）时向 parent 发 `runtime.background_task_awaiting_steer`，payload 含 `task_id`/`child_session_id`/turn 摘要；该事件在 `DELEGATED_BACKGROUND_TASK_EVENT_TYPES` 集合内，可附加到已封印的 parent 行，去重键为 per-turn（child session 最后一个事件的 sequence）。
+- hook surface：通过现有 `background_task_notification_enqueued` hook 投递，`extra_payload` 带 `notification_event_type=runtime.background_task_awaiting_steer` 与事件 sequence。
+
+### 工具 / CLI / HTTP surface（与 status/output/cancel/retry/list 平级）
+
+- leader 工具 `steer_task(task_id, prompt)`：调用方必须是任务的 parent（`context.session_id == task.parent_session_id`，session_id 取自 runtime tool context，不信任客户端传入）；`keep_alive=true` 时 `task` 工具在 request metadata **顶层**加 `"keep_alive": true`（不放 delegation 子对象）。
+- CLI：`voidcode tasks steer <task_id> "<prompt>" [--json]`；`tasks status` 对 `idle` 状态给出 `tasks steer` / `tasks cancel` 指引。
+- HTTP：`POST /api/tasks/<task_id>/steer`，body `{"prompt": "..."}`，返回 steered task state。
+
 ## 通知契约
 
 leader notification 必须表现为**附加到 parent session 上的 runtime events**。
@@ -210,8 +251,9 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 - `runtime.background_task_failed`
 - `runtime.background_task_cancelled`
 - `runtime.background_task_waiting_approval`
+- `runtime.background_task_awaiting_steer`（keep-alive 任务 turn 完成、进入 idle）
 
-这四类事件已经足够覆盖 issue #139 的最小 leader-notification 需求。
+这五类事件已经足够覆盖 issue #139 的最小 leader-notification 需求，以及 keep-alive 委托的 leader 驱动需求。
 
 当前 runtime 同时发出 `runtime.delegated_result_available`，用于表达 delegated/background result 已作为 runtime truth 可被 leader-facing retrieval 消费。background-task lifecycle 事件仍承载 `result_available` 与 `summary_output` 等字段。
 
@@ -276,6 +318,17 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 这里的 `status: "running"` 明确表示：approval-blocked 是 child session lifecycle 的派生观察结果，而不是对 task status 词汇表的扩展。
 
 对于最小契约，`runtime.background_task_waiting_approval` 不再单独引入新的 `approval_session_id` 标识符；当前语义直接使用 `child_session_id` 指向进入 `waiting` 的 child session。
+
+#### `runtime.background_task_awaiting_steer`
+
+- `task_id`
+- `parent_session_id`
+- `child_session_id`
+- `status: "idle"`
+- `result_available`（可选）
+- `delegation` / `message`（可选；`_delegated_lifecycle_payloads` 结构）
+
+该事件在每个 keep-alive turn 结束时投递一次（去重键 per-turn），表示 worker 已挂起、等待 leader 用 `steer_task(task_id, prompt)` / `tasks steer` / `POST /api/tasks/<id>/steer` 派发下一 turn。
 
 ## 顺序规则
 
@@ -427,10 +480,11 @@ Leader 读取结果时应遵守以下规则：
 
 - `background_output(task_id)` 默认返回紧凑结果视图。
 - `background_output(task_id, full_session=true)` 返回 bounded transcript payload，并带 child session id 与 transcript metadata。
-- CLI `voidcode tasks status/output/list/cancel/retry --json` 返回 machine-readable payload，并保留 readable 默认输出；结构化字段应包含 `task_id`、`parent_session_id`、`requested_child_session_id`、`child_session_id`、approval / question request id、`result_available`、`error_type` 与 `next_steps`。
-- CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks cancel <task_id>`）。
+- CLI `voidcode tasks status/output/list/cancel/retry/steer --json` 返回 machine-readable payload，并保留 readable 默认输出；结构化字段应包含 `task_id`、`parent_session_id`、`requested_child_session_id`、`child_session_id`、approval / question request id、`result_available`、`error_type` 与 `next_steps`。
+- CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / idle / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks steer <task_id> "<prompt>"`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。
 - failed/cancelled/interrupted task 可以通过 runtime 方法 `retry_background_task(task_id)`、CLI `voidcode tasks retry <task_id>` 或 HTTP `POST /api/tasks/<task_id>/retry` 显式重试。retry 必须复用旧 task 持久化的 request prompt、requested child session id、parent session id、metadata、routing 与 `allocate_session_id`，并创建新的 queued task handle；不得改写旧 terminal task。
+- idle keep-alive task 通过 `steer_background_task(task_id, prompt)`（CLI `voidcode tasks steer <task_id> "<prompt>"`、HTTP `POST /api/tasks/<task_id>/steer`、工具 `steer_task(task_id, prompt)`）派发下一 worker turn；keep-alive 的 `interrupted` 任务可视为断点续跑同样 steer。steer 只对 keep-alive 任务开放，且任务必须处于 `idle`/`interrupted`（turn 在飞时拒绝）。
 - failed/interrupted child 输出可以提示用户显式请求 retry/continue，并优先使用 runtime-owned `retry_background_task` 返回的新 task id；工具本身不得自动进入无限 retry loop。
 - repeated child failure 应升级给 leader / user，而不是继续隐藏在后台循环里。
 - `background_cancel` 对 unknown task 返回稳定 `status="unknown"` payload；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。

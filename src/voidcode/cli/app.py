@@ -1162,6 +1162,10 @@ def _background_task_fields(task: BackgroundTaskState) -> list[tuple[str, object
         ("question_request_id", task.question_request_id),
         ("result_available", task.result_available),
     ]
+    if task.keep_alive:
+        fields.append(("keep_alive", True))
+    if task.steer_prompt is not None:
+        fields.append(("steer_prompt", task.steer_prompt))
     if task.cancellation_cause is not None:
         fields.append(("cancellation_cause", task.cancellation_cause))
     if task.error is not None:
@@ -1253,6 +1257,10 @@ def _background_task_next_steps(
         steps.append(f"Refresh state: voidcode tasks status {task_id} {workspace_arg}")
         steps.append(f"Read partial result view: voidcode tasks output {task_id} {workspace_arg}")
         steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
+    elif status == "idle":
+        steps.append(f'Dispatch the next worker turn: voidcode tasks steer {task_id} "<prompt>" {workspace_arg}')
+        steps.append(f"Refresh state: voidcode tasks status {task_id} {workspace_arg}")
+        steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
     elif status == "completed":
         steps.append(f"Read output: voidcode tasks output {task_id} {workspace_arg}")
         if child_session_id is not None:
@@ -1304,6 +1312,8 @@ def _background_task_state_payload(task: BackgroundTaskState, *, workspace: Path
         "question_request_id": task.question_request_id,
         "approval_blocked": task.approval_request_id is not None,
         "result_available": task.result_available,
+        "keep_alive": task.keep_alive,
+        "steer_prompt": task.steer_prompt,
         "cancellation_cause": cancellation_cause,
         "error": error,
         "error_type": error_type,
@@ -1356,6 +1366,8 @@ def _background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "prompt": task.prompt,
+        "keep_alive": task.keep_alive,
+        "steer_prompt": task.steer_prompt,
         "error": error,
         "error_type": _background_task_error_type(error),
         "observability": _background_task_observability_payload(task),
@@ -1957,6 +1969,33 @@ def _handle_tasks_retry_command(args: TasksArgs) -> int:
         args,
         {"workspace": str(workspace), "task": payload},
         _print_retry_task,
+    )
+
+
+def _handle_tasks_steer_command(args: TasksArgs) -> int:
+    workspace = args.workspace
+    task_id = args.task_id
+    prompt = args.prompt
+    assert task_id is not None
+    assert prompt is not None
+    with _runtime_session(workspace) as runtime:
+        try:
+            task = runtime.steer_background_task(task_id, prompt)
+        except ValueError as exc:
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
+
+    payload = _background_task_state_payload(task, workspace=workspace)
+    payload["steer_prompt"] = prompt
+
+    def _print_steer_task() -> None:
+        print(_format_background_task_state(task))
+        print(f"STEER task_id={task_id} status={task.status}")
+        _print_background_task_guidance(payload)
+
+    return _emit_output(
+        args,
+        {"workspace": str(workspace), "task": payload},
+        _print_steer_task,
     )
 
 
@@ -3273,6 +3312,22 @@ def retry(task_id: str, workspace: Path, json_output: bool) -> int:
     return _handle_tasks_retry_command(
         TasksArgs(
             task_id=task_id,
+            workspace=workspace,
+            json=json_output,
+        )
+    )
+
+
+@tasks.command(help="Dispatch a new worker turn for an idle keep-alive delegated task.")
+@click.argument("task_id")
+@click.argument("prompt")
+@_workspace_option("Workspace root used to resolve the local session database.")
+@_json_option("Output steered delegated task state as JSON.")
+def steer(task_id: str, prompt: str, workspace: Path, json_output: bool) -> int:
+    return _handle_tasks_steer_command(
+        TasksArgs(
+            task_id=task_id,
+            prompt=prompt,
             workspace=workspace,
             json=json_output,
         )

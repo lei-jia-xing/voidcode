@@ -23,6 +23,7 @@ from .contracts import (
     UnknownSessionError,
 )
 from .events import (
+    RUNTIME_BACKGROUND_TASK_AWAITING_STEER,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
     RUNTIME_BACKGROUND_TASK_FAILED,
@@ -225,6 +226,52 @@ class RuntimeBackgroundTaskSupervisor:
         # Terminalize still-queued (never-started) tasks so no cross-process
         # ``queued`` orphans survive a runtime teardown.
         self._terminalize_queued_tasks_for_shutdown()
+        # Keep-alive tasks parked ``idle`` (awaiting steer) own no worker
+        # thread, so nothing else will finalize them; mark them ``interrupted``
+        # (resumable — child session and transcript stay intact) so no
+        # cross-process ``idle`` orphans survive a runtime teardown.
+        self._terminalize_idle_keep_alive_tasks_for_shutdown()
+
+    def _terminalize_idle_keep_alive_tasks_for_shutdown(self) -> tuple[str, ...]:
+        """Mark every idle keep-alive task ``interrupted`` durably.
+
+        Called by ``shutdown``: an idle keep-alive task is parked awaiting
+        steer with no worker thread, so it can never be dispatched again after
+        teardown and must not survive as an ``idle`` orphan. ``interrupted``
+        is the resumable terminal status — the child session and its
+        transcript stay intact and the leader continues via the ``task`` tool
+        ``session_id`` continuation or ``tasks retry`` after restart.
+        """
+        runtime = self._runtime
+        terminalized: list[str] = []
+        for summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
+            if summary.status != "idle" or not summary.keep_alive:
+                continue
+            try:
+                terminal_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=summary.task.id,
+                    status="interrupted",
+                    error="runtime exited while keep-alive worker was awaiting steer",
+                )
+            except Exception as exc:
+                if "unknown background task" in str(exc):
+                    continue
+                logger.exception(
+                    "background task %s could not persist shutdown interruption state",
+                    summary.task.id,
+                )
+                continue
+            if terminal_task.status != "interrupted":
+                # A concurrent steer/cancel won the transition race; the
+                # winning path owns finalization, so do not emit a stale
+                # shutdown lifecycle hook for it.
+                continue
+            with self._queue_lock:
+                self._queued_waiting_reasons.pop(summary.task.id, None)
+            terminalized.append(terminal_task.task.id)
+            self.run_background_task_lifecycle_hook(terminal_task)
+        return tuple(terminalized)
 
     def _terminalize_queued_tasks_for_shutdown(self) -> tuple[str, ...]:
         """Mark every still-queued task terminal (``interrupted``) durably.
@@ -270,12 +317,22 @@ class RuntimeBackgroundTaskSupervisor:
                         self._threads.pop(task_id, None)
                 continue
             try:
-                task = runtime._session_store.mark_background_task_terminal(
+                task = runtime._session_store.load_background_task(
                     workspace=runtime._workspace,
                     task_id=task_id,
-                    status="failed",
-                    error="background task stopped because parent runtime exited before completion",
                 )
+                keep_alive = task.keep_alive
+                terminal_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=task_id,
+                    status="interrupted" if keep_alive else "failed",
+                    error=(
+                        "runtime exited during keep-alive worker turn"
+                        if keep_alive
+                        else "background task stopped because parent runtime exited before completion"
+                    ),
+                )
+                task = terminal_task
             except Exception as exc:
                 if "unknown background task" in str(exc):
                     logger.debug(
@@ -482,6 +539,8 @@ class RuntimeBackgroundTaskSupervisor:
         if task.status == "queued":
             with self._queue_lock:
                 return self._queued_waiting_reasons.get(task.task.id, _QUEUED_WAITING_REASON_QUEUED)
+        if task.status == "idle":
+            return "awaiting_steer"
         if task.status == "running" and retry is not None:
             return "rate_limited"
         if task.status == "running" and task.cancel_requested_at is not None:
@@ -544,6 +603,90 @@ class RuntimeBackgroundTaskSupervisor:
                 allocate_session_id=previous_task.request.allocate_session_id,
             )
         )
+
+    def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
+        """Dispatch a new worker turn for a keep-alive background task.
+
+        Validates that the task is keep-alive and parked (``idle``, or
+        ``interrupted`` as a resumable breakpoint after a process restart),
+        persists the steer prompt (``mark_background_task_steered`` flips the
+        row ``idle|interrupted → running``), reserves a concurrency slot and
+        spawns a fresh start-gated worker thread through the same dispatch
+        path as the queue drain — the slot is reserved once at dispatch and
+        released once in the worker's ``finally``.
+
+        Raises ``ValueError`` when the task is not keep-alive, is not parked
+        (a turn is in flight — v1 has no steer pipelining), the content is
+        empty, or the provider/model concurrency limit is exhausted (the task
+        stays parked and the steer may be retried).
+        """
+        runtime = self._runtime
+        validate_background_task_id(task_id)
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("background task steer requires non-empty content")
+        self.reconcile_background_tasks_if_needed()
+        current_task = runtime._session_store.load_background_task(
+            workspace=runtime._workspace,
+            task_id=task_id,
+        )
+        if not current_task.keep_alive:
+            raise ValueError(f"background task {task_id} is not a keep-alive task and cannot be steered")
+        if current_task.status not in ("idle", "interrupted"):
+            raise ValueError(f"background task {task_id} can only be steered while idle or interrupted; task is {current_task.status}")
+        request = RuntimeRequest(
+            prompt=current_task.request.prompt,
+            session_id=current_task.request.session_id,
+            parent_session_id=current_task.request.parent_session_id,
+            metadata=cast(RuntimeRequestMetadataPayload, current_task.request.metadata),
+            allocate_session_id=current_task.request.allocate_session_id,
+        )
+        identity = self._concurrency_identity_for_request(request)
+        with self._queue_lock:
+            if not self._can_start_task(identity):
+                raise ValueError(f"background task {task_id} steer blocked by the provider/model concurrency limit; retry when a worker slot frees")
+            self._reserve_slot(identity)
+        # Register the worker thread BEFORE flipping the row to ``running`` so
+        # a concurrent drain orphan-scan never sees a ``running`` row without
+        # an owner while this steer dispatch is in flight.
+        worker, worker_start_gate = self._spawn_worker_thread(
+            task_id=task_id,
+            reserved_identity=identity,
+        )
+        steered_task = runtime._session_store.mark_background_task_steered(
+            workspace=runtime._workspace,
+            task_id=task_id,
+            steer_prompt=content.strip(),
+        )
+        if steered_task.status != "running":
+            # Raced to a terminal state (e.g. a concurrent cancel) between
+            # validation and dispatch; undo the reserved slot and thread.
+            with self._queue_lock:
+                self._threads.pop(task_id, None)
+                self._release_slot(identity)
+            return self.task_with_observability(steered_task)
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            with self._queue_lock:
+                self._threads.pop(task_id, None)
+                self._release_slot(identity)
+            failed_task = runtime._session_store.mark_background_task_terminal(
+                workspace=runtime._workspace,
+                task_id=task_id,
+                status="failed",
+                error=str(exc),
+            )
+            self.run_background_task_lifecycle_hook(failed_task)
+            return self.task_with_observability(failed_task)
+        try:
+            self.run_background_task_lifecycle_surface(
+                task=steered_task,
+                surface="background_task_started",
+                session_id=(steered_task.session_id or steered_task.parent_session_id or "runtime"),
+            )
+        finally:
+            worker_start_gate.set()
+        return self.task_with_observability(steered_task)
 
     def _concurrency_identity_for_request(self, request: RuntimeRequest) -> _BackgroundTaskConcurrencyIdentity:
         effective_config = self._runtime._runtime_config_for_request(request)
@@ -833,6 +976,15 @@ class RuntimeBackgroundTaskSupervisor:
                         workspace=runtime._workspace,
                         task_id=summary.task.id,
                     )
+                    # Keep-alive steer in flight: ``steer_background_task``
+                    # registers the worker thread before flipping the row to
+                    # ``running``, but a dispatch race or a failed spawn can
+                    # still leave a ``running`` row carrying an unconsumed
+                    # steer prompt for an instant. Treat it as in-transit
+                    # instead of terminalizing a live steer (a stuck row is
+                    # still caught by reconcile on the next process start).
+                    if orphan_task.keep_alive and orphan_task.steer_prompt is not None:
+                        continue
                     # Exemption mirroring ``fail_incomplete_background_tasks``:
                     # a running task whose child is durably waiting on a pending
                     # approval/question survives process restarts (the user must
@@ -913,36 +1065,11 @@ class RuntimeBackgroundTaskSupervisor:
                     continue
                 self._queued_waiting_reasons.pop(task.task.id, None)
                 outcomes[task.task.id] = _BACKGROUND_TASK_DRAIN_DISPATCHED
-                worker_start_gate = threading.Event()
-
                 background_task_id = running_task.task.id
-
-                def run_worker_after_started_hook(
-                    *,
-                    background_task_id: str = background_task_id,
-                    reserved_identity: _BackgroundTaskConcurrencyIdentity = identity,
-                    start_gate: threading.Event = worker_start_gate,
-                ) -> None:
-                    try:
-                        start_gate.wait()
-                        if self._shutdown_requested:
-                            try:
-                                self._mark_background_task_interrupted_before_worker(task_id=background_task_id)
-                            finally:
-                                with self._queue_lock:
-                                    self._release_slot(reserved_identity)
-                            return
-                        self.run_background_task_worker(background_task_id)
-                    finally:
-                        with self._queue_lock:
-                            self._threads.pop(background_task_id, None)
-
-                worker = threading.Thread(
-                    target=run_worker_after_started_hook,
-                    name=f"voidcode-background-task-{background_task_id}",
-                    daemon=True,
+                worker, worker_start_gate = self._spawn_worker_thread(
+                    task_id=background_task_id,
+                    reserved_identity=identity,
                 )
-                self._threads[background_task_id] = worker
                 started_tasks.append((running_task, worker, identity, worker_start_gate))
         for started_task, worker, identity, worker_start_gate in started_tasks:
             try:
@@ -970,6 +1097,63 @@ class RuntimeBackgroundTaskSupervisor:
         for failed_task in failed_tasks:
             self.run_background_task_lifecycle_hook(failed_task)
         return outcomes
+
+    def _spawn_worker_thread(
+        self,
+        *,
+        task_id: str,
+        reserved_identity: _BackgroundTaskConcurrencyIdentity,
+    ) -> tuple[threading.Thread, threading.Event]:
+        """Create (but do not start) a start-gated worker thread for ``task_id``.
+
+        Shared by the queue drain and ``steer_background_task`` so both
+        dispatch paths keep the same slot accounting: the caller MUST already
+        have reserved a concurrency slot for ``reserved_identity`` at dispatch
+        time, and the started thread releases it exactly once — either in the
+        pre-start shutdown path (interrupt + ``_release_slot``) or in the
+        worker's ``finally`` — preserving the "reserve once at dispatch,
+        release once in the worker" invariant.
+
+        The thread is registered in ``self._threads`` here, before the caller
+        starts it, so a concurrent drain orphan-scan never terminalizes a
+        ``running`` row that owns an in-flight dispatch.
+        """
+        worker_start_gate = threading.Event()
+
+        def run_worker_after_started_hook(
+            *,
+            background_task_id: str = task_id,
+            reserved_identity: _BackgroundTaskConcurrencyIdentity = reserved_identity,
+            start_gate: threading.Event = worker_start_gate,
+        ) -> None:
+            try:
+                start_gate.wait()
+                if self._shutdown_requested:
+                    try:
+                        self._mark_background_task_interrupted_before_worker(task_id=background_task_id)
+                    finally:
+                        with self._queue_lock:
+                            self._release_slot(reserved_identity)
+                    return
+                self.run_background_task_worker(background_task_id)
+            finally:
+                with self._queue_lock:
+                    # Only the current worker may unregister itself. A newer
+                    # steer-dispatched worker can register the same task id
+                    # while this worker's finally is still running; popping
+                    # blindly would delete the newer worker's registration and
+                    # make the drain orphan-scan terminalize the running task
+                    # as interrupted. Mirrors the shutdown-join identity guard.
+                    if self._threads.get(background_task_id) is threading.current_thread():
+                        self._threads.pop(background_task_id, None)
+
+        worker = threading.Thread(
+            target=run_worker_after_started_hook,
+            name=f"voidcode-background-task-{task_id}",
+            daemon=True,
+        )
+        self._threads[task_id] = worker
+        return worker, worker_start_gate
 
     def _mark_background_task_interrupted_before_worker(self, *, task_id: str) -> None:
         runtime = self._runtime
@@ -1125,6 +1309,15 @@ class RuntimeBackgroundTaskSupervisor:
                     status="cancelled",
                     error="cancelled by parent while child session was waiting",
                 )
+        if task.status == "idle":
+            # An idle keep-alive task owns no worker thread, so nothing will
+            # ever poll the cancel request; terminalize it directly.
+            task = runtime._session_store.mark_background_task_terminal(
+                workspace=runtime._workspace,
+                task_id=task_id,
+                status="cancelled",
+                error="cancelled by parent while awaiting steer",
+            )
         if previous_task.status != "cancelled" and task.status == "cancelled":
             self.run_background_task_lifecycle_hook(task)
         return self.task_with_observability(task)
@@ -1588,6 +1781,90 @@ class RuntimeBackgroundTaskSupervisor:
                 parent_session_id,
             )
 
+    def emit_background_task_awaiting_steer(
+        self,
+        *,
+        task: BackgroundTaskState,
+        session_response: RuntimeResponse,
+    ) -> None:
+        """Notify the parent that a keep-alive task parked ``idle`` (awaiting steer).
+
+        Emitted by the worker after a keep-alive turn without a submit_result
+        handoff. The event type is part of
+        ``DELEGATED_BACKGROUND_TASK_EVENT_TYPES``, so it can land on an
+        already-sealed parent session row; the dedupe key is per-turn (the
+        child session's last event sequence) because the same task parks idle
+        again on every steer round.
+        """
+        runtime = self._runtime
+        parent_session_id = task.parent_session_id
+        child_session_id = task.session_id
+        if parent_session_id is None or child_session_id is None:
+            return
+        session_event_appender = runtime._session_store
+        if not isinstance(session_event_appender, SessionEventAppender):
+            logger.debug("skipping background awaiting-steer event for session store without append support")
+            return
+        result = self.background_task_result(task=task)
+        _, delegation_payload, message_payload = self._delegated_lifecycle_payloads(result)
+        turn_sequence = session_response.events[-1].sequence if session_response.events else 0
+        try:
+            appended = session_event_appender.append_session_event(
+                workspace=runtime._workspace,
+                session_id=parent_session_id,
+                event_type=RUNTIME_BACKGROUND_TASK_AWAITING_STEER,
+                source="runtime",
+                payload={
+                    "task_id": task.task.id,
+                    "parent_session_id": parent_session_id,
+                    "child_session_id": child_session_id,
+                    "status": "idle",
+                    "result_available": result.result_available,
+                    "delegation": delegation_payload,
+                    "message": message_payload,
+                    **self._concurrency_payload_for_event(task),
+                },
+                dedupe_key=f"{RUNTIME_BACKGROUND_TASK_AWAITING_STEER}:{task.task.id}:{turn_sequence}",
+            )
+            if appended is not None:
+                self.run_background_task_lifecycle_surface(
+                    task=task,
+                    surface="background_task_notification_enqueued",
+                    session_id=parent_session_id,
+                    extra_payload={
+                        "notification_event_type": RUNTIME_BACKGROUND_TASK_AWAITING_STEER,
+                        "notification_event_sequence": appended.sequence,
+                    },
+                )
+            acp_payload: dict[str, object] = {
+                "task_id": task.task.id,
+                "parent_session_id": parent_session_id,
+                "child_session_id": child_session_id,
+                "status": "idle",
+            }
+            runtime._append_parent_acp_delegated_lifecycle_event(
+                task=task,
+                lifecycle_status="idle",
+                result_available=result.result_available,
+                payload=acp_payload,
+            )
+            runtime._publish_delegated_acp_event(
+                task=task,
+                lifecycle_status="idle",
+                result_available=result.result_available,
+                payload=acp_payload,
+            )
+        except UnknownSessionError:
+            logger.debug(
+                "skipping background awaiting-steer event for unavailable parent session: %s",
+                parent_session_id,
+            )
+        except SessionSealedError:
+            logger.debug(
+                "dropping background awaiting-steer event for sealed parent session: %s",
+                parent_session_id,
+            )
+
     def emit_background_task_idle_reminder_for_waiting_child(
         self,
         *,
@@ -2037,6 +2314,33 @@ class RuntimeBackgroundTaskSupervisor:
         # re-dispatched by the drain at the end of this pass.
         for orphan_task in self._terminalize_queued_orphans_with_terminal_parent():
             self.run_background_task_lifecycle_hook(orphan_task)
+        # Keep-alive is a process-lifetime concept: after a restart no worker
+        # threads and no leader context survive, so alive keep-alive tasks
+        # (``idle`` awaiting steer, or ``running`` from a crashed turn) must
+        # not persist as cross-process orphans. Terminalize them
+        # ``interrupted`` (resumable — the child session and full transcript
+        # stay intact; the leader continues via the ``task`` tool
+        # ``session_id`` continuation or ``tasks retry``).
+        for task_summary in runtime._session_store.list_background_tasks(workspace=runtime._workspace):
+            if task_summary.status not in ("idle", "running") or not task_summary.keep_alive:
+                continue
+            try:
+                terminal_task = runtime._session_store.mark_background_task_terminal(
+                    workspace=runtime._workspace,
+                    task_id=task_summary.task.id,
+                    status="interrupted",
+                    error="runtime exited while keep-alive worker was awaiting steer",
+                )
+            except Exception as exc:
+                logger.debug(
+                    "background task %s keep-alive terminalization failed: %s",
+                    task_summary.task.id,
+                    exc,
+                )
+                continue
+            if terminal_task.status != "interrupted":
+                continue
+            self.run_background_task_lifecycle_hook(terminal_task)
         task_summaries = runtime._session_store.list_background_tasks(workspace=runtime._workspace)
         for task_summary in task_summaries:
             task = runtime._session_store.load_background_task(
@@ -2156,12 +2460,20 @@ class RuntimeBackgroundTaskSupervisor:
                 self.run_background_task_lifecycle_hook(terminal_task)
                 return
             retry_count = 0
+            # Keep-alive turns run on the persisted steer prompt when present
+            # (written by ``mark_background_task_steered``); the first turn
+            # uses the original request prompt. ``keep_alive_turn`` is the
+            # internal metadata the run loop gates on (D3): it skips the
+            # one-shot submit_result requirement and parks the final step as
+            # ``interrupted`` (resumable child) instead of ``completed``.
+            keep_alive_turn = dispatch_task.request.metadata.get("keep_alive") is True
+            turn_prompt = dispatch_task.steer_prompt or dispatch_task.request.prompt
             while True:
                 events: list[EventEnvelope] = []
                 output: str | None = None
                 final_session: Any | None = None
                 internal_request = RuntimeRequest(
-                    prompt=dispatch_task.request.prompt,
+                    prompt=turn_prompt,
                     session_id=session_id,
                     parent_session_id=dispatch_task.request.parent_session_id,
                     metadata=cast(
@@ -2171,6 +2483,7 @@ class RuntimeBackgroundTaskSupervisor:
                             **({"background_rate_limit_retry": True} if retry_count < _BACKGROUND_TASK_RATE_LIMIT_RETRIES else {}),
                             "background_task_id": task_id,
                             "background_run": True,
+                            **({"keep_alive_turn": True} if keep_alive_turn else {}),
                         },
                     ),
                     allocate_session_id=False,
@@ -2300,7 +2613,30 @@ class RuntimeBackgroundTaskSupervisor:
                         return
                     slot_reserved = True
                     continue
-                self.finalize_background_task_from_session_response(session_response=response)
+                if keep_alive_turn:
+                    # Keep-alive finalize: only durable outcomes finalize the
+                    # task — a ``failed`` turn, a ``waiting`` turn (existing
+                    # waiting path keeps the task ``running`` and emits the
+                    # idle reminder + waiting approval), or a transcript-proven
+                    # submit_result handoff (``_child_transcript_completed``
+                    # only trusts transcript evidence, never the bare row
+                    # status). Any other finished turn parks the task ``idle``
+                    # (awaiting steer) and exits this thread; the next steer
+                    # dispatches a fresh worker against the same child session.
+                    if response.session.status == "failed" or response.session.status == "waiting" or self._child_transcript_completed(response):
+                        self.finalize_background_task_from_session_response(session_response=response)
+                    else:
+                        idle_task = runtime._session_store.mark_background_task_idle(
+                            workspace=runtime._workspace,
+                            task_id=task_id,
+                        )
+                        self.emit_background_task_awaiting_steer(
+                            task=idle_task,
+                            session_response=response,
+                        )
+                        return
+                else:
+                    self.finalize_background_task_from_session_response(session_response=response)
                 return
         except Exception as exc:
             logger.exception("background task failed: %s", task_id)
@@ -2336,7 +2672,15 @@ class RuntimeBackgroundTaskSupervisor:
             if slot_identity is not None and slot_reserved:
                 with self._queue_lock:
                     self._release_slot(slot_identity)
-            self._threads.pop(task_id, None)
+            with self._queue_lock:
+                # Only the current worker may unregister itself; a newer
+                # steer-dispatched worker for the same task id must not have
+                # its registration removed by this worker's teardown. Held
+                # under the queue lock to stay atomic with the drain
+                # orphan-scan's liveness read. Mirrors the shutdown-join
+                # identity guard.
+                if self._threads.get(task_id) is threading.current_thread():
+                    self._threads.pop(task_id, None)
             if not self._shutdown_requested:
                 try:
                     self._drain_background_task_queue()

@@ -85,6 +85,7 @@ class TasksArgs:
     command: str = "tasks"
     workspace: Path = field(default_factory=Path.cwd)
     task_id: str | None = None
+    prompt: str | None = None
     json: bool = False
     parent_session_id: str | None = None
 
