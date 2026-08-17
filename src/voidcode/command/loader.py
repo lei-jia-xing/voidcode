@@ -11,67 +11,21 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         name="init",
         description="Generate or refresh a structured AGENTS.md project knowledge base.",
         template=(
-            "Workflow: initialize durable project instructions by generating or refreshing "
-            "AGENTS.md at the workspace root. User focus notes: $ARGUMENTS. First inspect "
-            "the repository structure, existing AGENTS.md files, README/development docs, "
-            "runtime/config files, test/build commands, and notable conventions. Then write "
-            "or update AGENTS.md with stable, structured project knowledge only. Required "
-            "sections: PROJECT KNOWLEDGE BASE, OVERVIEW, STRUCTURE, WHERE TO LOOK, CODE MAP, "
-            "CONVENTIONS, ANTI-PATTERNS, UNIQUE STYLES, COMMANDS, and NOTES. Preserve useful "
-            "existing AGENTS.md content, remove stale or duplicate guidance, and do not store "
-            "secrets, transient task plans, chat history, or unverified guesses. Prefer concise "
-            "tables and bullets over prose. Verification: read the final AGENTS.md and confirm "
-            "it reflects the current repo surface without claiming unsupported capabilities."
-        ),
-        source="builtin",
-    ),
-    CommandDefinition(
-        name="compact",
-        description="Compact the current session into durable continuity guidance.",
-        template=(
-            "Workflow: refresh the runtime-owned continuity summary for this session. "
-            "Arguments are optional focus notes for what must be preserved: $ARGUMENTS. "
-            "Review the active objective, user constraints, completed progress, blockers, "
-            "key decisions, relevant files/commands/errors, verification state, and next "
-            "steps. Produce a concise handoff that future turns can use after context "
-            "compaction. Do not modify workspace files unless the user separately asks for "
-            "implementation."
-        ),
-        source="builtin",
-    ),
-    CommandDefinition(
-        name="commit",
-        description="Analyze staged changes and generate a Conventional Commits message.",
-        template=(
-            "Workflow: inspect current git status and diff, then draft a focused Conventional "
-            "Commits message using the repository's style. Arguments are optional context for "
-            "the intended commit: $ARGUMENTS. Read-only by default: do not create commits, "
-            "amend history, or push unless explicitly instructed. Verification: if there are "
-            "no staged or unstaged changes, report that clearly instead of inventing a message."
-        ),
-        source="builtin",
-    ),
-    CommandDefinition(
-        name="explain",
-        description="Explain code, concepts, architecture, or errors with clarity.",
-        template=(
-            "Workflow: read the requested target, error, stack trace, or behavior and explain it "
-            "with concrete examples where helpful. Arguments identify the target to explain: "
-            "$ARGUMENTS. Read-only by default: do not modify any files or run destructive "
-            "commands. Verification: if the target cannot be found or read, say so clearly "
-            "and do not hallucinate file contents."
-        ),
-        source="builtin",
-    ),
-    CommandDefinition(
-        name="fix",
-        description="Fix a code issue or bug with a concrete, verifiable patch.",
-        template=(
-            "Workflow: locate the root cause, make the smallest safe code change, and verify "
-            "the fix. Arguments describe the concrete problem to diagnose: $ARGUMENTS. "
-            "Execution mode: editing is allowed when needed, but preserve runtime/tool/approval "
-            "governance. Verification: run targeted tests, lint, or type checks that cover the "
-            "fix; if verification still fails, report the remaining failure clearly."
+            "Generate or refresh the project knowledge base (AGENTS.md) at the workspace root.\n"
+            "\n"
+            "Steps:\n"
+            "1. Inspect the repository: structure, existing AGENTS.md, README/docs, build and test commands, and conventions.\n"
+            "2. Write or update AGENTS.md with stable project knowledge only. Required sections: OVERVIEW, STRUCTURE, WHERE TO LOOK, "
+            "CODE MAP, CONVENTIONS, ANTI-PATTERNS, UNIQUE STYLES, COMMANDS, NOTES.\n"
+            "3. Preserve useful existing content; drop stale or duplicate guidance.\n"
+            "\n"
+            "Constraints:\n"
+            "- Never store secrets, transient task plans, chat history, or unverified guesses.\n"
+            "- Prefer concise tables and bullets over prose.\n"
+            "\n"
+            "Verify: read the final AGENTS.md and confirm it reflects the current repository without claiming unsupported capabilities.\n"
+            "\n"
+            "Focus notes: $ARGUMENTS"
         ),
         source="builtin",
     ),
@@ -79,119 +33,24 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
         name="plan",
         description="Create an implementation plan before writing code.",
         template=(
-            "Workflow: produce an implementation plan, acceptance criteria, risks, and a "
-            "verification strategy for the requested goal. Arguments describe the planning "
-            "target: $ARGUMENTS. You stay the active agent; you may delegate planning to the "
-            "product agent through the task tool (subagent_type=product) and "
-            "read its plan back, or plan directly. Read-only by default: do not write "
-            "code or modify files unless explicitly instructed after the plan is accepted. "
-            "Use todo_write only for session planning/progress state; it is runtime state, not "
-            "workspace mutation. If this plan should be executed later, include a concise "
-            "Start-work handoff section with the exact goal, files/modules, verification, and "
-            "open risks."
+            "Produce an implementation plan before writing code.\n"
+            "\n"
+            "Steps:\n"
+            "1. Converge the request into a concrete goal with acceptance criteria, risks, and a verification strategy.\n"
+            "2. Inspect the relevant code before committing to a shape.\n"
+            "\n"
+            "Constraints:\n"
+            "- Read-only: do not write code or modify files unless explicitly instructed after the plan is accepted.\n"
+            "- Plan directly, or delegate to the product agent (subagent_type=product) via the task tool and read its plan back.\n"
+            "- todo_write is runtime state, not workspace mutation.\n"
+            "\n"
+            "Target: $ARGUMENTS"
         ),
         source="builtin",
         workflow_mode="product",
     ),
-    CommandDefinition(
-        name="start-work",
-        description="Start implementation from a previously accepted plan or handoff.",
-        template=(
-            "Workflow: execute the accepted plan or handoff using runtime tools. Arguments "
-            "identify the plan text, plan file, plan session id, issue, or goal to implement: "
-            "$ARGUMENTS. If a plan session id is provided, use the runtime-hydrated plan "
-            "artifact included below as the source of truth. First restate the concrete "
-            "implementation target and constraints, then "
-            "make the smallest safe changes. Use todo_write for multi-step progress tracking, "
-            "but do not treat todos as the durable plan artifact. Verification: run targeted "
-            "checks that cover the changed behavior and report any unverified risk."
-        ),
-        source="builtin",
-        workflow_mode="sustain",
-    ),
-    CommandDefinition(
-        name="continuation-loop",
-        description="Start or continue a runtime-owned continuation loop for a task.",
-        template=(
-            "Workflow: continue under the runtime-owned continuation loop recorded for this "
-            "request. Task: $ARGUMENTS. The runtime creates and persists the loop state before "
-            "execution; use the loop metadata in this session instead of prompt-only "
-            "self-reminders. Respect max iterations, completion promise, cancellation, "
-            "approval, and session persistence. Verification: after each iteration, run the "
-            "most relevant checks and mark completion only when the requested work is actually "
-            "done."
-        ),
-        source="builtin",
-        workflow_mode="sustain",
-    ),
-    CommandDefinition(
-        name="intensive-loop",
-        description="Start a higher-intensity runtime-owned continuation loop.",
-        template=(
-            "Workflow: continue under the runtime-owned intensive continuation loop recorded for "
-            "this request. Task: $ARGUMENTS. The runtime persists intensive=true before execution "
-            "to signal deeper exploration and stricter runtime verification. Completion is not "
-            "terminal when the normal promise is reached; the runtime keeps verification_status "
-            "pending until independent verification succeeds and the verification promise is met. "
-            "Do not use external product names for this mode. Preserve runtime session/storage "
-            "ownership, avoid prompt-only continuation hacks, and stop only after concrete "
-            "verification passes or a runtime terminal loop state is reached."
-        ),
-        source="builtin",
-        workflow_mode="deep_work",
-    ),
-    CommandDefinition(
-        name="cancel-continuation",
-        description="Cancel the current runtime-owned continuation loop.",
-        template=(
-            "Workflow: cancel the current runtime-owned continuation loop. Optional target: "
-            "$ARGUMENTS. If a loop id is provided, the runtime cancels that durable loop state; "
-            "otherwise it cancels the latest active loop for this workspace during slash-command "
-            "resolution. Report the resulting loop status. If no active loop exists, say so "
-            "clearly instead of asking the user to hunt for an id."
-        ),
-        source="builtin",
-    ),
-    CommandDefinition(
-        name="review",
-        description="Review the requested code or change set.",
-        template=(
-            "Workflow: review the requested file, directory, diff, PR, or current changes and "
-            "report findings by severity with actionable fixes. Arguments identify the review "
-            "target; if empty, review the current working tree changes: $ARGUMENTS. Read-only "
-            "by default: do not modify files. Verification: if the target is empty, missing, "
-            "or unreadable, explain that instead of producing a generic review."
-        ),
-        source="builtin",
-        workflow_mode="review",
-    ),
-    CommandDefinition(
-        name="test",
-        description="Generate and/or run tests with verification guidance.",
-        template=(
-            "Workflow: add focused tests, run relevant tests, or explain test failures for the "
-            "requested target. Arguments identify the code or behavior under test: $ARGUMENTS. "
-            "Execution mode: editing test files is allowed when adding coverage, but do not "
-            "delete or weaken existing tests. Verification: prefer targeted test commands before "
-            "broad suites; if no test framework is detected, explain the setup steps."
-        ),
-        source="builtin",
-    ),
-    CommandDefinition(
-        name="memory",
-        description="Use workspace memory tools deliberately for recall or explicit persistence.",
-        template=(
-            "Workflow: use the existing runtime memory tools; do not create another persistence "
-            "path. Request or focus: $ARGUMENTS. If prior durable context may matter, call "
-            "memory_search with a focused query before answering. If the user explicitly asks to "
-            "remember a stable preference, project fact, decision, or reusable lesson, call "
-            "memory_add with concise content. Do not persist temporary task state, speculative "
-            "conclusions, secrets, credentials, sensitive data, or anything the user did not "
-            "intend to save."
-        ),
-        source="builtin",
-    ),
 )
+
 
 _SOURCE_PRECEDENCE: tuple[CommandSource, ...] = ("builtin", "user", "project", "skill", "mcp")
 

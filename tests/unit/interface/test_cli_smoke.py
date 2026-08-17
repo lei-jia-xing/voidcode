@@ -957,13 +957,13 @@ def test_run_command_loads_config_and_forwards_it_to_runtime() -> None:
     runtime_class.return_value.resume.assert_not_called()
 
 
-def test_run_command_executes_compact_slash_command_through_runtime_surface() -> None:
+def test_run_command_executes_plan_slash_command_through_runtime_surface() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         workspace = Path(tmp)
         env = with_src_pythonpath(os.environ.copy())
         result = _run_module_cli(
             "run",
-            "/compact preserve todo state",
+            "/plan add command presets",
             "--workspace",
             str(workspace),
             "--json",
@@ -973,8 +973,8 @@ def test_run_command_executes_compact_slash_command_through_runtime_surface() ->
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["output"] is not None
-    assert "runtime-owned continuity summary" in payload["output"]
-    assert "preserve todo state" in payload["output"]
+    assert "Produce an implementation plan before writing code" in payload["output"]
+    assert "Target: add command presets" in payload["output"]
 
 
 def test_run_command_ctrl_c_cancels_active_runtime_session(capsys: Any) -> None:
@@ -3406,7 +3406,7 @@ def test_commands_list_outputs_discovered_project_commands_json() -> None:
     command_names = {command["name"] for command in payload["commands"]}
     assert result.returncode == 0
     assert payload["workspace"] == str(workspace)
-    assert {"commit", "explain", "fix", "plan", "review", "test"}.issubset(command_names)
+    assert {"init", "plan"}.issubset(command_names)
 
 
 def test_commands_show_outputs_project_command_json() -> None:

@@ -93,18 +93,7 @@ def test_template_rendering_does_not_rewrite_inserted_arguments_or_dollar_litera
 class TestBuiltinCommandDiscovery:
     _EXPECTED_NAMES = (
         "init",
-        "compact",
-        "commit",
-        "explain",
-        "fix",
         "plan",
-        "start-work",
-        "continuation-loop",
-        "intensive-loop",
-        "cancel-continuation",
-        "review",
-        "test",
-        "memory",
     )
 
     def test_expected_builtins_present(self) -> None:
@@ -128,37 +117,6 @@ class TestBuiltinCommandDiscovery:
         plan = [c for c in builtin_commands() if c.name == "plan"][0]
         assert plan.agent is None, f"/plan should keep the active agent, got {plan.agent}"
         assert plan.workflow_mode == "product"
-
-    def test_start_work_command_targets_implementation_workflow(self) -> None:
-        start_work = [c for c in builtin_commands() if c.name == "start-work"][0]
-
-        assert start_work.agent is None
-        assert start_work.workflow_mode == "sustain"
-
-    def test_review_command_targets_review_workflow_mode(self) -> None:
-        review = [c for c in builtin_commands() if c.name == "review"][0]
-
-        assert review.workflow_mode == "review"
-
-    def test_continuation_loop_commands_target_runtime_owned_flow(self) -> None:
-        commands = {c.name: c for c in builtin_commands()}
-
-        assert commands["continuation-loop"].workflow_mode == "sustain"
-        assert commands["intensive-loop"].workflow_mode == "deep_work"
-        assert "runtime-owned" in commands["continuation-loop"].template
-        assert "intensive=true" in commands["intensive-loop"].template
-        assert "verification_status" in commands["intensive-loop"].template
-        assert "latest active loop" in commands["cancel-continuation"].template
-
-    def test_memory_command_guides_runtime_memory_tools_without_subcommands(self) -> None:
-        commands = {c.name: c for c in builtin_commands()}
-
-        assert commands["memory"].workflow_mode is None
-        assert "memory/search" not in commands
-        assert "memory/add" not in commands
-        assert "memory_search" in commands["memory"].template
-        assert "memory_add" in commands["memory"].template
-        assert "do not create another persistence path" in commands["memory"].template
 
     def test_builtin_registry_can_read_workflow_modes_by_name(self) -> None:
         registry = CommandRegistry(builtin_commands())
@@ -204,7 +162,7 @@ class TestMarkdownCommandWorkflowMode:
 
 class TestBuiltinCommandRendering:
     def test_fix_renders_arguments_correctly(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "fix"][0]
+        cmd = [c for c in builtin_commands() if c.name == "plan"][0]
         rendered = render_command_template(
             cmd.template,
             raw_arguments="the null pointer bug in utils.py",
@@ -225,23 +183,11 @@ class TestBuiltinCommandRendering:
         )
 
         assert "focus on runtime boundaries" in rendered
-        assert "AGENTS.md at the workspace root" in rendered
-        assert "PROJECT KNOWLEDGE BASE" in rendered
+        assert "Generate or refresh the project knowledge base (AGENTS.md)" in rendered
         assert "WHERE TO LOOK" in rendered
         assert "CODE MAP" in rendered
-        assert "do not store secrets" in rendered
+        assert "Never store secrets" in rendered
         assert "read the final AGENTS.md" in rendered
-
-    def test_explain_renders_read_only_guidance(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "explain"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="the auth.py module",
-            arguments=split_command_arguments("the auth.py module"),
-        )
-        assert "auth.py module" in rendered
-        assert "do not modify any files" in rendered
-        assert "do not hallucinate" in rendered
 
     def test_plan_renders_no_code_guidance(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "plan"][0]
@@ -250,90 +196,12 @@ class TestBuiltinCommandRendering:
             raw_arguments="add dark mode support",
             arguments=split_command_arguments("add dark mode support"),
         )
-        assert "dark mode support" in rendered
-        assert "do not write code" in rendered
-        assert "You stay the active agent" in rendered
-        assert "delegate planning to the product agent" in rendered
+        assert "add dark mode support" in rendered
+        assert "Produce an implementation plan before writing code" in rendered
         assert "acceptance criteria" in rendered
-        assert "Use todo_write only for session planning/progress state" in rendered
-        assert "Start-work handoff" in rendered
-
-    def test_start_work_renders_handoff_guidance(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "start-work"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="plan from session abc",
-            arguments=split_command_arguments("plan from session abc"),
-        )
-
-        assert "plan from session abc" in rendered
-        assert "accepted plan or handoff" in rendered
-        assert "Use todo_write for multi-step progress tracking" in rendered
-        assert "run targeted checks" in rendered
-
-    def test_commit_renders_conventional_commits_guidance(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "commit"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="ci pipeline fixes",
-            arguments=split_command_arguments("ci pipeline fixes"),
-        )
-        assert "ci pipeline fixes" in rendered
-        assert "Conventional Commits" in rendered
-        assert "do not create commits" in rendered
-        assert "no staged or unstaged changes" in rendered
-
-    def test_compact_renders_continuity_guidance(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "compact"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="preserve verification state",
-            arguments=split_command_arguments("preserve verification state"),
-        )
-
-        assert "preserve verification state" in rendered
-        assert "runtime-owned continuity summary" in rendered
-        assert "future turns can use after context compaction" in rendered
-        assert "Do not modify workspace files" in rendered
-
-    def test_test_renders_verification_guidance(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "test"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="src/auth.py",
-            arguments=split_command_arguments("src/auth.py"),
-        )
-        assert "src/auth.py" in rendered
-        assert "verification" in rendered.lower()
-        assert "do not delete or weaken existing tests" in rendered
-        assert "no test framework" in rendered
-
-    def test_review_renders_arguments_and_severity(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "review"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="src/app.py",
-            arguments=split_command_arguments("src/app.py"),
-        )
-        assert "src/app.py" in rendered
-        assert "severity" in rendered
-        assert "Read-only by default" in rendered
-        assert "unreadable" in rendered
-
-    def test_memory_renders_tool_guidance_without_storage_plumbing(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "memory"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="remember my preference for concise answers",
-            arguments=split_command_arguments("remember my preference for concise answers"),
-        )
-
-        assert "remember my preference for concise answers" in rendered
-        assert "memory_search" in rendered
-        assert "memory_add" in rendered
-        assert "do not create another persistence path" in rendered
-        assert "secrets" in rendered
-        assert "$ARGUMENTS" not in rendered
+        assert "do not write code or modify files" in rendered
+        assert "delegate to the product agent (subagent_type=product)" in rendered
+        assert "todo_write is runtime state" in rendered
 
     def test_dollar_placeholder_substitution_uses_shlex_splitting(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "fix"][0]
@@ -348,46 +216,38 @@ class TestBuiltinCommandRendering:
 
 
 class TestBuiltinCommandProjectOverride:
-    def test_project_fix_overrides_builtin_fix(self, tmp_path: Path) -> None:
+    def test_project_plan_overrides_builtin_plan(self, tmp_path: Path) -> None:
         commands_dir = tmp_path / "commands"
         commands_dir.mkdir()
-        (commands_dir / "fix.md").write_text(
-            "---\ndescription: Custom project fix command\nagent: worker\n---\nApply a targeted fix for $1 and verify with tests\n",
+        (commands_dir / "plan.md").write_text(
+            "---\ndescription: Custom project plan command\nagent: worker\n---\nScope $1 and return a short plan\n",
             encoding="utf-8",
         )
 
         registry = load_command_registry(workspace=tmp_path)
-        cmd = registry.get("fix")
+        cmd = registry.get("plan")
         assert cmd is not None
         assert cmd.source == "project"
         assert cmd.agent == "worker"
-        resolution = resolve_prompt_command("/fix the login timeout bug", registry)
+        resolution = resolve_prompt_command("/plan the login flow", registry)
         assert resolution is not None
-        assert "targeted fix" in resolution.invocation.rendered_prompt
-        assert "verify with tests" in resolution.invocation.rendered_prompt
+        assert resolution.invocation.arguments == ("the", "login", "flow")
+        assert "Scope the" in resolution.invocation.rendered_prompt
+        assert "short plan" in resolution.invocation.rendered_prompt
 
     def test_project_override_preserves_other_builtins(self, tmp_path: Path) -> None:
         commands_dir = tmp_path / "commands"
         commands_dir.mkdir()
-        (commands_dir / "fix.md").write_text(
-            "---\ndescription: Custom fix\n---\nFix $ARGUMENTS\n",
+        (commands_dir / "plan.md").write_text(
+            "---\ndescription: Custom plan\n---\nPlan $ARGUMENTS\n",
             encoding="utf-8",
         )
 
         registry = load_command_registry(workspace=tmp_path)
-        fix_cmd = registry.get("fix")
-        assert fix_cmd is not None
-        assert fix_cmd.source == "project"
-        for name in (
-            "init",
-            "compact",
-            "review",
-            "explain",
-            "plan",
-            "start-work",
-            "test",
-            "commit",
-        ):
+        plan_cmd = registry.get("plan")
+        assert plan_cmd is not None
+        assert plan_cmd.source == "project"
+        for name in ("init",):
             cmd = registry.get(name)
             assert cmd is not None, f"{name} should still be registered"
             assert cmd.source == "builtin", f"/{name} source should still be builtin, got {cmd.source}"
@@ -395,17 +255,17 @@ class TestBuiltinCommandProjectOverride:
     def test_project_disabled_command_not_listed(self, tmp_path: Path) -> None:
         commands_dir = tmp_path / "commands"
         commands_dir.mkdir()
-        (commands_dir / "fix.md").write_text(
-            "---\ndescription: Disabled fix\nenabled: false\n---\nFix $ARGUMENTS\n",
+        (commands_dir / "plan.md").write_text(
+            "---\ndescription: Disabled plan\nenabled: false\n---\nPlan $ARGUMENTS\n",
             encoding="utf-8",
         )
 
         registry = load_command_registry(workspace=tmp_path)
-        cmd = registry.get("fix")
+        cmd = registry.get("plan")
         assert cmd is not None
         assert not cmd.enabled
         visible = registry.list()
-        assert not any(c.name == "fix" for c in visible)
+        assert not any(c.name == "plan" for c in visible)
 
     def test_nonexistent_slash_command_still_raises(self, tmp_path: Path) -> None:
         registry = load_command_registry(workspace=tmp_path)

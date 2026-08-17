@@ -291,23 +291,6 @@ def test_runtime_stream_rejects_invalid_top_level_workflow_mode_type(tmp_path: P
         raise AssertionError("invalid workflow_mode type should fail run_stream validation")
 
 
-def test_compact_command_renders_runtime_continuity_prompt(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
-
-    response = runtime.run(RuntimeRequest(prompt="/compact preserve test results"))
-
-    assert response.session.metadata.get("command") == {
-        "name": "compact",
-        "source": "builtin",
-        "arguments": ["preserve", "test", "results"],
-        "raw_arguments": "preserve test results",
-        "original_prompt": "/compact preserve test results",
-    }
-    assert response.output is not None
-    assert "runtime-owned continuity summary" in response.output
-    assert "preserve test results" in response.output
-
-
 def test_init_command_renders_agents_md_generation_prompt(tmp_path: Path) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
 
@@ -321,39 +304,10 @@ def test_init_command_renders_agents_md_generation_prompt(tmp_path: Path) -> Non
         "original_prompt": "/init focus on runtime boundaries",
     }
     assert response.output is not None
-    assert "AGENTS.md at the workspace root" in response.output
-    assert "PROJECT KNOWLEDGE BASE" in response.output
+    assert "Generate or refresh the project knowledge base (AGENTS.md)" in response.output
+    assert "WHERE TO LOOK" in response.output
+    assert "Never store secrets" in response.output
     assert "focus on runtime boundaries" in response.output
-
-
-def test_memory_command_resolves_through_runtime_prompt_pipeline(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
-
-    response = runtime.run(RuntimeRequest(prompt="/memory remember preferred test command"))
-
-    assert response.session.metadata.get("command") == {
-        "name": "memory",
-        "source": "builtin",
-        "arguments": ["remember", "preferred", "test", "command"],
-        "raw_arguments": "remember preferred test command",
-        "original_prompt": "/memory remember preferred test command",
-    }
-    assert response.output is not None
-    assert "memory_search" in response.output
-    assert "memory_add" in response.output
-    assert "do not create another persistence path" in response.output
-
-
-def test_memory_subcommands_are_not_builtin_prompt_commands(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_EchoPromptGraph())
-
-    for prompt in ("/memory/search coding style", "/memory/add prefers short summaries"):
-        try:
-            _ = runtime.run(RuntimeRequest(prompt=prompt))
-        except RuntimeRequestError as exc:
-            assert "unknown command" in str(exc)
-        else:
-            raise AssertionError(f"{prompt} should not resolve as a builtin command")
 
 
 def test_runtime_ignores_malformed_command_files_for_non_slash_prompt(
