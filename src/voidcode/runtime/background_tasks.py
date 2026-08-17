@@ -2575,7 +2575,7 @@ class RuntimeBackgroundTaskSupervisor:
                     # task — a ``failed`` turn, a ``waiting`` turn (existing
                     # waiting path keeps the task ``running`` and emits the
                     # idle reminder + waiting approval), or a transcript-proven
-                    # submit_result handoff (``_child_transcript_completed``
+                    # submit_result handoff (``child_transcript_proves_completed``
                     # only trusts transcript evidence, never the bare row
                     # status). Any other finished turn parks the task ``idle``
                     # (awaiting steer) and exits this thread; the next steer
