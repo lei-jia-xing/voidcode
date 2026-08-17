@@ -92,6 +92,7 @@ type DelegatedBackgroundTaskEventType = Literal[
 type DelegatedLifecycleStatus = Literal[
     "queued",
     "running",
+    "idle",
     "waiting_approval",
     "completed",
     "failed",
@@ -114,6 +115,8 @@ def _parse_delegated_lifecycle_status(value: object) -> DelegatedLifecycleStatus
         return "queued"
     if value == "running":
         return "running"
+    if value == "idle":
+        return "idle"
     if value == "waiting_approval":
         return "waiting_approval"
     if value == "completed":
@@ -553,6 +556,7 @@ _DELEGATED_LIFECYCLE_STATUSES: Final[frozenset[DelegatedLifecycleStatus]] = froz
     {
         "queued",
         "running",
+        "idle",
         "waiting_approval",
         "completed",
         "failed",

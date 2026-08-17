@@ -633,7 +633,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 10
+    assert schema_version == 11
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
 
 
@@ -779,7 +779,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 10 got 999.*future-runtime\.sqlite3",
+        match=r"schema version mismatch: expected 11 got 999.*future-runtime\.sqlite3",
     ):
         store.list_sessions(workspace=tmp_path)
 
@@ -987,7 +987,8 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         RuntimeError,
         match=(
             r"table 'background_tasks' missing columns: created_at_unix_ms, "
-            r"delegated_reminder_json, finished_at_unix_ms, started_at_unix_ms.*"
+            r"delegated_reminder_json, finished_at_unix_ms, keep_alive, "
+            r"started_at_unix_ms, steer_prompt.*"
             r"Reset the runtime database with `uv run voidcode storage reset` "
             r"or remove '.*[\\/]wrong-table-shape\.sqlite3' "
             r"plus matching -wal/-shm files\."

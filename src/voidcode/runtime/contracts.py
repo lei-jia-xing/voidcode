@@ -62,12 +62,14 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
+    keep_alive: bool
 
 
 class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
     background_run: bool
     background_rate_limit_retry: bool
     background_task_id: str
+    keep_alive_turn: bool
 
 
 type RuntimeRequestMetadataPayload = RuntimeRequestMetadata | InternalRuntimeRequestMetadata
@@ -101,9 +103,10 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "show_thinking",
         "skills",
         "force_load_skills",
+        "keep_alive",
     }
 )
-_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_rate_limit_retry", "background_task_id"})
+_INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_rate_limit_retry", "background_task_id", "keep_alive_turn"})
 
 
 def _empty_runtime_request_metadata() -> RuntimeRequestMetadata:
@@ -473,6 +476,12 @@ def validate_runtime_request_metadata(
             parsed_force_load.append(raw_name)
         normalized["force_load_skills"] = parsed_force_load
 
+    if "keep_alive" in metadata:
+        keep_alive = metadata["keep_alive"]
+        if not isinstance(keep_alive, bool):
+            raise RuntimeRequestError("request metadata 'keep_alive' must be a boolean")
+        normalized["keep_alive"] = keep_alive
+
     if allow_internal_fields and "background_run" in metadata:
         background_run = metadata["background_run"]
         if not isinstance(background_run, bool):
@@ -490,6 +499,12 @@ def validate_runtime_request_metadata(
         if not isinstance(background_task_id, str) or not background_task_id:
             raise RuntimeRequestError("request metadata 'background_task_id' must be a non-empty string")
         normalized["background_task_id"] = background_task_id
+
+    if allow_internal_fields and "keep_alive_turn" in metadata:
+        keep_alive_turn = metadata["keep_alive_turn"]
+        if not isinstance(keep_alive_turn, bool):
+            raise RuntimeRequestError("request metadata 'keep_alive_turn' must be a boolean")
+        normalized["keep_alive_turn"] = keep_alive_turn
 
     if allow_internal_fields:
         return cast(InternalRuntimeRequestMetadata, normalized)
@@ -1040,6 +1055,7 @@ class BackgroundTaskResult:
         lifecycle_status: Literal[
             "queued",
             "running",
+            "idle",
             "waiting_approval",
             "completed",
             "failed",

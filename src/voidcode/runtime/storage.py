@@ -290,6 +290,21 @@ class SessionStore(Protocol):
         error: str | None = None,
     ) -> BackgroundTaskState: ...
 
+    def mark_background_task_idle(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+    ) -> BackgroundTaskState: ...
+
+    def mark_background_task_steered(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        steer_prompt: str,
+    ) -> BackgroundTaskState: ...
+
     def request_background_task_cancel(
         self,
         *,
@@ -391,7 +406,7 @@ class _SQLitePolicy:
 @final
 class SqliteSessionStore:
     _database_path: Path | None
-    _SCHEMA_VERSION = 10
+    _SCHEMA_VERSION = 11
     _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(("project", "preference", "feedback", "reference", "decision"))
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _sqlite_policy = _SQLitePolicy()
@@ -462,6 +477,8 @@ class SqliteSessionStore:
             ("created_at_unix_ms", "INTEGER", 0, None, 0),
             ("started_at_unix_ms", "INTEGER", 0, None, 0),
             ("finished_at_unix_ms", "INTEGER", 0, None, 0),
+            ("keep_alive", "INTEGER", 1, "0", 0),
+            ("steer_prompt", "TEXT", 0, None, 0),
         ),
         "memories": (
             ("memory_id", "TEXT", 1, None, 2),
@@ -705,6 +722,8 @@ class SqliteSessionStore:
                 created_at_unix_ms INTEGER,
                 started_at_unix_ms INTEGER,
                 finished_at_unix_ms INTEGER,
+                keep_alive INTEGER NOT NULL DEFAULT 0,
+                steer_prompt TEXT,
                 PRIMARY KEY (workspace_id, task_id)
             )
             """
@@ -805,6 +824,16 @@ class SqliteSessionStore:
         if current_version == 6:
             try:
                 connection.execute("ALTER TABLE sessions ADD COLUMN created_at_unix_ms INTEGER")
+            except sqlite3.OperationalError:
+                pass  # Column already exists (idempotent)
+        # Migration: add keep-alive steering columns for v10 → v11 upgrade.
+        if current_version == 10:
+            try:
+                connection.execute("ALTER TABLE background_tasks ADD COLUMN keep_alive INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists (idempotent)
+            try:
+                connection.execute("ALTER TABLE background_tasks ADD COLUMN steer_prompt TEXT")
             except sqlite3.OperationalError:
                 pass  # Column already exists (idempotent)
         # Validate the freshly-created/already-present schema before stamping the
@@ -926,6 +955,9 @@ class SqliteSessionStore:
         if version == 6:
             # Allow migration from v6 (adds created_at_unix_ms column).
             return
+        if version == 10:
+            # Allow migration from v10 (adds keep_alive/steer_prompt columns).
+            return
         cls._raise_schema_mismatch(
             database_path=database_path,
             detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),
@@ -936,6 +968,11 @@ class SqliteSessionStore:
         """Stamp ``PRAGMA user_version`` only after the schema is fully validated."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == 0:
+            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
+            return
+        if version == 10:
+            # The v10 → v11 migration (keep_alive/steer_prompt columns) ran in
+            # ``_ensure_schema``; stamp the migrated database as current.
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
             return
         if version != cls._SCHEMA_VERSION:
@@ -1097,6 +1134,8 @@ class SqliteSessionStore:
             return "queued"
         if value == "running":
             return "running"
+        if value == "idle":
+            return "idle"
         if value == "completed":
             return "completed"
         if value == "failed":
@@ -1450,6 +1489,8 @@ class SqliteSessionStore:
             created_at=cast(int, row["created_at"]),
             updated_at=cast(int, row["updated_at"]),
             created_at_unix_ms=cast(int | None, row["created_at_unix_ms"]),
+            keep_alive=bool(cast(int, row["keep_alive"])),
+            steer_prompt=cast(str | None, row["steer_prompt"]),
         )
 
     @staticmethod
@@ -3406,10 +3447,10 @@ class SqliteSessionStore:
                     delegated_reminder_json, allocate_session_id, session_id,
                     error, cancel_requested_at,
                     created_at, updated_at, started_at, finished_at,
-                    created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms
+                    created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms, keep_alive
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -3441,6 +3482,7 @@ class SqliteSessionStore:
                     wall_clock_ms,
                     task.started_at_unix_ms,
                     task.finished_at_unix_ms,
+                    1 if task.request.metadata.get("keep_alive") is True else 0,
                 ),
             )
             connection.commit()
@@ -3469,7 +3511,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms
+                           , created_at_unix_ms, keep_alive, steer_prompt
                     FROM background_tasks
                     WHERE workspace_id = ?
                     ORDER BY updated_at DESC, task_id ASC
@@ -3486,7 +3528,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms
+                           , created_at_unix_ms, keep_alive, steer_prompt
                     FROM background_tasks
                     WHERE workspace_id = ? AND status = 'queued'
                     ORDER BY created_at ASC, task_id ASC
@@ -3509,7 +3551,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms
+                           , created_at_unix_ms, keep_alive, steer_prompt
                     FROM background_tasks
                     WHERE workspace_id = ? AND status = 'running'
                     ORDER BY updated_at ASC, task_id ASC
@@ -3526,7 +3568,7 @@ class SqliteSessionStore:
                 connection.execute(
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
-                           , created_at_unix_ms
+                           , created_at_unix_ms, keep_alive, steer_prompt
                     FROM background_tasks
                     WHERE workspace_id = ? AND request_parent_session_id = ?
                     ORDER BY updated_at DESC, task_id ASC
@@ -3660,6 +3702,92 @@ class SqliteSessionStore:
                     result_available,
                     finished_at_unix_ms,
                     delegated_reminder_json,
+                    str(workspace),
+                    task_id,
+                ),
+            )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            connection.commit()
+        return self._background_task_state_from_row(updated_row)
+
+    def mark_background_task_idle(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._write_connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            if not is_background_task_transition_allowed(
+                current_status=current_status,
+                next_status="idle",
+            ):
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET status = ?, steer_prompt = NULL, updated_at = ?
+                WHERE workspace_id = ? AND task_id = ? AND status = 'running'
+                """,
+                (
+                    "idle",
+                    updated_at,
+                    str(workspace),
+                    task_id,
+                ),
+            )
+            updated_row = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            connection.commit()
+        return self._background_task_state_from_row(updated_row)
+
+    def mark_background_task_steered(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        steer_prompt: str,
+    ) -> BackgroundTaskState:
+        task_id = validate_background_task_id(task_id)
+        with self._write_connect(workspace) as connection:
+            current = self._background_task_runtime_row(
+                connection=connection,
+                workspace=workspace,
+                task_id=task_id,
+            )
+            current_status = self._parse_background_task_status(cast(str, current["status"]))
+            if not is_background_task_transition_allowed(
+                current_status=current_status,
+                next_status="running",
+            ):
+                connection.commit()
+                return self._background_task_state_from_row(current)
+            updated_at = self._next_background_task_timestamp(connection=connection)
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET status = ?, steer_prompt = ?, updated_at = ?
+                WHERE workspace_id = ? AND task_id = ? AND status IN ('idle', 'interrupted')
+                """,
+                (
+                    "running",
+                    steer_prompt,
+                    updated_at,
                     str(workspace),
                     task_id,
                 ),
@@ -4092,6 +4220,8 @@ class SqliteSessionStore:
             finished_at_unix_ms=cast(int | None, row["finished_at_unix_ms"]),
             cancel_requested_at=cast(int | None, row["cancel_requested_at"]),
             delegated_reminder=self._delegated_reminder_state_from_payload(cast(str | None, row["delegated_reminder_json"])),
+            keep_alive=bool(cast(int, row["keep_alive"])),
+            steer_prompt=cast(str | None, row["steer_prompt"]),
         )
 
     @staticmethod

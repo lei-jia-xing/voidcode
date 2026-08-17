@@ -1668,6 +1668,7 @@ class VoidCodeRuntime:
                 Literal[
                     "queued",
                     "running",
+                    "idle",
                     "waiting_approval",
                     "completed",
                     "failed",

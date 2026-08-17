@@ -6,6 +6,7 @@ from typing import Literal, Protocol
 type AcpDelegatedLifecycleStatus = Literal[
     "queued",
     "running",
+    "idle",
     "waiting_approval",
     "completed",
     "failed",

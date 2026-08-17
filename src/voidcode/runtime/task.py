@@ -7,6 +7,7 @@ from typing import Literal, cast
 type BackgroundTaskStatus = Literal[
     "queued",
     "running",
+    "idle",
     "completed",
     "failed",
     "cancelled",
@@ -71,11 +72,12 @@ _CALLABLE_SUBAGENT_PRESETS = frozenset({"advisor", "explore", "researcher", "wor
 _BACKGROUND_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[BackgroundTaskStatus]] = {
     "queued": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
-    "running": frozenset({"completed", "failed", "cancelled", "interrupted"}),
+    "running": frozenset({"completed", "failed", "cancelled", "interrupted", "idle"}),
+    "idle": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
     "completed": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
-    "interrupted": frozenset({"completed", "failed", "cancelled"}),
+    "interrupted": frozenset({"completed", "failed", "cancelled", "running", "idle"}),
 }
 
 
@@ -325,6 +327,8 @@ class BackgroundTaskState:
     cancel_requested_at: int | None = None
     delegated_reminder: DelegatedReminderState | None = None
     observability: BackgroundTaskObservability | None = None
+    keep_alive: bool = False
+    steer_prompt: str | None = None
 
     @property
     def parent_session_id(self) -> str | None:
@@ -362,6 +366,8 @@ class StoredBackgroundTaskSummary:
     updated_at: int
     created_at_unix_ms: int | None = None
     observability: BackgroundTaskObservability | None = None
+    keep_alive: bool = False
+    steer_prompt: str | None = None
 
 
 def validate_background_task_id(task_id: str) -> str:
