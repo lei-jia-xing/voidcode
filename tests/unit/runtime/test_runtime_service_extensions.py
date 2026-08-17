@@ -4217,9 +4217,7 @@ def test_runtime_materializes_plan_mode_guidance_into_provider_context_and_metad
 
     assert request is not None
     plan_segments = [
-        segment
-        for segment in request.assembled_context.segments
-        if segment.role == "system" and "Plan mode is active" in (segment.content or "")
+        segment for segment in request.assembled_context.segments if segment.role == "system" and "Plan mode is active" in (segment.content or "")
     ]
     assert len(plan_segments) == 1
     system_text = "\n".join(segment.content or "" for segment in request.assembled_context.segments if segment.role == "system")

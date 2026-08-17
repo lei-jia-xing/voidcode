@@ -144,6 +144,3 @@ def test_persisted_hook_preset_snapshot_rejects_authority_actions() -> None:
 
     with pytest.raises(ValueError, match="forbidden authority action: grant_tools"):
         _ = hook_preset_snapshot_from_payload(payload)
-
-
-

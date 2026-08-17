@@ -5700,9 +5700,7 @@ class VoidCodeRuntime:
         validated = validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=(
-                "background_run" in normalized
-                or "background_rate_limit_retry" in normalized
-                or "background_task_id" in normalized
+                "background_run" in normalized or "background_rate_limit_retry" in normalized or "background_task_id" in normalized
             ),
         )
         return validated
@@ -5950,10 +5948,7 @@ class VoidCodeRuntime:
         # transform_refs=("mode_guidance",)).
         mode_resolution = resolve_mode(
             runtime_mode_from_metadata(session_metadata),
-            explicit_read_only=(
-                isinstance(session_metadata.get("read_only"), bool)
-                and cast(bool, session_metadata["read_only"]) is True
-            ),
+            explicit_read_only=(isinstance(session_metadata.get("read_only"), bool) and cast(bool, session_metadata["read_only"]) is True),
             source="metadata" if "mode" in session_metadata else "default",
         )
         mode_guidance_context = ""
