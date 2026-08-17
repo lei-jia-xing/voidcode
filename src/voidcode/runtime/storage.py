@@ -382,6 +382,10 @@ class SessionStore(Protocol):
 
     def delete_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord: ...
 
+    def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
+
+    def load_session_status(self, *, workspace: Path, session_id: str) -> SessionStatus: ...
+
 
 @runtime_checkable
 class SessionEventAppender(Protocol):

@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, cast
 
 from ..skills.models import SkillMetadata
@@ -251,8 +252,97 @@ __all__ = [
     "build_runtime_contexts",
     "build_skill_execution_snapshot",
     "build_skill_prompt_context",
+    "catalog_skill_context",
+    "loaded_skill_names",
     "runtime_context_from_payload",
     "SkillExecutionSnapshot",
+    "skill_binding_mismatch_payload",
+    "skill_prompt_context_for_assembly",
     "snapshot_from_payload",
     "snapshot_payload",
 ]
+
+
+def _skill_entry_uri(path: Path) -> str:
+    if path.is_absolute():
+        return path.as_uri()
+    return path.resolve().as_uri()
+
+
+def loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
+    # Builtin skills are catalog resources: they stay resolvable through the
+    # skill tool and selected workflow refs, but they are not workspace skills
+    # that were actively loaded for an ordinary run.
+    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.origin != "builtin")
+
+
+def catalog_skill_context(
+    skill_registry: SkillRegistry,
+    *,
+    available_skill_names: tuple[str, ...],
+    selected_skill_names: tuple[str, ...],
+) -> str:
+    names = selected_skill_names or available_skill_names
+    if not names:
+        return ""
+    lines = [
+        "Runtime skills catalog (recommended/visible).",
+        "Each entry is metadata only; the full SKILL.md body is NOT in your",
+        "current context.",
+        "Load a skill body ONLY when its description matches the active task.",
+        'Use the skill tool: skill(name="..."). Do NOT speculatively load every',
+        "skill; lazy loading keeps the harness lightweight and the model focused.",
+        "",
+        "<available_skills>",
+    ]
+    for skill_name in names:
+        skill = skill_registry.skills.get(skill_name)
+        if skill is None:
+            continue
+        lines.extend(
+            (
+                "  <skill>",
+                f"    <name>{skill.name}</name>",
+                f"    <description>{skill.description}</description>",
+                f"    <location>{_skill_entry_uri(skill.entry_path)}</location>",
+                "  </skill>",
+            )
+        )
+    lines.append("</available_skills>")
+    return "\n".join(lines)
+
+
+def skill_prompt_context_for_assembly(
+    *,
+    skill_registry: SkillRegistry,
+    applied_context: str,
+    selected_skill_names: tuple[str, ...],
+) -> str:
+    """System-prompt skill metadata: applied skill bodies plus the catalog.
+
+    The catalog (name + description per skill) is always included when
+    skills exist so the model can discover and lazily load skill bodies via
+    the skill tool, independent of which skills are currently applied.
+    """
+    catalog = catalog_skill_context(
+        skill_registry,
+        available_skill_names=tuple(loaded_skill_names(skill_registry)),
+        selected_skill_names=selected_skill_names,
+    )
+    return "\n\n".join(part for part in (applied_context, catalog) if part)
+
+
+def skill_binding_mismatch_payload(
+    expected: dict[str, object] | None,
+    actual: dict[str, object] | None,
+) -> dict[str, object]:
+    expected_payload = expected if isinstance(expected, dict) else {}
+    actual_payload = actual if isinstance(actual, dict) else {}
+    keys = sorted(set(expected_payload.keys()) | set(actual_payload.keys()))
+    mismatches = [key for key in keys if expected_payload.get(key) != actual_payload.get(key)]
+    return {
+        "mismatch": bool(mismatches),
+        "mismatch_keys": mismatches,
+        "expected_binding": expected_payload,
+        "actual_binding": actual_payload,
+    }

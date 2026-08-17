@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from voidcode.runtime.skill_metadata import (
-    available_runtime_contexts,
-    catalog_skill_context,
-)
+from voidcode.runtime.skill_metadata import available_runtime_contexts
+from voidcode.runtime.skills import catalog_skill_context
 from voidcode.skills import (
     DEFAULT_SKILL_SEARCH_PATHS,
     LocalSkillMetadataLoader,

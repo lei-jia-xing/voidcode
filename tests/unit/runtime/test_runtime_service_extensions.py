@@ -104,6 +104,10 @@ from voidcode.runtime.events import (
     RUNTIME_TURN_PROGRESS,
     EventEnvelope,
 )
+from voidcode.runtime.execution_seams import (
+    fallback_graph_for_provider_error,
+    select_graph_for_effective_config,
+)
 from voidcode.runtime.lsp import DisabledLspManager
 from voidcode.runtime.mcp import (
     McpConfigState,
@@ -130,6 +134,7 @@ from voidcode.runtime.provider_fallback import (
     ProviderTerminalDecision,
     ProviderTransientRetryDecision,
     decide_provider_error_policy,
+    provider_transient_retry_config,
 )
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
@@ -151,6 +156,11 @@ from voidcode.runtime.service import (
     VoidCodeRuntime,
 )
 from voidcode.runtime.session import SessionRef, SessionStatus
+from voidcode.runtime.session_metadata_helpers import (
+    continuity_state_from_session_metadata,
+    session_with_context_window_metadata,
+    session_with_context_window_payload_metadata,
+)
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
@@ -4325,8 +4335,8 @@ def test_runtime_materializes_explicit_agent_hook_refs_without_expanding_tools(
     assert "runtime-owned task routing" not in (hook_segments[0].content or "")
     assert tool_names == {
         definition.name
-        for definition in runtime._tool_registry_for_effective_config(
-            runtime._effective_runtime_config_from_metadata(response.session.metadata)
+        for definition in runtime.tool_registry_for_effective_config(
+            runtime.effective_runtime_config_from_metadata(response.session.metadata)
         ).definitions()
     }
 
@@ -4751,15 +4761,15 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
     )
     prepare_provider_context_window = cast(
         Callable[..., RuntimeContextWindow],
-        _private_attr(runtime, "_prepare_provider_context_window"),
+        _private_attr(runtime, "prepare_provider_context_window"),
     )
     assemble_provider_context = cast(
         Callable[..., ProviderAssembledContext],
-        _private_attr(runtime, "_assemble_provider_context"),
+        _private_attr(runtime, "assemble_provider_context"),
     )
     execute_graph_loop = cast(
         Callable[..., Iterator[Any]],
-        _private_attr(runtime, "_execute_graph_loop"),
+        runtime._run_loop_coordinator.execute_graph_loop,
     )
     session_metadata: dict[str, object] = {
         "runtime_config": runtime_config_metadata(),
@@ -4799,7 +4809,7 @@ def test_runtime_denies_divergent_approval_replay_without_fresh_permission(tmp_p
     def _fail_fresh_permission(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("denied divergent approval replay must not ask fresh permission")
 
-    monkeypatch.setattr(runtime, "_resolve_permission", _fail_fresh_permission)
+    monkeypatch.setattr(runtime, "resolve_permission", _fail_fresh_permission)
 
     session_store = _private_attr(runtime, "_session_store")
     session_store.save_interrupted_checkpoint(
@@ -5457,7 +5467,7 @@ def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_
     runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
 
     _ = runtime.run(RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug"))
-    stream = runtime._run_with_persistence(RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug"))
+    stream = runtime.run_with_persistence(RuntimeRequest(prompt="same prompt", session_id="same-prompt-debug"))
 
     first_chunk = next(stream)
     snapshot = runtime.session_debug_snapshot(session_id="same-prompt-debug")
@@ -5801,10 +5811,10 @@ def test_hook_preset_snapshot_does_not_change_agent_tool_permissions(tmp_path: P
         ),
     )
 
-    no_hook_config = runtime_without_hooks._effective_runtime_config_from_metadata(None)
-    hook_config = runtime_with_hooks._effective_runtime_config_from_metadata(None)
-    no_hook_tools = runtime_without_hooks._tool_registry_for_effective_config(no_hook_config)
-    hook_tools = runtime_with_hooks._tool_registry_for_effective_config(hook_config)
+    no_hook_config = runtime_without_hooks.effective_runtime_config_from_metadata(None)
+    hook_config = runtime_with_hooks.effective_runtime_config_from_metadata(None)
+    no_hook_tools = runtime_without_hooks.tool_registry_for_effective_config(no_hook_config)
+    hook_tools = runtime_with_hooks.tool_registry_for_effective_config(hook_config)
 
     assert tuple(no_hook_tools.tools) == tuple(hook_tools.tools)
 
@@ -5826,8 +5836,8 @@ def test_hook_preset_snapshot_cannot_grant_denied_tools_or_policy_authority(
     )
 
     response = runtime.run(RuntimeRequest(prompt="non-authority", session_id="hook-non-authority"))
-    effective_config = runtime._effective_runtime_config_from_metadata(response.session.metadata)
-    scoped_tools = runtime._tool_registry_for_effective_config(
+    effective_config = runtime.effective_runtime_config_from_metadata(response.session.metadata)
+    scoped_tools = runtime.tool_registry_for_effective_config(
         effective_config,
         response.session.metadata,
     )
@@ -10957,7 +10967,7 @@ def test_runtime_config_metadata_materializes_supported_persisted_fields(
     )
 
     metadata = runtime._runtime_config_metadata()
-    effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
+    effective = runtime.effective_runtime_config_from_metadata({"runtime_config": metadata})
 
     persisted_keys = runtime_config_materializer_module.PERSISTED_RUNTIME_CONFIG_KEYS
     assert set(metadata) <= persisted_keys
@@ -11036,7 +11046,7 @@ def test_runtime_config_request_metadata_overrides_supported_fields(
         ),
     )
 
-    resolved = cast(Any, runtime)._runtime_config_for_request(
+    resolved = cast(Any, runtime).runtime_config_for_request(
         RuntimeRequest(
             prompt="hello",
             metadata=validate_runtime_request_metadata(
@@ -11071,7 +11081,7 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
         ValueError,
         match="persisted runtime_config field 'surprise' is not supported",
     ):
-        _ = runtime._effective_runtime_config_from_metadata({"runtime_config": runtime_config_metadata})
+        _ = runtime.effective_runtime_config_from_metadata({"runtime_config": runtime_config_metadata})
 
 
 @pytest.mark.parametrize(
@@ -11096,7 +11106,7 @@ def test_runtime_config_rejects_removed_persisted_shapes(
         ValueError,
         match=rf"persisted runtime_config field '{removed_field}' is not supported",
     ):
-        _ = runtime._effective_runtime_config_from_metadata({"runtime_config": runtime_config_metadata})
+        _ = runtime.effective_runtime_config_from_metadata({"runtime_config": runtime_config_metadata})
 
 
 def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_config(
@@ -11105,7 +11115,7 @@ def test_runtime_config_rejects_removed_top_level_metadata_without_runtime_confi
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
     with pytest.raises(ValueError, match="persisted session metadata must include runtime_config"):
-        _ = runtime._effective_runtime_config_from_metadata(
+        _ = runtime.effective_runtime_config_from_metadata(
             {
                 "agent": {"preset": "leader"},
                 "max_steps": 3,
@@ -11934,7 +11944,7 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
 
 
 def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> None:
-    continuity_from_metadata = _private_attr(VoidCodeRuntime, "_continuity_state_from_session_metadata")
+    continuity_from_metadata = continuity_state_from_session_metadata
     continuity = continuity_from_metadata(
         {
             "runtime_state": {
@@ -11953,7 +11963,7 @@ def test_runtime_rejects_boolean_continuity_version_in_session_metadata() -> Non
 
 
 def test_runtime_restores_token_budget_continuity_metadata() -> None:
-    continuity_from_metadata = _private_attr(VoidCodeRuntime, "_continuity_state_from_session_metadata")
+    continuity_from_metadata = continuity_state_from_session_metadata
     continuity = continuity_from_metadata(
         {
             "runtime_state": {
@@ -11988,7 +11998,7 @@ def test_runtime_restores_token_budget_continuity_metadata() -> None:
 
 
 def test_runtime_rejects_invalid_token_budget_continuity_metadata() -> None:
-    continuity_from_metadata = _private_attr(VoidCodeRuntime, "_continuity_state_from_session_metadata")
+    continuity_from_metadata = continuity_state_from_session_metadata
     continuity = continuity_from_metadata(
         {
             "runtime_state": {
@@ -12399,7 +12409,7 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
         model_provider_registry=registry,
     )
 
-    graph = runtime._graph_for_session_metadata(
+    graph = runtime.graph_for_session_metadata(
         {
             "runtime_config": {
                 "approval_mode": "ask",
@@ -12445,8 +12455,8 @@ def test_runtime_graph_selection_seam_uses_provider_attempt_target(tmp_path: Pat
         model_provider_registry=registry,
     )
 
-    selection = runtime._graph_selection_for_effective_config(
-        runtime.effective_runtime_config(),
+    selection = select_graph_for_effective_config(
+        config=runtime.effective_runtime_config(),
         provider_attempt=1,
     )
 
@@ -12483,7 +12493,7 @@ def test_runtime_context_window_policy_uses_fallback_attempt_model_metadata(
         model_provider_registry=registry,
     )
 
-    context_window = runtime._prepare_provider_context_window(
+    context_window = runtime.prepare_provider_context_window(
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={
@@ -12522,7 +12532,7 @@ def test_runtime_context_window_policy_recomputes_default_for_fallback_attempt(
         model_provider_registry=registry,
     )
 
-    context_window = runtime._prepare_provider_context_window(
+    context_window = runtime.prepare_provider_context_window(
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={
@@ -12559,8 +12569,8 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
         status="running",
     )
     prompt = "read sample.txt"
-    tool_registry = runtime._tool_registry_for_effective_config(runtime.effective_runtime_config())
-    context_window = runtime._prepare_provider_context_window(
+    tool_registry = runtime.tool_registry_for_effective_config(runtime.effective_runtime_config())
+    context_window = runtime.prepare_provider_context_window(
         prompt=prompt,
         tool_results=(),
         session_metadata=session.metadata,
@@ -12570,7 +12580,7 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
         prompt=prompt,
         available_tools=tool_registry.definitions(),
         context_window=context_window,
-        assembled_context=runtime._assemble_provider_context(
+        assembled_context=runtime.assemble_provider_context(
             prompt=prompt,
             tool_results=(),
             session_metadata=session.metadata,
@@ -12584,7 +12594,7 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
 
     monkeypatch.setattr(
         runtime,
-        "_prepare_provider_context_window",
+        "prepare_provider_context_window",
         _unexpected_prepare_provider_context_window,
     )
 
@@ -12599,7 +12609,7 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
     )
 
     chunks = list(
-        runtime._execute_graph_loop(
+        runtime._run_loop_coordinator.execute_graph_loop(
             graph=_SingleStepGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -12642,8 +12652,8 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
         status="running",
     )
     prompt = "read sample.txt"
-    tool_registry = runtime._tool_registry_for_effective_config(runtime.effective_runtime_config())
-    context_window = runtime._prepare_provider_context_window(
+    tool_registry = runtime.tool_registry_for_effective_config(runtime.effective_runtime_config())
+    context_window = runtime.prepare_provider_context_window(
         prompt=prompt,
         tool_results=(),
         session_metadata=session.metadata,
@@ -12653,14 +12663,14 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
         prompt=prompt,
         available_tools=tool_registry.definitions(),
         context_window=context_window,
-        assembled_context=runtime._assemble_provider_context(
+        assembled_context=runtime.assemble_provider_context(
             prompt=prompt,
             tool_results=(),
             session_metadata=session.metadata,
         ),
         metadata=session.metadata,
     )
-    original_prepare = runtime._prepare_provider_context_window
+    original_prepare = runtime.prepare_provider_context_window
 
     def _counting_prepare_provider_context_window(**kwargs: object) -> object:
         nonlocal prepared_calls
@@ -12675,7 +12685,7 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
 
     monkeypatch.setattr(
         runtime,
-        "_prepare_provider_context_window",
+        "prepare_provider_context_window",
         _counting_prepare_provider_context_window,
     )
     tool_results = [ToolResult(tool_name="read", status="ok", content="alpha")]
@@ -12691,7 +12701,7 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
     )
 
     list(
-        runtime._execute_graph_loop(
+        runtime._run_loop_coordinator.execute_graph_loop(
             graph=_ContextWindowCountingGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -12732,43 +12742,46 @@ def test_runtime_provider_fallback_seam_returns_next_graph_selection(tmp_path: P
         model_provider_registry=registry,
     )
 
-    selection = runtime._fallback_graph_selection(
+    session_metadata = {
+        "runtime_config": {
+            "approval_mode": "ask",
+            "permission": _DEFAULT_PERMISSION_METADATA,
+            "execution_engine": "provider",
+            "max_steps": None,
+            "tool_timeout_seconds": None,
+            "model": "primary/model-a",
+            "fallback_models": ["fallback/model-b"],
+            "resolved_provider": {
+                "active_target": {
+                    "provider": "primary",
+                    "model": "model-a",
+                    "raw_model": "primary/model-a",
+                },
+                "targets": [
+                    {
+                        "provider": "primary",
+                        "model": "model-a",
+                        "raw_model": "primary/model-a",
+                    },
+                    {
+                        "provider": "fallback",
+                        "model": "model-b",
+                        "raw_model": "fallback/model-b",
+                    },
+                ],
+            },
+        }
+    }
+    effective_config = runtime.effective_runtime_config_from_metadata(session_metadata)
+    selection = fallback_graph_for_provider_error(
         error=ProviderExecutionError(
             kind="rate_limit",
             provider_name="primary",
             model_name="model-a",
             message="rate limited",
         ),
-        session_metadata={
-            "runtime_config": {
-                "approval_mode": "ask",
-                "permission": _DEFAULT_PERMISSION_METADATA,
-                "execution_engine": "provider",
-                "max_steps": None,
-                "tool_timeout_seconds": None,
-                "model": "primary/model-a",
-                "fallback_models": ["fallback/model-b"],
-                "resolved_provider": {
-                    "active_target": {
-                        "provider": "primary",
-                        "model": "model-a",
-                        "raw_model": "primary/model-a",
-                    },
-                    "targets": [
-                        {
-                            "provider": "primary",
-                            "model": "model-a",
-                            "raw_model": "primary/model-a",
-                        },
-                        {
-                            "provider": "fallback",
-                            "model": "model-b",
-                            "raw_model": "fallback/model-b",
-                        },
-                    ],
-                },
-            }
-        },
+        provider_chain=effective_config.resolved_provider.target_chain,
+        config=effective_config,
         provider_attempt=0,
     )
 
@@ -14088,7 +14101,7 @@ def test_runtime_request_agent_override_preserves_existing_prompt_materializatio
         model_provider_registry=registry,
     )
 
-    resolved = cast(Any, runtime)._runtime_config_for_request(
+    resolved = cast(Any, runtime).runtime_config_for_request(
         RuntimeRequest(
             prompt="hello",
             metadata={"agent": {"preset": "leader", "model": "opencode/gpt-5.4"}},
@@ -14138,7 +14151,7 @@ def test_runtime_request_agent_explicit_prompt_materialization_replaces_existing
         model_provider_registry=registry,
     )
 
-    resolved = cast(Any, runtime)._runtime_config_for_request(
+    resolved = cast(Any, runtime).runtime_config_for_request(
         RuntimeRequest(
             prompt="hello",
             metadata={
@@ -17086,44 +17099,45 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
             }
         ),
     )
-    retry_config = runtime._provider_transient_retry_config(
-        provider_name="opencode",
-        session_metadata={
-            "runtime_config": {
-                "approval_mode": "ask",
-                "permission": {},
-                "execution_engine": "provider",
-                "max_steps": None,
-                "tool_timeout_seconds": None,
-                "model": "opencode/gpt-5.4",
-                "fallback_models": ["custom/demo"],
-                "providers": {
-                    "opencode": {
-                        "auth_scheme": "bearer",
-                        "transient_retry": {"max_retries": 0},
-                    }
+    retry_metadata = {
+        "runtime_config": {
+            "approval_mode": "ask",
+            "permission": {},
+            "execution_engine": "provider",
+            "max_steps": None,
+            "tool_timeout_seconds": None,
+            "model": "opencode/gpt-5.4",
+            "fallback_models": ["custom/demo"],
+            "providers": {
+                "opencode": {
+                    "auth_scheme": "bearer",
+                    "transient_retry": {"max_retries": 0},
+                }
+            },
+            "resolved_provider": {
+                "active_target": {
+                    "raw_model": "opencode/gpt-5.4",
+                    "provider": "opencode",
+                    "model": "gpt-5.4",
                 },
-                "resolved_provider": {
-                    "active_target": {
+                "targets": [
+                    {
                         "raw_model": "opencode/gpt-5.4",
                         "provider": "opencode",
                         "model": "gpt-5.4",
                     },
-                    "targets": [
-                        {
-                            "raw_model": "opencode/gpt-5.4",
-                            "provider": "opencode",
-                            "model": "gpt-5.4",
-                        },
-                        {
-                            "raw_model": "custom/demo",
-                            "provider": "custom",
-                            "model": "demo",
-                        },
-                    ],
-                },
-            }
-        },
+                    {
+                        "raw_model": "custom/demo",
+                        "provider": "custom",
+                        "model": "demo",
+                    },
+                ],
+            },
+        }
+    }
+    retry_config = provider_transient_retry_config(
+        providers=runtime.effective_runtime_config_from_metadata(retry_metadata).providers,
+        provider_name="opencode",
     )
 
     assert retry_config.max_retries == 0
@@ -17489,7 +17503,7 @@ def test_runtime_provider_failure_resume_finalizes_background_task_and_releases_
     child_session_id = "provider-retry-background-child"
 
     _ = list(
-        runtime._run_with_persistence(
+        runtime.run_with_persistence(
             RuntimeRequest(
                 prompt="read sample.txt",
                 session_id=child_session_id,
@@ -17584,7 +17598,7 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
     child_session_id = "provider-retry-raise-child"
 
     _ = list(
-        runtime._run_with_persistence(
+        runtime.run_with_persistence(
             RuntimeRequest(
                 prompt="read sample.txt",
                 session_id=child_session_id,
@@ -17649,8 +17663,8 @@ def test_runtime_provider_failure_resume_persists_failed_chunk_when_loop_raises(
         raise RuntimeError("graph loop raised after failed chunk")
 
     monkeypatch.setattr(
-        runtime,
-        "_execute_graph_loop",
+        runtime._run_loop_coordinator,
+        "execute_graph_loop",
         _raise_after_failed_chunk,
     )
 
@@ -18142,7 +18156,7 @@ def test_runtime_context_window_policy_uses_active_model_limit(tmp_path: Path) -
         model_provider_registry=registry,
     )
 
-    context = runtime._prepare_provider_context_window(
+    context = runtime.prepare_provider_context_window(
         prompt="read sample.txt",
         tool_results=(),
         session_metadata={
@@ -18604,7 +18618,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
         context_window_policy=ContextWindowPolicy(model_context_window_tokens=1),
     )
 
-    context_window = runtime._prepare_provider_context_window(
+    context_window = runtime.prepare_provider_context_window(
         prompt="verify build",
         tool_results=(
             ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
@@ -18623,7 +18637,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
             "runtime_config": runtime._runtime_config_metadata(),
         },
     )
-    enriched = VoidCodeRuntime._session_with_context_window_metadata(session, context_window)
+    enriched = session_with_context_window_metadata(session, context_window)
 
     persisted_cw = cast(dict[str, object], enriched.metadata["context_window"])
     assert persisted_cw["original_tool_result_count"] == 3
@@ -18646,7 +18660,7 @@ def test_runtime_persists_assembled_context_token_estimate(
     session_metadata: dict[str, object] = {
         "runtime_config": runtime._runtime_config_metadata(),
     }
-    assembled = runtime._assemble_provider_context(
+    assembled = runtime.assemble_provider_context(
         prompt="检查构建输出",
         tool_results=(ToolResult(tool_name="read", status="ok", content="hello world", data={}),),
         session_metadata=session_metadata,
@@ -18659,7 +18673,7 @@ def test_runtime_persists_assembled_context_token_estimate(
         metadata=session_metadata,
     )
 
-    enriched = VoidCodeRuntime._session_with_context_window_payload_metadata(
+    enriched = session_with_context_window_payload_metadata(
         session,
         assembled.metadata,
     )
@@ -18694,7 +18708,7 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
         "runtime_state": {"context_projection": prior_payload},
     }
 
-    assembled = runtime._assemble_provider_context(
+    assembled = runtime.assemble_provider_context(
         prompt="resume using raw events",
         tool_results=(ToolResult(tool_name="read", status="ok", content="raw retained"),),
         session_metadata=session_metadata,
@@ -18735,7 +18749,7 @@ def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
     }
 
     with pytest.raises(ValueError, match="legacy runtime continuity metadata"):
-        runtime._assemble_provider_context(
+        runtime.assemble_provider_context(
             prompt="resume despite malformed metadata",
             tool_results=(ToolResult(tool_name="read", status="ok", content="raw retained"),),
             session_metadata=session_metadata,
@@ -18764,12 +18778,12 @@ def test_runtime_context_window_projection_no_command_name_scoring(
     )
 
     meta: dict[str, object] = {"runtime_config": runtime._runtime_config_metadata()}
-    context_a = runtime._prepare_provider_context_window(
+    context_a = runtime.prepare_provider_context_window(
         prompt="verify",
         tool_results=(shell_a,),
         session_metadata=meta,
     )
-    context_b = runtime._prepare_provider_context_window(
+    context_b = runtime.prepare_provider_context_window(
         prompt="verify",
         tool_results=(shell_b,),
         session_metadata=meta,
@@ -18791,7 +18805,7 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
         context_window_policy=ContextWindowPolicy(model_context_window_tokens=1),
     )
 
-    context = runtime._prepare_provider_context_window(
+    context = runtime.prepare_provider_context_window(
         prompt="continue coding",
         tool_results=(
             ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),
@@ -18815,7 +18829,7 @@ def test_runtime_context_window_projection_auto_compaction_disabled_preserves_al
     projection (derived output matches complete truth for this case)."""
     runtime = VoidCodeRuntime(workspace=tmp_path)
 
-    context = runtime._prepare_provider_context_window(
+    context = runtime.prepare_provider_context_window(
         prompt="inspect",
         tool_results=(
             ToolResult(tool_name="read", status="ok", content="a", data={"index": 1}),

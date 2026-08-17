@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast
 
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .policy import runtime_policy_snapshot_from_session_metadata
+
+if TYPE_CHECKING:
+    from .storage import SessionStore
 
 type SessionStatus = Literal["idle", "running", "waiting", "completed", "failed", "interrupted"]
 type SessionKind = Literal["top_level", "child"]
@@ -283,3 +287,30 @@ class StoredSessionSummary:
     turn: int
     prompt: str
     updated_at: int
+
+
+def validate_session_workspace(
+    session: SessionState,
+    *,
+    session_id: str,
+    workspace: Path,
+) -> None:
+    session_workspace = session.metadata.get("workspace")
+    if session_workspace is None:
+        return
+    if session_workspace != str(workspace):
+        raise ValueError(f"session {session_id} does not belong to workspace {workspace}")
+
+
+def reload_persisted_session(
+    store: SessionStore,
+    workspace: Path,
+    *,
+    session_id: str,
+) -> SessionState:
+    response = store.load_session(
+        workspace=workspace,
+        session_id=session_id,
+    )
+    validate_session_workspace(response.session, session_id=session_id, workspace=workspace)
+    return response.session

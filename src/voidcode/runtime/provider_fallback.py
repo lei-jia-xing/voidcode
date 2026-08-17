@@ -4,8 +4,9 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
-from ..provider.config import ProviderTransientRetryConfig
+from ..provider.config import DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG, ProviderTransientRetryConfig
 from ..provider.errors import ProviderExecutionError
+from .config import RuntimeProvidersConfig
 
 PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
 PROVIDER_FALLBACK_ELIGIBLE_KINDS = frozenset(
@@ -186,5 +187,45 @@ __all__ = [
     "ProviderTerminalDecision",
     "ProviderTransientRetryDecision",
     "decide_provider_error_policy",
+    "provider_transient_retry_config",
     "provider_transient_retry_delay_ms",
 ]
+
+
+def provider_transient_retry_config(
+    providers: RuntimeProvidersConfig | None,
+    provider_name: str,
+) -> ProviderTransientRetryConfig:
+    if providers is None:
+        return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
+    if provider_name == "opencode-go":
+        provider_config = providers.opencode_go
+    elif provider_name == "openai":
+        provider_config = providers.openai
+    elif provider_name == "anthropic":
+        provider_config = providers.anthropic
+    elif provider_name == "google":
+        provider_config = providers.google
+    elif provider_name == "copilot":
+        provider_config = providers.copilot
+    elif provider_name == "litellm":
+        provider_config = providers.litellm
+    elif provider_name == "opencode":
+        provider_config = providers.opencode
+    elif provider_name == "deepseek":
+        provider_config = providers.deepseek
+    elif provider_name == "glm":
+        provider_config = providers.glm
+    elif provider_name == "grok":
+        provider_config = providers.grok
+    elif provider_name == "minimax":
+        provider_config = providers.minimax
+    elif provider_name == "kimi":
+        provider_config = providers.kimi
+    elif provider_name == "qwen":
+        provider_config = providers.qwen
+    else:
+        provider_config = providers.custom.get(provider_name)
+    if provider_config is None or provider_config.transient_retry is None:
+        return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
+    return provider_config.transient_retry

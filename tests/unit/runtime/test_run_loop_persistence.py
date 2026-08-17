@@ -64,8 +64,8 @@ def _graph_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream
         },
     )
     prompt = "probe"
-    tool_registry = runtime._tool_registry_for_effective_config(runtime.effective_runtime_config())
-    context_window = runtime._prepare_provider_context_window(
+    tool_registry = runtime.tool_registry_for_effective_config(runtime.effective_runtime_config())
+    context_window = runtime.prepare_provider_context_window(
         prompt=prompt,
         tool_results=(),
         session_metadata=session.metadata,
@@ -75,7 +75,7 @@ def _graph_request(runtime: VoidCodeRuntime, *, session_id: str, provider_stream
         prompt=prompt,
         available_tools=tool_registry.definitions(),
         context_window=context_window,
-        assembled_context=runtime._assemble_provider_context(
+        assembled_context=runtime.assemble_provider_context(
             prompt=prompt,
             tool_results=(),
             session_metadata=session.metadata,
@@ -227,7 +227,7 @@ def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path
     session, request, tool_registry = _graph_request(runtime, session_id="session-1", provider_stream=True)
 
     chunks = list(
-        runtime._execute_graph_loop(
+        runtime._run_loop_coordinator.execute_graph_loop(
             graph=_StreamingGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -283,7 +283,7 @@ def test_execute_graph_loop_streaming_persists_aggregated_reasoning(tmp_path: Pa
     session, request, tool_registry = _graph_request(runtime, session_id="session-1", provider_stream=True)
 
     chunks = list(
-        runtime._execute_graph_loop(
+        runtime._run_loop_coordinator.execute_graph_loop(
             graph=_StreamingReasoningGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -336,7 +336,7 @@ def test_execute_graph_loop_non_streaming_persists_step_reasoning(tmp_path: Path
     session, request, tool_registry = _graph_request(runtime, session_id="session-1")
 
     chunks = list(
-        runtime._execute_graph_loop(
+        runtime._run_loop_coordinator.execute_graph_loop(
             graph=_NonStreamingReasoningGraph(),
             tool_registry=tool_registry,
             session=session,
@@ -387,7 +387,7 @@ def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) ->
     session, request, tool_registry = _graph_request(runtime, session_id="session-1")
 
     chunks = list(
-        runtime._execute_graph_loop(
+        runtime._run_loop_coordinator.execute_graph_loop(
             graph=_ToolThenFinalGraph(),
             tool_registry=tool_registry,
             session=session,

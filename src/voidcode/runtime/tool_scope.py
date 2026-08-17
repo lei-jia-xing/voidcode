@@ -122,4 +122,9 @@ class RuntimeToolScopeResolver:
         )
 
 
-__all__ = ["RuntimeToolScopeResolver"]
+def tool_policy_error(decision: ToolPolicyDecision) -> str:
+    reason = decision.reason or "runtime tool policy denied the tool"
+    return f"{reason}: '{decision.tool_name}'"
+
+
+__all__ = ["RuntimeToolScopeResolver", "tool_policy_error"]

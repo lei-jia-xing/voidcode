@@ -442,8 +442,8 @@ def test_default_runtime_scopes_tools_to_leader_manifest(tmp_path: Path) -> None
     agent = cast(dict[str, object], agent_raw)
 
     assert agent["preset"] == "leader"
-    effective_config = runtime._effective_runtime_config_from_metadata(response.session.metadata)
-    scoped_registry = runtime._tool_registry_for_effective_config(effective_config)
+    effective_config = runtime.effective_runtime_config_from_metadata(response.session.metadata)
+    scoped_registry = runtime.tool_registry_for_effective_config(effective_config)
     assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(scoped_registry.tools)
     assert any(event.event_type == "runtime.tool_lookup_succeeded" for event in response.events)
     assert all(event.payload.get("tool") != "missing_tool" for event in response.events)
@@ -455,9 +455,9 @@ def test_injected_graph_skips_eager_default_remote_mcp_discovery(tmp_path: Path)
         config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
         graph=_StubGraph(),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(None)
+    effective_config = runtime.effective_runtime_config_from_metadata(None)
 
-    assert runtime._should_skip_mcp_startup_for_request(
+    assert runtime.should_skip_mcp_startup_for_request(
         request_metadata={},
         effective_config=effective_config,
     )
@@ -473,9 +473,9 @@ def test_disabled_memory_runtime_does_not_expose_memory_tools(tmp_path: Path) ->
         ),
         graph=_StubGraph(),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(None)
+    effective_config = runtime.effective_runtime_config_from_metadata(None)
 
-    registry = runtime._tool_registry_for_effective_config(effective_config)
+    registry = runtime.tool_registry_for_effective_config(effective_config)
 
     assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(registry.tools)
     assert runtime.memory_status().total_count == 0
@@ -487,9 +487,9 @@ def test_memory_tools_are_conservative_without_explicit_runtime_policy(tmp_path:
         config=RuntimeConfig(execution_engine="provider", model="opencode-go/glm-5.1"),
         graph=_StubGraph(),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(None)
+    effective_config = runtime.effective_runtime_config_from_metadata(None)
 
-    registry = runtime._tool_registry_for_effective_config(effective_config)
+    registry = runtime.tool_registry_for_effective_config(effective_config)
 
     assert {"memory_add", "memory_delete", "memory_list", "memory_search"}.isdisjoint(registry.tools)
 
@@ -602,7 +602,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
         config=RuntimeConfig(execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="allow"),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(
+    effective_config = runtime.effective_runtime_config_from_metadata(
         {
             "runtime_config": {
                 "execution_engine": "deterministic",
@@ -611,7 +611,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
         }
     )
 
-    registry = runtime._tool_registry_for_effective_config(effective_config)
+    registry = runtime.tool_registry_for_effective_config(effective_config)
 
     assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" in registry.tools
@@ -630,7 +630,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
         ),
         permission_policy=PermissionPolicy(mode="allow"),
     )
-    effective_config = runtime._effective_runtime_config_from_metadata(
+    effective_config = runtime.effective_runtime_config_from_metadata(
         {
             "runtime_config": {
                 "execution_engine": "deterministic",
@@ -639,7 +639,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
         }
     )
 
-    registry = runtime._tool_registry_for_effective_config(effective_config)
+    registry = runtime.tool_registry_for_effective_config(effective_config)
 
     assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" not in registry.tools
@@ -1053,7 +1053,7 @@ def test_runtime_includes_opted_in_local_custom_tools(tmp_path: Path) -> None:
         ),
     )
 
-    registry = runtime._tool_registry_for_effective_config(runtime._initial_effective_config)
+    registry = runtime.tool_registry_for_effective_config(runtime._initial_effective_config)
 
     assert "local/echo" not in runtime._base_tool_registry.tools
     assert "local/echo" in registry.tools
@@ -1158,7 +1158,7 @@ def test_runtime_persists_top_level_local_tools_config(tmp_path: Path) -> None:
     metadata = runtime._runtime_config_metadata()
 
     assert metadata["tools"] == {"local": {"enabled": True, "path": ".voidcode/tools"}}
-    effective = runtime._effective_runtime_config_from_metadata({"runtime_config": metadata})
+    effective = runtime.effective_runtime_config_from_metadata({"runtime_config": metadata})
     assert effective.tools == RuntimeToolsConfig(local=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"))
 
 
@@ -1174,7 +1174,7 @@ def test_runtime_rejects_local_custom_tool_name_collisions(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="duplicate tool definition: grep"):
-        _ = runtime._tool_registry_for_effective_config(runtime._initial_effective_config)
+        _ = runtime.tool_registry_for_effective_config(runtime._initial_effective_config)
 
 
 def test_local_custom_tool_provider_rejects_invalid_input_schema(tmp_path: Path) -> None:

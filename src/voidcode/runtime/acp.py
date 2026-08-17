@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from ..acp import (
     AcpConfigState,
@@ -12,6 +14,17 @@ from ..acp import (
     AcpResponseEnvelope,
 )
 from .config import RuntimeAcpConfig
+from .contracts import RuntimeStreamChunk, UnknownSessionError
+from .event_envelopes import envelopes_for_acp_events
+from .events import RUNTIME_ACP_DELEGATED_LIFECYCLE
+from .session import SessionState
+from .session_metadata_helpers import session_with_current_acp_metadata
+from .storage import SessionEventAppender, SessionStore
+
+if TYPE_CHECKING:
+    from .background_tasks import BackgroundTaskState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,3 +355,178 @@ def build_acp_adapter(config: RuntimeAcpConfig | None) -> AcpAdapter:
     if configuration.configured_enabled is not True:
         return DisabledAcpAdapter(config)
     return ManagedAcpAdapter(config or RuntimeAcpConfig())
+
+
+def delegated_execution_for_task(
+    *,
+    task: BackgroundTaskState,
+    lifecycle_status: str,
+    approval_blocked: bool | None = None,
+    result_available: bool | None = None,
+) -> AcpDelegatedExecution:
+    try:
+        routing = task.routing_identity
+    except ValueError:
+        routing = None
+    delegation_metadata = task.request.metadata.get("delegation")
+    delegation_dict = cast(dict[str, object], delegation_metadata) if isinstance(delegation_metadata, dict) else {}
+    return AcpDelegatedExecution(
+        parent_session_id=task.parent_session_id,
+        requested_child_session_id=task.request.session_id,
+        child_session_id=task.session_id,
+        delegated_task_id=task.task.id,
+        approval_request_id=task.approval_request_id,
+        question_request_id=task.question_request_id,
+        routing_mode=routing.mode if routing is not None else None,
+        routing_subagent_type=routing.subagent_type if routing is not None else None,
+        routing_description=routing.description if routing is not None else None,
+        routing_command=routing.command if routing is not None else None,
+        selected_preset=(cast(str, delegation_dict["selected_preset"]) if isinstance(delegation_dict.get("selected_preset"), str) else None),
+        selected_execution_engine=(
+            cast(str, delegation_dict["selected_execution_engine"]) if isinstance(delegation_dict.get("selected_execution_engine"), str) else None
+        ),
+        lifecycle_status=cast(
+            Literal[
+                "queued",
+                "running",
+                "idle",
+                "waiting_approval",
+                "completed",
+                "failed",
+                "cancelled",
+            ],
+            lifecycle_status,
+        ),
+        approval_blocked=(approval_blocked if approval_blocked is not None else task.status == "running"),
+        result_available=(result_available if result_available is not None else task.result_available),
+        cancellation_cause=task.cancellation_cause,
+    )
+
+
+def publish_delegated_acp_event(
+    adapter: AcpAdapter,
+    *,
+    task: BackgroundTaskState,
+    lifecycle_status: str,
+    payload: dict[str, object],
+    approval_blocked: bool | None = None,
+    result_available: bool | None = None,
+) -> None:
+    if adapter.current_state().status != "connected":
+        return
+    delegation = delegated_execution_for_task(
+        task=task,
+        lifecycle_status=lifecycle_status,
+        approval_blocked=approval_blocked,
+        result_available=result_available,
+    )
+    response = adapter.publish(
+        AcpEventEnvelope(
+            event_type=RUNTIME_ACP_DELEGATED_LIFECYCLE,
+            session_id=task.session_id,
+            parent_session_id=task.parent_session_id,
+            delegation=delegation,
+            payload=payload,
+        )
+    )
+    if response.status != "ok":
+        logger.debug("skipping ACP delegated lifecycle event: %s", response.error)
+
+
+def append_parent_acp_delegated_lifecycle_event(
+    appender: SessionStore,
+    *,
+    workspace: Path,
+    task: BackgroundTaskState,
+    lifecycle_status: str,
+    payload: dict[str, object],
+    approval_blocked: bool | None = None,
+    result_available: bool | None = None,
+) -> None:
+    parent_session_id = task.parent_session_id
+    if parent_session_id is None:
+        return
+    if not isinstance(appender, SessionEventAppender):
+        return
+    delegation = delegated_execution_for_task(
+        task=task,
+        lifecycle_status=lifecycle_status,
+        approval_blocked=approval_blocked,
+        result_available=result_available,
+    )
+    correlation_id = task.approval_request_id or task.question_request_id or task.session_id or "none"
+    try:
+        _ = appender.append_session_event(
+            workspace=workspace,
+            session_id=parent_session_id,
+            event_type=RUNTIME_ACP_DELEGATED_LIFECYCLE,
+            source="runtime",
+            payload={
+                "session_id": task.session_id,
+                "parent_session_id": parent_session_id,
+                "delegation": delegation.as_payload(),
+                **payload,
+            },
+            dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{correlation_id}"),
+        )
+    except (AttributeError, UnknownSessionError):
+        logger.debug(
+            "skipping ACP delegated lifecycle event for unavailable parent session: %s",
+            parent_session_id,
+        )
+
+
+def disconnect_acp_for_session_state(adapter: AcpAdapter, session: SessionState) -> SessionState:
+    _ = adapter.disconnect()
+    return session_with_current_acp_metadata(session, adapter.current_state())
+
+
+def emit_acp_events(
+    adapter: AcpAdapter,
+    session: SessionState,
+    start_sequence: int,
+    acp_events: tuple[object, ...],
+) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
+    emitted: list[RuntimeStreamChunk] = []
+    current_session = session
+    sequence = start_sequence - 1
+    for acp_event in envelopes_for_acp_events(
+        session_id=session.session.id,
+        start_sequence=start_sequence,
+        acp_events=acp_events,
+    ):
+        sequence = acp_event.sequence
+        current_session = session_with_current_acp_metadata(current_session, adapter.current_state())
+        emitted.append(RuntimeStreamChunk(kind="event", session=current_session, event=acp_event))
+    return tuple(emitted), current_session, sequence
+
+
+def emit_current_acp_drain(
+    adapter: AcpAdapter,
+    session: SessionState,
+    start_sequence: int,
+) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
+    return emit_acp_events(
+        adapter,
+        session,
+        start_sequence=start_sequence,
+        acp_events=adapter.drain_events(),
+    )
+
+
+def finalize_run_acp(
+    adapter: AcpAdapter,
+    session: SessionState,
+    sequence: int,
+) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
+    if adapter.current_state().configuration.configured_enabled is not True:
+        return (), session, sequence
+    emitted, updated_session, last_sequence = emit_acp_events(
+        adapter,
+        session,
+        start_sequence=sequence + 1,
+        acp_events=adapter.disconnect(),
+    )
+    if not emitted:
+        updated_session = session_with_current_acp_metadata(updated_session, adapter.current_state())
+    return emitted, updated_session, last_sequence or sequence

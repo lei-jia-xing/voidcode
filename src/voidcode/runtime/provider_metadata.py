@@ -5,6 +5,8 @@ from typing import cast
 
 from ..provider.model_catalog import ProviderModelMetadata as CatalogProviderModelMetadata
 from ..provider.model_catalog import ToolFeedbackMode
+from ..provider.reasoning_effort import provider_supports_reasoning_effort
+from .config_materializer import EffectiveRuntimeConfig
 from .contracts import ProviderModelMetadata
 
 
@@ -115,4 +117,23 @@ __all__ = [
     "optional_string",
     "optional_string_tuple",
     "tool_feedback_mode",
+    "validate_reasoning_effort_capability",
 ]
+
+
+def validate_reasoning_effort_capability(config: EffectiveRuntimeConfig) -> None:
+    if config.reasoning_effort is None:
+        return
+    if config.execution_engine != "provider":
+        return
+    active_target = config.resolved_provider.active_target.selection
+    provider_name = active_target.provider
+    model_name = active_target.model
+    if provider_name is None or model_name is None:
+        return
+    if provider_supports_reasoning_effort(provider_name, model_name) is False:
+        raise ValueError(
+            "reasoning_effort is configured but model "
+            f"'{provider_name}/{model_name}' does not support reasoning effort; "
+            "remove the reasoning_effort hint or pick a reasoning-effort capable model"
+        )

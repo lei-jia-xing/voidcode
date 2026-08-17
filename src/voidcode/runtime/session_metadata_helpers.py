@@ -1,9 +1,22 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from typing import cast
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
-from .session import SessionState
+from .context_window import (
+    ContextProjection,
+    RuntimeContextWindow,
+    continuity_state_from_metadata_payload,
+)
+from .contracts import RuntimeResponse, UnknownSessionError
+from .permission import DelegationGovernance
+from .permission_policy import (
+    pending_approval_from_response,
+    pending_question_from_response,
+)
+from .session import SessionState, validate_session_workspace
 from .todos import (
     runtime_todos_equal,
     runtime_todos_from_state_payload,
@@ -11,6 +24,25 @@ from .todos import (
     todo_event_payload,
     todo_state_payload,
 )
+
+if TYPE_CHECKING:
+    from .acp import AcpAdapterState
+    from .storage import SessionStore
+
+logger = logging.getLogger(__name__)
+
+_DELEGATION_GOVERNANCE = DelegationGovernance()
+
+
+def _coerce_int_like(value: object | None, default: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def session_model_identity(
@@ -171,10 +203,222 @@ def todo_state_matches_payload(
     return runtime_todos_equal(current, raw_todos=raw_todos, updated_at=revision)
 
 
+def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
+    return SessionState(
+        session=session.session,
+        status=session.status,
+        turn=session.turn,
+        metadata=metadata,
+    )
+
+
+def session_with_plan_state(
+    session: SessionState,
+    *,
+    status: str | None = None,
+    approval_request_id: str | None = None,
+    blocked_tool: str | None = None,
+    error: str | None = None,
+) -> SessionState:
+    plan_state = plan_state_from_metadata(
+        session.metadata,
+        status=status,
+        approval_request_id=approval_request_id,
+        blocked_tool=blocked_tool,
+        error=error,
+    )
+    if plan_state is None:
+        if status is not None and status.startswith("waiting_"):
+            plan_state = {"status": status}
+            if approval_request_id is not None:
+                plan_state["approval_request_id"] = approval_request_id
+            if blocked_tool is not None:
+                plan_state["blocked_tool"] = blocked_tool
+            if error is not None:
+                plan_state["last_error"] = error
+        else:
+            return session
+    return _session_with_metadata(
+        session,
+        {
+            **session.metadata,
+            "plan_state": plan_state,
+        },
+    )
+
+
+def session_with_context_window_metadata(
+    session: SessionState,
+    context_window: RuntimeContextWindow,
+) -> SessionState:
+    return session_with_context_window_payload_metadata(session, context_window.metadata_payload())
+
+
+def delegation_depth_from_metadata(metadata: dict[str, object] | None) -> int:
+    if metadata is None:
+        return 0
+    raw_delegation = metadata.get("delegation")
+    if not isinstance(raw_delegation, dict):
+        return 0
+    delegation = cast(dict[str, object], raw_delegation)
+    return max(0, _coerce_int_like(delegation.get("depth"), 0))
+
+
+def remaining_spawn_budget_from_metadata(metadata: dict[str, object] | None) -> int:
+    if metadata is None:
+        return _DELEGATION_GOVERNANCE.spawn_budget
+    raw_delegation = metadata.get("delegation")
+    if not isinstance(raw_delegation, dict):
+        return _DELEGATION_GOVERNANCE.spawn_budget
+    delegation = cast(dict[str, object], raw_delegation)
+    remaining = _coerce_int_like(
+        delegation.get("remaining_spawn_budget"),
+        _DELEGATION_GOVERNANCE.spawn_budget,
+    )
+    return max(0, remaining)
+
+
+def continuity_state_from_session_metadata(
+    session_metadata: dict[str, object],
+) -> ContextProjection | None:
+    runtime_state = session_metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict):
+        return None
+    runtime_state_payload = cast(dict[str, object], runtime_state)
+    continuity = runtime_state_payload.get("context_projection")
+    if not isinstance(continuity, dict):
+        return None
+    return continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
+
+
+def _runtime_state_metadata_with_acp_state(
+    metadata: dict[str, object],
+    acp_state: AcpAdapterState,
+) -> dict[str, object]:
+    runtime_state = metadata.get("runtime_state")
+    if runtime_state is None:
+        runtime_state_metadata: dict[str, object] = {}
+    elif isinstance(runtime_state, dict):
+        runtime_state_metadata = dict(cast(dict[str, object], runtime_state))
+    else:
+        runtime_state_metadata = {}
+    runtime_state_metadata["acp"] = {
+        "mode": acp_state.mode,
+        "configured_enabled": acp_state.configuration.configured_enabled,
+        "status": acp_state.status,
+        "available": acp_state.available,
+        "last_error": acp_state.last_error,
+        "last_request_type": acp_state.last_request_type,
+        "last_request_id": acp_state.last_request_id,
+        "last_event_type": acp_state.last_event_type,
+        "last_delegation": (acp_state.last_delegation.as_payload() if acp_state.last_delegation is not None else None),
+    }
+    return {**metadata, "runtime_state": runtime_state_metadata}
+
+
+def session_with_current_acp_metadata(
+    session: SessionState,
+    acp_state: AcpAdapterState,
+) -> SessionState:
+    return _session_with_metadata(
+        session,
+        _runtime_state_metadata_with_acp_state(
+            session.metadata,
+            acp_state,
+        ),
+    )
+
+
+def persist_tool_execution_intent(
+    store: SessionStore,
+    workspace: Path,
+    session: SessionState,
+    intent: dict[str, object],
+) -> None:
+    runtime_state = session.metadata.get("runtime_state")
+    state = dict(cast(dict[str, object], runtime_state)) if isinstance(runtime_state, dict) else {}
+    pending = dict(intent)
+    state["pending_tool_intent"] = pending
+    metadata = {**session.metadata, "runtime_state": state}
+    try:
+        store.update_session_metadata(
+            workspace=workspace,
+            session_id=session.session.id,
+            metadata=metadata,
+        )
+    except UnknownSessionError:
+        # The initial run snapshot may not have committed yet.
+        logger.debug("tool intent persistence deferred for new session %s", session.session.id)
+
+
+def clear_tool_execution_intent(
+    store: SessionStore,
+    workspace: Path,
+    session: SessionState,
+) -> None:
+    try:
+        persisted_session = store.load_session(
+            workspace=workspace,
+            session_id=session.session.id,
+        ).session
+    except UnknownSessionError:
+        logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
+        return
+    validate_session_workspace(persisted_session, session_id=session.session.id, workspace=workspace)
+    runtime_state = persisted_session.metadata.get("runtime_state")
+    if not isinstance(runtime_state, dict) or "pending_tool_intent" not in runtime_state:
+        return
+    state = dict(cast(dict[str, object], runtime_state))
+    state.pop("pending_tool_intent", None)
+    try:
+        store.update_session_metadata(
+            workspace=workspace,
+            session_id=session.session.id,
+            metadata={**persisted_session.metadata, "runtime_state": state},
+        )
+    except UnknownSessionError:
+        logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
+
+
+def waiting_reason_from_session(session: SessionState) -> str:
+    plan_state = session.metadata.get("plan_state")
+    if not isinstance(plan_state, dict):
+        return "waiting"
+    plan_state_payload = cast(dict[str, object], plan_state)
+    status = plan_state_payload.get("status")
+    if status == "waiting_approval":
+        return "waiting_for_approval"
+    if status == "waiting_question":
+        return "waiting_for_question"
+    return "waiting"
+
+
+def resume_waiting_reason(response: RuntimeResponse) -> str:
+    try:
+        pending_approval_from_response(response)
+    except ValueError:
+        pass
+    else:
+        return "waiting_for_approval"
+    if pending_question_from_response(response) is not None:
+        return "waiting_for_question"
+    return "waiting"
+
+
 __all__ = [
+    "clear_tool_execution_intent",
+    "continuity_state_from_session_metadata",
+    "delegation_depth_from_metadata",
+    "persist_tool_execution_intent",
     "plan_state_from_metadata",
+    "remaining_spawn_budget_from_metadata",
+    "resume_waiting_reason",
     "session_model_identity",
+    "session_with_context_window_metadata",
     "session_with_context_window_payload_metadata",
+    "session_with_current_acp_metadata",
+    "session_with_plan_state",
     "session_with_todo_state",
     "todo_state_matches_payload",
+    "waiting_reason_from_session",
 ]

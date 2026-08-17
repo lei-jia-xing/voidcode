@@ -48,6 +48,7 @@ from ..mcp import (
     redact_mcp_command,
 )
 from .config import RuntimeMcpConfig
+from .event_envelopes import envelopes_for_mcp_events
 from .events import (
     RUNTIME_MCP_SERVER_ACQUIRED,
     RUNTIME_MCP_SERVER_FAILED,
@@ -56,6 +57,7 @@ from .events import (
     RUNTIME_MCP_SERVER_REUSED,
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
+    EventEnvelope,
 )
 
 DEFAULT_MCP_REQUEST_TIMEOUT_SECONDS = 30.0
@@ -1342,4 +1344,23 @@ def build_mcp_manager(
     return ManagedMcpManager(
         config or RuntimeMcpConfig(),
         diagnostics_collector=diagnostics_collector,
+    )
+
+
+def release_mcp_session_events(
+    mcp_manager: McpManager,
+    *,
+    session_id: str,
+    start_sequence: int,
+) -> tuple[EventEnvelope, ...]:
+    release_session = getattr(mcp_manager, "release_session", None)
+    if release_session is None:
+        return ()
+    return envelopes_for_mcp_events(
+        session_id=session_id,
+        start_sequence=start_sequence,
+        mcp_events=cast(
+            tuple[object, ...],
+            release_session(session_id=session_id),
+        ),
     )

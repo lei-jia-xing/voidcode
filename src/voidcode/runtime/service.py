@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, final
 
-from ..acp import AcpDelegatedExecution, AcpEventEnvelope, AcpRequestEnvelope, AcpResponseEnvelope
+from ..acp import AcpRequestEnvelope, AcpResponseEnvelope
 from ..agent import AgentManifestRegistry, get_builtin_agent_manifest, load_agent_manifest_registry
 from ..agent.prompts import render_agent_prompt
 from ..command import (
@@ -20,16 +20,7 @@ from ..command import (
     resolve_prompt_command,
 )
 from ..command.models import CommandDefinition
-from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
-from ..hook.config import RuntimeHookSurface
-from ..hook.executor import (
-    HookExecutionOutcome,
-    HookExecutionPolicy,
-    HookExecutionRequest,
-    LifecycleHookExecutionRequest,
-    run_lifecycle_hooks,
-    run_tool_hooks,
-)
+from ..graph.contracts import GraphRunRequest, RuntimeGraph
 from ..hook.presets import (
     ResolvedHookPresetSnapshot,
     hook_preset_snapshot_from_payload,
@@ -39,11 +30,6 @@ from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthResolver,
 )
-from ..provider.config import (
-    DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG,
-    ProviderTransientRetryConfig,
-)
-from ..provider.errors import guidance_for_provider_error_kind
 from ..provider.model_catalog import ToolFeedbackMode
 from ..provider.models import (
     ResolvedProviderChain,
@@ -52,8 +38,6 @@ from ..provider.models import (
 )
 from ..provider.protocol import (
     ProviderAbortSignal,
-    ProviderErrorKind,
-    ProviderTokenUsage,
 )
 from ..provider.reasoning_effort import provider_supports_reasoning_effort
 from ..provider.registry import ModelProviderRegistry
@@ -87,7 +71,17 @@ from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
 from ..tools.steer_task import SteerTaskTool
 from ..tools.task import TaskTool
-from .acp import AcpAdapter, AcpAdapterState, build_acp_adapter
+from . import chunk_builders, skills
+from .acp import (
+    AcpAdapter,
+    AcpAdapterState,
+    build_acp_adapter,
+    delegated_execution_for_task,
+    disconnect_acp_for_session_state,
+    emit_acp_events,
+    emit_current_acp_drain,
+    finalize_run_acp,
+)
 from .active_session import (
     ACTIVE_SESSION_REGISTRY,
     ActiveRunInterruptResult,
@@ -152,13 +146,11 @@ from .context_transforms import (
     validate_runtime_context_transform_refs,
 )
 from .context_window import (
-    ContextProjection,
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
     assemble_provider_context,
-    continuity_state_from_metadata_payload,
     prepare_provider_context,
 )
 from .context_window_policy import (
@@ -216,17 +208,12 @@ from .delegation_routing import (
 from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
 from .event_envelopes import (
-    ReasoningCaptureState as _ReasoningCaptureState,
-)
-from .event_envelopes import (
     envelopes_for_acp_events,
     envelopes_for_lsp_events,
     envelopes_for_mcp_events,
-    renumber_events,
     resequence_event,
 )
 from .events import (
-    RUNTIME_ACP_DELEGATED_LIFECYCLE,
     RUNTIME_HOOK_PRESETS_LOADED,
     RUNTIME_MEMORY_ADDED,
     RUNTIME_MEMORY_DELETED,
@@ -242,7 +229,6 @@ from .events import (
 )
 from .execution_seams import (
     cache_key_for_effective_config,
-    fallback_graph_for_provider_error,
     provider_model_required_message,
     resolve_runtime_session_routing,
     select_graph_for_effective_config,
@@ -253,14 +239,18 @@ from .hook_preset_metadata import (
     hook_preset_refs_for_agent,
     resolved_hook_preset_snapshot_from_session_metadata,
 )
+from .hook_runtime import (
+    HOOK_RECURSION_ENV_VAR,
+    hook_execution_policy_from_metadata,
+    run_lifecycle_hooks_for_session,
+)
 from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
-from .mcp import McpManager, build_mcp_manager
+from .mcp import McpManager, build_mcp_manager, release_mcp_session_events
 from .memory import MemoryConfig, MemoryKind, MemoryRecord, MemorySearchResult, build_memory_manager
 from .mode import MODE_DEFINITIONS, resolve_mode
 from .paths import provider_catalog_cache_path
 from .permission import (
-    DelegationGovernance,
     PendingApproval,
     PermissionDecision,
     PermissionPolicy,
@@ -271,10 +261,8 @@ from .permission_context import RuntimePermissionContextResolver
 from .permission_engine import PermissionEngine
 from .permission_path_helpers import extract_paths_from_patch
 from .permission_policy import (
-    approval_request_id_from_waiting_response,
     pending_approval_from_response,
     pending_question_from_response,
-    permission_policy_for_session,
     request_event_and_resolution_state,
     waiting_request_id_from_response,
 )
@@ -286,9 +274,7 @@ from .provider_catalog_query import RuntimeProviderCatalogQuery
 from .provider_context import inspect_provider_context
 from .provider_execution_metadata import (
     provider_attempt_from_metadata,
-    provider_retry_attempt_from_metadata,
     run_id_from_session_metadata,
-    session_with_provider_usage_metadata,
 )
 from .provider_inspection import (
     ProviderReadinessFacts,
@@ -306,8 +292,8 @@ from .provider_metadata import (
     optional_string,
     optional_string_tuple,
     tool_feedback_mode,
+    validate_reasoning_effort_capability,
 )
-from .provider_protocol import ProviderExecutionError
 from .question import PendingQuestion, QuestionResponse
 from .resume import RuntimeResumeCoordinator
 from .review import WorkspaceReviewService
@@ -322,29 +308,34 @@ from .runtime_debug import (
     operator_guidance,
     payload_with_artifact_status,
     prompt_and_tool_results_from_debug_events,
-    prompt_from_events,
     provider_visible_tool_result_data,
 )
+from .runtime_surface import PermissionOutcome, RuntimeSurface
 from .session import (
     SessionRef,
     SessionState,
     SessionStatus,
     StoredSessionSummary,
     is_session_status_terminal,
+    reload_persisted_session,
     session_metadata_for_replay,
+    validate_session_workspace,
 )
 from .session_metadata_helpers import (
-    plan_state_from_metadata,
+    _DELEGATION_GOVERNANCE,
+    continuity_state_from_session_metadata,
+    delegation_depth_from_metadata,
+    remaining_spawn_budget_from_metadata,
     session_with_context_window_payload_metadata,
-    session_with_todo_state,
+    session_with_current_acp_metadata,
+    session_with_plan_state,
+    waiting_reason_from_session,
 )
 from .skill_metadata import (
     available_runtime_contexts,
-    catalog_skill_context,
     effective_selected_skill_names,
     force_loaded_skill_payloads,
     fresh_request_metadata,
-    loaded_skill_names,
     persisted_selected_skill_names,
     request_skill_names_from_metadata,
     selected_skill_names_for_agent,
@@ -357,8 +348,9 @@ from .skills import (
     SkillRuntimeContext,
     build_runtime_contexts,
     build_skill_execution_snapshot,
+    skill_prompt_context_for_assembly,
 )
-from .storage import SessionEventAppender, SessionSealedError, SessionStore, SqliteSessionStore
+from .storage import SessionSealedError, SessionStore, SqliteSessionStore
 from .task import (
     BACKGROUND_TASK_TERMINAL_STATUSES,
     BackgroundTaskState,
@@ -379,7 +371,7 @@ from .tool_replay import ToolExecutionIntent, recovery_action
 from .tool_scope import RuntimeToolScopeResolver
 
 if TYPE_CHECKING:
-    from .execution_seams import RuntimeGraphSelection, RuntimeSessionRouting
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -438,26 +430,12 @@ def _provider_target_label(target: ResolvedProviderModel) -> str:
     return f"{provider}/{model}"
 
 
-_DELEGATION_GOVERNANCE = DelegationGovernance()
-
-
 def _coerce_bool_like(value: object | None, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
         return default
     return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
-
-
-def _coerce_int_like(value: object | None, default: int) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
 
 
 def _render_workspace_memory_context(
@@ -614,7 +592,7 @@ class _RuntimeTranscriptReadFacade:
 
 
 @final
-class VoidCodeRuntime:
+class VoidCodeRuntime(RuntimeSurface):
     """Headless runtime entrypoint for one local deterministic request."""
 
     _workspace: Path
@@ -646,7 +624,6 @@ class VoidCodeRuntime:
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
     _background_process_manager: BackgroundProcessManager
     _context_transform_registry: RuntimeContextTransformRegistry
-    _hook_recursion_env_var = "VOIDCODE_RUNNING_TOOL_HOOK"
     _default_context_window_policy = ContextWindowPolicy()
 
     def __init__(
@@ -759,8 +736,23 @@ class VoidCodeRuntime:
             initial_context_window,
             resolved_provider=None,
         )
+        self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(
+            self,
+            session_store=self._session_store,
+            workspace=self._workspace,
+            config=self._config,
+            acp_adapter=self._acp_adapter,
+        )
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(
             self,
+            session_store=self._session_store,
+            workspace=self._workspace,
+            config=self._config,
+            permission_policy=self._permission_policy,
+            acp_adapter=self._acp_adapter,
+            mcp_manager=self._mcp_manager,
+            lsp_manager=self._lsp_manager,
+            provider_catalog_query=self._provider_catalog_query,
             tool_executor=RuntimeToolExecutor(
                 workspace=self._workspace,
                 memory=self,
@@ -771,8 +763,17 @@ class VoidCodeRuntime:
                 transcript=_RuntimeTranscriptReadFacade(self),
             ),
         )
-        self._resume_coordinator = RuntimeResumeCoordinator(self)
-        self._background_task_supervisor = RuntimeBackgroundTaskSupervisor(self)
+        self._resume_coordinator = RuntimeResumeCoordinator(
+            self,
+            session_store=self._session_store,
+            workspace=self._workspace,
+            config=self._config,
+            permission_policy=self._permission_policy,
+            acp_adapter=self._acp_adapter,
+            mcp_manager=self._mcp_manager,
+            background_task_supervisor=self._background_task_supervisor,
+            run_loop_coordinator=self._run_loop_coordinator,
+        )
         self._background_process_manager = BackgroundProcessManager()
 
     def _bind_provider_catalog_collaborators(self) -> None:
@@ -912,145 +913,6 @@ class VoidCodeRuntime:
     ) -> ToolRegistry:
         return self._tool_materialization_with_effective_local_tools(effective_config).registry
 
-    @staticmethod
-    def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
-        return SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata=metadata,
-        )
-
-    def _runtime_state_metadata_with_acp_state(
-        self,
-        metadata: dict[str, object],
-        acp_state: AcpAdapterState,
-    ) -> dict[str, object]:
-        runtime_state = metadata.get("runtime_state")
-        if runtime_state is None:
-            runtime_state_metadata: dict[str, object] = {}
-        elif isinstance(runtime_state, dict):
-            runtime_state_metadata = dict(cast(dict[str, object], runtime_state))
-        else:
-            runtime_state_metadata = {}
-        runtime_state_metadata["acp"] = {
-            "mode": acp_state.mode,
-            "configured_enabled": acp_state.configuration.configured_enabled,
-            "status": acp_state.status,
-            "available": acp_state.available,
-            "last_error": acp_state.last_error,
-            "last_request_type": acp_state.last_request_type,
-            "last_request_id": acp_state.last_request_id,
-            "last_event_type": acp_state.last_event_type,
-            "last_delegation": (acp_state.last_delegation.as_payload() if acp_state.last_delegation is not None else None),
-        }
-        return {**metadata, "runtime_state": runtime_state_metadata}
-
-    def _session_with_current_acp_metadata(self, session: SessionState) -> SessionState:
-        return self._session_with_metadata(
-            session,
-            self._runtime_state_metadata_with_acp_state(
-                session.metadata,
-                self._acp_adapter.current_state(),
-            ),
-        )
-
-    @staticmethod
-    def _plan_state_from_metadata(
-        metadata: dict[str, object],
-        *,
-        status: str | None = None,
-        approval_request_id: str | None = None,
-        blocked_tool: str | None = None,
-        error: str | None = None,
-    ) -> dict[str, object] | None:
-        return plan_state_from_metadata(
-            metadata,
-            status=status,
-            approval_request_id=approval_request_id,
-            blocked_tool=blocked_tool,
-            error=error,
-        )
-
-    def _session_with_plan_state(
-        self,
-        session: SessionState,
-        *,
-        status: str | None = None,
-        approval_request_id: str | None = None,
-        blocked_tool: str | None = None,
-        error: str | None = None,
-    ) -> SessionState:
-        plan_state = self._plan_state_from_metadata(
-            session.metadata,
-            status=status,
-            approval_request_id=approval_request_id,
-            blocked_tool=blocked_tool,
-            error=error,
-        )
-        if plan_state is None:
-            if status is not None and status.startswith("waiting_"):
-                plan_state = {"status": status}
-                if approval_request_id is not None:
-                    plan_state["approval_request_id"] = approval_request_id
-                if blocked_tool is not None:
-                    plan_state["blocked_tool"] = blocked_tool
-                if error is not None:
-                    plan_state["last_error"] = error
-            else:
-                return session
-        return self._session_with_metadata(
-            session,
-            {
-                **session.metadata,
-                "plan_state": plan_state,
-            },
-        )
-
-    def _disconnect_acp_for_session_state(self, session: SessionState) -> SessionState:
-        _ = self._acp_adapter.disconnect()
-        return self._session_with_current_acp_metadata(session)
-
-    def _reload_persisted_session(self, *, session_id: str) -> SessionState:
-        return self._load_stored_response(session_id=session_id).session
-
-    @staticmethod
-    def _resequence_event(event: EventEnvelope, *, sequence: int) -> EventEnvelope:
-        # Referenced via extracted collaborators.
-        return resequence_event(event, sequence=sequence)
-
-    def _emit_acp_events(
-        self,
-        *,
-        session: SessionState,
-        start_sequence: int,
-        acp_events: tuple[object, ...],
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
-        emitted: list[RuntimeStreamChunk] = []
-        current_session = session
-        sequence = start_sequence - 1
-        for acp_event in self._envelopes_for_acp_events(
-            session_id=session.session.id,
-            start_sequence=start_sequence,
-            acp_events=acp_events,
-        ):
-            sequence = acp_event.sequence
-            current_session = self._session_with_current_acp_metadata(current_session)
-            emitted.append(RuntimeStreamChunk(kind="event", session=current_session, event=acp_event))
-        return tuple(emitted), current_session, sequence
-
-    def _emit_current_acp_drain(
-        self,
-        *,
-        session: SessionState,
-        start_sequence: int,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
-        return self._emit_acp_events(
-            session=session,
-            start_sequence=start_sequence,
-            acp_events=self._acp_adapter.drain_events(),
-        )
-
     def _start_run_acp(
         self,
         *,
@@ -1062,43 +924,28 @@ class VoidCodeRuntime:
         try:
             acp_events = self._acp_adapter.connect()
         except Exception as exc:
-            emitted, updated_session, last_sequence = self._emit_current_acp_drain(
+            emitted, updated_session, last_sequence = emit_current_acp_drain(
+                self._acp_adapter,
                 session=session,
                 start_sequence=sequence + 1,
             )
-            failed_session = self._session_with_current_acp_metadata(updated_session)
-            failed_chunk = self._failed_chunk(
+            failed_session = session_with_current_acp_metadata(updated_session, self._acp_adapter.current_state())
+            failed_chunk = chunk_builders.failed_chunk(
                 session=failed_session,
                 sequence=last_sequence + 1,
                 error=str(exc),
                 payload={"kind": "acp_startup_failed"},
             )
             return emitted, failed_session, last_sequence + 1, failed_chunk
-        emitted, updated_session, last_sequence = self._emit_acp_events(
+        emitted, updated_session, last_sequence = emit_acp_events(
+            self._acp_adapter,
             session=session,
             start_sequence=sequence + 1,
             acp_events=acp_events,
         )
         if not emitted:
-            updated_session = self._session_with_current_acp_metadata(updated_session)
+            updated_session = session_with_current_acp_metadata(updated_session, self._acp_adapter.current_state())
         return emitted, updated_session, last_sequence or sequence, None
-
-    def _finalize_run_acp(
-        self,
-        *,
-        session: SessionState,
-        sequence: int,
-    ) -> tuple[tuple[RuntimeStreamChunk, ...], SessionState, int]:
-        if self.current_acp_state().configuration.configured_enabled is not True:
-            return (), session, sequence
-        emitted, updated_session, last_sequence = self._emit_acp_events(
-            session=session,
-            start_sequence=sequence + 1,
-            acp_events=self._acp_adapter.disconnect(),
-        )
-        if not emitted:
-            updated_session = self._session_with_current_acp_metadata(updated_session)
-        return emitted, updated_session, last_sequence or sequence
 
     def _build_graph_for_engine_from_config(
         self,
@@ -1129,39 +976,8 @@ class VoidCodeRuntime:
             return
         raise RuntimeRequestError(provider_model_required_message())
 
-    def _graph_selection_for_effective_config(
-        self,
-        config: EffectiveRuntimeConfig,
-        *,
-        provider_attempt: int = 0,
-    ) -> RuntimeGraphSelection:
-        # Referenced via extracted run-loop/resume collaborators.
-        return select_graph_for_effective_config(
-            config=config,
-            provider_attempt=provider_attempt,
-        )
-
-    def _fallback_graph_selection(
-        self,
-        *,
-        error: ProviderExecutionError,
-        session_metadata: dict[str, object],
-        provider_attempt: int,
-    ) -> RuntimeGraphSelection | None:
-        # Referenced via extracted run-loop collaborator.
-        return fallback_graph_for_provider_error(
-            error=error,
-            provider_chain=self._provider_chain_for_session_metadata(session_metadata),
-            config=self._effective_runtime_config_from_metadata(session_metadata),
-            provider_attempt=provider_attempt,
-        )
-
-    def _session_routing_for_request(self, request: RuntimeRequest) -> RuntimeSessionRouting:
-        # Referenced via extracted background-task collaborator.
-        return resolve_runtime_session_routing(request)
-
-    def _runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
-        resolved = self._effective_runtime_config_from_metadata(None)
+    def runtime_config_for_request(self, request: RuntimeRequest) -> EffectiveRuntimeConfig:
+        resolved = self.effective_runtime_config_from_metadata(None)
         request_agent = request.metadata.get("agent")
         if request_agent is not None:
             try:
@@ -1189,27 +1005,10 @@ class VoidCodeRuntime:
             context_transform_refs=context_transform_refs,
         )
         try:
-            self._validate_reasoning_effort_capability(resolved)
+            validate_reasoning_effort_capability(resolved)
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
         return resolved
-
-    def _validate_reasoning_effort_capability(self, config: EffectiveRuntimeConfig) -> None:
-        if config.reasoning_effort is None:
-            return
-        if config.execution_engine != "provider":
-            return
-        active_target = config.resolved_provider.active_target.selection
-        provider_name = active_target.provider
-        model_name = active_target.model
-        if provider_name is None or model_name is None:
-            return
-        if provider_supports_reasoning_effort(provider_name, model_name) is False:
-            raise ValueError(
-                "reasoning_effort is configured but model "
-                f"'{provider_name}/{model_name}' does not support reasoning effort; "
-                "remove the reasoning_effort hint or pick a reasoning-effort capable model"
-            )
 
     def _build_skill_registry(self, skills_config: RuntimeSkillsConfig | None) -> SkillRegistry:
         if skills_config is None or skills_config.enabled is not True:
@@ -1231,7 +1030,7 @@ class VoidCodeRuntime:
             return effective_config.agent.skills
         return self._config.skills
 
-    def _skill_registry_for_effective_config(
+    def skill_registry_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
     ) -> SkillRegistry:
@@ -1274,7 +1073,7 @@ class VoidCodeRuntime:
         self._tool_materialization = self._tool_materializer.materialize_mcp_tools(self._build_mcp_tools())
         self._tool_registry = self._tool_materialization.registry
 
-    def _refresh_mcp_tools_for_session(
+    def refresh_mcp_tools_for_session(
         self,
         *,
         session: SessionState,
@@ -1295,7 +1094,7 @@ class VoidCodeRuntime:
                 extra={"failure_kind": failure_kind},
                 exc_info=True,
             )
-            emitted_events = self._envelopes_for_mcp_events(
+            emitted_events = envelopes_for_mcp_events(
                 session_id=session.session.id,
                 start_sequence=sequence + 1,
                 mcp_events=self._mcp_manager.drain_events(),
@@ -1318,7 +1117,7 @@ class VoidCodeRuntime:
             return False
         return True
 
-    def _should_skip_mcp_startup_for_request(
+    def should_skip_mcp_startup_for_request(
         self,
         *,
         request_metadata: Mapping[str, object],
@@ -1359,7 +1158,7 @@ class VoidCodeRuntime:
             if tool.enabled
         )
 
-    def _tool_registry_for_effective_config(
+    def tool_registry_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
         metadata: dict[str, object] | None = None,
@@ -1369,7 +1168,10 @@ class VoidCodeRuntime:
             metadata,
         ).registry
 
-    def _provider_tool_definitions(
+    def reset_tool_registry_to_base(self) -> None:
+        self._tool_registry = self._base_tool_registry
+
+    def provider_tool_definitions(
         self,
         tool_registry: ToolRegistry,
         effective_config: EffectiveRuntimeConfig,
@@ -1387,26 +1189,6 @@ class VoidCodeRuntime:
             allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
         )
 
-    def _skill_prompt_context_for_assembly(
-        self,
-        *,
-        skill_registry: SkillRegistry,
-        applied_context: str,
-        selected_skill_names: tuple[str, ...],
-    ) -> str:
-        """System-prompt skill metadata: applied skill bodies plus the catalog.
-
-        The catalog (name + description per skill) is always included when
-        skills exist so the model can discover and lazily load skill bodies via
-        the skill tool, independent of which skills are currently applied.
-        """
-        catalog = self._catalog_skill_context(
-            skill_registry,
-            available_skill_names=tuple(self._loaded_skill_names(skill_registry)),
-            selected_skill_names=selected_skill_names,
-        )
-        return "\n\n".join(part for part in (applied_context, catalog) if part)
-
     def _tool_materialization_for_effective_config(
         self,
         effective_config: EffectiveRuntimeConfig,
@@ -1420,13 +1202,13 @@ class VoidCodeRuntime:
         )
         return materialization.scoped(registry)
 
-    def _tool_policy_denial(
+    def tool_policy_denial(
         self,
         *,
         session: SessionState,
         tool_name: str,
     ) -> ToolPolicyDecision | None:
-        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
+        effective_config = self.effective_runtime_config_from_metadata(session.metadata)
         registry = self._tool_registry_with_effective_local_tools(effective_config)
         return self._tool_scope_resolver.denial(
             registry,
@@ -1435,12 +1217,7 @@ class VoidCodeRuntime:
             tool_name=tool_name,
         )
 
-    @staticmethod
-    def _tool_policy_error(decision: ToolPolicyDecision) -> str:
-        reason = decision.reason or "runtime tool policy denied the tool"
-        return f"{reason}: '{decision.tool_name}'"
-
-    def _delegation_tool_policy_error(
+    def delegation_tool_policy_error(
         self,
         *,
         session: SessionState,
@@ -1455,7 +1232,7 @@ class VoidCodeRuntime:
         )
         if route is None:
             return None
-        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
+        effective_config = self.effective_runtime_config_from_metadata(session.metadata)
         agent = effective_config.agent
         return self._tool_scope_resolver.delegation_policy_error(
             delegated_child=True,
@@ -1529,32 +1306,14 @@ class VoidCodeRuntime:
         )
 
     def _release_mcp_session(self, session_id: str) -> tuple[EventEnvelope, ...]:
-        return self._release_mcp_session_events(session_id=session_id, start_sequence=1)
-
-    def _release_mcp_session_events(
-        self,
-        *,
-        session_id: str,
-        start_sequence: int,
-    ) -> tuple[EventEnvelope, ...]:
-        release_session = getattr(self._mcp_manager, "release_session", None)
-        if release_session is None:
-            return ()
-        return self._envelopes_for_mcp_events(
-            session_id=session_id,
-            start_sequence=start_sequence,
-            mcp_events=cast(
-                tuple[object, ...],
-                release_session(session_id=session_id),
-            ),
-        )
+        return release_mcp_session_events(self._mcp_manager, session_id=session_id, start_sequence=1)
 
     def cleanup_idle_mcp_sessions(
         self,
         *,
         max_idle_seconds: float = 300.0,
     ) -> tuple[EventEnvelope, ...]:
-        return self._envelopes_for_mcp_events(
+        return envelopes_for_mcp_events(
             session_id="runtime",
             start_sequence=1,
             mcp_events=cast(
@@ -1564,14 +1323,14 @@ class VoidCodeRuntime:
         )
 
     def shutdown_mcp(self) -> tuple[EventEnvelope, ...]:
-        return self._envelopes_for_mcp_events(
+        return envelopes_for_mcp_events(
             session_id="runtime",
             start_sequence=1,
             mcp_events=self._mcp_manager.shutdown(),
         )
 
     def shutdown_lsp(self) -> tuple[EventEnvelope, ...]:
-        return self._envelopes_for_lsp_events(
+        return envelopes_for_lsp_events(
             session_id="runtime",
             start_sequence=1,
             lsp_events=self._lsp_manager.shutdown(),
@@ -1581,14 +1340,14 @@ class VoidCodeRuntime:
         return self._acp_adapter.current_state()
 
     def connect_acp(self) -> tuple[EventEnvelope, ...]:
-        return self._envelopes_for_acp_events(
+        return envelopes_for_acp_events(
             session_id="runtime",
             start_sequence=1,
             acp_events=self._acp_adapter.connect(),
         )
 
     def disconnect_acp(self) -> tuple[EventEnvelope, ...]:
-        return self._envelopes_for_acp_events(
+        return envelopes_for_acp_events(
             session_id="runtime",
             start_sequence=1,
             acp_events=self._acp_adapter.disconnect(),
@@ -1610,7 +1369,7 @@ class VoidCodeRuntime:
             request_id=task.task.id,
             session_id=task.session_id,
             parent_session_id=task.parent_session_id,
-            delegation=self._delegated_execution_for_task(
+            delegation=delegated_execution_for_task(
                 task=task,
                 lifecycle_status=("waiting_approval" if task.status == "running" and task.approval_request_id else task.status),
             ),
@@ -1637,133 +1396,14 @@ class VoidCodeRuntime:
                 builtin[agent_id] = manifest
         return AgentManifestRegistry(builtin=builtin, custom=registry.custom)
 
-    def _delegated_execution_for_task(
-        self,
-        *,
-        task: BackgroundTaskState,
-        lifecycle_status: str,
-        approval_blocked: bool | None = None,
-        result_available: bool | None = None,
-    ) -> AcpDelegatedExecution:
-        try:
-            routing = task.routing_identity
-        except ValueError:
-            routing = None
-        delegation_metadata = task.request.metadata.get("delegation")
-        delegation_dict = cast(dict[str, object], delegation_metadata) if isinstance(delegation_metadata, dict) else {}
-        return AcpDelegatedExecution(
-            parent_session_id=task.parent_session_id,
-            requested_child_session_id=task.request.session_id,
-            child_session_id=task.session_id,
-            delegated_task_id=task.task.id,
-            approval_request_id=task.approval_request_id,
-            question_request_id=task.question_request_id,
-            routing_mode=routing.mode if routing is not None else None,
-            routing_subagent_type=routing.subagent_type if routing is not None else None,
-            routing_description=routing.description if routing is not None else None,
-            routing_command=routing.command if routing is not None else None,
-            selected_preset=(cast(str, delegation_dict["selected_preset"]) if isinstance(delegation_dict.get("selected_preset"), str) else None),
-            selected_execution_engine=(
-                cast(str, delegation_dict["selected_execution_engine"]) if isinstance(delegation_dict.get("selected_execution_engine"), str) else None
-            ),
-            lifecycle_status=cast(
-                Literal[
-                    "queued",
-                    "running",
-                    "idle",
-                    "waiting_approval",
-                    "completed",
-                    "failed",
-                    "cancelled",
-                ],
-                lifecycle_status,
-            ),
-            approval_blocked=(approval_blocked if approval_blocked is not None else task.status == "running"),
-            result_available=(result_available if result_available is not None else task.result_available),
-            cancellation_cause=task.cancellation_cause,
-        )
-
-    def _publish_delegated_acp_event(
-        self,
-        *,
-        task: BackgroundTaskState,
-        lifecycle_status: str,
-        payload: dict[str, object],
-        approval_blocked: bool | None = None,
-        result_available: bool | None = None,
-    ) -> None:
-        # Referenced via extracted background-task collaborator.
-        if self.current_acp_state().status != "connected":
-            return
-        delegation = self._delegated_execution_for_task(
-            task=task,
-            lifecycle_status=lifecycle_status,
-            approval_blocked=approval_blocked,
-            result_available=result_available,
-        )
-        response = self._acp_adapter.publish(
-            AcpEventEnvelope(
-                event_type=RUNTIME_ACP_DELEGATED_LIFECYCLE,
-                session_id=task.session_id,
-                parent_session_id=task.parent_session_id,
-                delegation=delegation,
-                payload=payload,
-            )
-        )
-        if response.status != "ok":
-            logger.debug("skipping ACP delegated lifecycle event: %s", response.error)
-
-    def _append_parent_acp_delegated_lifecycle_event(
-        self,
-        *,
-        task: BackgroundTaskState,
-        lifecycle_status: str,
-        payload: dict[str, object],
-        approval_blocked: bool | None = None,
-        result_available: bool | None = None,
-    ) -> None:
-        # Referenced via extracted background-task collaborator.
-        parent_session_id = task.parent_session_id
-        if parent_session_id is None:
-            return
-        session_event_appender = self._session_store
-        if not isinstance(session_event_appender, SessionEventAppender):
-            return
-        delegation = self._delegated_execution_for_task(
-            task=task,
-            lifecycle_status=lifecycle_status,
-            approval_blocked=approval_blocked,
-            result_available=result_available,
-        )
-        correlation_id = task.approval_request_id or task.question_request_id or task.session_id or "none"
-        try:
-            _ = session_event_appender.append_session_event(
-                workspace=self._workspace,
-                session_id=parent_session_id,
-                event_type=RUNTIME_ACP_DELEGATED_LIFECYCLE,
-                source="runtime",
-                payload={
-                    "session_id": task.session_id,
-                    "parent_session_id": parent_session_id,
-                    "delegation": delegation.as_payload(),
-                    **payload,
-                },
-                dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{correlation_id}"),
-            )
-        except (AttributeError, UnknownSessionError):
-            logger.debug(
-                "skipping ACP delegated lifecycle event for unavailable parent session: %s",
-                parent_session_id,
-            )
-
     def fail_acp(self, message: str) -> tuple[EventEnvelope, ...]:
-        return self._envelopes_for_acp_events(
+        return envelopes_for_acp_events(
             session_id="runtime",
             start_sequence=1,
             acp_events=self._acp_adapter.fail(message),
         )
 
-    def _run_with_persistence(
+    def run_with_persistence(
         self,
         request: RuntimeRequest,
         *,
@@ -1807,16 +1447,16 @@ class VoidCodeRuntime:
                     yield chunk
             except Exception:
                 if final_session is not None and final_session.status == "failed":
-                    final_session = self._disconnect_acp_for_session_state(final_session)
+                    final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
                     response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
-                    self._persist_response(request=request, response=response)
+                    self.persist_response(request=request, response=response)
                 raise
 
             if final_session is None:
                 raise ValueError("runtime stream emitted no chunks")
 
             if final_session.status == "waiting":
-                final_session = self._disconnect_acp_for_session_state(final_session)
+                final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
 
             final_session = self._session_with_loaded_skill_metadata(
                 final_session,
@@ -1824,7 +1464,7 @@ class VoidCodeRuntime:
             )
 
             response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
-            self._persist_response(request=request, response=response)
+            self.persist_response(request=request, response=response)
 
             # Follow-up messages are delivered only after the current run has
             # reached a durable terminal state. They become ordinary prompts
@@ -1848,7 +1488,7 @@ class VoidCodeRuntime:
                             parent_session_id=request.parent_session_id,
                             metadata=request.metadata,
                         )
-                        yield from self._run_with_persistence(
+                        yield from self.run_with_persistence(
                             followup_request,
                             allow_internal_metadata=allow_internal_metadata,
                         )
@@ -1860,7 +1500,7 @@ class VoidCodeRuntime:
         output: str | None = None
         final_session: SessionState | None = None
 
-        for chunk in self._run_with_persistence(request):
+        for chunk in self.run_with_persistence(request):
             final_session = chunk.session
             if chunk.event is not None:
                 events.append(chunk.event)
@@ -1871,7 +1511,7 @@ class VoidCodeRuntime:
             raise ValueError("runtime stream emitted no chunks")
 
         if final_session.status == "waiting":
-            final_session = self._reload_persisted_session(session_id=final_session.session.id)
+            final_session = reload_persisted_session(self._session_store, self._workspace, session_id=final_session.session.id)
 
         final_session = self._session_with_loaded_skill_metadata(
             final_session,
@@ -1984,7 +1624,7 @@ class VoidCodeRuntime:
 
     def run_stream(self, request: RuntimeRequest) -> Iterator[RuntimeStreamChunk]:
         if "provider_stream" in request.metadata:
-            return self._run_with_persistence(request)
+            return self.run_with_persistence(request)
 
         stream_metadata = {**request.metadata, "provider_stream": True}
         validated_stream_metadata = validate_runtime_request_metadata(stream_metadata)
@@ -1995,7 +1635,7 @@ class VoidCodeRuntime:
             metadata=validated_stream_metadata,
             allocate_session_id=request.allocate_session_id,
         )
-        return self._run_with_persistence(request_with_stream)
+        return self.run_with_persistence(request_with_stream)
 
     def _stream_chunks(
         self,
@@ -2006,7 +1646,7 @@ class VoidCodeRuntime:
         abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
         resolved_session_id = session_id or self._resolve_session_id(request)
-        effective_config = self._runtime_config_for_request(request)
+        effective_config = self.runtime_config_for_request(request)
         if self._graph_override is None:
             self._validate_provider_execution_ready(effective_config)
         request_metadata = self._fresh_request_metadata(request.metadata)
@@ -2185,7 +1825,7 @@ class VoidCodeRuntime:
                 event=envelope,
             )
 
-        if self._should_skip_mcp_startup_for_request(
+        if self.should_skip_mcp_startup_for_request(
             request_metadata=request_metadata,
             effective_config=effective_config,
         ) or self._is_background_child_mcp_deferred(
@@ -2200,7 +1840,7 @@ class VoidCodeRuntime:
                 session,
                 sequence,
                 mcp_failed_chunk,
-            ) = self._refresh_mcp_tools_for_session(
+            ) = self.refresh_mcp_tools_for_session(
                 session=session,
                 sequence=sequence,
                 failure_kind="mcp_startup_failed",
@@ -2225,30 +1865,35 @@ class VoidCodeRuntime:
             tool_materialization=tool_materialization,
         )
         tool_registry = tool_materialization.registry
-        skill_registry = self._skill_registry_for_effective_config(effective_config)
+        skill_registry = self.skill_registry_for_effective_config(effective_config)
 
-        start_hook_outcome = self._run_lifecycle_hooks(
+        start_hook_outcome = run_lifecycle_hooks_for_session(
+            hooks=self._config.hooks,
+            workspace=self._workspace,
             session=session,
-            sequence=sequence,
             surface="session_start",
+            recursion_env_var=HOOK_RECURSION_ENV_VAR,
+            sequence=sequence,
             payload={"prompt": request.prompt},
+            policy=hook_execution_policy_from_metadata(session.metadata),
         )
         sequence = yield from self._persist_emitted_chunks(
             start_hook_outcome.chunks,
             fallback_sequence=start_hook_outcome.last_sequence,
         )
         if start_hook_outcome.failed_error is not None:
-            failed_chunk = self._lifecycle_hook_failure_chunk(
+            failed_chunk = chunk_builders.lifecycle_hook_failure_chunk(
                 session=session,
                 sequence=sequence,
                 surface="session_start",
                 error=start_hook_outcome.failed_error,
+                hooks=self._config.hooks,
             )
             if failed_chunk is not None:
                 yield self._persist_emitted_chunk(failed_chunk)
                 return
 
-        loaded_skill_names = self._loaded_skill_names(skill_registry)
+        loaded_skill_names = skills.loaded_skill_names(skill_registry)
 
         startup_chunks, session, sequence, startup_failed_chunk = self._start_run_acp(
             session=session,
@@ -2262,18 +1907,18 @@ class VoidCodeRuntime:
             yield self._persist_emitted_chunk(startup_failed_chunk)
             return
 
-        skill_snapshot = self._build_skill_snapshot(
+        skill_snapshot = self.build_skill_snapshot(
             skill_registry,
             metadata=session.metadata,
             agent=effective_config.agent,
             source="run",
         )
-        catalog_skill_context = self._catalog_skill_context(
+        catalog_skill_context = skills.catalog_skill_context(
             skill_registry,
             available_skill_names=tuple(loaded_skill_names),
             selected_skill_names=skill_snapshot.selected_skill_names,
         )
-        skill_prompt_context = self._skill_prompt_context_for_assembly(
+        skill_prompt_context = skill_prompt_context_for_assembly(
             skill_registry=skill_registry,
             applied_context=skill_snapshot.skill_prompt_context,
             selected_skill_names=skill_snapshot.selected_skill_names,
@@ -2341,22 +1986,22 @@ class VoidCodeRuntime:
                 event=hook_presets_envelope,
             )
 
-        assembled_context = self._assemble_provider_context(
+        assembled_context = self.assemble_provider_context(
             prompt=request.prompt,
             tool_results=rehydrated_tool_results,
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context,
             replayed_conversation_segments=rehydrated_conversation_segments,
         )
-        session = self._session_with_context_window_payload_metadata(
+        session = session_with_context_window_payload_metadata(
             session,
             dict(assembled_context.metadata),
         )
         graph_request = GraphRunRequest(
             session=session,
             prompt=request.prompt,
-            available_tools=self._provider_tool_definitions(tool_registry, effective_config),
-            context_window=self._prepare_provider_context_window(
+            available_tools=self.provider_tool_definitions(tool_registry, effective_config),
+            context_window=self.prepare_provider_context_window(
                 prompt=request.prompt,
                 tool_results=rehydrated_tool_results,
                 session_metadata=session.metadata,
@@ -2365,7 +2010,7 @@ class VoidCodeRuntime:
             assembled_context=assembled_context,
             metadata={
                 **request_metadata,
-                "agent_preset": serialize_runtime_agent_config(self._effective_runtime_config_from_metadata(session.metadata).agent),
+                "agent_preset": serialize_runtime_agent_config(self.effective_runtime_config_from_metadata(session.metadata).agent),
                 "provider_attempt": 0,
                 "provider_stream": _coerce_bool_like(
                     request_metadata.get("provider_stream", False),
@@ -2380,14 +2025,14 @@ class VoidCodeRuntime:
             abort_signal=abort_signal,
         )
         tool_results: list[ToolResult] = list(rehydrated_tool_results)
-        graph = self._graph_for_session_metadata(session.metadata)
+        graph = self.graph_for_session_metadata(session.metadata)
 
         last_chunk: RuntimeStreamChunk | None = None
         last_sequence = sequence
         deferred_failed_chunk: RuntimeStreamChunk | None = None
         graph_loop_error: Exception | None = None
         try:
-            for chunk in self._execute_graph_loop(
+            for chunk in self._run_loop_coordinator.execute_graph_loop(
                 graph=graph,
                 tool_registry=tool_registry,
                 session=session,
@@ -2414,7 +2059,8 @@ class VoidCodeRuntime:
         if deferred_failed_chunk is not None:
             failed_event = cast(EventEnvelope, deferred_failed_chunk.event)
             cleanup_sequence = failed_event.sequence - 1
-            final_chunks, finalized_session, final_sequence = self._finalize_run_acp(
+            final_chunks, finalized_session, final_sequence = finalize_run_acp(
+                self._acp_adapter,
                 session=deferred_failed_chunk.session,
                 sequence=cleanup_sequence,
             )
@@ -2422,28 +2068,34 @@ class VoidCodeRuntime:
                 final_chunks,
                 fallback_sequence=final_sequence,
             )
-            end_hook_outcome = self._run_lifecycle_hooks(
+            end_hook_outcome = run_lifecycle_hooks_for_session(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
                 session=finalized_session,
-                sequence=final_sequence,
                 surface="session_end",
+                recursion_env_var=HOOK_RECURSION_ENV_VAR,
+                sequence=final_sequence,
                 payload={"session_status": finalized_session.status},
+                policy=hook_execution_policy_from_metadata(finalized_session.metadata),
             )
             release_sequence = yield from self._persist_emitted_chunks(
                 end_hook_outcome.chunks,
                 fallback_sequence=end_hook_outcome.last_sequence,
             )
             if end_hook_outcome.failed_error is not None:
-                hook_failed_chunk = self._lifecycle_hook_failure_chunk(
+                hook_failed_chunk = chunk_builders.lifecycle_hook_failure_chunk(
                     session=finalized_session,
                     sequence=end_hook_outcome.last_sequence,
                     surface="session_end",
                     error=end_hook_outcome.failed_error,
+                    hooks=self._config.hooks,
                 )
                 if hook_failed_chunk is not None:
                     persisted_hook_failed = self._persist_emitted_chunk(hook_failed_chunk)
                     yield persisted_hook_failed
                     release_sequence = persisted_hook_failed.event.sequence if persisted_hook_failed.event is not None else release_sequence
-            for release_event in self._release_mcp_session_events(
+            for release_event in release_mcp_session_events(
+                self._mcp_manager,
                 session_id=finalized_session.session.id,
                 start_sequence=release_sequence + 1,
             ):
@@ -2462,7 +2114,7 @@ class VoidCodeRuntime:
             yield RuntimeStreamChunk(
                 kind="event",
                 session=deferred_failed_chunk.session,
-                event=self._resequence_event(failed_event, sequence=release_sequence + 1),
+                event=resequence_event(failed_event, sequence=release_sequence + 1),
             )
             if graph_loop_error is not None:
                 raise graph_loop_error
@@ -2479,28 +2131,34 @@ class VoidCodeRuntime:
             return
 
         if last_chunk.session.status == "waiting":
-            idle_hook_outcome = self._run_lifecycle_hooks(
+            idle_hook_outcome = run_lifecycle_hooks_for_session(
+                hooks=self._config.hooks,
+                workspace=self._workspace,
                 session=last_chunk.session,
-                sequence=last_sequence,
                 surface="session_idle",
-                payload={"reason": self._waiting_reason_from_session(last_chunk.session)},
+                recursion_env_var=HOOK_RECURSION_ENV_VAR,
+                sequence=last_sequence,
+                payload={"reason": waiting_reason_from_session(last_chunk.session)},
+                policy=hook_execution_policy_from_metadata(last_chunk.session.metadata),
             )
             yield from self._persist_emitted_chunks(
                 idle_hook_outcome.chunks,
                 fallback_sequence=idle_hook_outcome.last_sequence,
             )
             if idle_hook_outcome.failed_error is not None:
-                failed_chunk = self._lifecycle_hook_failure_chunk(
-                    session=self._disconnect_acp_for_session_state(last_chunk.session),
+                failed_chunk = chunk_builders.lifecycle_hook_failure_chunk(
+                    session=disconnect_acp_for_session_state(self._acp_adapter, last_chunk.session),
                     sequence=idle_hook_outcome.last_sequence,
                     surface="session_idle",
                     error=idle_hook_outcome.failed_error,
+                    hooks=self._config.hooks,
                 )
                 if failed_chunk is not None:
                     yield self._persist_emitted_chunk(failed_chunk)
             return
 
-        final_chunks, finalized_session, final_sequence = self._finalize_run_acp(
+        final_chunks, finalized_session, final_sequence = finalize_run_acp(
+            self._acp_adapter,
             session=last_chunk.session,
             sequence=last_sequence,
         )
@@ -2508,28 +2166,34 @@ class VoidCodeRuntime:
             final_chunks,
             fallback_sequence=final_sequence,
         )
-        end_hook_outcome = self._run_lifecycle_hooks(
+        end_hook_outcome = run_lifecycle_hooks_for_session(
+            hooks=self._config.hooks,
+            workspace=self._workspace,
             session=finalized_session,
-            sequence=final_sequence,
             surface="session_end",
+            recursion_env_var=HOOK_RECURSION_ENV_VAR,
+            sequence=final_sequence,
             payload={"session_status": finalized_session.status},
+            policy=hook_execution_policy_from_metadata(finalized_session.metadata),
         )
         release_sequence = yield from self._persist_emitted_chunks(
             end_hook_outcome.chunks,
             fallback_sequence=end_hook_outcome.last_sequence,
         )
         if end_hook_outcome.failed_error is not None:
-            failed_chunk = self._lifecycle_hook_failure_chunk(
+            failed_chunk = chunk_builders.lifecycle_hook_failure_chunk(
                 session=finalized_session,
                 sequence=end_hook_outcome.last_sequence,
                 surface="session_end",
                 error=end_hook_outcome.failed_error,
+                hooks=self._config.hooks,
             )
             if failed_chunk is not None:
                 persisted_failed_chunk = self._persist_emitted_chunk(failed_chunk)
                 yield persisted_failed_chunk
                 release_sequence = persisted_failed_chunk.event.sequence if persisted_failed_chunk.event is not None else release_sequence
-        for event in self._release_mcp_session_events(
+        for event in release_mcp_session_events(
+            self._mcp_manager,
             session_id=finalized_session.session.id,
             start_sequence=release_sequence + 1,
         ):
@@ -2541,222 +2205,7 @@ class VoidCodeRuntime:
             )
             yield RuntimeStreamChunk(kind="event", session=finalized_session, event=envelope)
 
-    def _execute_graph_loop(
-        self,
-        *,
-        graph: RuntimeGraph,
-        tool_registry: ToolRegistry,
-        session: SessionState,
-        sequence: int,
-        graph_request: GraphRunRequest,
-        tool_results: list[ToolResult],
-        approval_resolution: tuple[PendingApproval, PermissionResolution] | None = None,
-        permission_policy: PermissionPolicy | None = None,
-        preserved_continuity_state: ContextProjection | None = None,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._run_loop_coordinator.execute_graph_loop(
-            graph=graph,
-            tool_registry=tool_registry,
-            session=session,
-            sequence=sequence,
-            graph_request=graph_request,
-            tool_results=tool_results,
-            approval_resolution=approval_resolution,
-            permission_policy=permission_policy,
-            preserved_continuity_state=preserved_continuity_state,
-        )
-
-    def _run_lifecycle_hooks(
-        self,
-        *,
-        session: SessionState,
-        sequence: int,
-        surface: RuntimeHookSurface,
-        payload: dict[str, object] | None = None,
-    ) -> _RuntimeHookOutcome:
-        outcome: HookExecutionOutcome = run_lifecycle_hooks(
-            LifecycleHookExecutionRequest(
-                hooks=self._config.hooks,
-                workspace=self._workspace,
-                session_id=session.session.id,
-                surface=surface,
-                recursion_env_var=self._hook_recursion_env_var,
-                environment=os.environ,
-                sequence_start=sequence,
-                payload=payload or {},
-                policy=self._hook_execution_policy_from_metadata(session.metadata),
-            )
-        )
-        emitted_chunks = tuple(
-            RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=event.sequence,
-                    event_type=event.event_type,
-                    source="runtime",
-                    payload=event.payload,
-                ),
-            )
-            for event in outcome.events
-        )
-        return _RuntimeHookOutcome(
-            chunks=emitted_chunks,
-            last_sequence=outcome.last_sequence,
-            failed_error=outcome.failed_error,
-            action=outcome.action,
-        )
-
-    def _lifecycle_hook_failure_chunk(
-        self,
-        *,
-        session: SessionState,
-        sequence: int,
-        surface: RuntimeHookSurface,
-        error: str | None,
-    ) -> RuntimeStreamChunk | None:
-        if error is None:
-            return None
-        if self._config.hooks is None or self._config.hooks.failure_mode != "fail":
-            logger.warning("%s hook failed for %s: %s", surface, session.session.id, error)
-            return None
-        return self._failed_chunk(session=session, sequence=sequence + 1, error=error)
-
-    def _run_tool_hooks(
-        self,
-        *,
-        session: SessionState,
-        sequence: int,
-        tool_name: str,
-        phase: Literal["pre", "post"],
-    ) -> _RuntimeHookOutcome:
-        # Referenced via extracted run-loop collaborator.
-        outcome: HookExecutionOutcome = run_tool_hooks(
-            HookExecutionRequest(
-                hooks=self._config.hooks,
-                workspace=self._workspace,
-                session_id=session.session.id,
-                tool_name=tool_name,
-                phase=phase,
-                recursion_env_var=self._hook_recursion_env_var,
-                environment=os.environ,
-                sequence_start=sequence,
-                policy=self._hook_execution_policy_from_metadata(session.metadata),
-            )
-        )
-        emitted_chunks = tuple(
-            RuntimeStreamChunk(
-                kind="event",
-                session=session,
-                event=EventEnvelope(
-                    session_id=session.session.id,
-                    sequence=event.sequence,
-                    event_type=event.event_type,
-                    source="runtime",
-                    payload=event.payload,
-                ),
-            )
-            for event in outcome.events
-        )
-        return _RuntimeHookOutcome(
-            chunks=emitted_chunks,
-            last_sequence=outcome.last_sequence,
-            failed_error=outcome.failed_error,
-            action=outcome.action,
-        )
-
-    def _hook_execution_policy_from_metadata(
-        self,
-        metadata: dict[str, object] | None,
-    ) -> HookExecutionPolicy:
-        mode = runtime_mode_from_metadata(metadata)
-        read_only = runtime_read_only_from_metadata(metadata)
-        return HookExecutionPolicy(mode=mode, read_only=read_only)
-
-    def _failed_chunk(
-        self,
-        *,
-        session: SessionState,
-        sequence: int,
-        error: str,
-        payload: dict[str, object] | None = None,
-    ) -> RuntimeStreamChunk:
-        failed_session = self._session_with_plan_state(
-            SessionState(
-                session=session.session,
-                status="failed",
-                turn=session.turn,
-                metadata=session.metadata,
-            ),
-            status="failed",
-            error=error,
-        )
-        failure_payload = {"error": error, **(payload or {})}
-        failure_payload = self._with_runtime_failure_details(failure_payload)
-        return RuntimeStreamChunk(
-            kind="event",
-            session=failed_session,
-            event=EventEnvelope(
-                session_id=session.session.id,
-                sequence=sequence,
-                event_type="runtime.failed",
-                source="runtime",
-                payload=failure_payload,
-            ),
-        )
-
-    @staticmethod
-    def _with_runtime_failure_details(payload: dict[str, object]) -> dict[str, object]:
-        normalized = dict(payload)
-        error = normalized.get("error")
-        if not isinstance(error, str) or not error:
-            return normalized
-        summary = normalized.get("error_summary")
-        if not isinstance(summary, str) or not summary:
-            summary = VoidCodeRuntime._format_runtime_error_summary(error)
-            normalized["error_summary"] = summary
-        guidance = normalized.get("retry_guidance")
-        if not isinstance(guidance, str) or not guidance:
-            retry_guidance = VoidCodeRuntime._retry_guidance_for_runtime_failure(normalized)
-            if retry_guidance is not None:
-                normalized["retry_guidance"] = retry_guidance
-        if "error_details" not in normalized:
-            details: dict[str, object] = {"message": error, "summary": summary}
-            if isinstance(normalized.get("provider_error_kind"), str):
-                details["provider_error_kind"] = normalized["provider_error_kind"]
-            if isinstance(normalized.get("provider_error_details"), dict):
-                details["provider_error_details"] = normalized["provider_error_details"]
-            if normalized.get("cancelled") is True:
-                details["cancelled"] = True
-            normalized["error_details"] = details
-        return normalized
-
-    @staticmethod
-    def _retry_guidance_for_runtime_failure(payload: dict[str, object]) -> str | None:
-        provider_error_kind = payload.get("provider_error_kind")
-        if isinstance(provider_error_kind, str) and provider_error_kind:
-            guidance = guidance_for_provider_error_kind(cast(ProviderErrorKind, provider_error_kind))
-            if guidance:
-                return guidance
-        if payload.get("cancelled") is True:
-            return "Retry the request if you still want to continue this run."
-        if payload.get("kind") == "interrupted":
-            return "Retry the request if you want to resume execution after the interruption."
-        return None
-
-    @staticmethod
-    def _format_runtime_error_summary(error: str) -> str:
-        cleaned = error.removeprefix("Error: ").strip()
-        if not cleaned:
-            return error
-        for prefix in ("Runtime failed:", "runtime failed:"):
-            if cleaned.startswith(prefix):
-                cleaned = cleaned[len(prefix) :].strip()
-                break
-        return cleaned or error
-
-    def _persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
+    def persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
         runtime_state = response.session.metadata.get("runtime_state")
         if response.session.status in {"completed", "failed"} and isinstance(runtime_state, dict) and "pending_tool_intent" in runtime_state:
             cleaned_state = dict(cast(dict[str, object], runtime_state))
@@ -2817,7 +2266,7 @@ class VoidCodeRuntime:
             seal_terminal_status=seal_terminal_status,
         )
 
-    def _resolve_permission(
+    def resolve_permission(
         self,
         *,
         session: SessionState,
@@ -2826,8 +2275,8 @@ class VoidCodeRuntime:
         tool_call: ToolCall,
         sequence: int,
         permission_policy: PermissionPolicy,
-    ) -> _PermissionOutcome:
-        effective_permission = self._effective_runtime_config_from_metadata(session.metadata).permission
+    ) -> PermissionOutcome:
+        effective_permission = self.effective_runtime_config_from_metadata(session.metadata).permission
         eval_result = self._permission_engine.evaluate(
             tool=tool,
             tool_instance=tool_instance,
@@ -2844,7 +2293,6 @@ class VoidCodeRuntime:
         policy_surface = eval_result.policy_surface
         external_decision = eval_result.external_decision
 
-        # Referenced via extracted run-loop collaborator.
         permission = resolve_permission(
             tool,
             tool_call,
@@ -2865,7 +2313,7 @@ class VoidCodeRuntime:
         )
 
         if path_scope == "workspace" and tool.read_only and operation_class == "read":
-            return _PermissionOutcome(
+            return PermissionOutcome(
                 chunks=(
                     RuntimeStreamChunk(
                         kind="event",
@@ -2886,7 +2334,7 @@ class VoidCodeRuntime:
         if pending_approval is None:
             raise ValueError("non-read-only permission decisions require pending approval data")
         if permission.decision in ("allow", "deny"):
-            return self._approval_resolution_outcome(
+            return self.approval_resolution_outcome(
                 session=session,
                 pending=pending_approval,
                 decision=permission.decision,
@@ -2894,7 +2342,7 @@ class VoidCodeRuntime:
             )
 
         pending = pending_approval
-        waiting_session = self._session_with_plan_state(
+        waiting_session = session_with_plan_state(
             SessionState(
                 session=session.session,
                 status="waiting",
@@ -2945,20 +2393,20 @@ class VoidCodeRuntime:
             payload=request_payload,
         )
         pending = replace(pending, request_event_sequence=request_event.sequence)
-        return _PermissionOutcome(
+        return PermissionOutcome(
             chunks=(RuntimeStreamChunk(kind="event", session=waiting_session, event=request_event),),
             last_sequence=sequence,
             pending_approval=pending,
         )
 
-    def _approval_resolution_outcome(
+    def approval_resolution_outcome(
         self,
         *,
         session: SessionState,
         pending: PendingApproval,
         decision: PermissionResolution,
         sequence: int,
-    ) -> _PermissionOutcome:
+    ) -> PermissionOutcome:
         resolution_payload: dict[str, object] = {
             "request_id": pending.request_id,
             "decision": decision,
@@ -2991,11 +2439,11 @@ class VoidCodeRuntime:
             payload=resolution_payload,
         )
         if decision == "deny":
-            return _PermissionOutcome(
+            return PermissionOutcome(
                 chunks=(
                     RuntimeStreamChunk(
                         kind="event",
-                        session=self._session_with_plan_state(session, status="in_progress"),
+                        session=session_with_plan_state(session, status="in_progress"),
                         event=resolution_event,
                     ),
                 ),
@@ -3003,11 +2451,11 @@ class VoidCodeRuntime:
                 denied=True,
                 denied_approval=pending,
             )
-        return _PermissionOutcome(
+        return PermissionOutcome(
             chunks=(
                 RuntimeStreamChunk(
                     kind="event",
-                    session=self._session_with_plan_state(session, status="in_progress"),
+                    session=session_with_plan_state(session, status="in_progress"),
                     event=resolution_event,
                 ),
             ),
@@ -3266,12 +2714,13 @@ class VoidCodeRuntime:
             session_id=session_id,
             sequence=sequence,
         )
-        self._validate_session_workspace(
+        validate_session_workspace(
             self._session_store.load_session_result(
                 workspace=self._workspace,
                 session_id=session_id,
             ).session,
             session_id=session_id,
+            workspace=self._workspace,
         )
         return marker
 
@@ -3281,12 +2730,13 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             session_id=session_id,
         )
-        self._validate_session_workspace(
+        validate_session_workspace(
             self._session_store.load_session_result(
                 workspace=self._workspace,
                 session_id=session_id,
             ).session,
             session_id=session_id,
+            workspace=self._workspace,
         )
         return marker
 
@@ -3296,12 +2746,13 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             session_id=session_id,
         )
-        self._validate_session_workspace(
+        validate_session_workspace(
             self._session_store.load_session_result(
                 workspace=self._workspace,
                 session_id=session_id,
             ).session,
             session_id=session_id,
+            workspace=self._workspace,
         )
         return marker
 
@@ -3311,7 +2762,7 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             session_id=session_id,
         )
-        self._validate_session_workspace(result.session, session_id=session_id)
+        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
         raw_snapshot = result.session.metadata.get("agent_capability_snapshot")
         if raw_snapshot is None:
             raise ValueError("persisted session requires agent_capability_snapshot")
@@ -3334,7 +2785,7 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             session_id=session_id,
         )
-        self._validate_session_workspace(result.session, session_id=session_id)
+        validate_session_workspace(result.session, session_id=session_id, workspace=self._workspace)
         artifact = resolve_tool_output_artifact_metadata(
             result.transcript,
             artifact_id=artifact_id,
@@ -3668,10 +3119,10 @@ class VoidCodeRuntime:
 
     def effective_runtime_config(self, *, session_id: str | None = None) -> EffectiveRuntimeConfig:
         if session_id is None:
-            return self._effective_runtime_config_from_metadata(None)
+            return self.effective_runtime_config_from_metadata(None)
         validate_session_id(session_id)
         response = self._load_stored_response(session_id=session_id)
-        return self._effective_runtime_config_from_metadata(response.session.metadata)
+        return self.effective_runtime_config_from_metadata(response.session.metadata)
 
     def effective_agent_model_config(self, *, session_id: str | None = None) -> dict[str, object]:
         agents, base_model, base_provider_fallback = self._display_routing_config(session_id=session_id)
@@ -4337,7 +3788,7 @@ class VoidCodeRuntime:
 
     def web_settings(self) -> dict[str, object]:
         settings = load_global_web_settings()
-        effective_config = self._effective_runtime_config_from_metadata(None)
+        effective_config = self.effective_runtime_config_from_metadata(None)
         return {
             "provider": settings.provider,
             "provider_api_key_present": settings.provider_api_key_present,
@@ -4516,7 +3967,7 @@ class VoidCodeRuntime:
         prompt, tool_results = self._prompt_and_tool_results_from_debug_events(result.transcript)
         if not prompt:
             prompt = result.prompt
-        assembled_context = self._assemble_provider_context(
+        assembled_context = self.assemble_provider_context(
             prompt=prompt,
             tool_results=tuple(tool_results),
             session_metadata=result.session.metadata,
@@ -4538,7 +3989,7 @@ class VoidCodeRuntime:
                     },
                     loaded_skills=assembled_context.loaded_skills,
                 )
-        effective_config = self._effective_runtime_config_from_metadata(result.session.metadata)
+        effective_config = self.effective_runtime_config_from_metadata(result.session.metadata)
         return self._provider_context_snapshot_for_assembled_context(
             assembled_context=assembled_context,
             effective_config=effective_config,
@@ -4553,14 +4004,14 @@ class VoidCodeRuntime:
         active_target = effective_config.resolved_provider.active_target
         provider = active_target.selection.provider or "unknown"
         model = active_target.selection.model or active_target.selection.raw_model or "unknown"
-        tool_registry = self._tool_registry_for_effective_config(effective_config)
+        tool_registry = self.tool_registry_for_effective_config(effective_config)
         context_window_config = effective_config.context_window or RuntimeContextWindowConfig()
         return inspect_provider_context(
             assembled_context=assembled_context,
             provider=provider,
             model=model,
             execution_engine=effective_config.execution_engine,
-            available_tool_count=len(self._provider_tool_definitions(tool_registry, effective_config)),
+            available_tool_count=len(self.provider_tool_definitions(tool_registry, effective_config)),
             tool_feedback_mode=self._tool_feedback_mode_for_effective_config(effective_config),
             oversized_tool_feedback_chars=(context_window_config.provider_context_oversized_feedback_chars),
             diagnostic_policy_mode=context_window_config.provider_context_diagnostics,
@@ -4575,7 +4026,7 @@ class VoidCodeRuntime:
             return active_target.metadata.tool_feedback_mode
         return "standard"
 
-    def _provider_context_policy_decision_for_graph_request(
+    def provider_context_policy_decision_for_graph_request(
         self,
         *,
         graph_request: GraphRunRequest,
@@ -4669,7 +4120,7 @@ class VoidCodeRuntime:
         if active_metadata is None:
             return False
         active_run_id = active_metadata.get("run_id")
-        persisted_run_id = VoidCodeRuntime._run_id_from_session_metadata(result.session.metadata)
+        persisted_run_id = run_id_from_session_metadata(result.session.metadata)
         if isinstance(active_run_id, str) and active_run_id != persisted_run_id:
             return True
         request_metadata = active_metadata.get("request_metadata")
@@ -4697,10 +4148,6 @@ class VoidCodeRuntime:
         }
         request_metadata = {key: value for key, value in metadata.items() if key in request_metadata_keys}
         return VoidCodeRuntime._fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
-
-    @staticmethod
-    def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
-        return run_id_from_session_metadata(metadata)
 
     def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
         """Persist a message to deliver before the next provider turn."""
@@ -4753,42 +4200,6 @@ class VoidCodeRuntime:
             metadata=metadata,
         )
         return tuple(message.content for message in messages)
-
-    def _persist_tool_execution_intent(self, session: SessionState, intent: dict[str, object]) -> None:
-        runtime_state = session.metadata.get("runtime_state")
-        state = dict(cast(dict[str, object], runtime_state)) if isinstance(runtime_state, dict) else {}
-        pending = dict(intent)
-        state["pending_tool_intent"] = pending
-        metadata = {**session.metadata, "runtime_state": state}
-        try:
-            self._session_store.update_session_metadata(
-                workspace=self._workspace,
-                session_id=session.session.id,
-                metadata=metadata,
-            )
-        except UnknownSessionError:
-            # The initial run snapshot may not have committed yet.
-            logger.debug("tool intent persistence deferred for new session %s", session.session.id)
-
-    def _clear_tool_execution_intent(self, session: SessionState) -> None:
-        try:
-            persisted_session = self._load_stored_response(session_id=session.session.id).session
-        except UnknownSessionError:
-            logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
-            return
-        runtime_state = persisted_session.metadata.get("runtime_state")
-        if not isinstance(runtime_state, dict) or "pending_tool_intent" not in runtime_state:
-            return
-        state = dict(cast(dict[str, object], runtime_state))
-        state.pop("pending_tool_intent", None)
-        try:
-            self._session_store.update_session_metadata(
-                workspace=self._workspace,
-                session_id=session.session.id,
-                metadata={**persisted_session.metadata, "runtime_state": state},
-            )
-        except UnknownSessionError:
-            logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
 
     def pending_tool_intent(self, session_id: str) -> dict[str, object] | None:
         """Return an unsettled tool intent left by an interrupted process."""
@@ -5101,100 +4512,6 @@ class VoidCodeRuntime:
             request_id=request_id,
         )
 
-    def _validate_pending_approval_matches_recorded_request(
-        self,
-        *,
-        stored: RuntimeResponse,
-        pending: PendingApproval,
-        checkpoint: dict[str, object] | None,
-    ) -> None:
-        # Referenced via extracted resume collaborator.
-        request_event, resolved = self._request_event_and_resolution_state(
-            stored.events,
-            request_kind="approval",
-            request_id=pending.request_id,
-        )
-        if resolved:
-            raise ValueError("approval request was already resolved; stale approval replay is not allowed")
-        if request_event is None:
-            if checkpoint is None:
-                raise ValueError("persisted pending approval has no matching approval request event")
-            if checkpoint.get("pending_approval_request_id") != pending.request_id:
-                raise ValueError("persisted approval resume checkpoint request id does not match pending approval")
-            if checkpoint.get("pending_approval_tool_name") != pending.tool_name or checkpoint.get("pending_approval_arguments") != pending.arguments:
-                raise ValueError("persisted pending approval no longer matches the recorded approval request payload")
-            if checkpoint.get("pending_approval_owner_session_id") != pending.owner_session_id:
-                raise ValueError("persisted pending approval owner_session_id does not match the recorded approval request")
-            if checkpoint.get("pending_approval_owner_parent_session_id") != pending.owner_parent_session_id:
-                raise ValueError("persisted pending approval owner_parent_session_id does not match the recorded approval request")
-            if checkpoint.get("pending_approval_delegated_task_id") != pending.delegated_task_id:
-                raise ValueError("persisted pending approval delegated_task_id does not match the recorded approval request")
-            checkpoint_sequence = checkpoint.get("pending_approval_request_event_sequence")
-            if (
-                pending.request_event_sequence is not None
-                and checkpoint_sequence is not None
-                and checkpoint_sequence != pending.request_event_sequence
-            ):
-                raise ValueError("persisted pending approval sequence does not match the recorded approval request")
-            return
-        if pending.request_event_sequence is not None and request_event.sequence != pending.request_event_sequence:
-            raise ValueError("persisted pending approval sequence does not match the recorded approval request")
-        payload = request_event.payload
-        if payload.get("tool") != pending.tool_name or payload.get("arguments") != pending.arguments:
-            raise ValueError("persisted pending approval no longer matches the recorded approval request payload")
-        if payload.get("owner_session_id") != pending.owner_session_id:
-            raise ValueError("persisted pending approval owner_session_id does not match the recorded approval request")
-        if payload.get("owner_parent_session_id") != pending.owner_parent_session_id:
-            raise ValueError("persisted pending approval owner_parent_session_id does not match the recorded approval request")
-        if payload.get("delegated_task_id") != pending.delegated_task_id:
-            raise ValueError("persisted pending approval delegated_task_id does not match the recorded approval request")
-
-    def _validate_pending_question_matches_recorded_request(
-        self,
-        *,
-        stored: RuntimeResponse,
-        pending: PendingQuestion,
-        checkpoint: dict[str, object] | None,
-    ) -> None:
-        # Referenced via extracted resume collaborator.
-        request_event, resolved = self._request_event_and_resolution_state(
-            stored.events,
-            request_kind="question",
-            request_id=pending.request_id,
-        )
-        if resolved:
-            raise ValueError("question request was already answered; stale question replay is not allowed")
-        expected_questions = [
-            {
-                "header": prompt.header,
-                "question": prompt.question,
-                "multiple": prompt.multiple,
-                "options": [
-                    {
-                        "label": option.label,
-                        "description": option.description,
-                    }
-                    for option in prompt.options
-                ],
-            }
-            for prompt in pending.prompts
-        ]
-        if request_event is None:
-            if checkpoint is None:
-                raise ValueError("persisted pending question has no matching question request event")
-            if checkpoint.get("pending_question_request_id") != pending.request_id:
-                raise ValueError("persisted question resume checkpoint request id does not match pending question")
-            if checkpoint.get("pending_question_tool_name") != pending.tool_name:
-                raise ValueError("persisted pending question tool does not match the recorded question request")
-            if checkpoint.get("pending_question_prompts") != expected_questions:
-                raise ValueError("persisted pending question no longer matches the recorded question request payload")
-            return
-        payload = request_event.payload
-        if payload.get("tool") != pending.tool_name:
-            raise ValueError("persisted pending question tool does not match the recorded question request")
-        if payload.get("questions") != expected_questions:
-            raise ValueError("persisted pending question no longer matches the recorded question request payload")
-
     def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
         return pending_question_from_response(response)
 
@@ -5276,30 +4593,6 @@ class VoidCodeRuntime:
             responses=responses,
             checkpoint=checkpoint,
         )
-
-    def _resume_waiting_reason(self, response: RuntimeResponse) -> str:
-        try:
-            self._pending_approval_from_response(response)
-        except ValueError:
-            pass
-        else:
-            return "waiting_for_approval"
-        if self._pending_question_from_response(response) is not None:
-            return "waiting_for_question"
-        return "waiting"
-
-    @staticmethod
-    def _waiting_reason_from_session(session: SessionState) -> str:
-        plan_state = session.metadata.get("plan_state")
-        if not isinstance(plan_state, dict):
-            return "waiting"
-        plan_state_payload = cast(dict[str, object], plan_state)
-        status = plan_state_payload.get("status")
-        if status == "waiting_approval":
-            return "waiting_for_approval"
-        if status == "waiting_question":
-            return "waiting_for_question"
-        return "waiting"
 
     def _response_from_resumed_chunks(
         self,
@@ -5690,11 +4983,11 @@ class VoidCodeRuntime:
         if parent_session_id is not None:
             parent_response = self._load_existing_session_if_present(session_id=parent_session_id)
             if parent_response is not None:
-                parent_depth = self._delegation_depth_from_metadata(parent_response.session.metadata)
-                remaining_spawn_budget = self._remaining_spawn_budget_from_metadata(parent_response.session.metadata)
+                parent_depth = delegation_depth_from_metadata(parent_response.session.metadata)
+                remaining_spawn_budget = remaining_spawn_budget_from_metadata(parent_response.session.metadata)
             elif (active_parent_metadata := self._active_session_metadata(parent_session_id)) is not None:
-                parent_depth = self._delegation_depth_from_metadata(active_parent_metadata)
-                remaining_spawn_budget = self._remaining_spawn_budget_from_metadata(active_parent_metadata)
+                parent_depth = delegation_depth_from_metadata(active_parent_metadata)
+                remaining_spawn_budget = remaining_spawn_budget_from_metadata(active_parent_metadata)
 
         request_depth = parent_depth + 1
         if request_depth > _DELEGATION_GOVERNANCE.max_depth:
@@ -5727,87 +5020,8 @@ class VoidCodeRuntime:
         return validated
 
     @staticmethod
-    def _delegation_depth_from_metadata(metadata: dict[str, object] | None) -> int:
-        if metadata is None:
-            return 0
-        raw_delegation = metadata.get("delegation")
-        if not isinstance(raw_delegation, dict):
-            return 0
-        delegation = cast(dict[str, object], raw_delegation)
-        return max(0, _coerce_int_like(delegation.get("depth"), 0))
-
-    @staticmethod
-    def _remaining_spawn_budget_from_metadata(metadata: dict[str, object] | None) -> int:
-        if metadata is None:
-            return _DELEGATION_GOVERNANCE.spawn_budget
-        raw_delegation = metadata.get("delegation")
-        if not isinstance(raw_delegation, dict):
-            return _DELEGATION_GOVERNANCE.spawn_budget
-        delegation = cast(dict[str, object], raw_delegation)
-        remaining = _coerce_int_like(
-            delegation.get("remaining_spawn_budget"),
-            _DELEGATION_GOVERNANCE.spawn_budget,
-        )
-        return max(0, remaining)
-
-    @staticmethod
     def _resolve_session_id(request: RuntimeRequest) -> str:
         return resolve_runtime_session_routing(request).session_id
-
-    @staticmethod
-    def _prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:
-        # Referenced via extracted collaborators.
-        return prompt_from_events(events)
-
-    @staticmethod
-    def _provider_attempt_from_metadata(metadata: dict[str, object]) -> int:
-        # Referenced via extracted collaborators.
-        return provider_attempt_from_metadata(metadata)
-
-    @staticmethod
-    def _provider_retry_attempt_from_metadata(metadata: dict[str, object]) -> int:
-        return provider_retry_attempt_from_metadata(metadata)
-
-    def _provider_transient_retry_config(
-        self,
-        *,
-        provider_name: str,
-        session_metadata: dict[str, object],
-    ) -> ProviderTransientRetryConfig:
-        providers = self._effective_runtime_config_from_metadata(session_metadata).providers
-        if providers is None:
-            return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
-        if provider_name == "opencode-go":
-            provider_config = providers.opencode_go
-        elif provider_name == "openai":
-            provider_config = providers.openai
-        elif provider_name == "anthropic":
-            provider_config = providers.anthropic
-        elif provider_name == "google":
-            provider_config = providers.google
-        elif provider_name == "copilot":
-            provider_config = providers.copilot
-        elif provider_name == "litellm":
-            provider_config = providers.litellm
-        elif provider_name == "opencode":
-            provider_config = providers.opencode
-        elif provider_name == "deepseek":
-            provider_config = providers.deepseek
-        elif provider_name == "glm":
-            provider_config = providers.glm
-        elif provider_name == "grok":
-            provider_config = providers.grok
-        elif provider_name == "minimax":
-            provider_config = providers.minimax
-        elif provider_name == "kimi":
-            provider_config = providers.kimi
-        elif provider_name == "qwen":
-            provider_config = providers.qwen
-        else:
-            provider_config = providers.custom.get(provider_name)
-        if provider_config is None or provider_config.transient_retry is None:
-            return DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG
-        return provider_config.transient_retry
 
     @staticmethod
     def _context_window_config_from_policy(
@@ -5828,7 +5042,7 @@ class VoidCodeRuntime:
             provider_attempt=provider_attempt,
         )
 
-    def _prepare_provider_context_window(
+    def prepare_provider_context_window(
         self,
         *,
         prompt: str,
@@ -5837,8 +5051,8 @@ class VoidCodeRuntime:
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,
     ) -> RuntimeContextWindow:
-        effective_config = self._effective_runtime_config_from_metadata(session_metadata)
-        provider_attempt = self._provider_attempt_from_metadata(session_metadata)
+        effective_config = self.effective_runtime_config_from_metadata(session_metadata)
+        provider_attempt = provider_attempt_from_metadata(session_metadata)
         if policy is None:
             policy = self._context_window_policy_from_config(
                 effective_config.context_window,
@@ -5953,7 +5167,7 @@ class VoidCodeRuntime:
                 eligible.append(result)
         return eligible
 
-    def _assemble_provider_context(
+    def assemble_provider_context(
         self,
         *,
         prompt: str,
@@ -5975,8 +5189,8 @@ class VoidCodeRuntime:
         mode_guidance_context = ""
         if mode_resolution.mode != "normal":
             mode_guidance_context = MODE_DEFINITIONS[mode_resolution.mode].description
-        effective_config = self._effective_runtime_config_from_metadata(session_metadata)
-        provider_attempt = self._provider_attempt_from_metadata(session_metadata)
+        effective_config = self.effective_runtime_config_from_metadata(session_metadata)
+        provider_attempt = provider_attempt_from_metadata(session_metadata)
         policy = self._context_window_policy_from_config(
             effective_config.context_window,
             resolved_provider=None,
@@ -6038,7 +5252,7 @@ class VoidCodeRuntime:
             skill_prompt_context=skill_prompt_context,
             preserved_system_segments=preserved_system_segments,
             loaded_skills=loaded_skills,
-            preserved_continuity_state=self._continuity_state_from_session_metadata(session_metadata),
+            preserved_continuity_state=continuity_state_from_session_metadata(session_metadata),
             workspace_memory_context=workspace_memory_context,
             workspace=self._workspace,
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
@@ -6055,105 +5269,6 @@ class VoidCodeRuntime:
             metadata={**assembled_context.metadata, "delegation": dict(delegation)},
             loaded_skills=assembled_context.loaded_skills,
         )
-
-    @staticmethod
-    def _continuity_state_from_session_metadata(
-        session_metadata: dict[str, object],
-    ) -> ContextProjection | None:
-        # Referenced via extracted collaborators.
-        runtime_state = session_metadata.get("runtime_state")
-        if not isinstance(runtime_state, dict):
-            return None
-        runtime_state_payload = cast(dict[str, object], runtime_state)
-        continuity = runtime_state_payload.get("context_projection")
-        if not isinstance(continuity, dict):
-            return None
-        return continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
-
-    @staticmethod
-    def _session_with_context_window_metadata(session: SessionState, context_window: RuntimeContextWindow) -> SessionState:
-        return VoidCodeRuntime._session_with_context_window_payload_metadata(session, context_window.metadata_payload())
-
-    @staticmethod
-    def _session_with_context_window_payload_metadata(session: SessionState, context_window_payload: dict[str, object]) -> SessionState:
-        return session_with_context_window_payload_metadata(session, context_window_payload)
-
-    @staticmethod
-    def _session_with_todo_state(
-        session: SessionState,
-        *,
-        raw_todos: object,
-        revision: int,
-    ) -> tuple[SessionState, dict[str, object]]:
-        return session_with_todo_state(session, raw_todos=raw_todos, revision=revision)
-
-    @staticmethod
-    def _session_with_provider_usage_metadata(session: SessionState, usage: ProviderTokenUsage | None) -> SessionState:
-        return session_with_provider_usage_metadata(session, usage)
-
-    @staticmethod
-    def _reasoning_capture_state() -> _ReasoningCaptureState:
-        # Referenced via extracted run-loop collaborator.
-        return _ReasoningCaptureState()
-
-    def _reasoning_output_diagnostic(
-        self,
-        *,
-        session: SessionState,
-        capture_state: _ReasoningCaptureState,
-    ) -> dict[str, object] | None:
-        # Referenced via extracted run-loop collaborator.
-        if capture_state.output_diagnostic_emitted or not capture_state.stream_observed:
-            return None
-        capture_state.output_diagnostic_emitted = True
-        effective_config = self._effective_runtime_config_from_metadata(session.metadata)
-        if effective_config.execution_engine != "provider":
-            return None
-        active_target = effective_config.resolved_provider.active_target.selection
-        provider_name = active_target.provider
-        model_name = active_target.model
-        metadata = self._metadata_for_provider_model(provider_name, model_name) if provider_name is not None and model_name is not None else None
-        supports_reasoning = metadata.supports_reasoning if metadata is not None else None
-        if capture_state.reasoning_observed:
-            severity = "info"
-            reason = "reasoning_output_observed"
-        elif supports_reasoning is True:
-            severity = "warning"
-            reason = "reasoning_capable_model_returned_no_reasoning_output"
-        else:
-            severity = "info"
-            reason = "no_reasoning_output_observed"
-        return {
-            "severity": severity,
-            "category": "reasoning_output",
-            "reason": reason,
-            "provider": provider_name,
-            "model": model_name,
-            "reasoning_output_observed": capture_state.reasoning_observed,
-            "supports_reasoning": supports_reasoning,
-            "captured_part_count": capture_state.part_count,
-            "captured_text_char_count": capture_state.text_char_count,
-        }
-
-    @staticmethod
-    def _renumber_events(
-        events: tuple[GraphEvent, ...],
-        *,
-        session_id: str,
-        start_sequence: int,
-        reasoning_capture_state: _ReasoningCaptureState | None = None,
-    ) -> tuple[EventEnvelope, ...]:
-        # Referenced via extracted run-loop collaborator.
-        return renumber_events(
-            events,
-            session_id=session_id,
-            start_sequence=start_sequence,
-            reasoning_capture_state=reasoning_capture_state,
-        )
-
-    @staticmethod
-    def _loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
-        return loaded_skill_names(skill_registry)
 
     def _applied_skill_contexts(
         self,
@@ -6187,7 +5302,7 @@ class VoidCodeRuntime:
     ) -> tuple[str, ...] | None:
         return request_skill_names_from_metadata(metadata, key=key)
 
-    def _build_skill_snapshot(
+    def build_skill_snapshot(
         self,
         skill_registry: SkillRegistry,
         *,
@@ -6259,7 +5374,7 @@ class VoidCodeRuntime:
             if isinstance(raw_runtime_config, dict):
                 source_runtime_config = cast(dict[str, object], raw_runtime_config)
         if source_runtime_config is None:
-            source_runtime_config = self._runtime_config_metadata(self._effective_runtime_config_from_metadata(metadata))
+            source_runtime_config = self._runtime_config_metadata(self.effective_runtime_config_from_metadata(metadata))
         snapshot: dict[str, object] = {}
         for key in _SKILL_BINDING_SCOPE_KEYS:
             if key in source_runtime_config:
@@ -6420,23 +5535,6 @@ class VoidCodeRuntime:
         return validate_agent_capability_snapshot(cast(dict[str, object], raw_snapshot))
 
     @staticmethod
-    def _skill_binding_mismatch_payload(
-        expected: dict[str, object] | None,
-        actual: dict[str, object] | None,
-    ) -> dict[str, object]:
-        # Referenced via extracted resume collaborator.
-        expected_payload = expected if isinstance(expected, dict) else {}
-        actual_payload = actual if isinstance(actual, dict) else {}
-        keys = sorted(set(expected_payload.keys()) | set(actual_payload.keys()))
-        mismatches = [key for key in keys if expected_payload.get(key) != actual_payload.get(key)]
-        return {
-            "mismatch": bool(mismatches),
-            "mismatch_keys": mismatches,
-            "expected_binding": expected_payload,
-            "actual_binding": actual_payload,
-        }
-
-    @staticmethod
     def _snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, object]:
         return snapshot_to_session_metadata(snapshot)
 
@@ -6525,24 +5623,11 @@ class VoidCodeRuntime:
     ) -> tuple[SkillRuntimeContext, ...]:
         return available_runtime_contexts(skill_registry, skill_names)
 
-    @staticmethod
-    def _catalog_skill_context(
-        skill_registry: SkillRegistry,
-        *,
-        available_skill_names: tuple[str, ...],
-        selected_skill_names: tuple[str, ...],
-    ) -> str:
-        return catalog_skill_context(
-            skill_registry,
-            available_skill_names=available_skill_names,
-            selected_skill_names=selected_skill_names,
-        )
-
     def _runtime_config_metadata(
         self,
         config: EffectiveRuntimeConfig | None = None,
     ) -> dict[str, object]:
-        effective_config = config or self._effective_runtime_config_from_metadata(None)
+        effective_config = config or self.effective_runtime_config_from_metadata(None)
         runtime_config_metadata = serialize_runtime_config_core(effective_config)
         runtime_config_metadata["resolved_provider"] = resolved_provider_snapshot(effective_config.resolved_provider)
         resolved_hook_presets = self._build_hook_preset_snapshot(
@@ -6875,54 +5960,6 @@ class VoidCodeRuntime:
         return debug_hook_preset_snapshot(metadata)
 
     @staticmethod
-    def _envelopes_for_lsp_events(
-        *,
-        session_id: str,
-        start_sequence: int,
-        lsp_events: tuple[object, ...],
-    ) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_lsp_events(
-            session_id=session_id,
-            start_sequence=start_sequence,
-            lsp_events=lsp_events,
-        )
-
-    @staticmethod
-    def _envelopes_for_acp_events(
-        *,
-        session_id: str,
-        start_sequence: int,
-        acp_events: tuple[object, ...],
-    ) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_acp_events(
-            session_id=session_id,
-            start_sequence=start_sequence,
-            acp_events=acp_events,
-        )
-
-    @staticmethod
-    def _envelopes_for_mcp_events(
-        *,
-        session_id: str,
-        start_sequence: int,
-        mcp_events: tuple[object, ...],
-    ) -> tuple[EventEnvelope, ...]:
-        return envelopes_for_mcp_events(
-            session_id=session_id,
-            start_sequence=start_sequence,
-            mcp_events=mcp_events,
-        )
-
-    def _permission_policy_for_session(self, metadata: dict[str, object] | None) -> PermissionPolicy:
-        # Referenced via extracted resume collaborator.
-        return permission_policy_for_session(base_policy=self._permission_policy, metadata=metadata)
-
-    @staticmethod
-    def _approval_request_id_from_waiting_response(response: RuntimeResponse) -> str | None:
-        # Referenced via extracted background-task collaborator.
-        return approval_request_id_from_waiting_response(response)
-
-    @staticmethod
     def _waiting_request_id_from_response(
         response: RuntimeResponse,
         *,
@@ -6930,7 +5967,7 @@ class VoidCodeRuntime:
     ) -> str | None:
         return waiting_request_id_from_response(response, request_kind=request_kind)
 
-    def _effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig:
+    def effective_runtime_config_from_metadata(self, metadata: dict[str, object] | None) -> EffectiveRuntimeConfig:
         approval_mode: PermissionDecision = self._config.approval_mode
         model = self._config.model
         execution_engine = self._config.execution_engine
@@ -7112,15 +6149,11 @@ class VoidCodeRuntime:
             policy=policy,
         )
 
-    def _provider_chain_for_session_metadata(self, metadata: dict[str, object] | None) -> ResolvedProviderChain:
-        effective_config = self._effective_runtime_config_from_metadata(metadata)
-        return effective_config.resolved_provider.target_chain
-
-    def _graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:
+    def graph_for_session_metadata(self, metadata: dict[str, object] | None) -> RuntimeGraph:
         if self._graph_override is not None:
             return self._graph_override
 
-        effective_config = self._effective_runtime_config_from_metadata(metadata)
+        effective_config = self.effective_runtime_config_from_metadata(metadata)
         if isinstance((metadata or {}).get("command"), dict):
             return self._build_graph_for_engine_from_config(effective_config, use_cache=False)
 
@@ -7143,13 +6176,6 @@ class VoidCodeRuntime:
         # Otherwise use cached graph or build new one
         return self._build_graph_for_engine_from_config(effective_config)
 
-    def _validate_session_workspace(self, session: SessionState, *, session_id: str) -> None:
-        session_workspace = session.metadata.get("workspace")
-        if session_workspace is None:
-            return
-        if session_workspace != str(self._workspace):
-            raise ValueError(f"session {session_id} does not belong to workspace {self._workspace}")
-
     def _load_existing_session_if_present(self, *, session_id: str) -> RuntimeResponse | None:
         if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
             return None
@@ -7160,7 +6186,7 @@ class VoidCodeRuntime:
             workspace=self._workspace,
             session_id=session_id,
         )
-        self._validate_session_workspace(response.session, session_id=session_id)
+        validate_session_workspace(response.session, session_id=session_id, workspace=self._workspace)
         return response
 
     def _load_replay_response(self, *, session_id: str) -> RuntimeResponse:
@@ -7168,7 +6194,7 @@ class VoidCodeRuntime:
         # Replay is still a runtime boundary: reject malformed persisted
         # configuration instead of silently projecting unverifiable state.
         if "runtime_config" in response.session.metadata:
-            self._effective_runtime_config_from_metadata(response.session.metadata)
+            self.effective_runtime_config_from_metadata(response.session.metadata)
         projected_metadata = session_metadata_for_replay(response.session.metadata)
         replay_events = self._events_with_runtime_policy_projection(
             response.events,
@@ -7345,20 +6371,3 @@ class _PersistedResumeCheckpointEnvelope:
     kind: str
     version: int
     payload: dict[str, object]
-
-
-@dataclass(frozen=True, slots=True)
-class _PermissionOutcome:
-    chunks: tuple[RuntimeStreamChunk, ...]
-    last_sequence: int
-    pending_approval: PendingApproval | None = None
-    denied: bool = False
-    denied_approval: PendingApproval | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _RuntimeHookOutcome:
-    chunks: tuple[RuntimeStreamChunk, ...]
-    last_sequence: int
-    failed_error: str | None = None
-    action: Literal["continue", "cancel"] = "continue"

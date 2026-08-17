@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from pathlib import Path
 from typing import cast
 
 from ..skills import SkillRegistry
@@ -13,19 +12,6 @@ from .skills import (
     snapshot_from_payload,
     snapshot_payload,
 )
-
-
-def _skill_entry_uri(path: Path) -> str:
-    if path.is_absolute():
-        return path.as_uri()
-    return path.resolve().as_uri()
-
-
-def loaded_skill_names(skill_registry: SkillRegistry) -> list[str]:
-    # Builtin skills are catalog resources: they stay resolvable through the
-    # skill tool and selected workflow refs, but they are not workspace skills
-    # that were actively loaded for an ordinary run.
-    return sorted(skill_name for skill_name, skill in skill_registry.skills.items() if skill.origin != "builtin")
 
 
 def request_skill_names_from_metadata(
@@ -194,49 +180,11 @@ def available_runtime_contexts(
     return tuple(contexts)
 
 
-def catalog_skill_context(
-    skill_registry: SkillRegistry,
-    *,
-    available_skill_names: tuple[str, ...],
-    selected_skill_names: tuple[str, ...],
-) -> str:
-    names = selected_skill_names or available_skill_names
-    if not names:
-        return ""
-    lines = [
-        "Runtime skills catalog (recommended/visible).",
-        "Each entry is metadata only; the full SKILL.md body is NOT in your",
-        "current context.",
-        "Load a skill body ONLY when its description matches the active task.",
-        'Use the skill tool: skill(name="..."). Do NOT speculatively load every',
-        "skill; lazy loading keeps the harness lightweight and the model focused.",
-        "",
-        "<available_skills>",
-    ]
-    for skill_name in names:
-        skill = skill_registry.skills.get(skill_name)
-        if skill is None:
-            continue
-        lines.extend(
-            (
-                "  <skill>",
-                f"    <name>{skill.name}</name>",
-                f"    <description>{skill.description}</description>",
-                f"    <location>{_skill_entry_uri(skill.entry_path)}</location>",
-                "  </skill>",
-            )
-        )
-    lines.append("</available_skills>")
-    return "\n".join(lines)
-
-
 __all__ = [
     "available_runtime_contexts",
-    "catalog_skill_context",
     "effective_selected_skill_names",
     "force_loaded_skill_payloads",
     "fresh_request_metadata",
-    "loaded_skill_names",
     "persisted_selected_skill_names",
     "request_skill_names_from_metadata",
     "selected_skill_names_for_agent",
