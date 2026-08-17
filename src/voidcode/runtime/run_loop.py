@@ -49,6 +49,7 @@ from .events import (
     REASONING_PERSISTED_LIMIT_CHARS,
     RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
+    RUNTIME_PROVIDER_FALLBACK,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
     RUNTIME_REASONING_PART,
@@ -1638,7 +1639,7 @@ class RuntimeRunLoopCoordinator:
                         )
                         envelope = self._persist_event(
                             session_id=session.session.id,
-                            event_type="runtime.provider_fallback",
+                            event_type=RUNTIME_PROVIDER_FALLBACK,
                             source="runtime",
                             payload=provider_decision.event_payload(),
                         )

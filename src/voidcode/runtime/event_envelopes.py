@@ -6,26 +6,22 @@ from typing import cast
 from ..acp import AcpDelegatedExecution
 from ..graph.contracts import GraphEvent
 from .events import (
-    RUNTIME_ACP_CONNECTED,
-    RUNTIME_ACP_DELEGATED_LIFECYCLE,
-    RUNTIME_ACP_DISCONNECTED,
-    RUNTIME_ACP_FAILED,
-    RUNTIME_LSP_SERVER_FAILED,
-    RUNTIME_LSP_SERVER_REUSED,
-    RUNTIME_LSP_SERVER_STARTED,
-    RUNTIME_LSP_SERVER_STARTUP_REJECTED,
-    RUNTIME_LSP_SERVER_STOPPED,
-    RUNTIME_MCP_SERVER_ACQUIRED,
-    RUNTIME_MCP_SERVER_FAILED,
-    RUNTIME_MCP_SERVER_IDLE_CLEANED,
-    RUNTIME_MCP_SERVER_RELEASED,
-    RUNTIME_MCP_SERVER_REUSED,
-    RUNTIME_MCP_SERVER_STARTED,
-    RUNTIME_MCP_SERVER_STOPPED,
+    EMITTED_EVENT_TYPES,
     RUNTIME_REASONING_PART,
     EventEnvelope,
     runtime_reasoning_part_from_provider_stream,
 )
+
+# Each surface (LSP/ACP/MCP) accepts exactly the ``EMITTED_EVENT_TYPES`` members
+# of its own family. The sets are DERIVED by prefix from events.py's
+# authoritative tuple (not hand-picked copies) so a newly added runtime event
+# type of the same family flows through its envelope converter automatically
+# instead of being silently dropped. The converters only ever see events
+# emitted by their own surface manager, so prefix membership cannot admit a
+# foreign event type in practice.
+_LSP_RUNTIME_EVENT_TYPES = frozenset(event_type for event_type in EMITTED_EVENT_TYPES if event_type.startswith("runtime.lsp_server_"))
+_ACP_RUNTIME_EVENT_TYPES = frozenset(event_type for event_type in EMITTED_EVENT_TYPES if event_type.startswith("runtime.acp_"))
+_MCP_RUNTIME_EVENT_TYPES = frozenset(event_type for event_type in EMITTED_EVENT_TYPES if event_type.startswith("runtime.mcp_server_"))
 
 
 def resequence_event(event: EventEnvelope, *, sequence: int) -> EventEnvelope:
@@ -44,13 +40,7 @@ def envelopes_for_lsp_events(
     start_sequence: int,
     lsp_events: tuple[object, ...],
 ) -> tuple[EventEnvelope, ...]:
-    known_event_types = {
-        RUNTIME_LSP_SERVER_STARTED,
-        RUNTIME_LSP_SERVER_REUSED,
-        RUNTIME_LSP_SERVER_STARTUP_REJECTED,
-        RUNTIME_LSP_SERVER_STOPPED,
-        RUNTIME_LSP_SERVER_FAILED,
-    }
+    known_event_types = _LSP_RUNTIME_EVENT_TYPES
     envelopes: list[EventEnvelope] = []
     sequence = start_sequence
     for raw_event in lsp_events:
@@ -82,12 +72,7 @@ def envelopes_for_acp_events(
     start_sequence: int,
     acp_events: tuple[object, ...],
 ) -> tuple[EventEnvelope, ...]:
-    known_event_types = {
-        RUNTIME_ACP_CONNECTED,
-        RUNTIME_ACP_DELEGATED_LIFECYCLE,
-        RUNTIME_ACP_DISCONNECTED,
-        RUNTIME_ACP_FAILED,
-    }
+    known_event_types = _ACP_RUNTIME_EVENT_TYPES
     envelopes: list[EventEnvelope] = []
     sequence = start_sequence
     for raw_event in acp_events:
@@ -142,15 +127,7 @@ def envelopes_for_mcp_events(
     start_sequence: int,
     mcp_events: tuple[object, ...],
 ) -> tuple[EventEnvelope, ...]:
-    known_event_types = {
-        RUNTIME_MCP_SERVER_FAILED,
-        RUNTIME_MCP_SERVER_ACQUIRED,
-        RUNTIME_MCP_SERVER_IDLE_CLEANED,
-        RUNTIME_MCP_SERVER_RELEASED,
-        RUNTIME_MCP_SERVER_REUSED,
-        RUNTIME_MCP_SERVER_STARTED,
-        RUNTIME_MCP_SERVER_STOPPED,
-    }
+    known_event_types = _MCP_RUNTIME_EVENT_TYPES
     envelopes: list[EventEnvelope] = []
     sequence = start_sequence
     for raw_event in mcp_events:

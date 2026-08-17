@@ -12,6 +12,7 @@ from ..hook.config import RuntimeHookSurface
 from ..hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
 from ..provider.models import ResolvedProviderConfig
 from .active_session import ACTIVE_SESSION_REGISTRY
+from .child_terminal import child_terminal_outcome, child_transcript_proves_completed
 from .contracts import (
     BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
@@ -1230,7 +1231,7 @@ class RuntimeBackgroundTaskSupervisor:
         # guard). ``finalize_background_task_from_session_response`` repairs the
         # unsealed session row while it terminalizes the task. Genuinely
         # resumable interrupted children (no handoff) yield None and stay put.
-        if self._child_terminal_status_from_response(child_response) is not None:
+        if child_terminal_outcome(child_response) is not None:
             self.finalize_background_task_from_session_response(session_response=child_response)
             return self._runtime._session_store.load_background_task(
                 workspace=self._runtime._workspace,
@@ -2050,7 +2051,7 @@ class RuntimeBackgroundTaskSupervisor:
                 child_response=session_response,
             )
             return
-        terminal_status = self._child_terminal_status_from_response(session_response)
+        terminal_status = child_terminal_outcome(session_response)
         if terminal_status is None:
             # Resumable child (``interrupted`` without a submit_result handoff):
             # never seal the session row nor terminalize the task.
@@ -2088,51 +2089,6 @@ class RuntimeBackgroundTaskSupervisor:
             error=error,
         )
         self.run_background_task_lifecycle_hook(terminal_task)
-
-    @staticmethod
-    def _child_terminal_status_from_response(session_response: RuntimeResponse) -> Literal["completed", "failed"] | None:
-        """Derive the child's terminal outcome, including transcript proof.
-
-        The session ROW can lag the transcript: the run loop persists every
-        event before the generator-driven terminal seal, so an ``interrupted``
-        row whose transcript ends in a successful ``submit_result`` handoff
-        plus ``graph.response_ready`` is actually a completed run whose seal
-        was skipped or downgraded. Genuinely resumable interrupted children
-        (no handoff) yield ``None`` and are never sealed or terminalized.
-        """
-        status = session_response.session.status
-        if status == "completed":
-            return "completed"
-        if status == "failed":
-            return "failed"
-        if status == "interrupted" and RuntimeBackgroundTaskSupervisor._child_transcript_completed(session_response):
-            return "completed"
-        # ``running`` (permission-denied tail) maps to ``failed`` exactly like
-        # the legacy derivation.
-        if status == "running":
-            return "failed"
-        return None
-
-    @staticmethod
-    def _child_transcript_completed(session_response: RuntimeResponse) -> bool:
-        """Return whether an unsealed child transcript proves a completed run.
-
-        Mirrors ``_child_handoff`` evidence (successful ``submit_result``
-        tool result carrying a non-empty handoff) and additionally requires the
-        ``graph.response_ready`` event the run loop emits immediately after
-        it, so a mid-flight or genuinely interrupted child is never
-        misclassified as completed.
-        """
-        saw_handoff = False
-        for event in session_response.events:
-            if event.event_type == RUNTIME_TOOL_COMPLETED and event.payload.get("tool") == "submit_result" and event.payload.get("status") == "ok":
-                handoff = event.payload.get("handoff")
-                if isinstance(handoff, dict) and isinstance(handoff.get("summary"), str) and handoff["summary"].strip():
-                    saw_handoff = True
-                    continue
-            if saw_handoff and event.event_type == "graph.response_ready":
-                return True
-        return False
 
     def _seal_child_session_from_response(
         self,
@@ -2299,7 +2255,7 @@ class RuntimeBackgroundTaskSupervisor:
             # terminal child (row-sealed, or transcript-proven via a
             # submit_result handoff even when the row is still ``interrupted``)
             # finalizes the task — and repairs the unsealed row.
-            if child_status == "waiting" or self._child_terminal_status_from_response(child_response) is not None:
+            if child_status == "waiting" or child_terminal_outcome(child_response) is not None:
                 self.finalize_background_task_from_session_response(session_response=child_response)
         failed_tasks = runtime._session_store.fail_incomplete_background_tasks(
             workspace=runtime._workspace,
@@ -2624,7 +2580,11 @@ class RuntimeBackgroundTaskSupervisor:
                     # status). Any other finished turn parks the task ``idle``
                     # (awaiting steer) and exits this thread; the next steer
                     # dispatches a fresh worker against the same child session.
-                    if response.session.status == "failed" or response.session.status == "waiting" or self._child_transcript_completed(response):
+                    if (
+                        response.session.status == "failed"
+                        or response.session.status == "waiting"
+                        or child_transcript_proves_completed(response.events)
+                    ):
                         self.finalize_background_task_from_session_response(session_response=response)
                     else:
                         idle_task = runtime._session_store.mark_background_task_idle(

@@ -36,6 +36,7 @@ from .events import (
     RUNTIME_MCP_SERVER_STARTED,
     RUNTIME_MCP_SERVER_STOPPED,
     RUNTIME_QUESTION_REQUESTED,
+    RUNTIME_TODO_UPDATED,
     EventEnvelope,
     EventSource,
 )
@@ -1267,7 +1268,7 @@ class SqliteSessionStore:
     @staticmethod
     def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None:
         for event in reversed(events):
-            if event.event_type != "runtime.todo_updated":
+            if event.event_type != RUNTIME_TODO_UPDATED:
                 continue
             todos = runtime_todos_from_state_payload(event.payload.get("todos"))
             revision = event.payload.get("revision")
