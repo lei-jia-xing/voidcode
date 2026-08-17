@@ -21,7 +21,6 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.runtime.workflow_snapshot import workflow_snapshot_from_metadata
 
 
 def _private_attr(instance: object, name: str) -> Any:
@@ -132,31 +131,23 @@ def test_session_storage_persists_parent_lineage_across_read_surfaces(tmp_path: 
     assert notifications[0].session.parent_id == "leader-session"
 
 
-def test_session_storage_roundtrips_snapshot_first_workflow_metadata(tmp_path: Path) -> None:
+def test_session_storage_roundtrips_plan_mode_metadata(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "workflow": {
-            "snapshot_version": 2,
-            "requested": {"workflow_mode": "deep_work"},
-            "effective": {
-                "mode": "deep_work",
-                "source": "workflow_mode",
-            },
-            "mode": "deep_work",
-            "source": "workflow_mode",
-        },
+        "mode": "plan",
+        "read_only": True,
     }
-    request = RuntimeRequest(prompt="persist workflow", session_id="workflow-session")
+    request = RuntimeRequest(prompt="persist plan mode", session_id="plan-mode-session")
     response = RuntimeResponse(
         session=SessionState(
-            session=SessionRef(id="workflow-session"),
+            session=SessionRef(id="plan-mode-session"),
             status="completed",
             turn=1,
             metadata=metadata,
         ),
         events=(
             EventEnvelope(
-                session_id="workflow-session",
+                session_id="plan-mode-session",
                 sequence=1,
                 event_type="graph.response_ready",
                 source="graph",
@@ -167,42 +158,31 @@ def test_session_storage_roundtrips_snapshot_first_workflow_metadata(tmp_path: P
 
     store.save_run(workspace=tmp_path, request=request, response=response)
 
-    loaded = store.load_session(workspace=tmp_path, session_id="workflow-session")
-    loaded_snapshot = workflow_snapshot_from_metadata(loaded.session.metadata)
+    loaded = store.load_session(workspace=tmp_path, session_id="plan-mode-session")
 
-    assert loaded_snapshot == workflow_snapshot_from_metadata(metadata)
-    assert loaded_snapshot is not None
-    assert loaded_snapshot["effective"] == cast(dict[str, object], cast(dict[str, object], metadata["workflow"])["effective"])
+    assert loaded.session.metadata["mode"] == "plan"
+    assert loaded.session.metadata["read_only"] is True
 
 
-def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
+def test_session_storage_roundtrips_requested_mode_and_derived_read_only(
     tmp_path: Path,
 ) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "workflow_mode": "sustain",
-        "workflow": {
-            "snapshot_version": 2,
-            "requested": {"workflow_mode": "sustain"},
-            "effective": {
-                "mode": "sustain",
-                "source": "workflow_mode",
-            },
-            "mode": "sustain",
-            "source": "workflow_mode",
-        },
+        "mode": "plan",
+        "read_only": False,
     }
-    request = RuntimeRequest(prompt="persist new workflow", session_id="new-workflow-session")
+    request = RuntimeRequest(prompt="persist derived read only", session_id="derived-read-only-session")
     response = RuntimeResponse(
         session=SessionState(
-            session=SessionRef(id="new-workflow-session"),
+            session=SessionRef(id="derived-read-only-session"),
             status="completed",
             turn=1,
             metadata=metadata,
         ),
         events=(
             EventEnvelope(
-                session_id="new-workflow-session",
+                session_id="derived-read-only-session",
                 sequence=1,
                 event_type="graph.response_ready",
                 source="graph",
@@ -213,20 +193,17 @@ def test_session_storage_roundtrips_requested_and_effective_workflow_mode(
 
     store.save_run(workspace=tmp_path, request=request, response=response)
 
-    loaded = store.load_session(workspace=tmp_path, session_id="new-workflow-session")
+    loaded = store.load_session(workspace=tmp_path, session_id="derived-read-only-session")
 
-    loaded_workflow = workflow_snapshot_from_metadata(loaded.session.metadata)
-    expected_workflow = workflow_snapshot_from_metadata(metadata)
-
-    assert loaded_workflow == expected_workflow
-    assert loaded.session.metadata.get("mode", "normal") == "normal"
-    assert loaded.session.metadata.get("mode") != "sustain"
+    # Plan mode implies read_only even when the explicit flag is False.
+    assert loaded.session.metadata["mode"] == "plan"
+    assert loaded.session.metadata["read_only"] is True
 
 
 def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "mode": "analyze",
+        "mode": "plan",
         "read_only": False,
         "delegation": {"mode": "background", "subagent_type": "explore", "depth": 1},
         "prompt_stack": {
@@ -260,7 +237,7 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
                     "tool": "write",
                     "tool_policy": {
                         "tool": "write",
-                        "mode": "analyze",
+                        "mode": "plan",
                         "read_only": True,
                         "decision": "deny",
                         "reason": "read-only runtime policy denies mutating tools",
@@ -277,7 +254,7 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
     checkpoint = store.load_resume_checkpoint(workspace=tmp_path, session_id="policy-session")
     encoded = json.dumps(loaded.session.metadata, sort_keys=True)
 
-    assert loaded.session.metadata["mode"] == "analyze"
+    assert loaded.session.metadata["mode"] == "plan"
     assert loaded.session.metadata["read_only"] is True
     assert "runtime_policy" not in loaded.session.metadata
     policy_observations = cast(dict[str, object], loaded.session.metadata["policy_observations"])
@@ -2100,7 +2077,7 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
         workspace=tmp_path,
         session_id="interrupt-session",
         prompt="interrupt me",
-        session_metadata={"mode": "analyze", "read_only": True},
+        session_metadata={"mode": "plan", "read_only": True},
         tool_results=tool_results,
         last_event_sequence=4,
         output="partial output",
@@ -2115,7 +2092,7 @@ def test_session_storage_save_interrupted_checkpoint_creates_row_and_roundtrips(
     assert checkpoint["kind"] == "interrupted"
     assert checkpoint["session_status"] == "interrupted"
     assert checkpoint["prompt"] == "interrupt me"
-    assert checkpoint["session_metadata"] == {"mode": "analyze", "read_only": True}
+    assert checkpoint["session_metadata"] == {"mode": "plan", "read_only": True}
     assert checkpoint["tool_results"] == list(tool_results)
     assert checkpoint["last_event_sequence"] == 4
     assert checkpoint["output"] == "partial output"

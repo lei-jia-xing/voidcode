@@ -2862,7 +2862,7 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
                 "provider_stream": True,
                 "max_steps": 6,
                 "skills": ["demo"],
-                "workflow_mode": "review",
+                "mode": "plan",
             }
             yield runtime_stream_chunk(
                 kind="event",
@@ -2902,7 +2902,7 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
                     "provider_stream": True,
                     "max_steps": 6,
                     "skills": ["demo"],
-                    "workflow_mode": "review",
+                    "mode": "plan",
                 },
             }
         ).encode("utf-8"),

@@ -81,7 +81,7 @@ from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     RuntimeContextWindow,
 )
-from voidcode.runtime.contracts import RuntimeRequestError, validate_runtime_request_metadata
+from voidcode.runtime.contracts import RuntimeRequestError, runtime_read_only_from_metadata, validate_runtime_request_metadata
 from voidcode.runtime.events import (
     REASONING_PERSISTED_LIMIT_CHARS,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
@@ -4187,6 +4187,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "injection_count": 1,
                 "provider_order": [
                     "hook_preset_guidance",
+                    "mode_guidance",
                     "runtime_file_rules",
                     "directory_readme_context",
                 ],
@@ -4196,7 +4197,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     }
 
 
-def test_runtime_materializes_workflow_mode_into_provider_context_and_metadata(
+def test_runtime_materializes_plan_mode_guidance_into_provider_context_and_metadata(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -4208,49 +4209,34 @@ def test_runtime_materializes_workflow_mode_into_provider_context_and_metadata(
     response = runtime.run(
         RuntimeRequest(
             prompt="hello",
-            session_id="workflow-mode-provider-context",
-            metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": "deep_work"}),
+            session_id="plan-mode-provider-context",
+            metadata=cast(RuntimeRequestMetadataPayload, {"mode": "plan"}),
         )
     )
     request = _SkillCapturingStubGraph.last_request
 
     assert request is not None
-    workflow_segments = [
+    plan_segments = [
         segment
         for segment in request.assembled_context.segments
-        if segment.role == "system" and "Workflow mode: deep_work." in (segment.content or "")
+        if segment.role == "system" and "Plan mode is active" in (segment.content or "")
     ]
-    assert len(workflow_segments) == 1
-    assert "Workflow mode: deep_work." in (workflow_segments[0].content or "")
-    assert "Depth-first mode" in (workflow_segments[0].content or "")
+    assert len(plan_segments) == 1
     system_text = "\n".join(segment.content or "" for segment in request.assembled_context.segments if segment.role == "system")
-    assert system_text.count("Workflow mode: deep_work.") == 1
+    assert system_text.count("Plan mode is active") == 1
 
     metadata = response.session.metadata
     runtime_config = cast(dict[str, object], metadata["runtime_config"])
-    workflow = cast(dict[str, object], metadata["workflow"])
-    runtime_workflow = cast(dict[str, object], runtime_config["workflow"])
     capability_snapshot = cast(dict[str, object], metadata["agent_capability_snapshot"])
-    capability_workflow = cast(dict[str, object], capability_snapshot["workflow"])
 
-    assert metadata["workflow_mode"] == "deep_work"
-    assert workflow["mode"] == "deep_work"
-    assert cast(dict[str, object], workflow["requested"])["workflow_mode"] == "deep_work"
-    assert cast(dict[str, object], workflow["effective"])["mode"] == "deep_work"
-    assert runtime_workflow == workflow
-    assert capability_workflow == workflow
-    assert response.session.metadata["resolved_hook_presets"] == runtime_config["resolved_hook_presets"]
-    assert cast(dict[str, object], capability_snapshot["hooks"])["resolved_refs"] == [
-        "role_reminder",
-        "delegated_task_timing_guidance",
-        "background_output_quality_guidance",
-        "delegation_guard",
-        "delegated_retry_guidance",
-        "todo_continuation_guidance",
-    ]
+    assert metadata["mode"] == "plan"
+    assert runtime_read_only_from_metadata(metadata) is True
+    assert "workflow" not in metadata
+    assert "workflow" not in runtime_config
+    assert "workflow" not in capability_snapshot
 
 
-def test_runtime_rejects_invalid_workflow_mode_before_provider_execution(
+def test_runtime_rejects_invalid_mode_before_provider_execution(
     tmp_path: Path,
 ) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
@@ -4269,11 +4255,11 @@ def test_runtime_rejects_invalid_workflow_mode_before_provider_execution(
         model_provider_registry=registry,
     )
 
-    with pytest.raises(RuntimeRequestError, match="unknown workflow_mode: banana"):
+    with pytest.raises(RuntimeRequestError, match="request metadata 'mode' must be 'normal' or 'plan'"):
         _ = runtime.run(
             RuntimeRequest(
                 prompt="hello",
-                metadata=cast(RuntimeRequestMetadataPayload, {"workflow_mode": "banana"}),
+                metadata=cast(RuntimeRequestMetadataPayload, {"mode": "banana"}),
             )
         )
 
@@ -10789,7 +10775,7 @@ def test_runtime_rejects_unknown_requested_skill(tmp_path: Path) -> None:
         _ = runtime.run(RuntimeRequest(prompt="hello", metadata={"force_load_skills": ["missing"]}))
 
 
-def test_runtime_request_workflow_mode_materializes_workflow_snapshot(
+def test_runtime_request_plan_mode_materializes_persisted_metadata(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -10805,22 +10791,20 @@ def test_runtime_request_workflow_mode_materializes_workflow_snapshot(
 
     response = runtime.run(
         RuntimeRequest(
-            prompt="review workflow mode",
-            metadata={"workflow_mode": "review"},
+            prompt="plan mode run",
+            metadata={"mode": "plan"},
         )
     )
 
     assert response.session.status == "completed"
     assert _SkillCapturingStubGraph.last_request is not None
-    assert response.session.metadata["workflow_mode"] == "review"
+    assert response.session.metadata["mode"] == "plan"
+    assert runtime_read_only_from_metadata(response.session.metadata) is True
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
-    workflow = cast(dict[str, object], runtime_config["workflow"])
-    assert workflow["snapshot_version"] == 2
-    assert workflow["mode"] == "review"
-    assert workflow["requested"] == {"workflow_mode": "review"}
+    assert "workflow" not in runtime_config
 
 
-def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
+def test_runtime_rejects_client_supplied_workflow_metadata_on_fresh_request(
     tmp_path: Path,
 ) -> None:
     runtime = VoidCodeRuntime(
@@ -10831,19 +10815,14 @@ def test_runtime_rejects_client_supplied_workflow_snapshot_on_fresh_request(
 
     with pytest.raises(
         RuntimeRequestError,
-        match="request metadata 'workflow' is internal runtime state",
+        match="unsupported request metadata field",
     ):
         _ = runtime.run(
             RuntimeRequest(
                 prompt="research this",
                 session_id="workflow-forged-fresh",
                 metadata={
-                    "workflow": {
-                        "snapshot_version": 2,
-                        "requested": {"workflow_mode": "review"},
-                        "effective": {"mode": "review", "source": "workflow_mode"},
-                        "mode": "review",
-                    },
+                    "workflow": {"snapshot_version": 2},
                 },
             )
         )
@@ -11100,7 +11079,7 @@ def test_runtime_config_rejects_unknown_persisted_field(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("removed_field", "removed_value"),
     (
-        ("workflow_preset", "implementation"),
+        ("workflow", {"snapshot_version": 2}),
         ("context_transform_refs", ["runtime_file_rules"]),
         ("agent_preset", "leader"),
         ("provider", "openai"),
@@ -13577,10 +13556,11 @@ def test_runtime_emits_context_transform_applied_event_for_runtime_file_rules(
         "tool_result_count": 0,
         "status": "ok",
         "priority": 200,
-        "execution_index": 2,
+        "execution_index": 3,
         "injection_count": 1,
         "provider_order": [
             "hook_preset_guidance",
+            "mode_guidance",
             "runtime_file_rules",
             "directory_readme_context",
         ],
@@ -14222,7 +14202,7 @@ def test_runtime_preserved_prompt_materialization_reaches_render_agent_prompt(
     assert prompt_materialization["body"] == "Use only the custom leader prompt."
 
 
-def test_runtime_plan_command_keeps_leader_active_and_sets_workflow_mode(tmp_path: Path) -> None:
+def test_runtime_plan_command_keeps_leader_active_and_sets_plan_mode(tmp_path: Path) -> None:
     created_providers: list[_ScriptedTurnProvider] = []
     registry = ModelProviderRegistry(
         providers={
@@ -14249,11 +14229,13 @@ def test_runtime_plan_command_keeps_leader_active_and_sets_workflow_mode(tmp_pat
         "arguments": ["add", "command", "presets"],
         "raw_arguments": "add command presets",
         "original_prompt": "/plan add command presets",
+        "mode": "plan",
     }
     assert response.session.metadata.get("agent") is None
-    assert response.session.metadata["workflow_mode"] == "product"
+    assert response.session.metadata["mode"] == "plan"
+    assert runtime_read_only_from_metadata(response.session.metadata) is True
     assert "workflow_preset" not in response.session.metadata
-    # The /plan command keeps the leader active (workflow_mode=product), so the
+    # The /plan command keeps the leader active (mode=plan), so the
     # provider-facing agent_preset is the leader's own config. This runtime
     # config sets only a top-level model (no agent block), so the leader agent
     # config carries no model of its own — the agent_preset reflects the agent
@@ -14265,19 +14247,7 @@ def test_runtime_plan_command_keeps_leader_active_and_sets_workflow_mode(tmp_pat
     }
     runtime_config = cast(dict[str, object], response.session.metadata["runtime_config"])
     assert runtime_config["agent"] == created_providers[-1].requests[0].agent_preset
-    workflow = cast(dict[str, object], runtime_config["workflow"])
-    assert workflow["mode"] == "product"
-    assert workflow["source"] == "command"
-    workflow_plan = cast(dict[str, object], response.session.metadata["workflow_plan"])
-    assert workflow_plan == {
-        "snapshot_version": 1,
-        "source": "plan-command",
-        "session_id": response.session.session.id,
-        "command": response.session.metadata["command"],
-        "goal": "add command presets",
-        "handoff": "plan complete",
-        "status": "ready",
-    }
+    assert "workflow" not in runtime_config
 
 
 def test_runtime_partial_request_agent_override_preserves_inherited_agent_fields(

@@ -17,7 +17,7 @@ class CommandDefinition:
     source: CommandSource = "builtin"
     arguments_schema: dict[str, object] | None = None
     agent: str | None = None
-    workflow_mode: str | None = None
+    mode: str | None = None
     model: str | None = None
     subtask: bool = False
     enabled: bool = True
@@ -33,8 +33,8 @@ class CommandDefinition:
             raise ValueError("command description must be a non-empty string")
         if not self.template.strip():
             raise ValueError("command template must be a non-empty string")
-        if self.workflow_mode is not None and not self.workflow_mode.strip():
-            raise ValueError("command workflow_mode must be a non-empty string")
+        if self.mode is not None and self.mode not in {"normal", "plan"}:
+            raise ValueError("command mode must be 'normal' or 'plan' when provided")
 
 
 @dataclass(frozen=True, slots=True)

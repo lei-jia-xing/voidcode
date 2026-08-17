@@ -10,7 +10,6 @@ from voidcode.runtime.contracts import (
     runtime_read_only_from_metadata,
     validate_runtime_request_metadata,
 )
-from voidcode.runtime.mode import RuntimeMode
 from voidcode.runtime.permission import (
     PLAN_MODE_DENIAL_REASON,
     OperationClass,
@@ -44,28 +43,28 @@ def _call(name: str = "write") -> ToolCall:
 
 
 @pytest.mark.parametrize(
-    ("mode", "tool", "operation_class", "expected"),
+    ("read_only", "tool", "operation_class", "expected"),
     [
-        ("normal", _write_tool(), "write", False),
-        ("plan", _read_only_tool(), "read", False),
-        ("plan", _read_only_tool(), None, False),
-        ("plan", _write_tool(), "write", True),
-        ("plan", _write_tool(), None, True),
+        (False, _write_tool(), "write", False),
+        (True, _read_only_tool(), "read", False),
+        (True, _read_only_tool(), None, False),
+        (True, _write_tool(), "write", True),
+        (True, _write_tool(), None, True),
         # Defense in depth: a read_only tool asked to perform a write/execute
-        # operation is still denied while plan mode is active.
-        ("plan", _read_only_tool(), "write", True),
-        ("plan", _read_only_tool(), "execute", True),
+        # operation is still denied while the read-only stance is active.
+        (True, _read_only_tool(), "write", True),
+        (True, _read_only_tool(), "execute", True),
     ],
 )
 def test_is_plan_mode_blocked_matrix(
-    mode: str,
+    read_only: bool,
     tool: ToolDefinition,
     operation_class: str | None,
     expected: bool,
 ) -> None:
     assert (
         is_plan_mode_blocked(
-            runtime_mode=cast(RuntimeMode, mode),
+            read_only=read_only,
             tool=tool,
             operation_class=cast(OperationClass | None, operation_class),
         )
@@ -73,12 +72,12 @@ def test_is_plan_mode_blocked_matrix(
     )
 
 
-def test_resolve_permission_plan_mode_denies_write_tool() -> None:
+def test_resolve_permission_read_only_denies_write_tool() -> None:
     outcome = resolve_permission(
         _write_tool(),
         _call(),
         policy=PermissionPolicy(mode="ask"),
-        runtime_mode="plan",
+        read_only=True,
     )
 
     assert outcome.decision == "deny"
@@ -88,12 +87,12 @@ def test_resolve_permission_plan_mode_denies_write_tool() -> None:
     assert outcome.pending_approval.reason == PLAN_MODE_DENIAL_REASON
 
 
-def test_resolve_permission_plan_mode_allows_read_only_tool() -> None:
+def test_resolve_permission_read_only_allows_read_only_tool() -> None:
     outcome = resolve_permission(
         _read_only_tool(),
         _call("grep"),
         policy=PermissionPolicy(mode="ask"),
-        runtime_mode="plan",
+        read_only=True,
     )
 
     assert outcome.decision == "allow"
@@ -105,24 +104,24 @@ def test_resolve_permission_normal_mode_does_not_short_circuit() -> None:
         _write_tool(),
         _call(),
         policy=PermissionPolicy(mode="ask"),
-        runtime_mode="act",
+        read_only=False,
     )
 
     assert outcome.decision == "ask"
     assert outcome.pending_approval is not None
     # Reason in normal mode should remain the default approval reason rather than
-    # the plan-mode denial sentinel.
+    # the read-only denial sentinel.
     assert outcome.pending_approval.reason != PLAN_MODE_DENIAL_REASON
 
 
-def test_resolve_permission_plan_mode_overrides_explicit_allow_rule() -> None:
-    """Plan mode is a hard ceiling; even an `allow` rule cannot override it."""
+def test_resolve_permission_read_only_overrides_explicit_allow_rule() -> None:
+    """The read-only stance is a hard ceiling; even an `allow` rule cannot override it."""
     outcome = resolve_permission(
         _write_tool(),
         _call(),
         policy=PermissionPolicy(mode="ask"),
         rule_decision="allow",
-        runtime_mode="plan",
+        read_only=True,
     )
 
     assert outcome.decision == "deny"
@@ -139,7 +138,7 @@ def test_request_metadata_defaults_to_normal_action_capable_runtime_mode() -> No
     assert runtime_read_only_from_metadata(normalized) is False
 
 
-@pytest.mark.parametrize("mode", ["normal", "analyze", "plan"])
+@pytest.mark.parametrize("mode", ["normal", "plan"])
 def test_request_metadata_accepts_runtime_mode(mode: str) -> None:
     normalized = validate_runtime_request_metadata({"mode": mode})
 
@@ -164,11 +163,10 @@ def test_request_metadata_rejects_non_boolean_read_only_flag() -> None:
         _ = validate_runtime_request_metadata({"read_only": "true"})
 
 
-@pytest.mark.parametrize("mode", ["analyze", "plan"])
-def test_analyze_and_plan_runtime_modes_imply_effective_read_only(mode: str) -> None:
-    normalized = validate_runtime_request_metadata({"mode": mode, "read_only": False})
+def test_plan_runtime_mode_implies_effective_read_only() -> None:
+    normalized = validate_runtime_request_metadata({"mode": "plan", "read_only": False})
 
-    assert runtime_mode_from_metadata(normalized) == mode
+    assert runtime_mode_from_metadata(normalized) == "plan"
     assert runtime_read_only_from_metadata(normalized) is True
 
 

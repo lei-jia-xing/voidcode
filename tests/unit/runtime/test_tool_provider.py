@@ -516,7 +516,7 @@ def test_read_only_mode_direct_invocation_denies_mutating_tool_before_execution(
             RuntimeRequest(
                 prompt="go",
                 session_id="read-only-write-denied",
-                metadata=cast(RuntimeRequestMetadataPayload, {"mode": "analyze"}),
+                metadata=cast(RuntimeRequestMetadataPayload, {"mode": "plan"}),
             )
         ):
             if chunk.event is not None:
@@ -529,7 +529,7 @@ def test_read_only_mode_direct_invocation_denies_mutating_tool_before_execution(
     assert failed.payload["tool"] == "write"
     assert failed.payload["tool_policy"] == {
         "tool": "write",
-        "mode": "analyze",
+        "mode": "plan",
         "read_only": True,
         "decision": "deny",
         "reason": "read-only runtime policy denies mutating tools",

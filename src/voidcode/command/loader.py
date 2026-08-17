@@ -47,7 +47,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "Target: $ARGUMENTS"
         ),
         source="builtin",
-        workflow_mode="product",
+        mode="plan",
     ),
 )
 
@@ -114,7 +114,7 @@ def _load_markdown_command(path: Path, *, root: Path, source: CommandSource) -> 
         template=template,
         source=source,
         agent=_optional_string(metadata.get("agent")),
-        workflow_mode=_optional_string(metadata.get("workflow_mode")),
+        mode=_optional_string(metadata.get("mode")),
         model=_optional_string(metadata.get("model")),
         subtask=_metadata_bool(metadata.get("subtask"), default=False),
         enabled=_metadata_bool(metadata.get("enabled"), default=True),

@@ -44,7 +44,7 @@ def test_tool_scope_resolver_applies_agent_scope_before_runtime_policy() -> None
         tools=RuntimeToolsConfig(allowlist=("read", "write")),
     )
 
-    scoped = resolver.scope(_registry(), agent=agent, metadata={"mode": "analyze"})
+    scoped = resolver.scope(_registry(), agent=agent, metadata={"mode": "plan"})
 
     assert tuple(scoped.tools) == ("read",)
 

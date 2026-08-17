@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from fnmatch import fnmatchcase
-from typing import cast
 
 from .config import RuntimeAgentConfig
-from .contracts import RuntimeRequestError
+from .contracts import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .tool_provider import scoped_tool_registry_for_agent
 from .tool_registry import ToolPolicyDecision, ToolRegistry
 
@@ -48,10 +47,17 @@ class RuntimeToolScopeResolver:
         registry: ToolRegistry,
         metadata: dict[str, object] | None,
     ) -> ToolPolicyDecision:
-        mode = self.runtime_mode(metadata)
-        read_only = self.effective_read_only(metadata)
+        # Single shared derivation: mode -> read_only (including explicit
+        # read_only metadata) comes from mode.py's resolve_mode via the
+        # contracts wrappers; this resolver no longer keeps a private copy.
+        mode = runtime_mode_from_metadata(metadata)
+        read_only = runtime_read_only_from_metadata(metadata)
 
         tool = registry.tools.get(tool_name)
+        # shell_exec stays callable under the read-only stance: read-only shell
+        # commands (git status, tests, etc.) remain available, while mutating
+        # uses are still denied by the permission layer's operation-class
+        # defense in depth.
         if read_only and tool_name == "shell_exec":
             return ToolPolicyDecision(
                 tool_name=tool_name,
@@ -114,30 +120,6 @@ class RuntimeToolScopeResolver:
             f"'{tool_name}' for child preset '{agent.preset}'; this preset may only call "
             "tools allowed by its manifest tool_allowlist"
         )
-
-    @staticmethod
-    def runtime_mode(metadata: dict[str, object] | None) -> str:
-        if metadata is None:
-            return "normal"
-        raw_mode = metadata.get("mode")
-        if raw_mode in {"normal", "analyze", "plan"}:
-            return cast(str, raw_mode)
-        return "normal"
-
-    @staticmethod
-    def runtime_read_only(metadata: dict[str, object] | None) -> bool:
-        if metadata is None:
-            return False
-        raw_mode = metadata.get("mode")
-        if raw_mode in {"analyze", "plan"}:
-            return True
-        read_only = metadata.get("read_only", False)
-        if not isinstance(read_only, bool):
-            raise RuntimeRequestError("request metadata 'read_only' must be a boolean")
-        return read_only
-
-    def effective_read_only(self, metadata: dict[str, object] | None) -> bool:
-        return self.runtime_read_only(metadata)
 
 
 __all__ = ["RuntimeToolScopeResolver"]

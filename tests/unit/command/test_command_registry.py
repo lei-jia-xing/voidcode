@@ -113,17 +113,16 @@ class TestBuiltinCommandDiscovery:
         ordered = [c.name for c in builtin_commands()]
         assert ordered == list(self._EXPECTED_NAMES), f"wrong order: {ordered}"
 
-    def test_plan_command_targets_planning_workflow_without_agent_switch(self) -> None:
+    def test_plan_command_targets_planning_mode_without_agent_switch(self) -> None:
         plan = [c for c in builtin_commands() if c.name == "plan"][0]
         assert plan.agent is None, f"/plan should keep the active agent, got {plan.agent}"
-        assert plan.workflow_mode == "product"
+        assert plan.mode == "plan"
 
-    def test_builtin_registry_can_read_workflow_modes_by_name(self) -> None:
+    def test_builtin_registry_can_read_modes_by_name(self) -> None:
         registry = CommandRegistry(builtin_commands())
 
-        assert registry.get_workflow_mode("plan") == "product"
-        assert registry.get_workflow_mode("review") == "review"
-        assert registry.get_workflow_mode("cancel-continuation") is None
+        assert registry.get_mode("plan") == "plan"
+        assert registry.get_mode("init") is None
 
     def test_commands_are_disabled_when_hidden_flag_set(self) -> None:
         registry = CommandRegistry(builtin_commands())
@@ -134,46 +133,33 @@ class TestBuiltinCommandDiscovery:
         all_cmds = registry.list(include_hidden=True)
         assert any(c.name == "hidden_cmd" for c in all_cmds)
 
-    def test_command_definition_rejects_blank_workflow_mode(self) -> None:
-        with pytest.raises(ValueError, match="workflow_mode"):
-            _ = CommandDefinition("cmd", "Command", "Do $ARGUMENTS", workflow_mode=" ")
+    def test_command_definition_rejects_unknown_mode(self) -> None:
+        with pytest.raises(ValueError, match="command mode must be 'normal' or 'plan'"):
+            _ = CommandDefinition("cmd", "Command", "Do $ARGUMENTS", mode="banana")
 
 
-class TestMarkdownCommandWorkflowMode:
-    def test_workflow_mode_frontmatter_is_loaded_and_resolved(self, tmp_path: Path) -> None:
+class TestMarkdownCommandMode:
+    def test_mode_frontmatter_is_loaded_and_resolved(self, tmp_path: Path) -> None:
         commands_dir = tmp_path / "commands"
         commands_dir.mkdir()
-        (commands_dir / "review.md").write_text(
-            "---\ndescription: Review this target\nworkflow_mode: review\n---\nReview $ARGUMENTS carefully\n",
+        (commands_dir / "plan.md").write_text(
+            "---\ndescription: Review this target\nmode: plan\n---\nReview $ARGUMENTS carefully\n",
             encoding="utf-8",
         )
 
         registry = load_command_registry(workspace=tmp_path)
-        command = registry.get("review")
+        command = registry.get("plan")
 
         assert command is not None
         assert command.source == "project"
-        assert command.workflow_mode == "review"
-        resolution = resolve_prompt_command("/review src/app.py", registry)
+        assert command.mode == "plan"
+        resolution = resolve_prompt_command("/plan src/app.py", registry)
         assert resolution is not None
-        assert resolution.definition.workflow_mode == "review"
+        assert resolution.definition.mode == "plan"
         assert resolution.invocation.rendered_prompt == "Review src/app.py carefully"
 
 
 class TestBuiltinCommandRendering:
-    def test_fix_renders_arguments_correctly(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "plan"][0]
-        rendered = render_command_template(
-            cmd.template,
-            raw_arguments="the null pointer bug in utils.py",
-            arguments=split_command_arguments("the null pointer bug in utils.py"),
-        )
-        assert "null pointer bug in utils.py" in rendered
-        assert "root cause" in rendered
-        assert "smallest safe code change" in rendered
-        assert "run targeted tests" in rendered
-        assert "$ARGUMENTS" not in rendered
-
     def test_init_renders_agents_md_generation_guidance(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "init"][0]
         rendered = render_command_template(
@@ -204,7 +190,7 @@ class TestBuiltinCommandRendering:
         assert "todo_write is runtime state" in rendered
 
     def test_dollar_placeholder_substitution_uses_shlex_splitting(self) -> None:
-        cmd = [c for c in builtin_commands() if c.name == "fix"][0]
+        cmd = [c for c in builtin_commands() if c.name == "plan"][0]
         args = split_command_arguments('"path with spaces/file.py" --flag')
         rendered = render_command_template(
             cmd.template,

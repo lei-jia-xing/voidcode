@@ -464,7 +464,7 @@ def _validated_snapshot_payload(payload: Mapping[str, object]) -> Mapping[str, o
         value = payload[field_name]
         if not isinstance(value, str) or not value:
             raise RuntimePolicySnapshotVersionError(f"runtime_policy snapshot {field_name} must be a non-empty string")
-    if payload["mode"] not in {"normal", "analyze", "plan"}:
+    if payload["mode"] not in {"normal", "plan"}:
         raise RuntimePolicySnapshotVersionError("runtime_policy snapshot mode is invalid")
     for field_name in (
         "intent",

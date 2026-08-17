@@ -135,7 +135,7 @@ def normalize_persisted_session_metadata(metadata: dict[str, object]) -> dict[st
     raw_runtime_policy = normalized.get("runtime_policy")
     if isinstance(raw_runtime_policy, dict):
         runtime_policy = dict(cast(dict[str, object], raw_runtime_policy))
-        if runtime_policy.get("mode") not in {"normal", "analyze", "plan"}:
+        if runtime_policy.get("mode") not in {"normal", "plan"}:
             runtime_policy["mode"] = mode
         normalized["runtime_policy"] = runtime_policy
     return normalized

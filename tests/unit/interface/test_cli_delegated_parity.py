@@ -1390,7 +1390,7 @@ def test_runtime_background_child_inherits_parent_read_only_policy(tmp_path: Pat
         runtime_module.RuntimeRequest(
             prompt="read sample.txt",
             session_id="leader-read-only",
-            metadata={"mode": "analyze"},
+            metadata={"mode": "plan"},
         )
     )
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path, graph=_WriteThenDoneGraph())
@@ -1409,9 +1409,11 @@ def test_runtime_background_child_inherits_parent_read_only_policy(tmp_path: Pat
     child_result = runtime.session_result(session_id=cast(str, completed.child_session_id))
 
     assert completed.status == "failed"
-    assert completed.request.metadata["mode"] == "analyze"
+    # Mode inheritance degenerates to read-only merging: the parent's plan
+    # stance propagates to the child as read_only, not as a copied mode key.
+    assert "mode" not in completed.request.metadata
     assert completed.request.metadata["read_only"] is True
-    assert child_result.session.metadata["mode"] == "analyze"
+    assert child_result.session.metadata["mode"] == "normal"
     assert child_result.session.metadata["read_only"] is True
     assert child_result.error is not None
     assert "read-only runtime policy denies mutating tools" in child_result.error

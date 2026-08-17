@@ -8,13 +8,12 @@ from typing import Literal
 from uuid import uuid4
 
 from ..tools.contracts import ToolCall, ToolDefinition
-from .mode import RuntimeMode
 
 type PermissionDecision = Literal["allow", "deny", "ask"]
 type PermissionResolution = Literal["allow", "deny"]
 type PathScope = Literal["workspace", "external"]
 type OperationClass = Literal["read", "write", "execute"]
-PLAN_MODE_DENIAL_REASON = "plan mode is active; mutating tools are denied"
+PLAN_MODE_DENIAL_REASON = "read-only mode is active; mutating tools are denied"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,18 +84,19 @@ def default_policy_for_tool(tool: ToolDefinition) -> PermissionPolicy:
 
 def is_plan_mode_blocked(
     *,
-    runtime_mode: RuntimeMode,
+    read_only: bool,
     tool: ToolDefinition,
     operation_class: OperationClass | None = None,
 ) -> bool:
-    """Return True when plan mode must deny a tool call.
+    """Return True when the read-only runtime stance must deny a tool call.
 
-    Plan mode is a read-only execution stance: every non-read-only tool is
-    denied regardless of approval policy or path scope, and any explicit
-    write/execute operation class is denied even if the tool itself is
-    advertised as read-only (defense in depth).
+    ``read_only`` is the single shared gate derived from ``resolve_mode``
+    (plan mode implies it, as does explicit ``read_only`` metadata): every
+    non-read-only tool is denied regardless of approval policy or path scope,
+    and any explicit write/execute operation class is denied even if the tool
+    itself is advertised as read-only (defense in depth).
     """
-    if runtime_mode != "plan":
+    if not read_only:
         return False
     if not tool.read_only:
         return True
@@ -118,9 +118,9 @@ def resolve_permission(
     policy_surface: str | None = None,
     external_decision: PermissionDecision | None = None,
     rule_decision: PermissionDecision | None = None,
-    runtime_mode: RuntimeMode = "normal",
+    read_only: bool = False,
 ) -> PermissionOutcome:
-    if is_plan_mode_blocked(runtime_mode=runtime_mode, tool=tool, operation_class=operation_class):
+    if is_plan_mode_blocked(read_only=read_only, tool=tool, operation_class=operation_class):
         pending_approval = build_pending_approval(
             tool_call,
             policy=PermissionPolicy(mode="deny"),

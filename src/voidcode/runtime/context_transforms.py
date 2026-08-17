@@ -68,6 +68,7 @@ class RuntimeContextTransformRequest:
     workspace: Path | None
     tool_results: tuple[ToolResult, ...]
     hook_preset_context: str
+    mode_guidance_context: str = ""
     failure_policy: RuntimeContextTransformFailurePolicy = "warn"
 
 
@@ -97,6 +98,36 @@ class HookPresetGuidanceTransformProvider:
                 RuntimeContextTransformInjection(
                     role="system",
                     content=normalized_hook_preset_context,
+                    metadata={"source": self.provider_id},
+                ),
+            ),
+            traces=(
+                RuntimeContextTransformTrace(
+                    provider_id=self.provider_id,
+                    priority=self.priority,
+                    injection_count=1,
+                    sources=(self.provider_id,),
+                ),
+            ),
+        )
+
+
+class ModeGuidanceTransformProvider:
+    provider_id = "mode_guidance"
+    priority = 150
+
+    def build_result(
+        self,
+        request: RuntimeContextTransformRequest,
+    ) -> RuntimeContextTransformResult:
+        normalized_mode_guidance = request.mode_guidance_context.strip()
+        if not normalized_mode_guidance:
+            return RuntimeContextTransformResult()
+        return RuntimeContextTransformResult(
+            injections=(
+                RuntimeContextTransformInjection(
+                    role="system",
+                    content=normalized_mode_guidance,
                     metadata={"source": self.provider_id},
                 ),
             ),
@@ -261,6 +292,7 @@ def default_runtime_context_transform_registry() -> RuntimeContextTransformRegis
     return RuntimeContextTransformRegistry(
         providers=(
             HookPresetGuidanceTransformProvider(),
+            ModeGuidanceTransformProvider(),
             RuntimeFileRulesTransformProvider(),
             DirectoryReadmeContextTransformProvider(),
         )
@@ -272,6 +304,7 @@ def build_provider_context_transform_result(
     workspace: Path | None,
     tool_results: tuple[ToolResult, ...],
     hook_preset_context: str,
+    mode_guidance_context: str = "",
     failure_policy: RuntimeContextTransformFailurePolicy = "warn",
     registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeContextTransformResult:
@@ -281,6 +314,7 @@ def build_provider_context_transform_result(
             workspace=workspace,
             tool_results=tool_results,
             hook_preset_context=hook_preset_context,
+            mode_guidance_context=mode_guidance_context,
             failure_policy=failure_policy,
         )
     )

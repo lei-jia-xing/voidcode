@@ -364,7 +364,6 @@ def build_prompt_assembly_plan(
     prompt: str,
     runtime_instruction_precedence: str,
     agent_prompt_context: str = "",
-    workflow_mode_prompt_context: str = "",
     preserved_system_segments: Iterable[str] = (),
     skill_prompt_context: str = "",
     context_transform_result: RuntimeContextTransformResult | None = None,
@@ -495,12 +494,6 @@ def build_prompt_assembly_plan(
             tier="instruction",
             layer="base_safety",
         )
-    append_system(
-        workflow_mode_prompt_context,
-        source="workflow_mode_prompt",
-        tier="instruction",
-        layer="mode_policy",
-    )
     if prompt_activation_section is not None:
         append_system(
             prompt_activation_section.content,
@@ -718,8 +711,6 @@ def _metadata_layer(metadata: Mapping[str, object], *, fallback: str) -> str:
 def _default_layer_for_source(source: str) -> str:
     if source in {"runtime_base_safety", "runtime_instruction_precedence"}:
         return "base_safety"
-    if source == "workflow_mode_prompt":
-        return "mode_policy"
     if source == "runtime_prompt_activation":
         return "prompt_activation"
     if source == "runtime_memory_usage_guidance":

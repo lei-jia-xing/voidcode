@@ -331,10 +331,11 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
                 "provider_id": "runtime_file_rules",
                 "status": "ok",
                 "priority": 200,
-                "execution_index": 2,
+                "execution_index": 3,
                 "injection_count": 2,
                 "provider_order": [
                     "hook_preset_guidance",
+                    "mode_guidance",
                     "runtime_file_rules",
                     "directory_readme_context",
                 ],
@@ -370,6 +371,7 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
                 "injection_count": 1,
                 "provider_order": [
                     "hook_preset_guidance",
+                    "mode_guidance",
                     "runtime_file_rules",
                     "directory_readme_context",
                 ],

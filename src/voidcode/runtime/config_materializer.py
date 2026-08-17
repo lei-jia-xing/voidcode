@@ -53,7 +53,6 @@ PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
         "context_window",
         "lsp",
         "mcp",
-        "workflow",
     }
 )
 

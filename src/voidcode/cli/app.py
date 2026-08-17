@@ -2711,8 +2711,8 @@ def tui(workspace: Path, approval_mode: str | None) -> int:
 @click.option(
     "--mode",
     "runtime_mode",
-    type=click.Choice(["normal", "analyze", "plan"]),
-    help="Select runtime mode metadata; analyze and plan are runtime-enforced read-only modes.",
+    type=click.Choice(["normal", "plan"]),
+    help="Select runtime mode metadata; plan is a runtime-enforced read-only mode.",
 )
 @click.option(
     "--read-only",

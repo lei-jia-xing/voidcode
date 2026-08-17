@@ -14,9 +14,6 @@ from voidcode.hook.presets import (
     validate_hook_preset_event_scopes,
     validate_hook_preset_refs,
 )
-from voidcode.runtime.config import RuntimeAgentConfig
-from voidcode.runtime.hook_preset_metadata import hook_preset_refs_for_mode_and_agent
-from voidcode.runtime.workflow import get_builtin_workflow_mode
 
 
 def test_builtin_hook_preset_catalog_contains_agent_manifest_refs() -> None:
@@ -149,44 +146,4 @@ def test_persisted_hook_preset_snapshot_rejects_authority_actions() -> None:
         _ = hook_preset_snapshot_from_payload(payload)
 
 
-def test_workflow_mode_hook_refs_merge_before_agent_refs_with_deterministic_dedup() -> None:
-    mode = get_builtin_workflow_mode("sustain")
-    assert mode is not None
-    agent = RuntimeAgentConfig(
-        preset="leader",
-        manifest_hook_refs=(
-            "role_reminder",
-            "delegation_guard",
-            "background_output_quality_guidance",
-        ),
-    )
 
-    refs = hook_preset_refs_for_mode_and_agent(mode, agent)
-
-    assert refs == (
-        "role_reminder",
-        "todo_continuation_guidance",
-        "delegated_task_timing_guidance",
-        "delegated_retry_guidance",
-        "delegation_guard",
-        "background_output_quality_guidance",
-    )
-
-
-def test_workflow_mode_hook_refs_merge_agent_override_refs() -> None:
-    mode = get_builtin_workflow_mode("deep_work")
-    assert mode is not None
-    agent = RuntimeAgentConfig(
-        preset="leader",
-        manifest_hook_refs=("delegation_guard",),
-        hook_refs=("role_reminder", "delegated_retry_guidance"),
-    )
-
-    refs = hook_preset_refs_for_mode_and_agent(mode, agent)
-
-    assert refs == (
-        "role_reminder",
-        "delegated_task_timing_guidance",
-        "background_output_quality_guidance",
-        "delegated_retry_guidance",
-    )

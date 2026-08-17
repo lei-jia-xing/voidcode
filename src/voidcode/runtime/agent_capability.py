@@ -30,7 +30,6 @@ def validate_agent_capability_snapshot(
         "hooks",
         "mcp",
         "delegation",
-        "workflow",
         "runtime",
         "execution",
     )

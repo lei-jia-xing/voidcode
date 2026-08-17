@@ -28,7 +28,6 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.runtime.workflow_snapshot import workflow_snapshot_from_metadata
 from voidcode.tools import ToolResult, cap_tool_result_output
 
 
@@ -421,31 +420,23 @@ def test_session_bundle_json_and_zip_roundtrip(tmp_path: Path) -> None:
     assert zip_bundle.to_payload() == bundle.to_payload()
 
 
-def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Path) -> None:
+def test_session_bundle_roundtrips_plan_mode_metadata(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "workflow": {
-            "snapshot_version": 2,
-            "requested": {"workflow_mode": "product"},
-            "effective": {
-                "mode": "product",
-                "source": "workflow_mode",
-            },
-            "mode": "product",
-            "source": "workflow_mode",
-        },
+        "mode": "plan",
+        "read_only": True,
     }
-    request = RuntimeRequest(prompt="bundle workflow", session_id="workflow-bundle-session")
+    request = RuntimeRequest(prompt="bundle plan mode", session_id="plan-mode-bundle-session")
     response = RuntimeResponse(
         session=SessionState(
-            session=SessionRef(id="workflow-bundle-session"),
+            session=SessionRef(id="plan-mode-bundle-session"),
             status="completed",
             turn=1,
             metadata=metadata,
         ),
         events=(
             EventEnvelope(
-                session_id="workflow-bundle-session",
+                session_id="plan-mode-bundle-session",
                 sequence=1,
                 event_type="graph.response_ready",
                 source="graph",
@@ -458,7 +449,7 @@ def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Pa
     bundle = build_session_bundle(
         session_store=store,
         workspace=tmp_path,
-        session_id="workflow-bundle-session",
+        session_id="plan-mode-bundle-session",
     )
     parsed = parse_session_bundle(bundle.to_payload())
     target_workspace = tmp_path / "imported"
@@ -469,54 +460,38 @@ def test_session_bundle_roundtrips_snapshot_first_workflow_metadata(tmp_path: Pa
     bundle_sessions = cast(list[object], bundle_payload["sessions"])
     bundled_session = cast(dict[str, object], bundle_sessions[0])
     bundled_metadata = bundled_session["metadata"]
-    imported = store.load_session(workspace=target_workspace, session_id="workflow-bundle-session")
-    bundled_snapshot = workflow_snapshot_from_metadata(cast(dict[str, object], bundled_metadata))
-    imported_snapshot = workflow_snapshot_from_metadata(imported.session.metadata)
+    imported = store.load_session(workspace=target_workspace, session_id="plan-mode-bundle-session")
 
-    assert bundled_snapshot == workflow_snapshot_from_metadata(metadata)
-    assert imported_snapshot == workflow_snapshot_from_metadata(metadata)
+    assert cast(dict[str, object], bundled_metadata)["mode"] == "plan"
+    assert imported.session.metadata["mode"] == "plan"
+    assert imported.session.metadata["read_only"] is True
 
 
-def test_session_bundle_import_preserves_requested_and_effective_workflow_mode(
-    tmp_path: Path,
-) -> None:
+def test_session_bundle_import_preserves_requested_mode(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     metadata: dict[str, object] = {
-        "workflow_mode": "review",
-        "workflow": {
-            "snapshot_version": 2,
-            "requested": {"workflow_mode": "review"},
-            "effective": {
-                "mode": "review",
-                "source": "workflow_mode",
-            },
-            "mode": "review",
-            "source": "workflow_mode",
-        },
+        "mode": "plan",
+        "read_only": True,
     }
     bundle = parse_session_bundle(
         _minimal_bundle_payload(
             [
                 {
-                    **_minimal_session_payload("new-workflow-bundle"),
+                    **_minimal_session_payload("plan-mode-bundle"),
                     "metadata": metadata,
                 }
             ]
         )
     )
-    target_workspace = tmp_path / "imported-new"
+    target_workspace = tmp_path / "imported-plan"
     target_workspace.mkdir()
 
     apply_session_bundle(bundle, session_store=store, workspace=target_workspace)
 
-    imported = store.load_session(workspace=target_workspace, session_id="new-workflow-bundle")
+    imported = store.load_session(workspace=target_workspace, session_id="plan-mode-bundle")
 
-    imported_workflow = workflow_snapshot_from_metadata(imported.session.metadata)
-    expected_workflow = workflow_snapshot_from_metadata(metadata)
-
-    assert imported_workflow == expected_workflow
-    assert imported.session.metadata.get("mode", "normal") == "normal"
-    assert imported.session.metadata.get("mode") != "review"
+    assert imported.session.metadata["mode"] == "plan"
+    assert imported.session.metadata["read_only"] is True
 
 
 def test_session_bundle_export_import_preserves_redacted_policy_observations(

@@ -1066,11 +1066,11 @@ def test_run_command_forwards_runtime_mode_metadata_without_policy_enforcement()
     with patch.object(cli, "load_runtime_config", autospec=True, return_value=config):
         with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
             runtime_class.return_value.run_stream.return_value = iter(chunks)
-            result = cli.main(["run", "inspect repo", "--workspace", str(workspace), "--mode", "analyze"])
+            result = cli.main(["run", "inspect repo", "--workspace", str(workspace), "--mode", "plan"])
 
     assert result == 0
     request = runtime_class.return_value.run_stream.call_args.args[0]
-    assert request.metadata["mode"] == "analyze"
+    assert request.metadata["mode"] == "plan"
     assert "read_only" not in request.metadata
 
 

@@ -1522,7 +1522,7 @@ def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(
             runtime_request(
                 prompt="try blocked write",
                 session_id="read-only-denied-flow",
-                metadata={"mode": "analyze", "read_only": True},
+                metadata={"mode": "plan", "read_only": True},
             )
         )
     replay = runtime.session_result(session_id="read-only-denied-flow")
@@ -1535,7 +1535,7 @@ def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(
     assert [event.event_type for event in transcript][-2:] != ["runtime.failed", "runtime.failed"]
     assert failed_event.payload["kind"] == "runtime_tool_policy_denied"
     assert failed_event.payload["tool"] == "write"
-    assert replay.session.metadata["mode"] == "analyze"
+    assert replay.session.metadata["mode"] == "plan"
     assert replay.session.metadata["read_only"] is True
     runtime_policy = cast(dict[str, object], replay.session.metadata["runtime_policy"])
     denial = cast(dict[str, object], runtime_policy["tool_policy_denial"])

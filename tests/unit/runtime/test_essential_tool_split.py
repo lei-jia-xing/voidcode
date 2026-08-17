@@ -374,7 +374,7 @@ def test_dispatch_is_denied_under_read_only_with_tool_level_feedback(tmp_path: P
         config=RuntimeConfig(execution_engine="deterministic"),
         permission_policy=PermissionPolicy(mode="allow"),
     )
-    events, outputs, _ = _run_events(runtime, graph, session_id="dispatch-read-only", metadata={"mode": "analyze"})
+    events, outputs, _ = _run_events(runtime, graph, session_id="dispatch-read-only", metadata={"mode": "plan"})
     completed = [event for event in events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "apply_patch"]
     assert completed, "expected tool-level feedback for the denied dispatch"
     assert completed[-1].payload["status"] == "error"

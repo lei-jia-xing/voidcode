@@ -159,7 +159,7 @@ def test_run_tool_hooks_skips_executable_commands_under_read_only_policy(
             recursion_env_var="VOIDCODE_RUNNING_TOOL_HOOK",
             environment={},
             sequence_start=7,
-            policy=HookExecutionPolicy(mode="analyze", read_only=True),
+            policy=HookExecutionPolicy(mode="plan", read_only=True),
         )
     )
 
@@ -173,7 +173,7 @@ def test_run_tool_hooks_skips_executable_commands_under_read_only_policy(
         "status": "skipped",
         "hook_policy": {
             "outcome": "skipped",
-            "mode": "analyze",
+            "mode": "plan",
             "read_only": True,
             "reason": "read-only runtime policy skips executable hook commands",
         },

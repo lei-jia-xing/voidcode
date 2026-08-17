@@ -44,7 +44,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         prompt="fix the failing test",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="agent prompt",
-        workflow_mode_prompt_context="workflow mode prompt",
         preserved_system_segments=("preserved-a",),
         skill_prompt_context="skill context",
         pending_state_section=PromptAssemblySection(
@@ -70,7 +69,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "workflow_mode_prompt",
         "preserved_system_segment",
         "runtime_memory_usage_guidance",
         "skill_prompt",
@@ -92,7 +90,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "instruction",
         "instruction",
         "instruction",
-        "instruction",
         "workspace",
         "task",
         "task",
@@ -107,7 +104,6 @@ def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
         prompt="continue",
         runtime_instruction_precedence="same text",
         agent_prompt_context="same text",
-        workflow_mode_prompt_context="same text",
         preserved_system_segments=("same text",),
         skill_prompt_context="same text",
     )
@@ -187,7 +183,6 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         prompt="fix the failing test",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
-        workflow_mode_prompt_context="workflow mode prompt",
         prompt_profile_name="leader",
         session_runtime_state={
             "workspace_root": "/tmp/not-a-worktree",
@@ -206,7 +201,6 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         "agent_prompt",
         "runtime_environment_stable",
         "runtime_instruction_precedence",
-        "workflow_mode_prompt",
         "runtime_memory_usage_guidance",
         "runtime_tool_policy_summary",
     ]
@@ -227,7 +221,6 @@ def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profile
         prompt="map the repo",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="explore base body",
-        workflow_mode_prompt_context="workflow mode prompt",
         prompt_profile_name="explore",
         session_runtime_state={"model": "opencode/test-model"},
     )
@@ -235,7 +228,6 @@ def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profile
         prompt="make the edit",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="worker base body",
-        workflow_mode_prompt_context="workflow mode prompt",
         prompt_profile_name="worker",
         session_runtime_state={"model": "opencode/test-model"},
     )
@@ -284,7 +276,6 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         prompt=secret_prompt,
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="agent prompt",
-        workflow_mode_prompt_context="workflow mode prompt",
         skill_prompt_context="skill context",
         context_transform_result=RuntimeContextTransformResult(
             injections=(
@@ -310,7 +301,6 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "workflow_mode_prompt",
         "runtime_memory_usage_guidance",
         "skill_prompt",
         "hook_context",
@@ -323,7 +313,6 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "base_safety",
         "base_safety",
         "persona_profile",
-        "mode_policy",
         "memory_usage_guidance",
         "skills",
         "hook_injected_context",
@@ -370,7 +359,6 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         prompt="continue work",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="agent prompt body",
-        workflow_mode_prompt_context="workflow mode text",
         skill_prompt_context="skill guidance for tools",
         todo_prompt_context="active todo: finish feature",
         context_transform_result=RuntimeContextTransformResult(
@@ -388,7 +376,6 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "workflow_mode_prompt",
         "runtime_memory_usage_guidance",
         "skill_prompt",
         "transform_hook",
@@ -398,7 +385,6 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "current_user_prompt",
     ]
     assert [section.tier for section in plan.sections] == [
-        "instruction",
         "instruction",
         "instruction",
         "instruction",

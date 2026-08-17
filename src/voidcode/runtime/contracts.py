@@ -46,7 +46,7 @@ class RuntimeCommandMetadata(TypedDict, total=False):
     arguments: list[str]
     raw_arguments: str
     original_prompt: str
-    workflow_mode: str
+    mode: runtime_mode.RuntimeMode
 
 
 class RuntimeRequestMetadata(TypedDict, total=False):
@@ -62,9 +62,6 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     show_thinking: bool
     skills: list[str]
     force_load_skills: list[str]
-    workflow_mode: str
-    workflow_plan: dict[str, object]
-    workflow: dict[str, object]
 
 
 class InternalRuntimeRequestMetadata(RuntimeRequestMetadata, total=False):
@@ -104,9 +101,6 @@ _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(
         "show_thinking",
         "skills",
         "force_load_skills",
-        "workflow_mode",
-        "workflow_plan",
-        "workflow",
     }
 )
 _INTERNAL_RUNTIME_REQUEST_METADATA_KEYS = frozenset({"background_run", "background_rate_limit_retry", "background_task_id"})
@@ -150,7 +144,7 @@ def parse_runtime_mode(value: object) -> runtime_mode.RuntimeMode:
     try:
         return runtime_mode.parse_runtime_mode(value)
     except ValueError as exc:
-        raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'") from exc
+        raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
 
 
 def runtime_mode_from_metadata(
@@ -159,7 +153,7 @@ def runtime_mode_from_metadata(
     try:
         return runtime_mode.runtime_mode_from_metadata(metadata)
     except ValueError as exc:
-        raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'") from exc
+        raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
 
 
 def runtime_read_only_from_metadata(
@@ -170,7 +164,7 @@ def runtime_read_only_from_metadata(
     except ValueError as exc:
         message = str(exc)
         if "mode" in message:
-            raise RuntimeRequestError("request metadata 'mode' must be 'normal', 'analyze', or 'plan'") from exc
+            raise RuntimeRequestError("request metadata 'mode' must be 'normal' or 'plan'") from exc
         raise RuntimeRequestError("request metadata 'read_only' must be a boolean") from exc
 
 
@@ -184,7 +178,7 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         "arguments",
         "raw_arguments",
         "original_prompt",
-        "workflow_mode",
+        "mode",
     }
     non_string_keys = sorted(repr(key) for key in payload if not isinstance(key, str))
     if non_string_keys:
@@ -231,18 +225,8 @@ def validate_runtime_command_metadata(metadata: object) -> RuntimeCommandMetadat
         "raw_arguments": raw_arguments,
         "original_prompt": original_prompt,
     }
-    if "workflow_mode" in command_payload:
-        workflow_mode = _validate_optional_runtime_metadata_string(
-            command_payload["workflow_mode"],
-            field_name="command.workflow_mode",
-        )
-        try:
-            from .workflow import resolve_workflow_mode
-
-            _ = resolve_workflow_mode(command_workflow_mode=workflow_mode)
-        except ValueError as exc:
-            raise RuntimeRequestError(str(exc)) from exc
-        normalized["workflow_mode"] = workflow_mode
+    if "mode" in command_payload:
+        normalized["mode"] = parse_runtime_mode(command_payload["mode"])
     return normalized
 
 
@@ -488,38 +472,6 @@ def validate_runtime_request_metadata(
                 raise RuntimeRequestError(f"request metadata 'force_load_skills[{index}]' must be a non-empty string")
             parsed_force_load.append(raw_name)
         normalized["force_load_skills"] = parsed_force_load
-
-    if "workflow_mode" in metadata:
-        normalized["workflow_mode"] = _validate_optional_runtime_metadata_string(
-            metadata["workflow_mode"],
-            field_name="workflow_mode",
-        )
-
-    if "workflow_mode" in normalized:
-        try:
-            from .workflow import resolve_workflow_mode
-
-            _ = resolve_workflow_mode(
-                metadata_workflow_mode=cast(str | None, normalized.get("workflow_mode")),
-            )
-        except ValueError as exc:
-            raise RuntimeRequestError(str(exc)) from exc
-
-    if "workflow_plan" in metadata:
-        if not allow_internal_fields:
-            raise RuntimeRequestError("request metadata 'workflow_plan' is internal runtime state and cannot be supplied")
-        workflow_plan = metadata["workflow_plan"]
-        if not isinstance(workflow_plan, dict):
-            raise RuntimeRequestError("request metadata 'workflow_plan' must be an object when provided")
-        normalized["workflow_plan"] = dict(cast(dict[str, object], workflow_plan))
-
-    if "workflow" in metadata:
-        if not allow_internal_fields:
-            raise RuntimeRequestError("request metadata 'workflow' is internal runtime state and cannot be supplied")
-        workflow = metadata["workflow"]
-        if not isinstance(workflow, dict):
-            raise RuntimeRequestError("request metadata 'workflow' must be an object when provided")
-        normalized["workflow"] = dict(cast(dict[str, object], workflow))
 
     if allow_internal_fields and "background_run" in metadata:
         background_run = metadata["background_run"]
