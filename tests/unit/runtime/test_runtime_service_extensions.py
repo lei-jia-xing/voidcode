@@ -158,6 +158,7 @@ from voidcode.runtime.service import (
 from voidcode.runtime.session import SessionRef, SessionStatus
 from voidcode.runtime.session_metadata_helpers import (
     continuity_state_from_session_metadata,
+    session_with_context_compacted_state,
     session_with_context_window_metadata,
     session_with_context_window_payload_metadata,
 )
@@ -13623,7 +13624,7 @@ def test_runtime_context_compacted_guard_suppresses_duplicate_anchor(tmp_path: P
         original_tool_result_count=9,
         retained_tool_result_count=8,
     )
-    updated = coordinator._session_with_context_compacted_state(
+    updated = session_with_context_compacted_state(
         session=session,
         summary_anchor="continuity:abc",
         original_tool_result_count=9,

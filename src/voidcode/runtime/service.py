@@ -325,10 +325,14 @@ from .session_metadata_helpers import (
     _DELEGATION_GOVERNANCE,
     continuity_state_from_session_metadata,
     delegation_depth_from_metadata,
+    parse_delegation_metadata,
     remaining_spawn_budget_from_metadata,
+    runtime_state_metadata_payload,
+    runtime_state_pending_tool_intent,
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
     session_with_plan_state,
+    session_without_tool_intent,
     waiting_reason_from_session,
 )
 from .skill_metadata import (
@@ -992,7 +996,7 @@ class VoidCodeRuntime(RuntimeSurface):
         context_transform_refs: tuple[str, ...] | None = None
         if request_context_transform_refs is not None:
             assert isinstance(request_context_transform_refs, list)
-            context_transform_refs = tuple(cast(list[str], request_context_transform_refs))
+            context_transform_refs = tuple(request_context_transform_refs)
             validate_runtime_context_transform_refs(
                 context_transform_refs,
                 field_path="request metadata 'context_transform_refs'",
@@ -1746,7 +1750,10 @@ class VoidCodeRuntime(RuntimeSurface):
                     parent_snapshot=parent_runtime_policy,
                 ).as_payload(),
                 **({"resolved_hook_presets": resolved_hook_presets.to_payload()} if resolved_hook_presets.presets else {}),
-                "runtime_state": self._runtime_state_metadata(run_id=run_id),
+                "runtime_state": runtime_state_metadata_payload(
+                    run_id=run_id,
+                    acp_state=self._acp_adapter.current_state(),
+                ),
             },
         )
         # Every fresh run must start from a writable row, ALWAYS. ``status`` in
@@ -2206,20 +2213,14 @@ class VoidCodeRuntime(RuntimeSurface):
             yield RuntimeStreamChunk(kind="event", session=finalized_session, event=envelope)
 
     def persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
-        runtime_state = response.session.metadata.get("runtime_state")
-        if response.session.status in {"completed", "failed"} and isinstance(runtime_state, dict) and "pending_tool_intent" in runtime_state:
-            cleaned_state = dict(cast(dict[str, object], runtime_state))
-            cleaned_state.pop("pending_tool_intent", None)
-            response = RuntimeResponse(
-                session=SessionState(
-                    session=response.session.session,
-                    status=response.session.status,
-                    turn=response.session.turn,
-                    metadata={**response.session.metadata, "runtime_state": cleaned_state},
-                ),
-                events=response.events,
-                output=response.output,
-            )
+        if response.session.status in {"completed", "failed"}:
+            cleaned_session = session_without_tool_intent(response.session)
+            if cleaned_session is not response.session:
+                response = RuntimeResponse(
+                    session=cleaned_session,
+                    events=response.events,
+                    output=response.output,
+                )
         if response.session.status == "waiting":
             pending_question = self._pending_question_from_response(response)
             if pending_question is not None:
@@ -4205,12 +4206,8 @@ class VoidCodeRuntime(RuntimeSurface):
         """Return an unsettled tool intent left by an interrupted process."""
         validate_session_id(session_id)
         response = self._load_stored_response(session_id=session_id)
-        raw_runtime_state = response.session.metadata.get("runtime_state")
-        if not isinstance(raw_runtime_state, dict):
-            return None
-        runtime_state = cast(dict[str, object], raw_runtime_state)
-        intent = runtime_state.get("pending_tool_intent")
-        return cast(dict[str, object], intent) if isinstance(intent, dict) else None
+        intent = runtime_state_pending_tool_intent(response.session.metadata)
+        return cast(dict[str, object], intent) if intent is not None else None
 
     def pending_tool_recovery(self, session_id: str) -> dict[str, object] | None:
         """Return the deterministic recovery action for an unsettled tool."""
@@ -5007,7 +5004,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
         delegation["depth"] = request_depth
         delegation["remaining_spawn_budget"] = remaining_spawn_budget
-        normalized["delegation"] = delegation
+        normalized["delegation"] = parse_delegation_metadata(delegation, strict=True)
         validated = validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=(
@@ -5258,8 +5255,9 @@ class VoidCodeRuntime(RuntimeSurface):
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
             replayed_conversation_segments=replayed_conversation_segments,
         )
-        delegation = session_metadata.get("delegation")
-        if not isinstance(delegation, dict):
+        raw_delegation = session_metadata.get("delegation")
+        delegation = parse_delegation_metadata(raw_delegation)
+        if not isinstance(raw_delegation, dict):
             return assembled_context
         return RuntimeAssembledContext(
             prompt=assembled_context.prompt,
@@ -5915,27 +5913,6 @@ class VoidCodeRuntime(RuntimeSurface):
         if self._config.agents is None:
             return None
         return self._config.agents.get(preset)
-
-    def _runtime_state_metadata(
-        self,
-        *,
-        run_id: str | None = None,
-    ) -> dict[str, object]:
-        acp_state = self._acp_adapter.current_state()
-        return {
-            **({"run_id": run_id} if run_id is not None else {}),
-            "acp": {
-                "mode": acp_state.mode,
-                "configured_enabled": acp_state.configuration.configured_enabled,
-                "status": acp_state.status,
-                "available": acp_state.available,
-                "last_error": acp_state.last_error,
-                "last_request_type": acp_state.last_request_type,
-                "last_request_id": acp_state.last_request_id,
-                "last_event_type": acp_state.last_event_type,
-                "last_delegation": (acp_state.last_delegation.as_payload() if acp_state.last_delegation is not None else None),
-            },
-        }
 
     @staticmethod
     def _resolved_hook_preset_snapshot_from_session_metadata(

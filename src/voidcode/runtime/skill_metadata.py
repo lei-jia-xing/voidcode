@@ -5,6 +5,7 @@ from typing import cast
 
 from ..skills import SkillRegistry
 from .config import RuntimeAgentConfig
+from .session_metadata_helpers import parse_skill_snapshot_metadata
 from .skills import (
     SkillExecutionSnapshot,
     SkillRuntimeContext,
@@ -100,7 +101,7 @@ def snapshot_to_session_metadata(snapshot: SkillExecutionSnapshot) -> dict[str, 
     return {
         "selected_skill_names": list(snapshot.selected_skill_names),
         "applied_skills": [payload["name"] for payload in snapshot.applied_skill_payloads],
-        "skill_snapshot": snapshot_payload(snapshot),
+        "skill_snapshot": parse_skill_snapshot_metadata(snapshot_payload(snapshot)),
     }
 
 

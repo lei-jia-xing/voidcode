@@ -535,21 +535,26 @@ def continuity_state_from_metadata_payload(
 def _previous_continuity_state(
     session_metadata: Mapping[str, object],
 ) -> ContextProjection | None:
-    runtime_state = session_metadata.get("runtime_state")
-    if not isinstance(runtime_state, dict):
-        return None
+    # 延迟导入：session_metadata_helpers 在模块级导入本模块（context_window），
+    # 模块级反向导入会构成环。解析统一走 helpers parse/accessor（唯一入口）。
+    from .session_metadata_helpers import (
+        parse_runtime_state_metadata,
+        runtime_state_context_projection,
+        runtime_state_context_projection_summary,
+    )
+
+    runtime_state = parse_runtime_state_metadata(session_metadata.get("runtime_state"))
     if "continuity" in runtime_state or "continuity_summary" in runtime_state:
         raise ValueError("legacy runtime continuity metadata is no longer supported; start a new session")
-    continuity = cast(dict[str, object], runtime_state).get("context_projection")
-    if not isinstance(continuity, dict):
+    continuity = runtime_state_context_projection(session_metadata)
+    if continuity is None:
         return None
-    state = continuity_state_from_metadata_payload(cast(dict[str, object], continuity))
+    state = continuity_state_from_metadata_payload(continuity)
     if state is None or state.projection_id is not None:
         return state
-    raw_summary = cast(dict[str, object], runtime_state).get("context_projection_summary")
-    summary = cast(dict[str, object], raw_summary) if isinstance(raw_summary, dict) else None
+    summary = runtime_state_context_projection_summary(session_metadata)
     if summary is not None and isinstance(summary.get("anchor"), str):
-        return replace(state, projection_id=cast(str, summary["anchor"]))
+        return replace(state, projection_id=summary["anchor"])
     return state
 
 
@@ -1183,10 +1188,11 @@ def _artifact_reference_segments(
 
 
 def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeContextSegment | None:
-    raw_plan_state = session_metadata.get("plan_state")
-    if not isinstance(raw_plan_state, Mapping):
-        return None
-    plan_state = cast(Mapping[str, object], raw_plan_state)
+    # 延迟导入：session_metadata_helpers 在模块级导入本模块（context_window），
+    # 模块级反向导入会构成环。解析统一走 helpers parse（唯一入口）。
+    from .session_metadata_helpers import parse_plan_state_metadata
+
+    plan_state = parse_plan_state_metadata(session_metadata.get("plan_state"))
     status = plan_state.get("status")
     if status not in {"waiting_approval", "waiting_question", "waiting"}:
         return None

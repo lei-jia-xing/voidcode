@@ -90,6 +90,7 @@ from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.question import QuestionResponse
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState, StoredSessionSummary
+from ..runtime.session_metadata_helpers import runtime_state_run_id
 from ..runtime.storage import SqliteSessionStore
 from ..runtime.task import (
     BackgroundTaskState,
@@ -451,12 +452,8 @@ def _has_permission_denied_tool_result(events: tuple[EventEnvelope, ...]) -> boo
 
 
 def _run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
-    runtime_state = metadata.get("runtime_state")
-    if not isinstance(runtime_state, dict):
-        return None
-    typed_runtime_state = cast(dict[str, object], runtime_state)
-    raw_run_id = typed_runtime_state.get("run_id")
-    return raw_run_id if isinstance(raw_run_id, str) and raw_run_id else None
+    run_id = runtime_state_run_id(metadata)
+    return run_id if run_id else None
 
 
 def _last_event(result: RuntimeStreamResult) -> EventEnvelope | None:

@@ -155,14 +155,13 @@ def todo_event_payload(
 def todo_state_from_session_metadata(
     session_metadata: dict[str, object],
 ) -> dict[str, object] | None:
-    raw_runtime_state = session_metadata.get("runtime_state")
-    if not isinstance(raw_runtime_state, dict):
+    # 延迟导入：session_metadata_helpers 在模块级导入本模块（todos），
+    # 模块级反向导入会构成环。读取统一走 helpers accessor（唯一入口）。
+    from .session_metadata_helpers import runtime_state_todos
+
+    todo_state = runtime_state_todos(session_metadata)
+    if todo_state is None:
         return None
-    runtime_state = cast(dict[str, object], raw_runtime_state)
-    raw_todo_state = runtime_state.get("todos")
-    if not isinstance(raw_todo_state, dict):
-        return None
-    todo_state = cast(dict[str, object], raw_todo_state)
     todos = runtime_todos_from_state_payload(todo_state.get("todos"))
     revision = todo_state.get("revision")
     return todo_state_payload(

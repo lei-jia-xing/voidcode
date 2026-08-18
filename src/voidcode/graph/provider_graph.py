@@ -20,6 +20,7 @@ from ..provider.protocol import (
 )
 from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
 from ..runtime.session import SessionState
+from ..runtime.session_metadata_helpers import runtime_state_run_id
 from ..tools.contracts import ToolCall, ToolResult
 from .contracts import GraphEvent, GraphRunRequest, GraphStreamItem
 
@@ -559,12 +560,8 @@ class ProviderGraph:
 
     @staticmethod
     def _run_id_from_metadata(metadata: dict[str, object]) -> str | None:
-        runtime_state = metadata.get("runtime_state")
-        if not isinstance(runtime_state, dict):
-            return None
-        runtime_state_payload = cast(dict[str, object], runtime_state)
-        run_id = runtime_state_payload.get("run_id")
-        return run_id if isinstance(run_id, str) and run_id else None
+        run_id = runtime_state_run_id(metadata)
+        return run_id if run_id else None
 
     @staticmethod
     def _is_approval_resume(metadata: dict[str, object]) -> bool:

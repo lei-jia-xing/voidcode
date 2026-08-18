@@ -53,6 +53,7 @@ class RuntimeRequestMetadata(TypedDict, total=False):
     abort_requested: bool
     agent: dict[str, object]
     command: RuntimeCommandMetadata
+    context_transform_refs: list[str]
     delegation: RuntimeSubagentRoutingMetadata
     mode: runtime_mode.RuntimeMode
     read_only: bool
@@ -86,6 +87,138 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     selected_execution_engine: str
     parallel_group_id: str
     parallel_group_size: int
+
+
+class AcpStateMetadata(TypedDict, total=False):
+    mode: str
+    configured_enabled: bool
+    status: str
+    available: bool
+    last_error: str | None
+    last_request_type: str | None
+    last_request_id: str | None
+    last_event_type: str | None
+    last_delegation: dict[str, object] | None  # AcpDelegationPayload（acp.py as_payload）
+
+
+class PendingToolIntentMetadata(TypedDict, total=False):
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    replay_policy: str  # Literal["safe", "never"]，tool_replay.py
+    status: str  # Literal["pending", "completed"]
+
+
+class TodosStateMetadata(TypedDict, total=False):
+    version: int  # 恒 1
+    revision: int
+    todos: list[dict[str, object]]
+    summary: dict[str, object]
+
+
+class ContextProjectionMetadata(TypedDict, total=False):
+    # 结构由 context_window.py ContextProjection.metadata_payload 定义
+    # （context_window.py:121-）；深度校验委托 owner，P1 只做 depth-1。
+    version: int
+    projection_id: str | None
+    source_event_sequence: int
+
+
+class ContextCompactedStateMetadata(TypedDict, total=False):
+    last_summary_anchor: str | None
+    last_original_tool_result_count: int
+    last_retained_tool_result_count: int
+    last_emitted_run_id: str | None
+
+
+class ContextTransformAppliedStateMetadata(TypedDict, total=False):
+    last_emitted_fingerprints: list[str]
+    last_emitted_run_id: str | None
+
+
+RUNTIME_STATE_METADATA_KEYS = frozenset(
+    {
+        "run_id",
+        "acp",
+        "context_projection",
+        "context_projection_summary",
+        "todos",
+        "pending_tool_intent",
+        "context_compacted",
+        "context_transform_applied",
+        # legacy read-only: "continuity", "continuity_summary"
+        # （context_window.py:541 读取即硬失败，不进入写入 key-set）
+    }
+)
+
+
+class RuntimeStateMetadata(TypedDict, total=False):
+    run_id: str
+    acp: AcpStateMetadata
+    context_projection: ContextProjectionMetadata
+    context_projection_summary: dict[str, str]
+    todos: TodosStateMetadata
+    pending_tool_intent: PendingToolIntentMetadata
+    context_compacted: ContextCompactedStateMetadata
+    context_transform_applied: ContextTransformAppliedStateMetadata
+
+
+PLAN_STATE_METADATA_KEYS = frozenset({"status", "approval_request_id", "blocked_tool", "last_error"})
+
+
+class PlanStateMetadata(TypedDict, total=False):
+    status: str
+    approval_request_id: str
+    blocked_tool: str
+    last_error: str
+
+
+DELEGATION_METADATA_KEYS = frozenset(
+    {
+        "mode",
+        "subagent_type",
+        "description",
+        "command",
+        "depth",
+        "remaining_spawn_budget",
+        "selected_preset",
+        "selected_execution_engine",
+        "parallel_group_id",
+        "parallel_group_size",
+    }
+)
+
+
+class PersistedDelegationMetadata(RuntimeSubagentRoutingMetadata, total=False):
+    """Persisted 形态的 delegation：与请求侧同形。
+
+    ``depth``/``remaining_spawn_budget`` 由 ``_metadata_with_delegation_governance``
+    在请求入 session 前解析（service.py:5004-5009），``selected_preset``/
+    ``selected_execution_engine`` 由路由解析填充（service.py:5849-5850）。
+    """
+
+
+SKILL_SNAPSHOT_METADATA_KEYS = frozenset(
+    {
+        "snapshot_version",
+        "source",
+        "selected_skill_names",
+        "applied_skill_payloads",
+        "skill_prompt_context",
+        "binding_snapshot",
+        "snapshot_hash",
+    }
+)
+
+
+class SkillSnapshotMetadata(TypedDict, total=False):
+    snapshot_version: int
+    source: str
+    selected_skill_names: list[str]
+    applied_skill_payloads: list[dict[str, str]]
+    skill_prompt_context: str
+    binding_snapshot: dict[str, object]
+    snapshot_hash: str
 
 
 _STABLE_RUNTIME_REQUEST_METADATA_KEYS = frozenset(

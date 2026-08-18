@@ -103,7 +103,12 @@ from .session_metadata_helpers import (
     delegation_depth_from_metadata,
     persist_tool_execution_intent,
     remaining_spawn_budget_from_metadata,
+    runtime_state_context_compacted,
+    runtime_state_context_transform_applied,
+    runtime_state_run_id,
     session_model_identity,
+    session_with_context_compacted_state,
+    session_with_context_transform_applied_state,
     session_with_context_window_metadata,
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
@@ -275,12 +280,8 @@ def _unseen_context_transform_payloads(
     session: SessionState,
     payloads: tuple[tuple[str, dict[str, object]], ...],
 ) -> tuple[tuple[str, dict[str, object]], ...]:
-    raw_runtime_state = session.metadata.get("runtime_state")
-    runtime_state = cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
-    current_run_id_raw = runtime_state.get("run_id")
-    current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
-    raw_transform_state = runtime_state.get("context_transform_applied")
-    transform_state = cast(dict[str, object], raw_transform_state) if isinstance(raw_transform_state, dict) else {}
+    current_run_id = runtime_state_run_id(session.metadata)
+    transform_state = runtime_state_context_transform_applied(session.metadata) or {}
     last_run_id_raw = transform_state.get("last_emitted_run_id")
     last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
     emitted_fingerprints: set[str] = set()
@@ -289,35 +290,6 @@ def _unseen_context_transform_payloads(
         if isinstance(raw_fingerprints, list):
             emitted_fingerprints = {item for item in raw_fingerprints if isinstance(item, str) and item.strip()}
     return tuple((fingerprint, payload) for fingerprint, payload in payloads if fingerprint not in emitted_fingerprints)
-
-
-def _session_with_context_transform_applied_state(
-    *,
-    session: SessionState,
-    fingerprints: tuple[str, ...],
-) -> SessionState:
-    raw_runtime_state = session.metadata.get("runtime_state")
-    runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
-    current_run_id = runtime_state.get("run_id") if isinstance(runtime_state.get("run_id"), str) else None
-    raw_transform_state = runtime_state.get("context_transform_applied")
-    transform_state = dict(cast(dict[str, object], raw_transform_state)) if isinstance(raw_transform_state, dict) else {}
-    last_run_id = transform_state.get("last_emitted_run_id") if isinstance(transform_state.get("last_emitted_run_id"), str) else None
-    existing_fingerprints: set[str] = set()
-    if current_run_id is None or last_run_id == current_run_id:
-        raw_existing = transform_state.get("last_emitted_fingerprints")
-        if isinstance(raw_existing, list):
-            existing_fingerprints = {item for item in raw_existing if isinstance(item, str) and item.strip()}
-    existing_fingerprints.update(fingerprints)
-    runtime_state["context_transform_applied"] = {
-        "last_emitted_fingerprints": sorted(existing_fingerprints),
-        "last_emitted_run_id": current_run_id,
-    }
-    return SessionState(
-        session=session.session,
-        status=session.status,
-        turn=session.turn,
-        metadata={**session.metadata, "runtime_state": runtime_state},
-    )
 
 
 def _tool_error_summary(error: str) -> str:
@@ -1424,7 +1396,7 @@ class RuntimeRunLoopCoordinator:
                 payloads=context_transform_payloads,
             )
             if unseen_context_transform_payloads:
-                session = _session_with_context_transform_applied_state(
+                session = session_with_context_transform_applied_state(
                     session=session,
                     fingerprints=tuple(fingerprint for fingerprint, _payload in unseen_context_transform_payloads),
                 )
@@ -1504,7 +1476,7 @@ class RuntimeRunLoopCoordinator:
             ):
                 memory_payload = self._build_context_compacted_payload(context_window)
                 if memory_payload is not None:
-                    session = self._session_with_context_compacted_state(
+                    session = session_with_context_compacted_state(
                         session=session,
                         summary_anchor=context_window.summary_anchor,
                         original_tool_result_count=context_window.original_tool_result_count,
@@ -3195,12 +3167,8 @@ class RuntimeRunLoopCoordinator:
 
     @staticmethod
     def _current_run_id(session: SessionState) -> str | None:
-        raw_runtime_state = session.metadata.get("runtime_state")
-        if not isinstance(raw_runtime_state, dict):
-            return None
-        runtime_state = cast(dict[str, object], raw_runtime_state)
-        run_id = runtime_state.get("run_id")
-        return run_id if isinstance(run_id, str) and run_id else None
+        run_id = runtime_state_run_id(session.metadata)
+        return run_id if run_id else None
 
     @staticmethod
     def _current_provider_attempt(session: SessionState) -> int:
@@ -3245,12 +3213,8 @@ class RuntimeRunLoopCoordinator:
         original_tool_result_count: int,
         retained_tool_result_count: int,
     ) -> bool:
-        raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = cast(dict[str, object], raw_runtime_state) if isinstance(raw_runtime_state, dict) else {}
-        current_run_id_raw = runtime_state.get("run_id")
-        current_run_id = current_run_id_raw if isinstance(current_run_id_raw, str) else None
-        raw_memory_state = runtime_state.get("context_compacted")
-        memory_state = cast(dict[str, object], raw_memory_state) if isinstance(raw_memory_state, dict) else {}
+        current_run_id = runtime_state_run_id(session.metadata)
+        memory_state = runtime_state_context_compacted(session.metadata) or {}
         last_run_id_raw = memory_state.get("last_emitted_run_id")
         last_run_id = last_run_id_raw if isinstance(last_run_id_raw, str) else None
         if current_run_id is not None and last_run_id is not None and current_run_id != last_run_id:
@@ -3260,29 +3224,6 @@ class RuntimeRunLoopCoordinator:
         return not (
             memory_state.get("last_original_tool_result_count") == original_tool_result_count
             and memory_state.get("last_retained_tool_result_count") == retained_tool_result_count
-        )
-
-    @staticmethod
-    def _session_with_context_compacted_state(
-        *,
-        session: SessionState,
-        summary_anchor: str | None,
-        original_tool_result_count: int,
-        retained_tool_result_count: int,
-    ) -> SessionState:
-        raw_runtime_state = session.metadata.get("runtime_state")
-        runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
-        runtime_state["context_compacted"] = {
-            "last_summary_anchor": summary_anchor,
-            "last_original_tool_result_count": original_tool_result_count,
-            "last_retained_tool_result_count": retained_tool_result_count,
-            "last_emitted_run_id": (runtime_state.get("run_id") if isinstance(runtime_state.get("run_id"), str) else None),
-        }
-        return SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata={**session.metadata, "runtime_state": runtime_state},
         )
 
     @staticmethod

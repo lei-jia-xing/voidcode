@@ -17,6 +17,7 @@ from ..runtime.contracts import (
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
+from ..runtime.session_metadata_helpers import runtime_state_run_id
 
 JSON_RPC_VERSION = "2.0"
 MAX_JSON_RPC_LINE_BYTES = 1_048_576
@@ -504,12 +505,8 @@ def _mapping_attr(value: object, name: str) -> JsonObject:
 
 def _session_run_id(session: object) -> str | None:
     metadata = _mapping_attr(session, "metadata")
-    runtime_state = metadata.get("runtime_state")
-    if not isinstance(runtime_state, dict):
-        return None
-    typed_runtime_state = cast(dict[str, object], runtime_state)
-    run_id = typed_runtime_state.get("run_id")
-    return run_id if isinstance(run_id, str) and run_id else None
+    run_id = runtime_state_run_id(metadata)
+    return run_id if run_id else None
 
 
 def _string_payload(payload: Mapping[str, object], key: str, *, default: str = "") -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from .config import RuntimeAgentConfig
+from .session_metadata_helpers import parse_delegation_metadata
 from .task import CALLABLE_SUBAGENT_PRESETS
 from .tool_provider import BUILTIN_TOOL_NAMES
 from .tool_registry import ToolRegistry
@@ -123,8 +124,7 @@ def agent_capability_delegation_snapshot(
     metadata: dict[str, object],
     parent_capability_snapshot: dict[str, object] | None,
 ) -> dict[str, object]:
-    raw_delegation = metadata.get("delegation")
-    delegation = cast(dict[str, object], raw_delegation) if isinstance(raw_delegation, dict) else {}
+    delegation = parse_delegation_metadata(metadata.get("delegation"))
     selected_preset = delegation.get("selected_preset")
     parent_delegation = (
         cast(dict[str, object], parent_capability_snapshot.get("delegation"))

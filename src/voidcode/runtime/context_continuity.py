@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from typing import cast
+from .session_metadata_helpers import parse_runtime_state_metadata
 
+# Recoverable runtime context keys are a subset of the persisted runtime_state
+# key-set (RUNTIME_STATE_METADATA_KEYS, contracts.py): context projection
+# snapshots are checkpoint-authoritative while the stored row may drift, so
+# they are exempted from the resume checkpoint equality check. The key-set
+# relationship is documented here instead of being asserted mechanically
+# because these keys are deliberately exempted from integrity checking while
+# RUNTIME_STATE_METADATA_KEYS describes the full writable key space.
 _RECOVERABLE_RUNTIME_CONTEXT_KEYS = frozenset({"context_projection", "context_projection_summary"})
 _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
 # Runtime-owned interaction queue (steer / follow-up) lives in session metadata
@@ -48,8 +55,10 @@ def _without_recoverable_context(metadata: dict[str, object]) -> dict[str, objec
     stripped = {key: value for key, value in metadata.items() if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS}
     runtime_state = stripped.get("runtime_state")
     if isinstance(runtime_state, dict):
+        # lenient parse 保留全部原始键值（含未知 key，round-trip 安全），
+        # 与迁移前的裸 dict 过滤逐点等价。
         runtime_payload = {
-            key: value for key, value in cast(dict[str, object], runtime_state).items() if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS
+            key: value for key, value in parse_runtime_state_metadata(runtime_state).items() if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS
         }
         if runtime_payload:
             stripped["runtime_state"] = runtime_payload

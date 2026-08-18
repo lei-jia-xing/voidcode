@@ -4,6 +4,7 @@ from typing import cast
 
 from ..provider.protocol import ProviderTokenUsage
 from .session import SessionState
+from .session_metadata_helpers import runtime_state_run_id
 
 
 def provider_attempt_from_metadata(metadata: dict[str, object]) -> int:
@@ -25,12 +26,13 @@ def provider_retry_attempt_from_metadata(metadata: dict[str, object]) -> int:
 
 
 def run_id_from_session_metadata(metadata: dict[str, object]) -> str | None:
-    runtime_state = metadata.get("runtime_state")
-    if not isinstance(runtime_state, dict):
-        return None
-    runtime_state_dict = cast(dict[str, object], runtime_state)
-    run_id = runtime_state_dict.get("run_id")
-    return run_id if isinstance(run_id, str) and run_id else None
+    """Persisted ``runtime_state.run_id``（非空 str 语义）。
+
+    薄转发：解析统一走 ``session_metadata_helpers.runtime_state_run_id``，
+    本函数保留函数名以不动既有 3 处调用点，只保留非空过滤。
+    """
+    run_id = runtime_state_run_id(metadata)
+    return run_id if run_id else None
 
 
 def _cache_hit_rate(cache_read_tokens: int, uncached_input_tokens: int) -> float | None:

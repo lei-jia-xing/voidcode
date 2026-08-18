@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from voidcode.agent.profile_overlays import get_profile_overlay
 from voidcode.agent.prompt_sections import (
@@ -274,10 +274,11 @@ def _state_value(state: object, key: str) -> object | None:
     value = metadata.get(key)
     if value is not None:
         return value
-    runtime_state = metadata.get("runtime_state")
-    if isinstance(runtime_state, Mapping):
-        return cast(Mapping[str, Any], runtime_state).get(key)
-    return None
+    # 延迟导入：session_metadata_helpers → context_window → prompt_assembly
+    # 构成导入环，模块级反向导入不可行。读取统一走 helpers accessor（唯一入口）。
+    from .session_metadata_helpers import runtime_state_value
+
+    return runtime_state_value(metadata, key)
 
 
 def _metadata_mapping(state: object) -> Mapping[str, object] | None:

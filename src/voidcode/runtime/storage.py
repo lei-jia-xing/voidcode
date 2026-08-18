@@ -53,6 +53,7 @@ from .session import (
     normalize_persisted_session_metadata,
     session_metadata_for_persistence,
 )
+from .session_metadata_helpers import runtime_state_todos, session_metadata_with_runtime_state_updates
 from .task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -1172,14 +1173,9 @@ class SqliteSessionStore:
 
     @staticmethod
     def _todo_state_from_metadata(metadata: dict[str, object]) -> dict[str, object] | None:
-        raw_runtime_state = metadata.get("runtime_state")
-        if not isinstance(raw_runtime_state, dict):
+        todo_state = runtime_state_todos(metadata)
+        if todo_state is None:
             return None
-        runtime_state = cast(dict[str, object], raw_runtime_state)
-        raw_todo_state = runtime_state.get("todos")
-        if not isinstance(raw_todo_state, dict):
-            return None
-        todo_state = cast(dict[str, object], raw_todo_state)
         revision = todo_state.get("revision")
         return todo_state_payload(
             runtime_todos_from_state_payload(todo_state.get("todos")),
@@ -1264,10 +1260,10 @@ class SqliteSessionStore:
     ) -> dict[str, object]:
         if todo_state is None:
             return metadata
-        raw_runtime_state = metadata.get("runtime_state")
-        runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
-        runtime_state["todos"] = todo_state
-        return {**metadata, "runtime_state": runtime_state}
+        return session_metadata_with_runtime_state_updates(
+            metadata,
+            updates={"todos": todo_state},
+        )
 
     @staticmethod
     def _todo_state_from_events(events: tuple[EventEnvelope, ...]) -> dict[str, object] | None:
@@ -3248,15 +3244,18 @@ class SqliteSessionStore:
         raw_runtime_state = next_metadata.get("runtime_state")
         if not isinstance(raw_runtime_state, dict):
             return next_metadata
-        runtime_state = dict(cast(dict[str, object], raw_runtime_state))
-        runtime_state.pop("context_projection", None)
         todo_state = self._todo_state_from_events(events)
         if todo_state is None:
-            runtime_state.pop("todos", None)
+            removed = frozenset({"context_projection", "todos"})
+            updates = None
         else:
-            runtime_state["todos"] = todo_state
-        next_metadata["runtime_state"] = runtime_state
-        return next_metadata
+            removed = frozenset({"context_projection"})
+            updates = {"todos": todo_state}
+        return session_metadata_with_runtime_state_updates(
+            next_metadata,
+            updates=updates,
+            removed=removed,
+        )
 
     def _session_metadata_and_events(
         self,

@@ -47,7 +47,6 @@ from .question import PendingQuestion, QuestionResponse
 from .session import (
     SessionState,
     reload_persisted_session,
-    session_metadata_for_persistence,
     validate_session_workspace,
 )
 from .session_metadata_helpers import (
@@ -57,6 +56,7 @@ from .session_metadata_helpers import (
     session_with_context_window_payload_metadata,
     session_with_current_acp_metadata,
     session_with_plan_state,
+    session_with_run_id,
     waiting_reason_from_session,
 )
 from .skills import skill_binding_mismatch_payload, skill_prompt_context_for_assembly
@@ -86,16 +86,6 @@ class PersistedResumeCheckpointEnvelope:
     kind: str
     version: int
     payload: dict[str, object]
-
-
-def _metadata_with_resume_run_id(metadata: dict[str, object], *, run_id: str | None) -> dict[str, object]:
-    metadata = session_metadata_for_persistence(metadata)
-    if run_id is None:
-        return metadata
-    raw_runtime_state = metadata.get("runtime_state")
-    runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
-    runtime_state["run_id"] = run_id
-    return {**metadata, "runtime_state": runtime_state}
 
 
 def validate_pending_approval_matches_recorded_request(
@@ -391,12 +381,7 @@ class RuntimeResumeCoordinator:
             metadata=checkpoint_state.session_metadata,
         )
         tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
-        session = SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata=_metadata_with_resume_run_id(session.metadata, run_id=run_id),
-        )
+        session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
         tool_results.append(question_answer_result)
 
@@ -725,12 +710,7 @@ class RuntimeResumeCoordinator:
         )
         tool_results: list[ToolResult] = list(checkpoint_state.tool_results)
 
-        session = SessionState(
-            session=session.session,
-            status=session.status,
-            turn=session.turn,
-            metadata=_metadata_with_resume_run_id(session.metadata, run_id=run_id),
-        )
+        session = session_with_run_id(session, run_id=run_id)
         validate_session_workspace(session, session_id=stored.session.session.id, workspace=self._workspace)
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
         effective_config = runtime.effective_runtime_config_from_metadata(session.metadata)
@@ -1378,14 +1358,14 @@ class RuntimeResumeCoordinator:
         )
         validate_session_workspace(stored.session, session_id=session_id, workspace=self._workspace)
         tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
-        session = SessionState(
-            session=stored.session.session,
-            status="running",
-            turn=stored.session.turn,
-            metadata=_metadata_with_resume_run_id(
-                cast(dict[str, object], session_metadata),
-                run_id=run_id,
+        session = session_with_run_id(
+            SessionState(
+                session=stored.session.session,
+                status="running",
+                turn=stored.session.turn,
+                metadata=cast(dict[str, object], session_metadata),
             ),
+            run_id=run_id,
         )
         validate_session_workspace(session, session_id=session_id, workspace=self._workspace)
         session = session_with_current_acp_metadata(session, self._acp_adapter.current_state())
