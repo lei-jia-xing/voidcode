@@ -3,11 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..context import directory_readme_contexts
 from ..tools.contracts import ToolResult
 from .context_rules import runtime_file_rule_contexts
+
+if TYPE_CHECKING:
+    from .context_window import ToolResultView
 
 type RuntimeContextTransformProviderId = str
 type RuntimeContextTransformFailurePolicy = str
@@ -66,7 +69,7 @@ class RuntimeContextTransformResult:
 @dataclass(frozen=True, slots=True)
 class RuntimeContextTransformRequest:
     workspace: Path | None
-    tool_results: tuple[ToolResult, ...]
+    tool_results: tuple[ToolResult | ToolResultView, ...]
     hook_preset_context: str
     mode_guidance_context: str = ""
     failure_policy: RuntimeContextTransformFailurePolicy = "warn"
@@ -302,7 +305,7 @@ def default_runtime_context_transform_registry() -> RuntimeContextTransformRegis
 def build_provider_context_transform_result(
     *,
     workspace: Path | None,
-    tool_results: tuple[ToolResult, ...],
+    tool_results: tuple[ToolResult | ToolResultView, ...],
     hook_preset_context: str,
     mode_guidance_context: str = "",
     failure_policy: RuntimeContextTransformFailurePolicy = "warn",

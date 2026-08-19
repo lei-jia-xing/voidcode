@@ -1987,7 +1987,7 @@ def test_provider_context_compacted_debug_snapshot_keeps_only_retained_live_shap
             approval_mode="allow",
             execution_engine="provider",
             model="opencode/gpt-5.4",
-            context_window=config_module.RuntimeContextWindowConfig(model_context_window_tokens=30),
+            context_window=config_module.RuntimeContextWindowConfig(auto_compaction=True, model_context_window_tokens=30),
         ),
         permission_policy=permission_module.PermissionPolicy(mode="allow"),
         model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _CompactionModelProvider()}),

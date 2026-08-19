@@ -335,7 +335,7 @@ def _empty_context_window_tool_limits() -> dict[str, int]:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContextWindowConfig:
-    auto_compaction: bool = True
+    auto_compaction: bool = False
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
     default_tool_result_tokens: int | None = 1_500
@@ -1621,7 +1621,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     model_config = ConfigDict(extra="ignore", validate_default=True)
 
     version: int = 1
-    auto_compaction: bool = True
+    auto_compaction: bool = False
     model_context_window_tokens: int | None = None
     reserved_output_tokens: int | None = None
     default_tool_result_tokens: int | None = 1_500
@@ -1636,7 +1636,7 @@ class _RuntimeContextWindowValidationModel(BaseModel):
     @classmethod
     def _validate_auto_compaction(cls, value: object) -> bool:
         parsed = _parse_optional_bool(value, field_path="context_window.auto_compaction")
-        return True if parsed is None else parsed
+        return False if parsed is None else parsed
 
     @field_validator("version", mode="before")
     @classmethod

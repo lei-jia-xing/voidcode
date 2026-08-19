@@ -11798,7 +11798,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
         ),
         permission_policy=PermissionPolicy(mode="ask"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=30),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
     )
 
     waiting = runtime.run(
@@ -11811,13 +11811,14 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     waiting_runtime_state = cast(dict[str, object], waiting.session.metadata["runtime_state"])
     initial_continuity = cast(dict[str, object], waiting_runtime_state["context_projection"])
     assert initial_continuity["objective"] == "read sample.txt read sample.txt write beta.txt 2"
-    assert initial_continuity["current_goal"] == "read sample.txt read sample.txt write beta.txt 2"
     assert initial_continuity["dropped_tool_result_count"] == 1
     assert initial_continuity["retained_tool_result_count"] == 1
     assert initial_continuity["source"] == "tool_result_window"
-    assert initial_continuity["version"] == 2
+    assert initial_continuity["version"] == 3
     assert "## Objective" in cast(str, initial_continuity["summary_text"])
-    assert "- Dropped tool results: 1" in cast(str, initial_continuity["summary_text"])
+    assert "current_goal" not in initial_continuity
+    assert "next_step" not in initial_continuity
+    assert "fact_reference_count" not in initial_continuity
     initial_continuity_summary = cast(dict[str, object], waiting_runtime_state["context_projection_summary"])
     assert initial_continuity_summary["source"] == {
         "tool_result_start": 0,
@@ -11837,8 +11838,7 @@ def test_runtime_approval_resume_preserves_canonical_continuity_state(tmp_path: 
     assert expected_resumed_continuity["dropped_tool_result_count"] == 2
     assert expected_resumed_continuity["retained_tool_result_count"] == 1
     assert expected_resumed_continuity["source"] == "tool_result_window"
-    assert expected_resumed_continuity["version"] == 2
-    assert "- Dropped tool results: 2" in cast(str, expected_resumed_continuity["summary_text"])
+    assert expected_resumed_continuity["version"] == 3
     resumed_continuity_summary = cast(dict[str, object], resumed_runtime_state["context_projection_summary"])
     assert resumed_continuity_summary["anchor"] != initial_continuity_summary["anchor"]
     assert resumed_continuity_summary["source"] == {
@@ -11903,7 +11903,7 @@ def test_runtime_approval_resume_preserves_token_budget_context_metadata(
         ),
         permission_policy=PermissionPolicy(mode="ask"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=1),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=1),
     )
 
     waiting = runtime.run(
@@ -11973,7 +11973,7 @@ def test_runtime_restores_token_budget_continuity_metadata() -> None:
                     "dropped_tool_result_count": 2,
                     "retained_tool_result_count": 1,
                     "source": "tool_result_window",
-                    "version": 2,
+                    "version": 3,
                     "original_tool_result_tokens": 300,
                     "retained_tool_result_tokens": 80,
                     "dropped_tool_result_tokens": 220,
@@ -11994,7 +11994,7 @@ def test_runtime_restores_token_budget_continuity_metadata() -> None:
         dropped_tool_result_tokens=220,
         token_budget=100,
         token_estimate_source="approx_chars_per_4",
-        version=2,
+        version=3,
     )
 
 
@@ -13055,7 +13055,7 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
         workspace=tmp_path,
         config=RuntimeConfig(model="opencode/gpt-5.4"),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=30),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
     )
 
     response = runtime.run(
@@ -13077,13 +13077,12 @@ def test_runtime_provider_compaction_emits_continuity_state_and_persists_metadat
     assert summary_source == {"tool_result_start": 0, "tool_result_end": 1}
     expected_continuity = cast(dict[str, object], memory_events[0].payload["projection"])
     assert expected_continuity["objective"] == "read sample.txt read sample.txt"
-    assert expected_continuity["current_goal"] == "read sample.txt read sample.txt"
     assert expected_continuity["dropped_tool_result_count"] == 1
     assert expected_continuity["retained_tool_result_count"] == 1
     assert expected_continuity["source"] == "tool_result_window"
-    assert expected_continuity["version"] == 2
+    assert expected_continuity["version"] == 3
     assert "## Objective" in cast(str, expected_continuity["summary_text"])
-    assert "- Dropped tool results: 1" in cast(str, expected_continuity["summary_text"])
+    assert "current_goal" not in expected_continuity
     assert memory_events[0].payload["reason"] == "tool_result_window"
     assert memory_events[0].payload["compacted"] is True
     assert memory_events[0].payload["projection"] == expected_continuity
@@ -13598,7 +13597,7 @@ def test_runtime_context_transform_event_reports_retained_tool_result_count(
         config=RuntimeConfig(
             approval_mode="allow",
         ),
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=30),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
     )
 
     response = runtime.run(RuntimeRequest(prompt="apply rules", session_id="transform-retained-count"))
@@ -13800,7 +13799,7 @@ def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_eve
             model="opencode/gpt-5.4",
         ),
         model_provider_registry=registry,
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=30),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
     )
 
     response = runtime.run(RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="memory-refresh-replay"))
@@ -18620,7 +18619,7 @@ def test_runtime_context_window_projection_preserves_full_session_truth(
     provider only receives a bounded projection."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=1),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=1),
     )
 
     context_window = runtime.prepare_provider_context_window(
@@ -18695,10 +18694,9 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
 ) -> None:
     runtime = VoidCodeRuntime(workspace=tmp_path)
     prior_payload: dict[str, object] = {
-        "version": 2,
+        "version": 3,
         "summary_text": "Prior compact summary is projection metadata",
         "objective": "ship resume-safe continuity",
-        "current_goal": "continue from raw events",
         "dropped_tool_result_count": 2,
         "retained_tool_result_count": 1,
         "source": "tool_result_window",
@@ -18722,7 +18720,7 @@ def test_runtime_context_window_resume_continuity_metadata_is_projection_only(
     assert assembled.continuity_state is not None
     assert assembled.continuity_state.summary_text
     continuity_metadata = cast(dict[str, object], assembled.metadata["projection"])
-    assert continuity_metadata["version"] == 2
+    assert continuity_metadata["version"] == 3
     assert isinstance(continuity_metadata["summary_text"], str)
     assert continuity_metadata["dropped_tool_result_count"] == 2
     assert assembled.metadata["summary_source"] == {"tool_result_start": 0, "tool_result_end": 2}
@@ -18807,7 +18805,7 @@ def test_runtime_context_window_projection_bounded_output_within_limit(
     With a small token budget and 4 inputs, only 2 results should be retained."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        context_window_policy=ContextWindowPolicy(model_context_window_tokens=1),
+        context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=1),
     )
 
     context = runtime.prepare_provider_context_window(

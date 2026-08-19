@@ -13,7 +13,7 @@ from ..tools.output import (
     sanitize_tool_result_data,
     strip_redaction_sentinels,
 )
-from .context_window import RuntimeAssembledContext, RuntimeContextSegment
+from .context_window import RuntimeAssembledContext, RuntimeContextSegment, ToolResultView
 from .contracts import (
     RuntimeProviderContextDiagnostic,
     RuntimeProviderContextDiagnosticPolicyAction,
@@ -325,7 +325,7 @@ def _segment_snapshot(
 def _provider_message_snapshots(
     *,
     segments: tuple[RuntimeContextSegment, ...],
-    tool_results: tuple[ToolResult, ...],
+    tool_results: tuple[ToolResult | ToolResultView, ...],
     tool_feedback_mode: ToolFeedbackMode,
 ) -> list[RuntimeProviderMessageSnapshot]:
     if tool_feedback_mode == "synthetic_user_message":
@@ -396,7 +396,7 @@ def _standard_tool_message_snapshots(
 def _synthetic_tool_feedback_message_snapshots(
     segments: tuple[RuntimeContextSegment, ...],
     *,
-    tool_results: tuple[ToolResult, ...],
+    tool_results: tuple[ToolResult | ToolResultView, ...],
 ) -> list[RuntimeProviderMessageSnapshot]:
     messages: list[RuntimeProviderMessageSnapshot] = []
     tool_feedback_lines: list[str] = []
@@ -466,7 +466,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
-def _tool_result_payload_json(result: ToolResult) -> str:
+def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
     sanitized_data = _sanitize_debug_data(result.data)
     raw_arguments = sanitized_data.get("arguments")
     sanitized_arguments = (

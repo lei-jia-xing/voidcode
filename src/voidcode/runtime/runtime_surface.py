@@ -28,6 +28,7 @@ from .context_window import (
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
+    ToolResultView,
 )
 from .contracts import (
     RuntimeProviderContextPolicyDecision,
@@ -102,7 +103,7 @@ class RuntimeSurface(Protocol):
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
         abort_signal: ProviderAbortSignal | None = None,
@@ -112,7 +113,7 @@ class RuntimeSurface(Protocol):
         self,
         *,
         prompt: str,
-        tool_results: tuple[ToolResult, ...],
+        tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
         preserved_system_segments: tuple[str, ...] = (),

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
-from ..tools.contracts import ToolResult
+
+class _ToolResultLike(Protocol):
+    @property
+    def data(self) -> dict[str, object]: ...
+
 
 RULE_FILE_NAME = "AGENTS.md"
 MAX_RULE_FILES = 8
@@ -30,7 +34,7 @@ class RuntimeFileRuleContext:
 def runtime_file_rule_contexts(
     *,
     workspace: Path | None,
-    tool_results: tuple[ToolResult, ...],
+    tool_results: tuple[_ToolResultLike, ...],
     max_rule_files: int = MAX_RULE_FILES,
     max_rule_file_chars: int = MAX_RULE_FILE_CHARS,
     include_workspace_root: bool = True,
@@ -64,7 +68,7 @@ def runtime_file_rule_contexts(
     return tuple(contexts)
 
 
-def _touched_paths_from_tool_results(tool_results: tuple[ToolResult, ...]) -> tuple[str, ...]:
+def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) -> tuple[str, ...]:
     paths: list[str] = []
     seen: set[str] = set()
 

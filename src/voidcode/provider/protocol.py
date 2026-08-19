@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from ..runtime.context_window import normalize_read_output
+from ..runtime.context_window import ToolResultView, normalize_read_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
 
@@ -33,7 +33,7 @@ class ProviderContextWindow(Protocol):
     def prompt(self) -> str: ...
 
     @property
-    def tool_results(self) -> tuple[ToolResult, ...]: ...
+    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]: ...
 
     @property
     def compacted(self) -> bool: ...
@@ -65,7 +65,7 @@ class ProviderTurnRequest:
         return self.assembled_context.prompt
 
     @property
-    def tool_results(self) -> tuple[ToolResult, ...]:
+    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]:
         return self.assembled_context.tool_results
 
     @property
@@ -124,7 +124,7 @@ class ProviderTurnRequest:
 @dataclass(frozen=True, slots=True)
 class _DerivedContextWindow:
     prompt: str
-    tool_results: tuple[ToolResult, ...]
+    tool_results: tuple[ToolResult | ToolResultView, ...]
     continuity_state: object | None = None
     compacted: bool = False
     retained_tool_result_count: int = 0
@@ -180,7 +180,7 @@ class ProviderAssembledContext(Protocol):
     def prompt(self) -> str: ...
 
     @property
-    def tool_results(self) -> tuple[ToolResult, ...]: ...
+    def tool_results(self) -> tuple[ToolResult | ToolResultView, ...]: ...
 
     @property
     def continuity_state(self) -> object | None: ...
