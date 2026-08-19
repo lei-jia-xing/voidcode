@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
 from voidcode.agent.prompt_sections import (
@@ -142,13 +143,13 @@ def test_build_prompt_assembly_plan_keeps_non_system_transform_roles() -> None:
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "runtime_memory_usage_guidance",
-        "transform_assistant",
-        "transform_system",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
+        "transform_assistant",
+        "transform_system",
         "current_user_prompt",
     ]
-    assistant_section = plan.sections[3]
+    assistant_section = plan.sections[5]
     assert assistant_section.role == "assistant"
     assert assistant_section.content == "assistant injected note"
     assert assistant_section.tier == "workspace"
@@ -303,10 +304,10 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "agent_prompt",
         "runtime_memory_usage_guidance",
         "skill_prompt",
-        "hook_context",
         "runtime_workspace_memory",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
+        "hook_context",
         "current_user_prompt",
     ]
     assert [fragment["layer"] for fragment in fragments] == [
@@ -315,10 +316,10 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "persona_profile",
         "memory_usage_guidance",
         "skills",
-        "hook_injected_context",
         "project_context",
         "tool_policy_summary",
         "project_context",
+        "hook_injected_context",
         "user_request",
     ]
 
@@ -378,9 +379,9 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "agent_prompt",
         "runtime_memory_usage_guidance",
         "skill_prompt",
-        "transform_hook",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
+        "transform_hook",
         "runtime_todo_state",
         "current_user_prompt",
     ]
@@ -390,8 +391,8 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "instruction",
         "instruction",
         "instruction",
-        "workspace",
         "instruction",
+        "workspace",
         "workspace",
         "task",
         "task",
@@ -467,3 +468,77 @@ def test_prompt_activation_decision_is_idempotent_for_existing_session_slot() ->
     assert second.section is None
     assert second.metadata["activated_this_turn"] is False
     assert second.metadata["activated"] == first.metadata["activated"]
+
+
+def test_transform_injections_live_in_dynamic_region_and_prefix_is_stable() -> None:
+    boundary_marker = dynamic_boundary_marker()
+    same_session_state = {
+        "workspace_root": "/tmp/not-a-worktree",
+        "model": "opencode/test-model",
+    }
+    injections = (
+        RuntimeContextTransformInjection(
+            role="system",
+            content="Runtime file rules are active.\nRule file: src/AGENTS.md\nSrc rules",
+            metadata={"source": "runtime_file_rules", "path": "src/AGENTS.md", "tier": "workspace"},
+        ),
+    )
+    first = build_prompt_assembly_plan(
+        prompt="first prompt",
+        runtime_instruction_precedence="runtime first",
+        agent_prompt_context="leader base body",
+        prompt_profile_name="leader",
+        session_runtime_state=same_session_state,
+        context_transform_result=RuntimeContextTransformResult(injections=injections),
+    )
+    second = build_prompt_assembly_plan(
+        prompt="second prompt",
+        runtime_instruction_precedence="runtime first",
+        agent_prompt_context="leader base body",
+        prompt_profile_name="leader",
+        session_runtime_state=same_session_state,
+        context_transform_result=RuntimeContextTransformResult(injections=injections),
+    )
+
+    first_sources = [section.source for section in first.sections]
+    second_sources = [section.source for section in second.sections]
+    first_boundary = first_sources.index("runtime_dynamic_boundary")
+    second_boundary = second_sources.index("runtime_dynamic_boundary")
+
+    # Transform injections must be in the dynamic region (after the boundary), never
+    # in the stable prefix.
+    assert "runtime_file_rules" in first_sources[first_boundary + 1 :]
+    assert "runtime_file_rules" not in first_sources[: first_boundary + 1]
+
+    # With an unchanged touched-path set (same injections), the stable prefix is
+    # byte-identical across assemblies even though the user prompt differs.
+    first_prefix = "\n".join(section.content for section in first.sections[: first_boundary + 1])
+    second_prefix = "\n".join(section.content for section in second.sections[: second_boundary + 1])
+    assert first_prefix == second_prefix
+    assert first_prefix.count(boundary_marker) == 1
+
+
+def test_git_dynamic_state_is_cached_per_workspace_within_session(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from voidcode.runtime import prompt_assembly as prompt_assembly_module
+
+    prompt_assembly_module._reset_git_state_cache()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(root: Path, args: tuple[str, ...], *, allow_empty: bool = False) -> str | None:
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr(prompt_assembly_module, "_run_git", fake_run_git)
+    prompt_assembly_module._git_dynamic_state(str(tmp_path))
+    prompt_assembly_module._git_dynamic_state(str(tmp_path))
+
+    # One cache miss runs both git subprocesses; the follow-up call reuses the
+    # cached observation (same workspace, no mtime/TTL change) and runs none.
+    assert calls == [
+        ("rev-parse", "--abbrev-ref", "HEAD"),
+        ("status", "--short"),
+    ]
+    prompt_assembly_module._reset_git_state_cache()

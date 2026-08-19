@@ -146,7 +146,7 @@ def test_runtime_file_rule_contexts_extracts_apply_patch_change_paths(
     ]
 
 
-def test_runtime_file_rule_contexts_cap_preserves_latest_revisited_path(
+def test_runtime_file_rule_contexts_cap_is_stable_across_touch_order(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path
@@ -156,6 +156,9 @@ def test_runtime_file_rule_contexts_cap_preserves_latest_revisited_path(
         (directory / "AGENTS.md").write_text(f"{directory_name} rules", encoding="utf-8")
         (directory / "module.py").write_text("print('ok')\n", encoding="utf-8")
 
+    # Touched-path order must not affect which rules are injected: the path set is
+    # deduplicated and sorted alphabetically, so re-visiting "active" last (as in
+    # the previous remove-then-reappend behavior) no longer changes the cap.
     contexts = runtime_file_rule_contexts(
         workspace=workspace,
         tool_results=(
@@ -184,6 +187,42 @@ def test_runtime_file_rule_contexts_cap_preserves_latest_revisited_path(
     )
 
     assert [context.path for context in contexts] == [
+        "one_off_a/AGENTS.md",
         "one_off_b/AGENTS.md",
-        "active/AGENTS.md",
     ]
+
+
+def test_runtime_file_rule_contexts_order_is_stable_across_touch_order(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path
+    (workspace / "AGENTS.md").write_text("Root rules", encoding="utf-8")
+    for directory_name in ("alpha", "beta"):
+        directory = workspace / directory_name
+        directory.mkdir()
+        (directory / "AGENTS.md").write_text(f"{directory_name} rules", encoding="utf-8")
+        (directory / "module.py").write_text("print('ok')\n", encoding="utf-8")
+
+    forward = runtime_file_rule_contexts(
+        workspace=workspace,
+        tool_results=(
+            ToolResult(tool_name="read", status="ok", data={"path": "alpha/module.py"}),
+            ToolResult(tool_name="read", status="ok", data={"path": "beta/module.py"}),
+        ),
+    )
+    reversed_order = runtime_file_rule_contexts(
+        workspace=workspace,
+        tool_results=(
+            ToolResult(tool_name="read", status="ok", data={"path": "beta/module.py"}),
+            ToolResult(tool_name="read", status="ok", data={"path": "alpha/module.py"}),
+        ),
+    )
+
+    expected = [
+        ("AGENTS.md", "Root rules"),
+        ("alpha/AGENTS.md", "alpha rules"),
+        ("beta/AGENTS.md", "beta rules"),
+    ]
+    assert [(context.path, context.content) for context in forward] == expected
+    # Touching the same paths in a different order must not change the injection text.
+    assert [(context.path, context.content) for context in reversed_order] == expected

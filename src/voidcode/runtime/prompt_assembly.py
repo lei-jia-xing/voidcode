@@ -4,6 +4,7 @@ import platform
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -37,6 +38,19 @@ _STRICT_MEMORY_USAGE_GUIDANCE = "Memory: prefer current files over recalled fact
 
 _TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and policy control execution."
 _PROMPT_ACTIVATION_PREVIEW_CHARS = 160
+
+# Session-scoped cache for git/environment observations. Git status only feeds the
+# dynamic suffix (never the stable prefix), so a bounded staleness window is
+# acceptable: recompute on TTL expiry or on a workspace-root directory mtime
+# change (which catches create/delete/rename events without scanning the tree).
+_GIT_STATE_CACHE_TTL = 30.0
+# Cached entries store: monotonic compute time, workspace-root directory mtime in
+# nanoseconds, git branch, and the git status summary.
+_GIT_STATE_CACHE: dict[str, tuple[float, int | None, str | None, str | None]] = {}
+
+
+def _reset_git_state_cache() -> None:
+    _GIT_STATE_CACHE.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,10 +229,26 @@ def _git_dynamic_state(workspace_root: str | None) -> tuple[str | None, str | No
     root = Path(workspace_root).expanduser()
     if not root.exists():
         return None, None
+    key = str(root)
+    now = time.monotonic()
+    root_mtime_ns = _root_mtime_ns(root)
+    cached = _GIT_STATE_CACHE.get(key)
+    if cached is not None:
+        computed_at, cached_mtime_ns, branch, status_summary = cached
+        if (now - computed_at) < _GIT_STATE_CACHE_TTL and root_mtime_ns == cached_mtime_ns:
+            return branch, status_summary
     branch = _run_git(root, ("rev-parse", "--abbrev-ref", "HEAD"))
     status_output = _run_git(root, ("status", "--short"), allow_empty=True)
     status_summary = _status_summary(status_output) if status_output is not None else None
+    _GIT_STATE_CACHE[key] = (now, root_mtime_ns, branch, status_summary)
     return branch, status_summary
+
+
+def _root_mtime_ns(root: Path) -> int | None:
+    try:
+        return root.stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 def _run_git(workspace_root: Path, args: tuple[str, ...], *, allow_empty: bool = False) -> str | None:
@@ -523,30 +553,6 @@ def build_prompt_assembly_plan(
         layer="skills",
     )
 
-    transform_result = context_transform_result
-    if transform_result is not None:
-        for injection in transform_result.injections:
-            normalized = injection.content.strip()
-            if not normalized:
-                continue
-            if injection.role == "system":
-                append_system(
-                    normalized,
-                    source=_metadata_source(injection.metadata, fallback="context_transform"),
-                    tier=_metadata_tier(injection.metadata, fallback="workspace"),
-                    layer="hook_injected_context",
-                    metadata=injection.metadata,
-                )
-                continue
-            append_block(
-                normalized,
-                role=cast(Literal["system", "user", "assistant", "tool"], injection.role),
-                source=_metadata_source(injection.metadata, fallback="context_transform"),
-                tier=_metadata_tier(injection.metadata, fallback="workspace"),
-                layer="hook_injected_context",
-                metadata=injection.metadata,
-            )
-
     append_system(
         workspace_memory_context,
         source="runtime_workspace_memory",
@@ -572,6 +578,29 @@ def build_prompt_assembly_plan(
         tier="workspace",
         layer="project_context",
     )
+    transform_result = context_transform_result
+    if transform_result is not None:
+        for injection in transform_result.injections:
+            normalized = injection.content.strip()
+            if not normalized:
+                continue
+            if injection.role == "system":
+                append_system(
+                    normalized,
+                    source=_metadata_source(injection.metadata, fallback="context_transform"),
+                    tier=_metadata_tier(injection.metadata, fallback="workspace"),
+                    layer="hook_injected_context",
+                    metadata=injection.metadata,
+                )
+                continue
+            append_block(
+                normalized,
+                role=cast(Literal["system", "user", "assistant", "tool"], injection.role),
+                source=_metadata_source(injection.metadata, fallback="context_transform"),
+                tier=_metadata_tier(injection.metadata, fallback="workspace"),
+                layer="hook_injected_context",
+                metadata=injection.metadata,
+            )
     if pending_state_section is not None:
         if pending_state_section.role == "system":
             append_system(

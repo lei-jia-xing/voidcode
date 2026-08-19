@@ -48,3 +48,37 @@ def test_directory_readme_contexts_ignore_external_paths(tmp_path: Path) -> None
     )
 
     assert [context.path for context in contexts] == ["README.md"]
+
+
+def test_directory_readme_contexts_order_is_stable_across_touch_order(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("Project readme", encoding="utf-8")
+    for directory_name in ("alpha", "beta"):
+        directory = tmp_path / directory_name
+        directory.mkdir()
+        (directory / "README.md").write_text(f"{directory_name} readme", encoding="utf-8")
+        (directory / "module.py").write_text("print('ok')\n", encoding="utf-8")
+
+    forward = directory_readme_contexts(
+        workspace=tmp_path,
+        tool_results=(
+            ToolResult(tool_name="read", status="ok", data={"path": "alpha/module.py"}),
+            ToolResult(tool_name="read", status="ok", data={"path": "beta/module.py"}),
+        ),
+    )
+    reversed_order = directory_readme_contexts(
+        workspace=tmp_path,
+        tool_results=(
+            ToolResult(tool_name="read", status="ok", data={"path": "beta/module.py"}),
+            ToolResult(tool_name="read", status="ok", data={"path": "alpha/module.py"}),
+        ),
+    )
+
+    expected = [
+        ("README.md", "Project readme"),
+        ("alpha/README.md", "alpha readme"),
+        ("beta/README.md", "beta readme"),
+    ]
+    assert [(context.path, context.content) for context in forward] == expected
+    assert [(context.path, context.content) for context in reversed_order] == expected

@@ -69,45 +69,37 @@ def runtime_file_rule_contexts(
 
 
 def _touched_paths_from_tool_results(tool_results: tuple[_ToolResultLike, ...]) -> tuple[str, ...]:
-    paths: list[str] = []
-    seen: set[str] = set()
+    paths: set[str] = set()
 
-    def append(value: object) -> None:
-        if not isinstance(value, str):
-            return
-        stripped = value.strip()
-        if not stripped:
-            return
-        if stripped in seen:
-            paths.remove(stripped)
-        else:
-            seen.add(stripped)
-        paths.append(stripped)
+    def add(value: object) -> None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                paths.add(stripped)
 
     for result in tool_results:
-        append(result.data.get("path"))
-        append(result.data.get("output_path"))
+        add(result.data.get("path"))
+        add(result.data.get("output_path"))
         raw_arguments = result.data.get("arguments")
         if isinstance(raw_arguments, dict):
             arguments = cast(dict[str, object], raw_arguments)
-            append(arguments.get("path"))
-            append(arguments.get("path"))
+            add(arguments.get("path"))
         raw_matches = result.data.get("matches")
         if isinstance(raw_matches, list | tuple):
             for raw_match in raw_matches:
                 if not isinstance(raw_match, dict):
                     continue
                 match = cast(dict[str, object], raw_match)
-                append(match.get("file"))
-                append(match.get("path"))
+                add(match.get("file"))
+                add(match.get("path"))
         raw_changes = result.data.get("changes")
         if isinstance(raw_changes, list | tuple):
             for raw_change in raw_changes:
                 if not isinstance(raw_change, dict):
                     continue
                 change = cast(dict[str, object], raw_change)
-                append(change.get("path"))
-    return tuple(paths)
+                add(change.get("path"))
+    return tuple(sorted(paths))
 
 
 def _applicable_rule_paths(
