@@ -633,8 +633,28 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 11
+    assert schema_version == 12
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
+
+
+def test_session_storage_fresh_database_background_tasks_carry_v12_schema_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "fresh-schema-v12.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    store.create_background_task(
+        workspace=tmp_path,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-v12"),
+            request=BackgroundTaskRequestSnapshot(prompt="probe"),
+        ),
+    )
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        task_columns = [row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()]
+        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+
+    assert schema_version == 12
+    for column in ("output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"):
+        assert column in task_columns
 
 
 def test_session_storage_parses_interrupted_session_status(tmp_path: Path) -> None:
@@ -779,9 +799,9 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema version mismatch: expected 11 got 999.*future-runtime\.sqlite3",
+        match="schema version mismatch: expected 12 got 999.*future-runtime\\.sqlite3",
     ):
-        store.list_sessions(workspace=tmp_path)
+        store.list_notifications(workspace=tmp_path)
 
 
 def test_session_storage_rejects_non_canonical_schema_missing_runtime_columns(
@@ -988,7 +1008,8 @@ def test_session_storage_rejects_non_canonical_schema_with_wrong_existing_table_
         match=(
             r"table 'background_tasks' missing columns: created_at_unix_ms, "
             r"delegated_reminder_json, finished_at_unix_ms, keep_alive, "
-            r"started_at_unix_ms, steer_prompt.*"
+            r"output_schema_json, schema_mode, schema_validation_json, "
+            r"started_at_unix_ms, steer_prompt, structured_output_json.*"
             r"Reset the runtime database with `uv run voidcode storage reset` "
             r"or remove '.*[\\/]wrong-table-shape\.sqlite3' "
             r"plus matching -wal/-shm files\."

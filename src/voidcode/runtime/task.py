@@ -314,6 +314,31 @@ class DelegatedReminderState:
 
 
 @dataclass(frozen=True, slots=True)
+class SchemaValidation:
+    """Runtime truth for validating a child's ``submit_result`` ``data``.
+
+    Persisted with the task row at finalize: ``schema_source`` is always
+    ``"invocation"`` in v1 (schemas are declared per-call on the ``task``
+    tool, never inherited from agent frontmatter), ``schema_mode`` mirrors the
+    parent's declaration, ``valid`` is the jsonschema verdict, and ``error``
+    carries the formatted validation failure when invalid.
+    """
+
+    schema_source: str | None = None
+    schema_mode: Literal["permissive", "strict"] = "permissive"
+    valid: bool = False
+    error: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema_source": self.schema_source,
+            "schema_mode": self.schema_mode,
+            "valid": self.valid,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BackgroundTaskState:
     task: BackgroundTaskRef
     status: BackgroundTaskStatus = "queued"
@@ -336,6 +361,10 @@ class BackgroundTaskState:
     observability: BackgroundTaskObservability | None = None
     keep_alive: bool = False
     steer_prompt: str | None = None
+    output_schema: dict[str, object] | None = None
+    schema_mode: Literal["permissive", "strict"] = "permissive"
+    structured_output: dict[str, object] | None = None
+    schema_validation: SchemaValidation | None = None
 
     @property
     def parent_session_id(self) -> str | None:
@@ -375,6 +404,8 @@ class StoredBackgroundTaskSummary:
     observability: BackgroundTaskObservability | None = None
     keep_alive: bool = False
     steer_prompt: str | None = None
+    output_schema: dict[str, object] | None = None
+    schema_mode: Literal["permissive", "strict"] = "permissive"
 
 
 def validate_background_task_id(task_id: str) -> str:

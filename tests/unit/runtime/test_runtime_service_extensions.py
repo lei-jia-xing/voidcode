@@ -13996,7 +13996,11 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert worker_prompt is not None
     assert "Stay tightly scoped to the delegated task" in worker_prompt
     assert "do not delegate or spawn child agents" in worker_prompt
-    assert "Your delegated run is not complete until you call submit_result with a non-empty summary of completed work" in worker_prompt
+    assert (
+        "Your delegated run is not complete until you call submit_result with a non-empty "
+        "summary of what changed, what passed, and any remaining risk"
+    ) in worker_prompt
+    assert "If the parent declared an outputSchema, put structured detail in the data object matching that schema" in worker_prompt
 
 
 def test_runtime_product_agent_config_is_not_top_level_selectable(

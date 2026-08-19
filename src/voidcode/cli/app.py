@@ -1316,6 +1316,10 @@ def _background_task_state_payload(task: BackgroundTaskState, *, workspace: Path
         "error_type": error_type,
         "routing": _background_task_routing_payload(task.routing_identity),
         "observability": _background_task_observability_payload(task),
+        "output_schema": getattr(task, "output_schema", None),
+        "schema_mode": getattr(task, "schema_mode", "permissive"),
+        "structured_output": getattr(task, "structured_output", None),
+        "schema_validation": _background_task_schema_validation_payload(getattr(task, "schema_validation", None)),
         "next_steps": next_steps,
     }
     return payload
@@ -1350,8 +1354,19 @@ def _background_task_result_payload(result: BackgroundTaskResult, *, workspace: 
         "cancellation_cause": cancellation_cause,
         "routing": _background_task_routing_payload(result.routing),
         "observability": _background_task_observability_payload(result),
+        "structured_output": getattr(result, "structured_output", None),
+        "schema_validation": _background_task_schema_validation_payload(getattr(result, "schema_validation", None)),
         "next_steps": next_steps,
     }
+
+
+def _background_task_schema_validation_payload(schema_validation: object | None) -> dict[str, object] | None:
+    as_payload = getattr(schema_validation, "as_payload", None)
+    if callable(as_payload):
+        return as_payload()
+    if isinstance(schema_validation, dict):
+        return schema_validation
+    return None
 
 
 def _background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[str, object]:
@@ -1365,6 +1380,8 @@ def _background_task_summary_payload(task: StoredBackgroundTaskSummary) -> dict[
         "prompt": task.prompt,
         "keep_alive": task.keep_alive,
         "steer_prompt": task.steer_prompt,
+        "output_schema": getattr(task, "output_schema", None),
+        "schema_mode": getattr(task, "schema_mode", "permissive"),
         "error": error,
         "error_type": _background_task_error_type(error),
         "observability": _background_task_observability_payload(task),

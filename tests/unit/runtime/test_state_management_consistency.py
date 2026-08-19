@@ -556,7 +556,7 @@ def _seed_unsealed_completed_child(
                     "tool": "submit_result",
                     "status": "ok",
                     "arguments": {"summary": "done"},
-                    "handoff": {"summary": "done", "completed_work": ["completed the probe"]},
+                    "handoff": {"summary": "done", "data": {"completed_work": ["completed the probe"]}},
                 },
                 None,
             ),

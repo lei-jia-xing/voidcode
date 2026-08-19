@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from .contracts import (
     RuntimeRequest,
@@ -22,6 +22,7 @@ from .task import (
     BackgroundTaskStatus,
     DelegatedReminderState,
     DelegatedReminderStopCondition,
+    SchemaValidation,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
     is_background_task_transition_allowed,
@@ -45,6 +46,46 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             "cancellation_cause": None,
             "result_available": 0,
         }
+
+    @staticmethod
+    def _background_task_schema_declaration_from_request(
+        task: BackgroundTaskState,
+    ) -> tuple[str | None, Literal["permissive", "strict"]]:
+        """Derive the persisted output-schema declaration from request metadata.
+
+        The ``task`` tool carries ``output_schema``/``schema_mode`` inside the
+        validated ``delegation`` metadata; the row columns are a denormalized
+        copy so finalize can read the declaration without re-parsing metadata.
+        """
+        raw_delegation = task.request.metadata.get("delegation")
+        if not isinstance(raw_delegation, dict):
+            return None, "permissive"
+        delegation = cast(dict[str, object], raw_delegation)
+        raw_output_schema = delegation.get("output_schema")
+        if not isinstance(raw_output_schema, dict):
+            return None, "permissive"
+        raw_schema_mode = delegation.get("schema_mode")
+        schema_mode = cast(Literal["permissive", "strict"], raw_schema_mode if raw_schema_mode in ("permissive", "strict") else "permissive")
+        return json.dumps(raw_output_schema, sort_keys=True), schema_mode
+
+    @staticmethod
+    def _schema_validation_from_json(raw: str | None) -> SchemaValidation | None:
+        if raw is None:
+            return None
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return None
+        payload = cast(dict[str, object], parsed)
+        raw_mode = payload.get("schema_mode")
+        schema_mode = cast(Literal["permissive", "strict"], raw_mode if raw_mode in ("permissive", "strict") else "permissive")
+        raw_source = payload.get("schema_source")
+        raw_error = payload.get("error")
+        return SchemaValidation(
+            schema_source=raw_source if isinstance(raw_source, str) else None,
+            schema_mode=schema_mode,
+            valid=bool(payload.get("valid")),
+            error=raw_error if isinstance(raw_error, str) else None,
+        )
 
     @classmethod
     def _request_id_from_pending_payload(cls, payload: str | None) -> str | None:
@@ -81,7 +122,20 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             created_at_unix_ms=cast(int | None, row["created_at_unix_ms"]),
             keep_alive=bool(cast(int, row["keep_alive"])),
             steer_prompt=cast(str | None, row["steer_prompt"]),
+            output_schema=_BackgroundTaskStorageMixin._output_schema_from_json(
+                cast(str | None, row["output_schema_json"]),
+            ),
+            schema_mode=cast(Literal["permissive", "strict"], cast(str, row["schema_mode"]) or "permissive"),
         )
+
+    @staticmethod
+    def _output_schema_from_json(raw: str | None) -> dict[str, object] | None:
+        if raw is None:
+            return None
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return None
+        return cast(dict[str, object], parsed)
 
     def _background_task_durable_payload(self, row: sqlite3.Row) -> dict[str, object]:
         durable_payload: dict[str, object] = {
@@ -296,6 +350,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             )
             timestamp = self._next_background_task_timestamp(connection=connection)
             wall_clock_ms = self._current_unix_ms()
+            output_schema_json, schema_mode = self._background_task_schema_declaration_from_request(task)
             _ = connection.execute(
                 """
                 INSERT INTO background_tasks (
@@ -307,10 +362,12 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     delegated_reminder_json, allocate_session_id, session_id,
                     error, cancel_requested_at,
                     created_at, updated_at, started_at, finished_at,
-                    created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms, keep_alive
+                    created_at_unix_ms, started_at_unix_ms, finished_at_unix_ms, keep_alive,
+                    output_schema_json, schema_mode, structured_output_json, schema_validation_json
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?
                 )
                 """,
                 (
@@ -343,6 +400,10 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     task.started_at_unix_ms,
                     task.finished_at_unix_ms,
                     1 if task.request.metadata.get("keep_alive") is True else 0,
+                    output_schema_json,
+                    schema_mode,
+                    None,
+                    None,
                 ),
             )
             connection.commit()
@@ -372,6 +433,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms, keep_alive, steer_prompt
+                           , output_schema_json, schema_mode
                     FROM background_tasks
                     WHERE workspace_id = ?
                     ORDER BY updated_at DESC, task_id ASC
@@ -389,6 +451,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms, keep_alive, steer_prompt
+                           , output_schema_json, schema_mode
                     FROM background_tasks
                     WHERE workspace_id = ? AND status = 'queued'
                     ORDER BY created_at ASC, task_id ASC
@@ -412,6 +475,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms, keep_alive, steer_prompt
+                           , output_schema_json, schema_mode
                     FROM background_tasks
                     WHERE workspace_id = ? AND status = 'running'
                     ORDER BY updated_at ASC, task_id ASC
@@ -429,6 +493,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     """
                     SELECT task_id, status, prompt, session_id, error, created_at, updated_at
                            , created_at_unix_ms, keep_alive, steer_prompt
+                           , output_schema_json, schema_mode
                     FROM background_tasks
                     WHERE workspace_id = ? AND request_parent_session_id = ?
                     ORDER BY updated_at DESC, task_id ASC
@@ -1050,6 +1115,42 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             connection.commit()
         return self.load_background_task(workspace=workspace, task_id=task_id)
 
+    def persist_background_task_schema_validation(
+        self,
+        *,
+        workspace: Path,
+        task_id: str,
+        structured_output_json: str | None,
+        schema_validation_json: str,
+    ) -> None:
+        """Persist the finalize-time schema verdict on the task row.
+
+        Called by the background-task supervisor AFTER deriving the child's
+        terminal outcome and BEFORE ``mark_background_task_terminal`` so the
+        schema truth is durable even when the terminal update follows. The
+        task row is the runtime truth; the child session row stays sealed by
+        transcript evidence independently (two layers, no rollback).
+        """
+        task_id = validate_background_task_id(task_id)
+        with self._write_connect(workspace) as connection:
+            _ = connection.execute(
+                """
+                UPDATE background_tasks
+                SET structured_output_json = ?,
+                    schema_validation_json = ?,
+                    updated_at = ?
+                WHERE workspace_id = ? AND task_id = ?
+                """,
+                (
+                    structured_output_json,
+                    schema_validation_json,
+                    self._next_background_task_timestamp(connection=connection),
+                    str(workspace),
+                    task_id,
+                ),
+            )
+            connection.commit()
+
     def _background_task_state_from_row(self, row: sqlite3.Row) -> BackgroundTaskState:
         metadata = json.loads(cast(str, row["request_metadata_json"]))
         if not isinstance(metadata, dict):
@@ -1082,6 +1183,10 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             delegated_reminder=self._delegated_reminder_state_from_payload(cast(str | None, row["delegated_reminder_json"])),
             keep_alive=bool(cast(int, row["keep_alive"])),
             steer_prompt=cast(str | None, row["steer_prompt"]),
+            output_schema=self._output_schema_from_json(cast(str | None, row["output_schema_json"])),
+            schema_mode=cast(Literal["permissive", "strict"], cast(str, row["schema_mode"]) or "permissive"),
+            structured_output=self._output_schema_from_json(cast(str | None, row["structured_output_json"])),
+            schema_validation=self._schema_validation_from_json(cast(str | None, row["schema_validation_json"])),
         )
 
     def _background_task_runtime_row(

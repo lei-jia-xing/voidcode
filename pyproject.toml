@@ -35,6 +35,7 @@ dependencies = [
   "typing-extensions",
   "textual>=1.0.0,<8.2.9",
   "httpx",
+  "jsonschema",
   "litellm>=1.82.6",
   "uvicorn",
   "rapidfuzz>=3.14.5",

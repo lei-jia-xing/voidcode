@@ -299,11 +299,15 @@ def test_background_task_storage_migrates_v10_database_with_keep_alive_columns(t
         task=_task(task_id="task-keep-alive", keep_alive=True),
     )
 
-    # Rewind the freshly-bootstrapped (v11) database to the previous released
-    # schema (v10): drop the keep-alive columns and stamp user_version = 10.
+    # Rewind the freshly-bootstrapped (v12) database to the previous released
+    # schema (v10): drop every post-v10 column and stamp user_version = 10.
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN keep_alive")
         _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN steer_prompt")
+        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN output_schema_json")
+        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN schema_mode")
+        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN structured_output_json")
+        _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN schema_validation_json")
         _ = connection.execute("PRAGMA user_version = 10")
         connection.commit()
 
@@ -317,9 +321,11 @@ def test_background_task_storage_migrates_v10_database_with_keep_alive_columns(t
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
         rows = connection.execute("SELECT task_id, keep_alive, steer_prompt FROM background_tasks ORDER BY task_id ASC").fetchall()
 
-    assert schema_version == 11
+    assert schema_version == 12
     assert "keep_alive" in columns
     assert "steer_prompt" in columns
+    assert "output_schema_json" in columns
+    assert "schema_mode" in columns
     # Pre-existing v10 rows are preserved and default to keep_alive = 0.
     assert rows == [
         ("task-keep-alive", 0, None),

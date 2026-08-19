@@ -128,6 +128,10 @@ def _validate_delegation_metadata_types(payload: dict[str, object]) -> None:
             value = payload[field]
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"persisted delegation field '{field}' must be a non-negative integer")
+    if "output_schema" in payload and not isinstance(payload["output_schema"], dict):
+        raise ValueError("persisted delegation field 'output_schema' must be an object")
+    if "schema_mode" in payload and payload["schema_mode"] not in {"permissive", "strict"}:
+        raise ValueError("persisted delegation field 'schema_mode' must be one of: permissive, strict")
 
 
 def parse_runtime_state_metadata(raw: object, *, strict: bool = False) -> RuntimeStateMetadata:

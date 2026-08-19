@@ -761,6 +761,8 @@ def test_http_background_task_list_endpoints_expose_global_and_parent_scoped_vie
             "observability": None,
             "keep_alive": False,
             "steer_prompt": None,
+            "output_schema": None,
+            "schema_mode": "permissive",
         }
     ]
 

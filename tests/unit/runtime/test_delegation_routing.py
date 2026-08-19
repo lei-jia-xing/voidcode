@@ -86,3 +86,49 @@ def test_parallel_group_size_must_be_a_positive_integer() -> None:
 
     with pytest.raises(RuntimeRequestError, match="parallel_group_size"):
         validate_runtime_subagent_routing_metadata(delegation)
+
+
+def test_output_schema_fields_are_accepted_and_normalized() -> None:
+    # Given: delegation metadata carrying the output-schema declaration the
+    # task tool emits (snake_case inside the validated metadata)
+    declared_schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    delegation: dict[str, object] = {
+        "mode": "background",
+        "subagent_type": "worker",
+        "output_schema": declared_schema,
+        "schema_mode": "strict",
+    }
+
+    # When: the request boundary normalizes it
+    normalized = validate_runtime_subagent_routing_metadata(delegation)
+
+    # Then: both fields survive intact
+    assert normalized.get("output_schema") == declared_schema
+    assert normalized.get("schema_mode") == "strict"
+
+
+def test_output_schema_must_be_an_object() -> None:
+    delegation: dict[str, object] = {
+        "mode": "background",
+        "subagent_type": "worker",
+        "output_schema": "not-a-schema",
+    }
+
+    with pytest.raises(RuntimeRequestError, match="delegation.output_schema"):
+        validate_runtime_subagent_routing_metadata(delegation)
+
+
+def test_schema_mode_must_be_permissive_or_strict() -> None:
+    delegation: dict[str, object] = {
+        "mode": "background",
+        "subagent_type": "worker",
+        "output_schema": {"type": "object"},
+        "schema_mode": "lenient",
+    }
+
+    with pytest.raises(RuntimeRequestError, match="delegation.schema_mode"):
+        validate_runtime_subagent_routing_metadata(delegation)

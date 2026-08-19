@@ -768,7 +768,7 @@ class _DelegationE2EModelProvider:
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
                             tool_name="submit_result",
-                            arguments={"summary": "child final", "completed_work": ["returned delegated result"]},
+                            arguments={"summary": "child final", "data": {"completed_work": ["returned delegated result"]}},
                         )
                     )
                 if not tool_results:
@@ -1043,7 +1043,7 @@ class _McpEchoGraph:
                 events=(),
                 tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
                     tool_name="submit_result",
-                    arguments={"summary": "mcp child done", "completed_work": ["called delegated MCP"]},
+                    arguments={"summary": "mcp child done", "data": {"completed_work": ["called delegated MCP"]}},
                 ),
             )
         return _GraphStep(events=(), tool_call=None, output="mcp parent done", is_finished=True)

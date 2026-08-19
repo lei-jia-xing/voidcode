@@ -115,6 +115,8 @@ class BackgroundOutputTool:
             "delegation": result.delegated_execution.as_payload(),
             "message": message_payload,
             "handoff_summary": _background_task_handoff_summary(result=result),
+            "structured_output": result.structured_output,
+            "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
             "block_timed_out": block_timed_out,
         }
         content = safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
@@ -339,9 +341,9 @@ def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[st
         blocked_reason = "cancelled by parent"
     return {
         "objective": result.delegated_execution.routing.as_payload() if result.delegated_execution.routing is not None else None,
-        "completed_work": result.summary_output if result.status == "completed" else None,
-        "open_questions": result.approval_blocked,
-        "files_touched": (),
+        "summary": result.summary_output if result.status == "completed" else None,
+        "structured_output": result.structured_output,
+        "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
         "verification": {
             "duration_seconds": result.duration_seconds,
             "tool_call_count": result.tool_call_count,

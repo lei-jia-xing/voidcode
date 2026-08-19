@@ -2322,6 +2322,10 @@ class RuntimeTransportApp:
             "steer_prompt": task.steer_prompt,
             "routing": RuntimeTransportApp._serialize_subagent_routing(task.routing_identity),
             "observability": (None if task.observability is None else task.observability.as_payload()),
+            "output_schema": task.output_schema,
+            "schema_mode": task.schema_mode,
+            "structured_output": task.structured_output,
+            "schema_validation": (None if task.schema_validation is None else task.schema_validation.as_payload()),
         }
 
     @staticmethod
@@ -2337,6 +2341,8 @@ class RuntimeTransportApp:
             "created_at_unix_ms": task.created_at_unix_ms,
             "keep_alive": task.keep_alive,
             "steer_prompt": task.steer_prompt,
+            "output_schema": task.output_schema,
+            "schema_mode": task.schema_mode,
             "observability": (None if task.observability is None else task.observability.as_payload()),
         }
 
@@ -2589,6 +2595,8 @@ class RuntimeTransportApp:
             "hook_reminder": result.hook_reminder,
             "delegation": result.delegated_execution.as_payload(),
             "message": result.delegated_message.as_payload(),
+            "structured_output": result.structured_output,
+            "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
         }
 
     @staticmethod

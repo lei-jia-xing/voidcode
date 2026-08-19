@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
@@ -11,12 +11,14 @@ from .runtime_context import require_runtime_tool_context
 
 
 class SubmitResultArgs(BaseModel):
+    """``submit_result(summary, data?)`` — the five fixed fields were deleted
+    (breaking change); callers declaring equivalent structure must do so via
+    the parent's ``outputSchema`` and put the payload in ``data``."""
+
+    model_config = ConfigDict(extra="forbid")
+
     summary: str = Field(min_length=1)
-    completed_work: list[str] = Field(default_factory=list)
-    files_touched: list[str] = Field(default_factory=list)
-    verification: list[str] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-    blockers: list[str] = Field(default_factory=list)
+    data: dict[str, object] = Field(default_factory=dict)
 
 
 class SubmitResultTool:
@@ -33,11 +35,10 @@ class SubmitResultTool:
             "additionalProperties": False,
             "properties": {
                 "summary": {"type": "string", "minLength": 1, "description": "Short result for the parent agent."},
-                "completed_work": {"type": "array", "items": {"type": "string"}, "description": "Completed actions or findings."},
-                "files_touched": {"type": "array", "items": {"type": "string"}, "description": "Files inspected or changed."},
-                "verification": {"type": "array", "items": {"type": "string"}, "description": "Tests, diagnostics, or other evidence."},
-                "open_questions": {"type": "array", "items": {"type": "string"}, "description": "Questions the parent must resolve."},
-                "blockers": {"type": "array", "items": {"type": "string"}, "description": "Unresolved blockers; empty means none known."},
+                "data": {
+                    "type": "object",
+                    "description": "Arbitrary structured detail validated against the parent-declared outputSchema when one was declared.",
+                },
             },
             "required": ["summary"],
         },

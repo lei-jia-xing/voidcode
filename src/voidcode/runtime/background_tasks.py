@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -44,6 +45,7 @@ from .execution_seams import resolve_runtime_session_routing
 from .hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
 from .permission_policy import approval_request_id_from_waiting_response
 from .runtime_debug import prompt_from_events
+from .schema_validation import validate_structured_output
 from .session import SessionState, reload_persisted_session, validate_session_workspace
 from .session_metadata_helpers import waiting_reason_from_session
 from .storage import SessionEventAppender, SessionSealedError, SessionStore
@@ -56,6 +58,7 @@ from .task import (
     BackgroundTaskRetryObservability,
     BackgroundTaskState,
     BackgroundTaskStatus,
+    SchemaValidation,
     StoredBackgroundTaskSummary,
     is_background_task_terminal,
     validate_background_task_id,
@@ -1416,6 +1419,8 @@ class RuntimeBackgroundTaskSupervisor:
             tool_call_count=tool_call_count,
             observability=self.task_observability(task),
             hook_reminder=hook_reminder,
+            structured_output=task.structured_output,
+            schema_validation=task.schema_validation,
         )
 
     @staticmethod
@@ -1483,8 +1488,9 @@ class RuntimeBackgroundTaskSupervisor:
         return f"Background child session {child_session_id}: {child_result.status}"
 
     @staticmethod
-    def _child_handoff(child_result: RuntimeSessionResult) -> dict[str, object] | None:
-        for event in reversed(child_result.transcript):
+    def _handoff_from_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> dict[str, object] | None:
+        """Extract the last successful ``submit_result`` handoff from a transcript."""
+        for event in reversed(events):
             if event.event_type != RUNTIME_TOOL_COMPLETED:
                 continue
             if event.payload.get("tool") != "submit_result" or event.payload.get("status") != "ok":
@@ -1497,23 +1503,16 @@ class RuntimeBackgroundTaskSupervisor:
                     return dict(typed_handoff)
         return None
 
+    @classmethod
+    def _child_handoff(cls, child_result: RuntimeSessionResult) -> dict[str, object] | None:
+        return cls._handoff_from_events(child_result.transcript)
+
     @staticmethod
     def _render_child_handoff(handoff: dict[str, object]) -> str:
         lines = [str(handoff["summary"]).strip()]
-        labels = (
-            ("completed_work", "Completed work"),
-            ("files_touched", "Files touched"),
-            ("verification", "Verification"),
-            ("open_questions", "Open questions"),
-            ("blockers", "Blockers"),
-        )
-        for key, label in labels:
-            value = handoff.get(key)
-            if not isinstance(value, list):
-                continue
-            items = [item.strip() for item in value if isinstance(item, str) and item.strip()]
-            if items:
-                lines.append(f"{label}: " + "; ".join(items))
+        data = handoff.get("data")
+        if isinstance(data, dict) and data:
+            lines.append("Structured output: " + json.dumps(data, sort_keys=True))
         return "\n".join(lines)
 
     def _delegated_lifecycle_payloads(
@@ -2069,11 +2068,41 @@ class RuntimeBackgroundTaskSupervisor:
                 child_response=session_response,
             )
             return
-        terminal_status = child_terminal_outcome(session_response)
-        if terminal_status is None:
+        child_terminal_status = child_terminal_outcome(session_response)
+        if child_terminal_status is None:
             # Resumable child (``interrupted`` without a submit_result handoff):
             # never seal the session row nor terminalize the task.
             return
+        # Schema validation (Phase 1 delegation flexibility): when the task row
+        # carries a parent-declared ``output_schema``, validate the child's
+        # final ``submit_result`` ``data`` against it. The verdict is persisted
+        # as runtime truth BEFORE the terminal update. ``child_terminal_status``
+        # stays the transcript-derived outcome (the child row is sealed by
+        # transcript evidence regardless), while a strict failure flips the TASK
+        # terminal status to ``failed`` — two layers, no rollback of the child
+        # row. Keep-alive intermediate turns (no handoff) never validate.
+        terminal_status = child_terminal_status
+        task_error: str | None = None
+        schema_validation: SchemaValidation | None = None
+        structured_output: dict[str, object] | None = None
+        if current_task.output_schema is not None:
+            handoff = self._handoff_from_events(session_response.events)
+            if handoff is not None:
+                raw_data = handoff.get("data")
+                data = raw_data if isinstance(raw_data, dict) else {}
+                schema_validation = validate_structured_output(
+                    data=data,
+                    schema=current_task.output_schema,
+                    schema_mode=current_task.schema_mode,
+                )
+                if schema_validation.valid:
+                    structured_output = data
+                elif current_task.schema_mode == "strict":
+                    terminal_status = "failed"
+                    task_error = (
+                        "delegated child schema validation failed: "
+                        f"{schema_validation.error or 'structured output does not satisfy the declared outputSchema'}"
+                    )
         # Seal the child session row whenever it is not already durably
         # terminal. The run loop's own seal (``_persist_response`` → ``save_run``
         # inside the stream generator) can be skipped entirely (generator
@@ -2087,14 +2116,21 @@ class RuntimeBackgroundTaskSupervisor:
         self._seal_child_session_from_response(
             task=current_task,
             session_response=session_response,
-            terminal_status=terminal_status,
+            terminal_status=child_terminal_status,
         )
         if current_task.status == terminal_status and current_task.error is None:
             return
         if is_background_task_terminal(current_task.status) and current_task.status != "interrupted" and current_task.status != terminal_status:
             return
-        error: str | None = None
-        if terminal_status == "failed":
+        if schema_validation is not None:
+            self._session_store.persist_background_task_schema_validation(
+                workspace=self._workspace,
+                task_id=background_task_id,
+                structured_output_json=(json.dumps(structured_output, sort_keys=True) if structured_output is not None else None),
+                schema_validation_json=json.dumps(schema_validation.as_payload(), sort_keys=True),
+            )
+        error: str | None = task_error
+        if terminal_status == "failed" and error is None:
             for event in reversed(session_response.events):
                 if event.event_type == RUNTIME_FAILED:
                     event_error = event.payload.get("error")

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..runtime.contracts import (
     BackgroundTaskResult,
@@ -45,11 +45,22 @@ class _TaskArgs(BaseModel):
     parallel_group_id: str | None = None
     parallel_group_size: int | None = None
     keep_alive: bool = False
+    output_schema: dict[str, object] | None = Field(default=None, validation_alias="outputSchema")
+    schema_mode: Literal["permissive", "strict"] = Field(default="permissive", validation_alias="schemaMode")
 
     @model_validator(mode="after")
     def _validate_keep_alive(self) -> _TaskArgs:
         if self.keep_alive and not self.run_in_background:
             raise ValueError("keep_alive=true requires run_in_background=true (sync delegation has no suspend/resume semantics)")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_output_schema(self) -> _TaskArgs:
+        if self.output_schema is not None or self.schema_mode != "permissive":
+            if not self.run_in_background:
+                raise ValueError("outputSchema requires run_in_background=true (sync delegation has no persisted schema validation)")
+        if self.schema_mode == "strict" and self.output_schema is None:
+            raise ValueError("schemaMode=strict requires outputSchema (schema_mode is meaningless without a declared schema)")
         return self
 
     @field_validator("prompt", mode="after")
@@ -107,8 +118,8 @@ class _TaskArgs(BaseModel):
         return value
 
 
-def _delegation_metadata(args: _TaskArgs) -> dict[str, str]:
-    metadata: dict[str, str] = {
+def _delegation_metadata(args: _TaskArgs) -> dict[str, object]:
+    metadata: dict[str, object] = {
         "mode": "background" if args.run_in_background else "sync",
     }
     metadata["subagent_type"] = args.subagent_type
@@ -120,6 +131,9 @@ def _delegation_metadata(args: _TaskArgs) -> dict[str, str]:
         metadata["parallel_group_id"] = args.parallel_group_id
     if args.parallel_group_size is not None:
         metadata["parallel_group_size"] = str(args.parallel_group_size)
+    if args.output_schema is not None:
+        metadata["output_schema"] = args.output_schema
+        metadata["schema_mode"] = args.schema_mode
     return metadata
 
 
@@ -195,6 +209,25 @@ class TaskTool:
                         "turns: after each turn without a handoff the task parks as idle "
                         "(awaiting_steer) and the leader resumes it with steer_task. Requires "
                         "run_in_background=true."
+                    ),
+                },
+                "outputSchema": {
+                    "type": "object",
+                    "description": (
+                        "Optional arbitrary JSON Schema (outputSchema) declaring the structured "
+                        "shape of the child's submit_result data. The child's final data is "
+                        "validated against this schema at task finalize and surfaced as "
+                        "structured_output. Requires run_in_background=true."
+                    ),
+                },
+                "schemaMode": {
+                    "type": "string",
+                    "enum": ["permissive", "strict"],
+                    "description": (
+                        "Optional validation strictness for outputSchema. permissive (default) "
+                        "keeps the task completed with schema_validation.valid=false on "
+                        "failure; strict fails the task with the validation error. Ignored "
+                        "without outputSchema."
                     ),
                 },
             },

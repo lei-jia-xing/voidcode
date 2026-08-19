@@ -242,7 +242,7 @@ class _KeepAliveChildGraph:
                     tool_name="submit_result",
                     arguments={
                         "summary": "final keep-alive handoff",
-                        "completed_work": ["wrote second.txt"],
+                        "data": {"completed_work": ["wrote second.txt"]},
                     },
                 ),
             )

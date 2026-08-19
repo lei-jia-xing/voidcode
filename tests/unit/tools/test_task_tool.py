@@ -407,3 +407,112 @@ def test_task_tool_dispatches_product_plan_delegation_before_dispatch(
         "force_load_skills": [],
         "delegation": {"mode": "background", "subagent_type": "product"},
     }
+
+
+def test_task_tool_input_schema_declares_output_schema_surface() -> None:
+    schema = TaskTool.definition.input_schema
+    properties = cast(dict[str, object], schema["properties"])
+
+    output_schema = cast(dict[str, object], properties["outputSchema"])
+    assert output_schema["type"] == "object"
+    assert "outputSchema" in cast(str, output_schema["description"])
+
+    schema_mode = cast(dict[str, object], properties["schemaMode"])
+    assert schema_mode["enum"] == ["permissive", "strict"]
+
+
+def test_task_tool_background_delegation_carries_output_schema_declaration(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+    declared_schema = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={
+                    "prompt": "Return a structured answer",
+                    "run_in_background": True,
+                    "load_skills": [],
+                    "subagent_type": "worker",
+                    "outputSchema": declared_schema,
+                    "schemaMode": "strict",
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["delegation"]["output_schema"] == declared_schema
+    assert result.data["delegation"]["schema_mode"] == "strict"
+    assert runtime.requests[0].metadata["delegation"] == {
+        "mode": "background",
+        "subagent_type": "worker",
+        "output_schema": declared_schema,
+        "schema_mode": "strict",
+    }
+
+
+def test_task_tool_output_schema_defaults_to_permissive_mode(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        result = tool.invoke(
+            ToolCall(
+                tool_name="task",
+                arguments={
+                    "prompt": "Return structured output",
+                    "run_in_background": True,
+                    "load_skills": [],
+                    "subagent_type": "worker",
+                    "outputSchema": {"type": "object"},
+                },
+            ),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert runtime.requests[0].metadata["delegation"]["schema_mode"] == "permissive"
+
+
+def test_task_tool_rejects_output_schema_in_sync_mode(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        with pytest.raises(ValueError, match="outputSchema requires run_in_background=true"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "Return structured output",
+                        "run_in_background": False,
+                        "load_skills": [],
+                        "subagent_type": "worker",
+                        "outputSchema": {"type": "object"},
+                    },
+                ),
+                workspace=tmp_path,
+            )
+
+
+def test_task_tool_rejects_strict_mode_without_output_schema(tmp_path: Path) -> None:
+    runtime = _StubTaskRuntime()
+    tool = TaskTool(runtime=runtime)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        with pytest.raises(ValueError, match="schemaMode=strict requires outputSchema"):
+            tool.invoke(
+                ToolCall(
+                    tool_name="task",
+                    arguments={
+                        "prompt": "Return structured output",
+                        "run_in_background": True,
+                        "load_skills": [],
+                        "subagent_type": "worker",
+                        "schemaMode": "strict",
+                    },
+                ),
+                workspace=tmp_path,
+            )

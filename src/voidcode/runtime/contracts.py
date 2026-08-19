@@ -20,6 +20,7 @@ from .task import (
     BackgroundTaskState,
     BackgroundTaskStatus,
     ResolvedSubagentRoute,
+    SchemaValidation,
     StoredBackgroundTaskSummary,
     SubagentExecutionContract,
     SubagentRoutingIdentity,
@@ -87,6 +88,8 @@ class RuntimeSubagentRoutingMetadata(TypedDict, total=False):
     selected_execution_engine: str
     parallel_group_id: str
     parallel_group_size: int
+    output_schema: dict[str, object]
+    schema_mode: Literal["permissive", "strict"]
 
 
 class AcpStateMetadata(TypedDict, total=False):
@@ -185,6 +188,8 @@ DELEGATION_METADATA_KEYS = frozenset(
         "selected_execution_engine",
         "parallel_group_id",
         "parallel_group_size",
+        "output_schema",
+        "schema_mode",
     }
 )
 
@@ -391,6 +396,8 @@ def validate_runtime_subagent_routing_metadata(
         "selected_execution_engine",
         "parallel_group_id",
         "parallel_group_size",
+        "output_schema",
+        "schema_mode",
     }
     unknown_keys = sorted(key for key in routing_metadata if key not in allowed_keys)
     if unknown_keys:
@@ -441,6 +448,16 @@ def validate_runtime_subagent_routing_metadata(
         normalized["parallel_group_size"] = _validate_parallel_group_size(
             routing_metadata["parallel_group_size"],
         )
+    if "output_schema" in routing_metadata:
+        raw_output_schema = routing_metadata["output_schema"]
+        if not isinstance(raw_output_schema, dict):
+            raise RuntimeRequestError("request metadata 'delegation.output_schema' must be an object")
+        normalized["output_schema"] = dict(raw_output_schema)
+    if "schema_mode" in routing_metadata:
+        raw_schema_mode = routing_metadata["schema_mode"]
+        if raw_schema_mode not in ("permissive", "strict"):
+            raise RuntimeRequestError("request metadata 'delegation.schema_mode' must be 'permissive' or 'strict'")
+        normalized["schema_mode"] = cast(Literal["permissive", "strict"], raw_schema_mode)
     return normalized
 
 
@@ -1131,6 +1148,8 @@ class BackgroundTaskResult:
     tool_call_count: int = 0
     observability: BackgroundTaskObservability | None = None
     hook_reminder: dict[str, object] | None = None
+    structured_output: dict[str, object] | None = None
+    schema_validation: SchemaValidation | None = None
 
     @property
     def subagent_execution(self) -> SubagentExecutionContract:
