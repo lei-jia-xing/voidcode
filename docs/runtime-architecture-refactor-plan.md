@@ -1,3 +1,5 @@
+> ⚠️ 状态：部分已实施；后续拆分的当前权威见 `docs/p2-monolith-decomposition-design.md`。
+
 # Runtime Architecture Refactor Contract
 
 ## Objective

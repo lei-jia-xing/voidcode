@@ -1,3 +1,5 @@
+> ⚠️ 状态：部分已实施；具体拆分的当前权威见 `docs/p2-monolith-decomposition-design.md`。本计划中的行号与代码树已过时。
+
 # `runtime/service.py` 安全拆分计划
 
 来源 issue：#428

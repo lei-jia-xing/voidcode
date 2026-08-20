@@ -1,5 +1,7 @@
 # Runtime 架构耦合审计报告
 
+> ⚠️ 本文档描述 2026-08-17 之前的代码树；此后 storage.py 已拆 10 mixin、execute_graph_loop 已切片、19 个 proxy 已删（child_terminal.py 单权威）、child preset 枚举已收敛；方法数/行号已过时。
+
 > 审计日期：2026-08-17 · 范围：`src/voidcode/runtime/`（只读调查，未改代码）
 > 基准：`docs/oh-my-pi-comparison-priorities.md` + `docs/architecture.md` 提炼的 OMP 设计原则（分层清晰 / 协议不变量 / 单一职责边界）
 > 方法：AST 方法清点、跨模块属性访问统计、magic-string metadata key 统计、状态/语义重复实现比对。全部结论附 `文件:行号` 代码证据。

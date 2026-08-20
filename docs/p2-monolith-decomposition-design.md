@@ -1,6 +1,6 @@
 # P2 单体拆解设计：storage.py 领域簇拆分 + execute_graph_loop 切片
 
-> 状态：design-only（未改代码）· 日期：2026-08-18
+> 状态：已实现（2026-08-18，commits 620d5148 storage mixins / 182d4774 run_loop 切片）；文档中的行号描述的是拆分前代码树
 > 依据：`docs/runtime-coupling-audit.md` §2.3/§2.4/§5（P2 项）+ `docs/runtime-architecture-refactor-plan.md`（Change Gate / 规则 7）
 > 范围：`src/voidcode/runtime/storage.py`（5280 行）、`src/voidcode/runtime/run_loop.py:1142-2558`（execute_graph_loop，1417 行）
 > 约定：不写实现代码，函数签名草案可；标注 `[推断]` 处为未直接验证的推测

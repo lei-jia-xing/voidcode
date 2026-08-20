@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 
+## [Unreleased]
+
+
+
+### Added
+
+
+- **runtime:** add keep-alive subagent contract, storage, and steer surface
+
+- **tools:** add background task steer tool
+
+- **tools:** add invocation-level outputSchema validation to task delegation
+
+- **runtime:** resolve child transcripts via voidcode://transcript/<id>
+
+- **runtime:** resolve tool-output artifacts via voidcode://artifact/<id>
+
+- **runtime:** add essential/discoverable tool split with on-demand dispatch
+
+- **runtime:** add incremental event persistence primitives
+
+- **runtime:** resume interrupted sessions and seal terminal state
+
+- **runtime:** add tool effectiveness stats and context projection strategies
+
+- **provider:** source model metadata from generated catalog with reasoning-effort support
+
+- **tools:** restore background process tools with stdin interaction
+
+- **events:** register parallel task group completion
+
+
+
+### Changed
+
+
+- **tools:** rename write_file tool to write (breaking)
+
+- **runtime:** replace WorkflowMode with resolved mode aggregation (breaking)
+
+- **runtime:** remove continuation loop and start-work workflow (breaking)
+
+- **runtime:** enforce strict persisted contracts and extract capability materialization boundaries (breaking)
+
+- **runtime:** decompose SqliteSessionStore into domain mixins
+
+- **runtime:** slice execute_graph_loop into collaborative methods
+
+- **runtime:** make collaborator dependencies explicit
+
+- **runtime:** converge child preset and terminal-set derivations to a single authority
+
+- **runtime:** remove category routing in favor of subagent_type
+
+- **command:** trim slash commands to init and plan
+
+
+
+### Fixed
+
+
+- **runtime:** exit background task shutdown busy loop
+
+- **transport:** make session replay read-only
+
+- **runtime:** seal completed child sessions
+
+- **provider:** persist reasoning for non-streaming child runs
+
+- **runtime:** harden session and background-task state management
+
+- **mcp:** retry transient discovery connection drops
+
+- **runtime:** re-dispatch stranded background tasks and terminalize queued orphans
+
+- **tui:** render background task events in order
+
+
+
 ## [0.1.1] - 2026-05-12
 
 
