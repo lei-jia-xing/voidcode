@@ -15,6 +15,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  CircleSlash,
   ChevronRight,
   Code2,
   Copy,
@@ -2098,6 +2099,14 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-danger-text)]">
         <AlertCircle className="w-3 h-3" />
         Failed
+      </span>
+    );
+  }
+  if (status === "interrupted") {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
+        <CircleSlash className="w-3 h-3" />
+        Interrupted
       </span>
     );
   }

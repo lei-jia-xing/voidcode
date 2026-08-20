@@ -101,6 +101,29 @@ describe("ChatThread", () => {
     expect(screen.queryByLabelText(/avatar/i)).not.toBeInTheDocument();
   });
 
+  it("renders an interrupted assistant message with an Interrupted badge and no failure text", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-1",
+            role: "assistant",
+            content: "partial answer",
+            thinking: [],
+            tools: [],
+            approval: null,
+            status: "interrupted",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Interrupted")).toBeInTheDocument();
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+  });
+
   it("uses pretext to reserve streamed assistant text height", () => {
     render(
       <ChatThread

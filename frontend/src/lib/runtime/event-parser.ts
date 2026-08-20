@@ -5,6 +5,21 @@ import {
   ToolStatusPayload,
 } from "./types";
 
+// A `runtime.failed` event whose payload signals a user/run cancellation (as
+// opposed to a genuine failure). The backend emits this as the final event of
+// an interrupted run, so the transcript must not render it as a failure.
+function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
+  if (event.event_type !== "runtime.failed") {
+    return false;
+  }
+  const payload = event.payload as Record<string, unknown> | undefined;
+  return (
+    payload?.cancelled === true ||
+    payload?.kind === "interrupted" ||
+    payload?.kind === "cancelled"
+  );
+}
+
 export interface DerivedTask {
   id: string;
   titleKey: string;
@@ -53,7 +68,7 @@ export interface ChatMessage {
     tool: string;
     prompts: QuestionPrompt[];
   } | null;
-  status: "in_progress" | "completed" | "failed" | "waiting";
+  status: "in_progress" | "completed" | "failed" | "interrupted" | "waiting";
   sequence: number;
 }
 
@@ -746,7 +761,11 @@ export function deriveChatMessages(
       }
     } else if (event.event_type === "runtime.failed") {
       if (currentAssistant) {
-        currentAssistant.status = "failed";
+        // A cancelled/interrupted run is distinct from a real failure: surface
+        // it as "interrupted" so the UI never shows a failed banner/badge.
+        currentAssistant.status = isRuntimeCancellationEvent(event)
+          ? "interrupted"
+          : "failed";
       }
     } else if (
       event.event_type === "runtime.tool_hook_pre" ||

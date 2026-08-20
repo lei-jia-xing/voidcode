@@ -767,3 +767,74 @@ describe("Tool Display Metadata Contract", () => {
     ]);
   });
 });
+
+describe("Interrupted Status Contract", () => {
+  function requestEvent(sequence: number): EventEnvelope {
+    return {
+      session_id: "test",
+      sequence,
+      event_type: "runtime.request_received",
+      source: "runtime",
+      payload: { prompt: "Do the thing" },
+    };
+  }
+
+  it("maps a genuine runtime.failed to a failed assistant message", () => {
+    const events: EventEnvelope[] = [
+      requestEvent(1),
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.failed",
+        source: "runtime",
+        payload: { error: "permission denied" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.status).toBe("failed");
+  });
+
+  it("maps a cancelled runtime.failed to interrupted, not failed", () => {
+    const events: EventEnvelope[] = [
+      requestEvent(1),
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.failed",
+        source: "runtime",
+        payload: { cancelled: true, error: "provider stream cancelled" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.status).toBe("interrupted");
+    expect(assistantMessage?.status).not.toBe("failed");
+  });
+
+  it("maps an interrupted-kind runtime.failed to interrupted, not failed", () => {
+    const events: EventEnvelope[] = [
+      requestEvent(1),
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.failed",
+        source: "runtime",
+        payload: { kind: "interrupted", error: "web user interrupt" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.status).toBe("interrupted");
+    expect(assistantMessage?.status).not.toBe("failed");
+  });
+});

@@ -1,7 +1,7 @@
 // Must precede the store/App imports so the persisted store sees a real
 // localStorage during hydration.
 import "./test-local-storage";
-import { render, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import App from "./App";
 import { useAppStore } from "./store";
@@ -426,9 +426,10 @@ describe("App follow stream with delegated child sessions", () => {
     runtimeClientMocks.sessionEventsMock.mockImplementation(async function* (
       sessionId: string,
     ) {
-      // The backend only closes follow streams for {completed, failed}; an
-      // interrupted row keeps polling forever. Simulate that: yield the
-      // snapshot and then never end.
+      // The backend now closes follow streams on interrupted too, but the
+      // frontend must still stop following on its own if the stream stays
+      // open (older backend, or any future terminal status). Simulate a
+      // stream that yields the interrupted snapshot and never ends.
       if (sessionId === "child-session") {
         try {
           yield makeSnapshotChunk(sessionId, "interrupted");
@@ -535,5 +536,119 @@ describe("App follow stream with delegated child sessions", () => {
     expect(useAppStore.getState().backgroundTaskOutput?.output).toBe(
       "child output",
     );
+  });
+
+  it("shows a locally interrupted run as Interrupted and never as Failed", async () => {
+    const sessionId = "session-1";
+    async function* stream() {
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "running"),
+        event: makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "do it" },
+          "runtime",
+          sessionId,
+        ),
+        output: null,
+      };
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "interrupted"),
+        event: makeEvent(
+          2,
+          "runtime.failed",
+          { cancelled: true, error: "provider stream cancelled" },
+          "runtime",
+          sessionId,
+        ),
+        output: null,
+      };
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      {
+        session: { id: sessionId },
+        status: "interrupted",
+        turn: 1,
+        prompt: "do it",
+        updated_at: 1,
+      },
+    ]);
+
+    render(<App />);
+    await flushAsync();
+    await act(async () => {
+      await useAppStore.getState().runTask("do it");
+    });
+    await flushAsync();
+
+    // The run is not treated as a failure: transient run status settles to
+    // idle (no error banner) and the transcript renders an Interrupted badge.
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+    expect(useAppStore.getState().currentSessionState?.status).toBe(
+      "interrupted",
+    );
+    expect(screen.getByText("Interrupted")).toBeInTheDocument();
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+  });
+
+  it("does not re-follow or re-select the session right after a locally completed run", async () => {
+    const sessionId = "session-1";
+    async function* stream() {
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "running"),
+        event: makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "do it" },
+          "runtime",
+          sessionId,
+        ),
+        output: null,
+      };
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "completed"),
+        event: makeEvent(
+          2,
+          "graph.response_ready",
+          { output: "done" },
+          "graph",
+          sessionId,
+        ),
+        output: null,
+      };
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      {
+        session: { id: sessionId },
+        status: "completed",
+        turn: 1,
+        prompt: "do it",
+        updated_at: 1,
+      },
+    ]);
+
+    render(<App />);
+    await flushAsync();
+    await act(async () => {
+      await useAppStore.getState().runTask("do it");
+    });
+    await flushAsync();
+
+    expect(useAppStore.getState().runStatus).toBe("success");
+    expect(useAppStore.getState().currentSessionState?.status).toBe(
+      "completed",
+    );
+    // The just-completed run already holds terminal data: the follow-stream
+    // effect must not open a follow stream nor trigger a redundant full
+    // reload (selectSession) for it.
+    expect(runtimeClientMocks.sessionEventsMock).not.toHaveBeenCalled();
+    expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
   });
 });

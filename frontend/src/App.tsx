@@ -58,9 +58,10 @@ function SubsessionTimelineHeader({
 }
 
 // Statuses after which the session transcript is static for display. The
-// backend only closes the session-event follow stream for {completed, failed};
-// an `interrupted` (unsealed) row would otherwise keep the stream polling
-// forever, so the frontend must stop following it on its own.
+// backend closes the session-event follow stream for {completed, failed,
+// interrupted}; stopping on any terminal status here keeps the frontend
+// resilient even if a future status (or an older backend) does not close the
+// stream.
 const TERMINAL_DISPLAY_SESSION_STATUSES: Record<string, true> = {
   completed: true,
   failed: true,
@@ -367,9 +368,27 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!currentSessionId || isRunning) return;
+    // If this session is already terminal-for-display (e.g. a run we just
+    // completed locally already populated terminal data), there is nothing to
+    // follow. Opening a follow stream here would immediately receive the
+    // terminal snapshot and then re-select the session, causing a redundant
+    // full reload right after every completed run.
+    if (
+      !currentSessionId ||
+      isRunning ||
+      (currentSessionState?.status != null &&
+        TERMINAL_DISPLAY_SESSION_STATUSES[currentSessionState.status] === true)
+    ) {
+      return;
+    }
     const controller = new AbortController();
     const afterSequence = sessionEventCursorRef.current;
+    // Tracks whether the follow actually observed new events. Re-selecting the
+    // session is only needed when the transcript changed while following; if
+    // the session was already terminal when the stream opened (and the run
+    // path already holds that terminal data), re-selecting would be a
+    // redundant full reload.
+    let sawNewData = false;
     void (async () => {
       try {
         for await (const chunk of RuntimeClient.sessionEvents(
@@ -377,11 +396,11 @@ function App() {
           afterSequence,
           controller.signal,
         )) {
-          // The first chunk is the session snapshot. The backend only closes
-          // the follow stream for {completed, failed}; an `interrupted`
-          // (unsealed) row would otherwise keep it polling forever. Once the
-          // session is terminal-for-display the transcript is static, so stop
-          // following instead of leaving a dangling stream open.
+          // The first chunk is the session snapshot. Once the session is
+          // terminal-for-display the transcript is static, so stop following
+          // instead of leaving a dangling stream open (the backend closes the
+          // stream for {completed, failed, interrupted}, but breaking here is
+          // also correct for older backends that keep interrupted polling).
           if (
             chunk.kind === "session" &&
             chunk.session &&
@@ -389,11 +408,14 @@ function App() {
           ) {
             break;
           }
-          if (chunk.event?.event_type.startsWith("runtime.background_task_")) {
-            await loadBackgroundTasks();
-            const outputId = selectedBackgroundTaskOutputIdRef.current;
-            if (outputId) {
-              await loadBackgroundTaskOutput(outputId);
+          if (chunk.event) {
+            sawNewData = true;
+            if (chunk.event.event_type.startsWith("runtime.background_task_")) {
+              await loadBackgroundTasks();
+              const outputId = selectedBackgroundTaskOutputIdRef.current;
+              if (outputId) {
+                await loadBackgroundTaskOutput(outputId);
+              }
             }
           }
         }
@@ -403,7 +425,10 @@ function App() {
           // in place. Re-selecting the underlying session here would clear the
           // child view state and flip the transcript back to the parent.
           await loadBackgroundTaskOutput(outputId);
-        } else if (useAppStore.getState().replayStatus !== "loading") {
+        } else if (
+          sawNewData &&
+          useAppStore.getState().replayStatus !== "loading"
+        ) {
           // A selectSession for this session is already in flight (its fetch
           // has not resolved yet). Re-selecting now would clear the view and
           // discard the in-flight result, flashing the transcript.
@@ -417,6 +442,7 @@ function App() {
     return () => controller.abort();
   }, [
     currentSessionId,
+    currentSessionState,
     isRunning,
     loadBackgroundTaskOutput,
     loadBackgroundTasks,
