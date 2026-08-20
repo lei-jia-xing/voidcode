@@ -173,7 +173,8 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "diagnostics_on_write": {
           "type": "boolean",
@@ -192,7 +193,8 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "request_timeout_seconds": {
           "type": "number",

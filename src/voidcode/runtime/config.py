@@ -397,6 +397,17 @@ class RuntimeMcpConfig:
     request_timeout_seconds: float | None = None
 
 
+def runtime_capability_enabled(enabled: bool | None) -> bool:
+    """Resolve a capability ``enabled`` tri-state to a boolean.
+
+    LSP/MCP tooling is enabled by default: ``None`` (unset) means enabled, and
+    only an explicit ``enabled: false`` disables the capability. This is the
+    single authority for the runtime-wide default-on convention; managers,
+    doctor checks, and config parsing all resolve through it.
+    """
+    return enabled is not False
+
+
 def _default_runtime_mcp_servers() -> dict[str, RuntimeMcpServerConfig]:
     servers: dict[str, RuntimeMcpServerConfig] = {}
     for descriptor in list_builtin_mcp_descriptors():
@@ -2278,7 +2289,11 @@ def _parse_mcp_config(raw_mcp: object) -> RuntimeMcpConfig | None:
     )
     if parsed is None:
         return None
-    if parsed.enabled is True and parsed.servers is None:
+    # Unset ``enabled`` (None) means enabled by default; an absent ``servers``
+    # block then behaves exactly like ``mcp.enabled: true`` today: load the
+    # builtin remote MCP descriptors. Only explicit ``enabled: false`` keeps
+    # the parsed section untouched.
+    if runtime_capability_enabled(parsed.enabled) and parsed.servers is None:
         return RuntimeMcpConfig(
             enabled=True,
             servers=_default_runtime_mcp_servers(),

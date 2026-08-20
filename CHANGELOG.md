@@ -42,6 +42,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 ### Changed
 
 
+- **runtime:** enable LSP and MCP tooling by default
+
 - **tools:** rename write_file tool to write (breaking)
 
 - **runtime:** replace WorkflowMode with resolved mode aggregation (breaking)

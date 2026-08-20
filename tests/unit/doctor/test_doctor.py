@@ -155,6 +155,26 @@ class TestCreateDoctorForConfig:
         assert mcp_result.details["configured_enabled"] is True
         assert mcp_result.details["configured_server_count"] == 0
 
+    def test_reports_unset_enabled_mcp_with_servers_as_configured(self) -> None:
+        """Unset ``enabled`` means enabled by default: server checks run, not the disabled branch."""
+        config = RuntimeConfig(
+            mcp=RuntimeMcpConfig(
+                servers={
+                    "grep_app": RuntimeMcpServerConfig(
+                        transport="remote-http",
+                        url="https://mcp.grep.app",
+                    )
+                }
+            )
+        )
+
+        doctor = create_doctor_for_config(Path("/tmp"), config)
+
+        mcp_result = next(result for result in doctor.results if result.name == "mcp:grep_app")
+        assert mcp_result.status == CapabilityCheckStatus.READY
+        assert mcp_result.details["transport"] == "remote-http"
+        assert mcp_result.details["url"] == "https://mcp.grep.app"
+
     def test_skips_formatter_checks_when_hooks_disabled(self) -> None:
         """Formatter checks should be skipped when hooks.enabled is False."""
         hooks = MagicMock()

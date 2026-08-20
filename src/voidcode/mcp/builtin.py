@@ -69,7 +69,9 @@ _BUILTIN_MCP_DESCRIPTORS: dict[str, BuiltinMcpDescriptor] = {
         transport="remote-http",
         url="https://mcp.grep.app",
         lifecycle="descriptor_only_config_gated",
-        description=("Code search MCP via grep.app remote endpoint. Requires mcp.enabled=true in .voidcode.json to connect."),
+        description=(
+            "Code search MCP via grep.app remote endpoint. Loaded by default with the builtin remote MCP set; mcp.enabled=false disables it."
+        ),
         tags=("code-search", "research"),
     ),
     "playwright": BuiltinMcpDescriptor(

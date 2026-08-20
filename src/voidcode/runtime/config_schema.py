@@ -155,7 +155,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "enabled": {"type": "boolean"},
+                    "enabled": {"type": "boolean", "default": True},
                     "diagnostics_on_write": {
                         "type": "boolean",
                         "description": ("Opt-in automatic LSP diagnostics after edit/write. Off by default. Does not gate the explicit 'lsp' tool."),
@@ -170,7 +170,7 @@ def runtime_config_json_schema() -> dict[str, object]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "enabled": {"type": "boolean"},
+                    "enabled": {"type": "boolean", "default": True},
                     "request_timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
                     "servers": {
                         "type": "object",

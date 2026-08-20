@@ -96,6 +96,18 @@ def test_lsp_config_state_enables_explicit_servers_when_enabled_omitted() -> Non
     assert tuple(state.servers) == ("pyright",)
 
 
+def test_lsp_config_state_defaults_to_enabled_even_without_servers() -> None:
+    """Unset ``enabled`` means enabled by default; only explicit ``false`` disables.
+
+    Server startup is still gated on non-empty ``servers``, so this stays a
+    safe no-op (no process is spawned) while reporting the default-on intent.
+    """
+    state = LspConfigState.from_runtime_config(RuntimeLspConfig())
+
+    assert state.configured_enabled is True
+    assert state.servers == {}
+
+
 def test_lsp_config_state_preserves_explicit_disable_with_servers() -> None:
     state = LspConfigState.from_runtime_config(
         RuntimeLspConfig(

@@ -65,7 +65,7 @@ grep.app 提供三个不同的端点，用途各不相同:
 - **MCP 端点**: `https://mcp.grep.app` — MCP 协议端点（远程 HTTP 传输）
 
 内置 `grep_app` 描述符现在指向官方 MCP 端点 `https://mcp.grep.app`:
-- 需要在 `.voidcode.json` 中配置 `mcp.enabled: true` 才能启用
+- LSP/MCP 工具默认开启：未声明 `mcp.enabled`（或显式 `mcp.enabled: true`）时，runtime 会自动装载内置远程 MCP 描述符（`context7`、`websearch`、`grep_app`）；只有显式 `mcp.enabled: false` 才会关闭
 - 启用后 runtime 会自动连接到远程 MCP 端点
 - 连接失败会作为 runtime MCP 诊断/状态输出，而不是模糊的工具错误
 

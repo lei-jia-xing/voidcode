@@ -24,7 +24,7 @@ from ..lsp import (
     match_lsp_servers_for_path,
     resolve_lsp_server_configs,
 )
-from .config import RuntimeLspConfig
+from .config import RuntimeLspConfig, runtime_capability_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,12 @@ class LspConfigState:
         if config is None:
             return cls()
         resolved_servers = resolve_lsp_server_configs(config.servers)
+        # Unset ``enabled`` (None) means enabled by default; only an explicit
+        # ``enabled: false`` disables the capability. Server startup is still
+        # gated on ``servers`` being non-empty, so a default-on config with no
+        # servers stays a safe no-op (no process is spawned).
         return cls(
-            configured_enabled=(config.enabled is True) or (config.enabled is None and bool(resolved_servers)),
+            configured_enabled=runtime_capability_enabled(config.enabled),
             servers=resolved_servers,
         )
 

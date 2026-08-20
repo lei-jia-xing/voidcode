@@ -528,6 +528,27 @@ marker.write_text("closed", encoding="utf-8")
     assert marker_path.read_text(encoding="utf-8") == "closed"
 
 
+def test_mcp_manager_defaults_to_managed_when_enabled_omitted() -> None:
+    """Unset ``enabled`` means enabled by default; explicit false is the only off switch."""
+    manager = build_mcp_manager(RuntimeMcpConfig(servers={"echo": RuntimeMcpServerConfig(transport="stdio", command=("python", "-c", "pass"))}))
+
+    state = manager.current_state()
+    assert state.mode == "managed"
+    assert state.configuration.configured_enabled is True
+    assert tuple(state.configuration.servers) == ("echo",)
+
+
+def test_mcp_manager_defaults_to_managed_without_servers() -> None:
+    """Default-on with no servers is a safe no-op: managed mode, zero tools, nothing spawned."""
+    manager = build_mcp_manager(RuntimeMcpConfig())
+
+    state = manager.current_state()
+    assert state.mode == "managed"
+    assert state.configuration.configured_enabled is True
+    assert state.configuration.servers == {}
+    assert manager.list_tools(workspace=Path(".")) == ()
+
+
 def test_disabled_mcp_manager_rejects_tool_listing(tmp_path: Path) -> None:
     manager = build_mcp_manager(RuntimeMcpConfig(enabled=False))
 

@@ -226,9 +226,9 @@ def create_doctor_for_config(
         for preset_name, preset in hooks_config.formatter_presets.items():
             doctor.add_formatter_preset_check(preset_name, preset)
 
-    # Check LSP servers (only when lsp.enabled is True).
+    # Check LSP servers unless explicitly disabled (unset enabled defaults to on).
     lsp_config = config.lsp
-    if lsp_config is not None and lsp_config.enabled is True and lsp_config.servers:
+    if lsp_config is not None and lsp_config.enabled is not False and lsp_config.servers:
         from ..lsp.presets import get_builtin_lsp_server_preset
         from ..lsp.registry import resolve_lsp_server_config
 
@@ -259,10 +259,10 @@ def create_doctor_for_config(
                     "configured_enabled": False,
                     "scope_boundary": "runtime/session-scoped when configured",
                 },
-                error_message=("MCP is not configured; set mcp.enabled and mcp.servers to enable it."),
+                error_message=("MCP is not configured; add an mcp section with servers to enable them."),
             )
         )
-    elif mcp_config.enabled is not True:
+    elif mcp_config.enabled is False:
         doctor.add_result(
             CapabilityCheckResult(
                 status=CapabilityCheckStatus.NOT_CONFIGURED,

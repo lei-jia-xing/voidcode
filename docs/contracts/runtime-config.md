@@ -178,7 +178,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `context_window.default_tool_result_tokens`：大于等于 1 的整数
 - `context_window.per_tool_result_tokens`：对象，value 为大于等于 1 的整数
 - `context_window.tokenizer_model`：字符串
-- `lsp.enabled`：布尔值
+- `lsp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭；未配置 `servers` 时不启动任何 server 进程）
 - `lsp.servers`：对象
 
 对于内置 LSP server，推荐的用户配置路径是直接使用内置 server 名作为 key，例如：
@@ -197,8 +197,8 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 ```
 
 只有在需要自定义 server 名、复用内置 preset 或声明完全自定义 server 时，才需要提供 `command` 或显式 `preset` 字段。
-- `mcp.enabled`：布尔值
-- `mcp.servers`：对象
+- `mcp.enabled`：布尔值；默认 `true`（未声明即开启，显式 `false` 关闭）
+- `mcp.servers`：对象；未声明时（默认开启状态下）自动装载内置远程 MCP descriptors：`context7`、`websearch`、`grep_app`（均为 remote-http，不 spawn 本地进程；skill-scoped 的 `playwright` 不参与默认装载）
 - `provider_fallback`：对象
 - `providers`：对象
 - provider 凭据环境变量可用于 first-run discovery：设置 `VOIDCODE_MODEL=opencode-go/<model>` 与 `OPENCODE_API_KEY` 时，即使 `.voidcode.json` 没有 `providers.opencode-go` block，runtime 也会构造最小 OpenCode Go provider 配置。该 discovery 也覆盖现有标准变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY`、`GITHUB_COPILOT_TOKEN`、`LITELLM_API_KEY` / `LITELLM_PROXY_API_KEY`、`ZAI_API_KEY`、`ZHIPU_API_KEY`、`MINIMAX_API_KEY`、`KIMI_API_KEY` 与 `DASHSCOPE_API_KEY`。这些值只进入运行时配置对象；`config show` 与 persisted runtime metadata 不会输出 secret。

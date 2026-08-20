@@ -82,8 +82,11 @@ class McpConfigState:
     def from_runtime_config(cls, config: Any | None) -> McpConfigState:
         if config is None:
             return cls()
+        # Unset ``enabled`` (None) means enabled by default; only an explicit
+        # ``enabled: false`` disables the capability (runtime/config.py
+        # ``runtime_capability_enabled`` is the shared convention).
         return cls(
-            configured_enabled=config.enabled,
+            configured_enabled=config.enabled is not False,
             servers=dict(config.servers or {}),
         )
 

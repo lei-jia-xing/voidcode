@@ -322,6 +322,36 @@ def test_runtime_config_defaults_mcp_to_builtin_remote_servers(tmp_path: Path) -
     )
 
 
+def test_runtime_config_empty_mcp_section_defaults_to_enabled_builtins(tmp_path: Path) -> None:
+    """An mcp section without ``enabled``/``servers`` behaves like ``enabled: true``.
+
+    LSP/MCP tooling is enabled by default: only explicit ``enabled: false``
+    disables it, and an absent ``servers`` block loads the builtin remote
+    descriptors (same as the existing ``mcp.enabled: true`` path).
+    """
+    (tmp_path / ".voidcode.json").write_text(json.dumps({"mcp": {}}), encoding="utf-8")
+
+    config = load_runtime_config(tmp_path, env={})
+
+    assert config.mcp == RuntimeMcpConfig(
+        enabled=True,
+        servers={
+            "context7": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url="https://mcp.context7.com/mcp",
+            ),
+            "websearch": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url="https://mcp.exa.ai/mcp",
+            ),
+            "grep_app": RuntimeMcpServerConfig(
+                transport="remote-http",
+                url="https://mcp.grep.app",
+            ),
+        },
+    )
+
+
 def test_runtime_config_rejects_missing_mcp_url_for_remote_http(tmp_path: Path) -> None:
     (tmp_path / ".voidcode.json").write_text(
         json.dumps(
