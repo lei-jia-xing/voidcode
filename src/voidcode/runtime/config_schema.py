@@ -350,6 +350,14 @@ def runtime_config_json_schema() -> dict[str, object]:
                     "local": {"$ref": "#/$defs/localToolsConfig"},
                     "allowlist": {"type": "array", "items": {"type": "string"}},
                     "default": {"type": "array", "items": {"type": "string"}},
+                    "essential_only": {
+                        "type": "boolean",
+                        "description": (
+                            "Essential/discoverable tool split: when true, only the essential "
+                            "tool set (plus allowlist-required tools) is sent top-level to the "
+                            "provider; the rest stay registered and reachable on demand."
+                        ),
+                    },
                 },
             },
             "agentToolsConfig": {

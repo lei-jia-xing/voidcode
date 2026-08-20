@@ -1,18 +1,33 @@
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from voidcode.runtime.config import load_runtime_config
+from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.runtime.config import (
+    RuntimeAgentConfig,
+    RuntimeBackgroundTaskConfig,
+    RuntimeConfig,
+    RuntimeContextWindowConfig,
+    RuntimeFormatterConfig,
+    RuntimeLspConfig,
+    RuntimeMcpConfig,
+    RuntimeSkillsConfig,
+    RuntimeToolsConfig,
+    RuntimeTuiConfig,
+    load_runtime_config,
+)
 from voidcode.runtime.config_schema import (
     RUNTIME_CONFIG_SCHEMA_ID,
     format_starter_runtime_config_json,
     generate_starter_runtime_config,
     runtime_config_json_schema,
 )
+from voidcode.runtime.memory import MemoryConfig
 
 
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
@@ -363,3 +378,185 @@ def test_runtime_config_rejects_invalid_policy_hook_scope(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="policy.hook_policy.allowed_event_scopes"):
         _ = load_runtime_config(tmp_path, env={})
+
+
+def _schema_properties(schema: dict[str, object], ref: str) -> set[str]:
+    node: object = schema
+    if ref:
+        for part in ref.split("."):
+            node = cast(dict[str, object], node)[part]
+    return set(cast(dict[str, object], cast(dict[str, object], node)["properties"]))
+
+
+def _dataclass_field_names(cls: type) -> set[str]:
+    return {f.name for f in fields(cls)}
+
+
+def _assert_config_section_mapping(
+    schema_props: set[str],
+    dataclass_cls: type,
+    *,
+    rename: dict[str, str] | None = None,
+    schema_only: set[str] | None = None,
+    runtime_only: set[str] | None = None,
+) -> None:
+    """Assert a bidirectional 1:1 mapping between schema properties and dataclass fields.
+
+    ``rename`` maps a schema key to a differently-named dataclass field (the config
+    file key is the schema name; the dataclass keeps a distinct public name).
+    ``schema_only`` are schema keys with no dataclass counterpart (schema markers,
+    e.g. ``$schema`` or ``context_window.version``).
+    ``runtime_only`` are dataclass fields derived at runtime rather than set via the
+    config file (e.g. resolution of env/explicit values), so they are intentionally
+    absent from the schema.
+    """
+    rename = rename or {}
+    schema_only = schema_only or set()
+    runtime_only = runtime_only or set()
+    config_keys = schema_props - schema_only
+    config_fields = _dataclass_field_names(dataclass_cls) - runtime_only
+    assert {rename.get(k, k) for k in config_keys} == config_fields
+
+
+def test_runtime_config_schema_file_matches_generated_schema() -> None:
+    """The checked-in schema.json must be a faithful export of the runtime schema.
+
+    ``voidcode config schema`` prints ``runtime_config_json_schema()`` (config_schema.py),
+    which is the runtime authority; ``schema/voidcode.config.schema.json`` is its static
+    editor-support export and must not drift.
+    """
+    schema_path = Path(__file__).resolve().parents[3] / "schema" / "voidcode.config.schema.json"
+    file_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert file_schema == runtime_config_json_schema()
+
+
+@pytest.mark.parametrize(
+    ("ref", "dataclass_cls", "rename", "schema_only", "runtime_only"),
+    [
+        # Top-level keys map to RuntimeConfig fields. `fallback_models` is the config-file
+        # key for the dataclass field `provider_fallback`; `$schema` is an editor reference;
+        # `acp`/`execution_engine` are runtime-derived, not config keys.
+        (
+            "",
+            RuntimeConfig,
+            {"fallback_models": "provider_fallback"},
+            {"$schema"},
+            {"acp", "execution_engine"},
+        ),
+        (
+            "$defs.runtimeToolsConfig",
+            RuntimeToolsConfig,
+            {},
+            set(),
+            set(),
+        ),
+        # context_window.version is a schema-only schema-version marker (const 1); every
+        # other property maps 1:1 onto RuntimeContextWindowConfig fields.
+        (
+            "$defs.contextWindowConfig",
+            RuntimeContextWindowConfig,
+            {},
+            {"version"},
+            set(),
+        ),
+        (
+            "properties.mcp",
+            RuntimeMcpConfig,
+            {},
+            set(),
+            set(),
+        ),
+        # agent.fallback_models maps to RuntimeAgentConfig.provider_fallback; the
+        # dataclass-only `execution_engine` is resolved from the environment, not the config file.
+        (
+            "$defs.agentConfig",
+            RuntimeAgentConfig,
+            {"fallback_models": "provider_fallback"},
+            set(),
+            {"execution_engine"},
+        ),
+        (
+            "$defs.skillsConfig",
+            RuntimeSkillsConfig,
+            {},
+            set(),
+            set(),
+        ),
+        (
+            "properties.lsp",
+            RuntimeLspConfig,
+            {},
+            set(),
+            set(),
+        ),
+        (
+            "properties.formatter",
+            RuntimeFormatterConfig,
+            {},
+            set(),
+            set(),
+        ),
+        (
+            "properties.background_task",
+            RuntimeBackgroundTaskConfig,
+            {},
+            set(),
+            set(),
+        ),
+        (
+            "properties.tui",
+            RuntimeTuiConfig,
+            {},
+            set(),
+            set(),
+        ),
+        (
+            "$defs.memoryConfig",
+            MemoryConfig,
+            {},
+            set(),
+            set(),
+        ),
+        # RuntimeHooksConfig.format_on_write is a derived alias populated from
+        # formatter.format_on_write/enabled, so it is not a hooks-level config key.
+        (
+            "properties.hooks",
+            RuntimeHooksConfig,
+            {},
+            set(),
+            {"format_on_write"},
+        ),
+    ],
+    ids=[
+        "top_level",
+        "tools",
+        "context_window",
+        "mcp",
+        "agent",
+        "skills",
+        "lsp",
+        "formatter",
+        "background_task",
+        "tui",
+        "memory",
+        "hooks",
+    ],
+)
+def test_runtime_config_schema_section_maps_to_config_fields(
+    ref: str,
+    dataclass_cls: type,
+    rename: dict[str, str],
+    schema_only: set[str],
+    runtime_only: set[str],
+) -> None:
+    schema = runtime_config_json_schema()
+    props = _schema_properties(schema, ref)
+
+    _assert_config_section_mapping(
+        props,
+        dataclass_cls,
+        rename=rename,
+        schema_only=schema_only,
+        runtime_only=runtime_only,
+    )
