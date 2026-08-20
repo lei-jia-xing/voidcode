@@ -5600,6 +5600,73 @@ def test_runtime_session_debug_snapshot_prefers_active_state_for_reused_session_
     _ = list(stream)
 
 
+def test_second_run_on_same_session_provider_messages_end_with_new_user_prompt(
+    tmp_path: Path,
+) -> None:
+    """A second run on an existing session must present the new prompt as the
+    last user message, with the previous run's history (including its tool
+    call/result pairs) placed before it -- never trailing tool messages that
+    make the model believe it is mid-task."""
+    sample_file = tmp_path / "sample.txt"
+    sample_file.write_text("alpha\nbeta\n", encoding="utf-8")
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(tool_call=ToolCall("read", {"path": "sample.txt"})),
+                    ProviderTurnResult(output="first exploration complete"),
+                    ProviderTurnResult(output="weather answer"),
+                ),
+                created_providers=created_providers,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+    first_run = runtime.run(RuntimeRequest(prompt="explore the repo", session_id="second-run-messages"))
+    assert first_run.output == "first exploration complete"
+    second_run = runtime.run(
+        RuntimeRequest(
+            prompt="what is the weather in Beijing",
+            session_id="second-run-messages",
+        )
+    )
+    assert second_run.output == "weather answer"
+
+    # The graph (and its turn provider) is cached per config, so both runs
+    # share one provider; the second run's requests carry its own prompt.
+    assert len(created_providers) == 1
+    turn_provider = created_providers[0]
+    second_run_requests = [request for request in turn_provider.requests if request.prompt == "what is the weather in Beijing"]
+    assert second_run_requests, "expected provider requests for the second run"
+    request = second_run_requests[0]
+
+    segments = request.assembled_context.segments
+    assert segments, "expected assembled context segments"
+    # The current request prompt must be the final message: nothing -- no
+    # replayed tool call/result, no retained tool result -- may trail it.
+    assert segments[-1].role == "user"
+    assert segments[-1].content == "what is the weather in Beijing"
+    assert all(segment is segments[-1] or segment.role != "user" or segment.content != "what is the weather in Beijing" for segment in segments[:-1])
+    assert not any((segment.metadata or {}).get("source") == "retained_tool_result" for segment in segments[:-1])
+
+    # The replayed history precedes the new prompt, in chronological order:
+    # prior user prompt, prior run's assistant tool call, its tool result,
+    # prior run's final assistant output.
+    tail_roles = [segment.role for segment in segments[-4:]]
+    assert tail_roles == ["assistant", "tool", "assistant", "user"]
+    assert segments[-4].tool_name == "read"
+    assert segments[-4].tool_call_id == segments[-3].tool_call_id
+    assert segments[-2].content == "first exploration complete"
+    assert segments[-3].metadata.get("source") == "replayed_conversation"
+    assert any(segment.role == "user" and segment.content == "explore the repo" for segment in segments)
+
+
 def test_runtime_session_debug_snapshot_preserves_fresh_terminal_state_while_active(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

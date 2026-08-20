@@ -542,3 +542,90 @@ def test_git_dynamic_state_is_cached_per_workspace_within_session(
         ("status", "--short"),
     ]
     prompt_assembly_module._reset_git_state_cache()
+
+
+def test_assemble_provider_context_replayed_history_ends_with_current_user_prompt() -> None:
+    """Replayed prior-run history (including tool call/result pairs) is placed
+    before the current prompt; the current prompt is the last user message and
+    prior-run tool results are never re-appended after it."""
+    from voidcode.runtime.context_window import (
+        RuntimeContextSegment,
+        assemble_provider_context,
+    )
+    from voidcode.tools.contracts import ToolResult
+
+    replayed_history = (
+        RuntimeContextSegment(
+            role="user",
+            content="explore the repo",
+            metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_user_prompt"},
+        ),
+        RuntimeContextSegment(
+            role="assistant",
+            content=None,
+            tool_call_id="call_1",
+            tool_name="read",
+            tool_arguments={"path": "sample.txt"},
+            metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_tool_call"},
+        ),
+        RuntimeContextSegment(
+            role="tool",
+            content="alpha\nbeta\n",
+            tool_call_id="call_1",
+            tool_name="read",
+            metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_tool_result", "status": "ok", "data": {}},
+        ),
+        RuntimeContextSegment(
+            role="assistant",
+            content="first exploration complete",
+            metadata={"source": "replayed_conversation", "tier": "recent", "kind": "prior_assistant_output"},
+        ),
+    )
+    replayed_tool_result = ToolResult(
+        tool_name="read",
+        status="ok",
+        content="alpha\nbeta\n",
+        data={"tool_call_id": "call_1", "arguments": {"path": "sample.txt"}},
+        source="replayed_conversation",
+    )
+    assembled = assemble_provider_context(
+        prompt="what is the weather in Beijing",
+        tool_results=(replayed_tool_result,),
+        session_metadata={},
+        replayed_conversation_segments=replayed_history,
+    )
+    segments = assembled.segments
+    assert segments[-1].role == "user"
+    assert segments[-1].content == "what is the weather in Beijing"
+    # Prior-run tool results must not be re-appended as trailing messages.
+    assert not any((segment.metadata or {}).get("source") == "retained_tool_result" for segment in segments)
+    # History order before the prompt: prior tool call, tool result, prior
+    # assistant output, current user prompt.
+    assert [segment.role for segment in segments[-4:]] == ["assistant", "tool", "assistant", "user"]
+    assert segments[-4].tool_call_id == segments[-3].tool_call_id == "call_1"
+    assert segments[-2].content == "first exploration complete"
+
+
+def test_assemble_provider_context_current_run_tool_results_still_follow_prompt() -> None:
+    """Current-run (non-replayed) tool results keep the standard agent-loop
+    placement after the user prompt, unchanged from pre-fix behavior."""
+    from voidcode.runtime.context_window import assemble_provider_context
+    from voidcode.tools.contracts import ToolResult
+
+    current_run_result = ToolResult(
+        tool_name="read",
+        status="ok",
+        content="alpha\nbeta\n",
+        data={"tool_call_id": "call_9", "arguments": {"path": "sample.txt"}},
+    )
+    assembled = assemble_provider_context(
+        prompt="read sample.txt",
+        tool_results=(current_run_result,),
+        session_metadata={},
+    )
+    segments = assembled.segments
+    assert segments[-1].role == "tool"
+    assert segments[-2].role == "assistant"
+    assert segments[-2].tool_name == "read"
+    assert segments[-3].role == "user"
+    assert segments[-3].content == "read sample.txt"

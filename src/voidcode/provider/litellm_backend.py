@@ -430,6 +430,11 @@ class LiteLLMBackendSingleAgentProvider:
         if self._tool_feedback_mode_for_request(request) == "synthetic_user_message":
             tool_feedback_lines: list[str] = []
             for result in assembled_context.tool_results:
+                # Prior-run results are replayed as history before the current
+                # prompt; only this run's own tool results belong in the
+                # trailing synthetic feedback ("for current request").
+                if getattr(result, "source", None) == "replayed_conversation":
+                    continue
                 raw_data = result.data
                 sanitized_data = sanitize_tool_result_data(raw_data) if isinstance(raw_data, dict) else {}
                 raw_arguments = sanitized_data.get("arguments")
@@ -457,9 +462,19 @@ class LiteLLMBackendSingleAgentProvider:
                 }
                 tool_feedback_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             for segment in assembled_context.segments:
+                is_replayed = (segment.metadata or {}).get("source") == "replayed_conversation"
                 if segment.role == "assistant" and segment.tool_name is not None:
                     continue
                 if segment.role == "tool":
+                    if is_replayed:
+                        # Keep prior-run tool output inside the replayed history
+                        # (before the current prompt) as a user-role message.
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"[Previous run tool result for {segment.tool_name}]\n{segment.content or ''}",
+                            }
+                        )
                     continue
                 messages.append({"role": segment.role, "content": segment.content})
             if tool_feedback_lines:

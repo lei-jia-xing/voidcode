@@ -300,6 +300,7 @@ from .runtime_debug import (
     operator_guidance,
     payload_with_artifact_status,
     prompt_and_tool_results_from_debug_events,
+    provider_visible_tool_result_data,
 )
 from .runtime_surface import PermissionOutcome, RuntimeSurface
 from .session import (
@@ -5126,7 +5127,12 @@ class VoidCodeRuntime(RuntimeSurface):
         if parent_session_id is not None and stored_parent_session_id != parent_session_id:
             return ()
         _prompt, tool_results = self._prompt_and_tool_results_from_debug_events(stored.events)
-        return tuple(self._eligible_rehydrated_tool_results(tool_results))
+        # Tag prior-run results so context assembly can place them into the
+        # replayed history (before the current prompt) instead of appending
+        # them after the current prompt as if they were this run's own tool
+        # calls. ``ToolResult.source`` is not rendered to providers, so the
+        # marker is invisible to the model while distinguishing history.
+        return tuple(replace(result, source="replayed_conversation") for result in self._eligible_rehydrated_tool_results(tool_results))
 
     @staticmethod
     def _rehydrated_conversation_segments_for_existing_session(
@@ -5143,29 +5149,92 @@ class VoidCodeRuntime(RuntimeSurface):
         if parent_session_id is not None and stored_parent_session_id != parent_session_id:
             return ()
 
-        user_segments: list[RuntimeContextSegment] = []
+        # Rebuild the prior conversation as faithful, chronologically ordered
+        # history: each user prompt, the tool calls/results the assistant
+        # performed in response, and the run's final assistant output. The
+        # current request's prompt is appended by the assembler after this
+        # history, so the provider message list ends with the new user message
+        # instead of trailing tool messages from a previous run.
+        segments: list[RuntimeContextSegment] = []
+        tool_index = 0
         for event in stored.events:
-            if event.event_type != "runtime.request_received":
+            if event.event_type == "runtime.request_received":
+                prompt = event.payload.get("prompt")
+                if not isinstance(prompt, str) or not prompt.strip():
+                    continue
+                segments.append(
+                    RuntimeContextSegment(
+                        role="user",
+                        content=prompt,
+                        metadata={
+                            "source": "replayed_conversation",
+                            "tier": "recent",
+                            "kind": "prior_user_prompt",
+                            "sequence": event.sequence,
+                        },
+                    )
+                )
                 continue
-            prompt = event.payload.get("prompt")
-            if not isinstance(prompt, str) or not prompt.strip():
+            if event.event_type != "runtime.tool_completed":
                 continue
-            user_segments.append(
+            payload = event.payload
+            tool_name = payload.get("tool")
+            if not isinstance(tool_name, str) or not tool_name:
+                continue
+            # Mirror ``_eligible_rehydrated_tool_results`` so the replayed
+            # history and the rehydrated tool-result pool stay consistent.
+            if tool_name not in {"read", "grep", "glob", "ast_grep"}:
+                if tool_name != "shell_exec":
+                    continue
+                command = payload.get("command")
+                if not isinstance(command, str) or not command.strip():
+                    continue
+            tool_index += 1
+            raw_tool_call_id = payload.get("tool_call_id")
+            tool_call_id = (
+                raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_replayed_tool_{tool_index}"
+            )
+            raw_arguments = payload.get("arguments")
+            tool_arguments = cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
+            error_value = payload.get("error")
+            is_error = error_value is not None
+            raw_content = payload.get("content")
+            content = str(raw_content) if raw_content is not None and not is_error else ""
+            segments.append(
                 RuntimeContextSegment(
-                    role="user",
-                    content=prompt,
+                    role="assistant",
+                    content=None,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    tool_arguments=tool_arguments,
                     metadata={
                         "source": "replayed_conversation",
                         "tier": "recent",
-                        "kind": "prior_user_prompt",
-                        "sequence": event.sequence,
+                        "kind": "prior_tool_call",
                     },
                 )
             )
-
-        assistant_segments: list[RuntimeContextSegment] = []
+            segments.append(
+                RuntimeContextSegment(
+                    role="tool",
+                    content=content,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    metadata={
+                        "source": "replayed_conversation",
+                        "tier": "recent",
+                        "kind": "prior_tool_result",
+                        "status": "error" if is_error else "ok",
+                        "error": str(error_value) if is_error else None,
+                        "data": provider_visible_tool_result_data(payload),
+                        "truncated": payload.get("truncated") is True,
+                        "partial": payload.get("partial") is True,
+                        "reference": (payload.get("reference") if isinstance(payload.get("reference"), str) else None),
+                    },
+                )
+            )
         if isinstance(stored.output, str) and stored.output.strip():
-            assistant_segments.append(
+            segments.append(
                 RuntimeContextSegment(
                     role="assistant",
                     content=stored.output,
@@ -5177,7 +5246,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 )
             )
 
-        return tuple((*user_segments, *assistant_segments))
+        return tuple(segments)
 
     @staticmethod
     def _next_sequence_for_existing_session(

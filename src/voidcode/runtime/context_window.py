@@ -1600,6 +1600,13 @@ def assemble_provider_context(
         for index, result in enumerate(context_window.tool_results, start=1):
             if todo_prompt_context is not None and result.tool_name == "todo_write":
                 continue
+            # Prior-run results are already rendered inside the replayed
+            # conversation history (before the current user prompt). Appending
+            # them here would place previous-run tool messages after the new
+            # prompt, making the model believe it is mid-turn and continue the
+            # previous task instead of answering the new request.
+            if getattr(result, "source", None) == "replayed_conversation":
+                continue
             raw_tool_call_id = result.data.get("tool_call_id")
             tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_tool_{index}"
             raw_arguments = result.data.get("arguments")
