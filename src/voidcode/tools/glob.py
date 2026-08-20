@@ -53,7 +53,7 @@ class GlobTool:
         pattern: str,
         search_path: Path | None = None,
         project_root: Path | None = None,
-    ) -> tuple[list[Path], bool]:
+    ) -> tuple[list[Path], bool, str | None]:
         search_dir = search_path if search_path else workspace_root
         root = project_root or workspace_root
 
@@ -62,6 +62,7 @@ class GlobTool:
 
         matched: list[Path] = []
         truncated = False
+        error_message: str | None = None
 
         try:
             for match in search_dir.glob(pattern):
@@ -75,10 +76,12 @@ class GlobTool:
                     if len(matched) >= LIMIT:
                         truncated = True
                         break
-        except Exception:
-            pass
+        except OSError as exc:
+            # Best-effort search: keep whatever matched so far, but surface the
+            # failure instead of silently returning an empty result.
+            error_message = str(exc)
 
-        return matched, truncated
+        return matched, truncated, error_message
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         pattern_value = call.arguments.get("pattern")
@@ -105,7 +108,7 @@ class GlobTool:
 
         workspace_root = workspace.resolve()
         effective_root = resolved.candidate if resolved is not None and resolved.is_external and resolved.candidate.is_dir() else workspace_root
-        matched, truncated = self._find_files(
+        matched, truncated, search_error = self._find_files(
             workspace_root,
             pattern_value,
             search_path,
@@ -126,17 +129,32 @@ class GlobTool:
 
         output = f"Found {len(relative_matches)} file(s)" + ("; results are truncated." if truncated else ".")
 
+        data: dict[str, object] = {
+            "pattern": pattern_value,
+            "path": path_display,
+            "count": len(relative_matches),
+            "truncated": truncated,
+            "matches": relative_matches,
+        }
+
+        if search_error is not None:
+            error_message = f"glob search failed: {search_error}"
+            data["search_error"] = search_error
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content=error_message,
+                data=data,
+                error=error_message,
+                truncated=truncated,
+                partial=truncated or True,
+            )
+
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=output,
-            data={
-                "pattern": pattern_value,
-                "path": path_display,
-                "count": len(relative_matches),
-                "truncated": truncated,
-                "matches": relative_matches,
-            },
+            data=data,
             truncated=truncated,
             partial=truncated,
         )
