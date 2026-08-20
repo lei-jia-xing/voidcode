@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, type Mock } from "vitest";
+import ReactMarkdown from "react-markdown";
 import { ChatThread } from "./ChatThread";
 import { estimateStreamedTextHeight } from "../lib/runtime/text-layout";
 import {
@@ -15,7 +16,7 @@ vi.mock("@chenglou/pretext", () => ({
 }));
 
 vi.mock("react-markdown", () => ({
-  default: ({ children }: { children: string }) => <div>{children}</div>,
+  default: vi.fn(({ children }: { children: string }) => <div>{children}</div>),
 }));
 
 vi.mock("remark-gfm", () => ({
@@ -466,6 +467,72 @@ describe("ChatThread", () => {
 
     expect(firstPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(secondPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("re-parses markdown only for the active streaming message when a delta arrives", () => {
+    const markdownMock = ReactMarkdown as unknown as Mock;
+    markdownMock.mockClear();
+
+    const completed: ChatMessage = {
+      id: "assistant-completed",
+      role: "assistant",
+      content: "Completed **text** one",
+      thinking: [],
+      tools: [],
+      parts: [{ kind: "text", sequence: 1, text: "Completed **text** one" }],
+      approval: null,
+      question: null,
+      status: "completed",
+      sequence: 1,
+    };
+    const active: ChatMessage = {
+      id: "assistant-active",
+      role: "assistant",
+      content: "Streaming **text**",
+      thinking: [],
+      tools: [],
+      parts: [{ kind: "text", sequence: 2, text: "Streaming **text**" }],
+      approval: null,
+      question: null,
+      status: "in_progress",
+      sequence: 2,
+    };
+
+    const { rerender } = render(
+      <ChatThread {...baseProps} messages={[completed, active]} />,
+    );
+    expect(markdownMock).toHaveBeenCalledTimes(2);
+
+    // A new delta only grows the in-progress message.
+    rerender(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          completed,
+          {
+            ...active,
+            content: "Streaming **text** more",
+            parts: [
+              { kind: "text", sequence: 2, text: "Streaming **text** more" },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    // Only the active message re-parsed; the completed message's markdown was
+    // not re-parsed even though ChatThread re-rendered.
+    expect(markdownMock).toHaveBeenCalledTimes(3);
+    expect(
+      markdownMock.mock.calls.filter(
+        (call) => call[0]?.children === "Completed **text** one",
+      ),
+    ).toHaveLength(1);
+    expect(
+      markdownMock.mock.calls.filter(
+        (call) => call[0]?.children === "Streaming **text** more",
+      ),
+    ).toHaveLength(1);
   });
 
   it("does not duplicate thinking when the persisted aggregated reasoning_part follows streamed deltas", () => {

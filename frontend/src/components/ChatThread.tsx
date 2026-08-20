@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useId,
   useMemo,
@@ -70,50 +71,60 @@ interface ChatThreadProps {
   } | null;
 }
 
-function StreamingMarkdown({
-  content,
-  active,
-}: {
-  content: string;
-  active: boolean;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [measuredWidth, setMeasuredWidth] = useState(
-    STREAM_TEXT_ESTIMATE_WIDTH,
-  );
+// react-markdown v10 re-parses its `children` on EVERY render (its Markdown
+// component has no internal memoization), and a full unified parse costs
+// ~6-20ms per message. Memoize so only the active streaming message re-parses
+// on each delta: completed messages keep an identical content string, so the
+// value comparison below skips them entirely. String primitives compare by
+// value, so this works even though deriveChatMessages rebuilds message/part
+// objects on every store update.
+const StreamingMarkdown = memo(
+  function StreamingMarkdown({
+    content,
+    active,
+  }: {
+    content: string;
+    active: boolean;
+  }) {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [measuredWidth, setMeasuredWidth] = useState(
+      STREAM_TEXT_ESTIMATE_WIDTH,
+    );
 
-  useEffect(() => {
-    if (!active) return;
-    const element = containerRef.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
+    useEffect(() => {
+      if (!active) return;
+      const element = containerRef.current;
+      if (!element || typeof ResizeObserver === "undefined") return;
 
-    const updateWidth = () => {
-      const nextWidth = Math.round(element.getBoundingClientRect().width);
-      if (nextWidth > 0) setMeasuredWidth(nextWidth);
-    };
-    updateWidth();
+      const updateWidth = () => {
+        const nextWidth = Math.round(element.getBoundingClientRect().width);
+        if (nextWidth > 0) setMeasuredWidth(nextWidth);
+      };
+      updateWidth();
 
-    const observer = new ResizeObserver(updateWidth);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [active]);
+      const observer = new ResizeObserver(updateWidth);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }, [active]);
 
-  const estimatedHeight = useMemo(
-    () => (active ? estimateStreamedTextHeight(content, measuredWidth) : 0),
-    [active, content, measuredWidth],
-  );
+    const estimatedHeight = useMemo(
+      () => (active ? estimateStreamedTextHeight(content, measuredWidth) : 0),
+      [active, content, measuredWidth],
+    );
 
-  return (
-    <div
-      ref={containerRef}
-      className="markdown-body"
-      data-pretext-estimated-height={estimatedHeight || undefined}
-      style={estimatedHeight > 0 ? { minHeight: estimatedHeight } : undefined}
-    >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-    </div>
-  );
-}
+    return (
+      <div
+        ref={containerRef}
+        className="markdown-body"
+        data-pretext-estimated-height={estimatedHeight || undefined}
+        style={estimatedHeight > 0 ? { minHeight: estimatedHeight } : undefined}
+      >
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      </div>
+    );
+  },
+  (prev, next) => prev.content === next.content && prev.active === next.active,
+);
 
 function toolValue(value: unknown): string | null {
   if (typeof value === "string" && value.length > 0) return value;
@@ -1676,19 +1687,24 @@ function GenericToolActivity({ tool }: { tool: ChatTool }) {
   );
 }
 
-function ThinkingBlock({ thinking }: { thinking: string[] }) {
-  const content = thinking.join("").trim();
-  if (!content) return null;
+const ThinkingBlock = memo(
+  function ThinkingBlock({ thinking }: { thinking: string[] }) {
+    const content = thinking.join("").trim();
+    if (!content) return null;
 
-  return (
-    <div className="vc-thinking-block text-sm leading-relaxed text-[var(--vc-text-muted)]">
-      <span className="font-medium text-[var(--vc-text-subtle)]">
-        Thinking:
-      </span>{" "}
-      <span className="whitespace-pre-wrap break-words">{content}</span>
-    </div>
-  );
-}
+    return (
+      <div className="vc-thinking-block text-sm leading-relaxed text-[var(--vc-text-muted)]">
+        <span className="font-medium text-[var(--vc-text-subtle)]">
+          Thinking:
+        </span>{" "}
+        <span className="whitespace-pre-wrap break-words">{content}</span>
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.thinking.length === next.thinking.length &&
+    prev.thinking.every((line, index) => line === next.thinking[index]),
+);
 
 function QuestionCard({
   question,
@@ -1895,45 +1911,56 @@ function partKey(part: MessagePart, idx: number): string {
   return `${part.kind}-${part.sequence}-${idx}`;
 }
 
-function MessagePartView({
-  part,
-  tools,
-  active,
-  onSelectSession,
-  backgroundTasksById,
-  selectedBackgroundTaskOutput,
-}: {
-  part: MessagePart;
-  tools: ChatTool[];
-  active: boolean;
-  onSelectSession?: (sessionId: string) => void;
-  backgroundTasksById?: Record<string, BackgroundTaskSummary>;
-  selectedBackgroundTaskOutput?: {
-    taskId: string;
-    durationSeconds: number | null;
-    toolCallCount: number | null;
-  } | null;
-}) {
-  if (part.kind === "text") {
-    const visible = visibleAssistantContent(part.text);
-    if (!visible) return null;
-    return <StreamingMarkdown content={visible} active={active} />;
-  }
-  if (part.kind === "reasoning") {
-    if (!part.text.trim()) return null;
-    return <ThinkingBlock thinking={[part.text]} />;
-  }
-  const tool = tools.find((t) => (t.partKey ?? t.id) === part.toolKey);
-  if (!tool) return null;
-  return (
-    <ToolActivity
-      tool={tool}
-      onSelectSession={onSelectSession}
-      backgroundTasksById={backgroundTasksById}
-      selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
-    />
-  );
-}
+// Text parts are the streaming hot path: completed text parts keep the same
+// text value across store updates (only the in-progress part grows), so skip
+// re-rendering them (and the markdown parse inside) via value comparison.
+// Reasoning/tool parts are cheap to render and delegate to memoized
+// children (ThinkingBlock/ToolActivity), so always re-render those.
+const MessagePartView = memo(
+  function MessagePartView({
+    part,
+    tools,
+    active,
+    onSelectSession,
+    backgroundTasksById,
+    selectedBackgroundTaskOutput,
+  }: {
+    part: MessagePart;
+    tools: ChatTool[];
+    active: boolean;
+    onSelectSession?: (sessionId: string) => void;
+    backgroundTasksById?: Record<string, BackgroundTaskSummary>;
+    selectedBackgroundTaskOutput?: {
+      taskId: string;
+      durationSeconds: number | null;
+      toolCallCount: number | null;
+    } | null;
+  }) {
+    if (part.kind === "text") {
+      const visible = visibleAssistantContent(part.text);
+      if (!visible) return null;
+      return <StreamingMarkdown content={visible} active={active} />;
+    }
+    if (part.kind === "reasoning") {
+      if (!part.text.trim()) return null;
+      return <ThinkingBlock thinking={[part.text]} />;
+    }
+    const tool = tools.find((t) => (t.partKey ?? t.id) === part.toolKey);
+    if (!tool) return null;
+    return (
+      <ToolActivity
+        tool={tool}
+        onSelectSession={onSelectSession}
+        backgroundTasksById={backgroundTasksById}
+        selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
+      />
+    );
+  },
+  (prev, next) => {
+    if (prev.part.kind !== "text" || next.part.kind !== "text") return false;
+    return prev.part.text === next.part.text && prev.active === next.active;
+  },
+);
 
 function ToolActivity({
   tool,
@@ -2113,7 +2140,14 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
   return null;
 }
 
-export function ChatThread({
+// The chat subtree is the most expensive part of the app (markdown parsing of
+// every message). ChatThread itself is memoized with the default shallow
+// comparison so that unrelated store updates (status polling, session list
+// refreshes, background-task loads) do not re-render the whole transcript:
+// App derives `messages` via useMemo, so the array reference is stable unless
+// the underlying events actually changed. Callers must pass stable callback
+// props (App wraps them in useCallback) for the shallow comparison to work.
+export const ChatThread = memo(function ChatThread({
   messages,
   isRunning,
   isWaitingApproval,
@@ -2262,4 +2296,4 @@ export function ChatThread({
       </div>
     </div>
   );
-}
+});

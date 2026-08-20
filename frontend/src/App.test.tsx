@@ -1,6 +1,10 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import App from "./App";
+import {
+  providerContextTokens,
+  providerTotalTokens,
+} from "./lib/runtime/providerUsage";
 import { useAppStore } from "./store";
 import { RuntimeClient } from "./lib/runtime/client";
 import type { RuntimeStatusSnapshot } from "./lib/runtime/types";
@@ -785,6 +789,117 @@ describe("App", () => {
     expect(screen.getByText("Here is the README content.")).toBeInTheDocument();
   });
 
+  it("does not yank the chat viewport down when a scrolled-up user gets a new message", () => {
+    const workspace = {
+      current: {
+        path: "/workspace",
+        label: "workspace",
+        available: true,
+        current: true,
+        last_opened_at: 1,
+      },
+      recent: [],
+      candidates: [],
+    };
+    const requestEvent = (sequence: number, prompt: string) => ({
+      session_id: "session-1",
+      sequence,
+      event_type: "runtime.request_received",
+      source: "runtime",
+      payload: { prompt },
+    });
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: workspace,
+      currentSessionEvents: [requestEvent(1, "first question")],
+    });
+    const { rerender } = render(<App />);
+
+    const scroller = document.querySelector(
+      ".min-h-0.min-w-0.flex-1.overflow-y-auto",
+    ) as HTMLDivElement;
+    expect(scroller).not.toBeNull();
+    // Simulate a tall transcript the user scrolled away from.
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 2000,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+    scroller.scrollTop = 800;
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: workspace,
+      currentSessionEvents: [
+        requestEvent(1, "first question"),
+        requestEvent(2, "second question"),
+      ],
+    });
+    rerender(<App />);
+
+    // The new message must not steal the viewport from the reader.
+    expect(scroller.scrollTop).toBe(800);
+  });
+
+  it("keeps following to the bottom when the user is at the bottom", () => {
+    const workspace = {
+      current: {
+        path: "/workspace",
+        label: "workspace",
+        available: true,
+        current: true,
+        last_opened_at: 1,
+      },
+      recent: [],
+      candidates: [],
+    };
+    const requestEvent = (sequence: number, prompt: string) => ({
+      session_id: "session-1",
+      sequence,
+      event_type: "runtime.request_received",
+      source: "runtime",
+      payload: { prompt },
+    });
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: workspace,
+      currentSessionEvents: [requestEvent(1, "first question")],
+    });
+    const { rerender } = render(<App />);
+
+    const scroller = document.querySelector(
+      ".min-h-0.min-w-0.flex-1.overflow-y-auto",
+    ) as HTMLDivElement;
+    expect(scroller).not.toBeNull();
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 2000,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+    // Within the follow threshold (50px from the bottom).
+    scroller.scrollTop = 1950;
+
+    (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...mockStore,
+      workspaces: workspace,
+      currentSessionEvents: [
+        requestEvent(1, "first question"),
+        requestEvent(2, "second question"),
+      ],
+    });
+    rerender(<App />);
+
+    expect(scroller.scrollTop).toBe(2000);
+  });
+
   it("renders thinking block for reasoning events", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
@@ -1565,5 +1680,76 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByText("Error: connection timeout")).toBeInTheDocument();
+  });
+});
+
+describe("provider token usage arithmetic", () => {
+  const withLatest = (latest: Record<string, unknown>) => ({
+    provider_usage: { latest },
+  });
+
+  it("does not double-count cache_read_tokens in providerContextTokens", () => {
+    // input_tokens already includes cache_read_tokens (cached hits are part of
+    // the prompt input), so used tokens = input_tokens + cache_write_tokens.
+    const usage = withLatest({
+      input_tokens: 1000,
+      cache_read_tokens: 900,
+      cache_write_tokens: 50,
+    });
+    expect(providerContextTokens(usage)).toBe(1050);
+  });
+
+  it("treats input_tokens as already including cache_read_tokens", () => {
+    // A pure-cache-hit turn: all input came from cache reads.
+    const usage = withLatest({
+      input_tokens: 900,
+      cache_read_tokens: 900,
+      cache_write_tokens: 0,
+    });
+    expect(providerContextTokens(usage)).toBe(900);
+  });
+
+  it("returns null when no input or cache-write tokens are present", () => {
+    expect(
+      providerContextTokens(
+        withLatest({
+          input_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null when provider_usage.latest is missing", () => {
+    expect(providerContextTokens(undefined)).toBeNull();
+    expect(providerContextTokens({})).toBeNull();
+  });
+
+  it("is equivalent to uncached + cache_read + cache_write decomposition", () => {
+    // Backend: input_tokens = uncached_input_tokens + cache_read_tokens, so
+    // input_tokens + cache_write_tokens must equal the decomposed form.
+    const usage = withLatest({
+      input_tokens: 1000,
+      cache_read_tokens: 900,
+      uncached_input_tokens: 100,
+      cache_write_tokens: 50,
+    });
+    expect(providerContextTokens(usage)).toBe(1050);
+  });
+
+  it("does not double-count cache_read_tokens in providerTotalTokens", () => {
+    // cumulative.input_tokens includes cumulative.cache_read_tokens.
+    const usage = {
+      provider_usage: {
+        cumulative: {
+          input_tokens: 5000,
+          output_tokens: 200,
+          cache_read_tokens: 4000,
+          cache_write_tokens: 100,
+        },
+      },
+    };
+    expect(providerTotalTokens(usage)).toBe(5300);
   });
 });

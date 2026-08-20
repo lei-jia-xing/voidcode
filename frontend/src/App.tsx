@@ -12,6 +12,11 @@ import { TodoPanel } from "./components/TodoPanel";
 import { deriveLatestTodoSnapshot } from "./components/todoPanelModel";
 import { ControlButton } from "./components/ui";
 import { deriveChatMessages } from "./lib/runtime/event-parser";
+import {
+  providerContextTokens,
+  providerTotalTokens,
+  providerCacheHitRate,
+} from "./lib/runtime/providerUsage";
 import { RuntimeClient } from "./lib/runtime/client";
 import {
   FileCode2,
@@ -23,6 +28,10 @@ import {
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
+
+// Auto-follow the chat only when the user is within this many pixels of the
+// bottom; scrolled-up readers are never yanked back down.
+const SCROLL_FOLLOW_THRESHOLD_PX = 80;
 
 function SubsessionTimelineHeader({
   childPrompt,
@@ -497,7 +506,14 @@ function App() {
     if (nextLength > lastMessageCountRef.current) {
       lastMessageCountRef.current = nextLength;
       const el = chatScrollRef.current;
-      if (el) {
+      // Only follow when the user is already at the bottom (within a small
+      // threshold). Never yank the viewport away from a user who scrolled up
+      // to read earlier content.
+      if (
+        el &&
+        el.scrollHeight - el.scrollTop - el.clientHeight <
+          SCROLL_FOLLOW_THRESHOLD_PX
+      ) {
         el.scrollTop = el.scrollHeight;
       }
     }
@@ -559,9 +575,20 @@ function App() {
     );
   }, [currentSessionId, currentSessionSummary, currentSessionEvents]);
 
-  const handleResolveApproval = (decision: "allow" | "deny") => {
-    void resolveApproval(decision);
-  };
+  const handleResolveApproval = useCallback(
+    (decision: "allow" | "deny") => {
+      void resolveApproval(decision);
+    },
+    [resolveApproval],
+  );
+  // Stable identity so the memoized ChatThread's shallow props comparison can
+  // skip re-renders when nothing chat-related changed.
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      void selectSession(sessionId);
+    },
+    [selectSession],
+  );
 
   const handleFileTreePathSelect = (path: string) => {
     void selectReviewPath(path);
@@ -762,9 +789,7 @@ function App() {
                   selectedBackgroundTaskOutput={
                     selectedBackgroundTaskOutputForChat
                   }
-                  onSelectSession={(sessionId) => {
-                    void selectSession(sessionId);
-                  }}
+                  onSelectSession={handleSelectSession}
                 />
               </div>
             </div>
@@ -921,52 +946,6 @@ function sessionContextUsageFromMetadata(
       modelContextWindowFromMetadata(metadata) ??
       contextWindowBudget(metadata),
   };
-}
-
-function providerContextTokens(
-  metadata: Record<string, unknown> | undefined,
-): number | null {
-  const providerUsage = objectValue(metadata, "provider_usage");
-  const latest = objectValue(providerUsage, "latest");
-  if (!latest) {
-    return null;
-  }
-  const total =
-    numericValue(latest, "input_tokens") +
-    numericValue(latest, "cache_write_tokens") +
-    numericValue(latest, "cache_read_tokens");
-  return total > 0 ? total : null;
-}
-
-function providerCacheHitRate(
-  metadata: Record<string, unknown> | undefined,
-): number | null {
-  const providerUsage = objectValue(metadata, "provider_usage");
-  const cumulative = objectValue(providerUsage, "cumulative");
-  if (cumulative && typeof cumulative.cache_hit_rate === "number") {
-    return cumulative.cache_hit_rate;
-  }
-  const latest = objectValue(providerUsage, "latest");
-  if (latest && typeof latest.cache_hit_rate === "number") {
-    return latest.cache_hit_rate;
-  }
-  return null;
-}
-
-function providerTotalTokens(
-  metadata: Record<string, unknown> | undefined,
-): number | null {
-  const providerUsage = objectValue(metadata, "provider_usage");
-  const cumulative = objectValue(providerUsage, "cumulative");
-  if (!cumulative) {
-    return null;
-  }
-  const total =
-    numericValue(cumulative, "input_tokens") +
-    numericValue(cumulative, "output_tokens") +
-    numericValue(cumulative, "cache_write_tokens") +
-    numericValue(cumulative, "cache_read_tokens");
-  return total > 0 ? total : null;
 }
 
 function contextWindowEstimatedTokens(
