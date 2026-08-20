@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { Composer } from "./Composer";
 import "../i18n";
@@ -599,6 +599,66 @@ describe("Composer", () => {
     fireEvent.click(stopButton);
 
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the textarea editable while running", () => {
+    render(<Composer {...baseProps} isRunning />);
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    expect(textarea).not.toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: "queued message" } });
+    expect(textarea).toHaveValue("queued message");
+  });
+
+  it("routes Enter to onSteer while running instead of onSubmit and shows queued feedback", async () => {
+    const onSubmit = vi.fn();
+    const onSteer = vi
+      .fn()
+      .mockResolvedValue({ session_id: "session-1", queued: 3 });
+    render(
+      <Composer
+        {...baseProps}
+        isRunning
+        onSubmit={onSubmit}
+        onSteer={onSteer}
+      />,
+    );
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    fireEvent.change(textarea, { target: { value: "queued message" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+
+    await waitFor(() => {
+      expect(onSteer).toHaveBeenCalledWith("queued message");
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("");
+    await waitFor(() => {
+      expect(screen.getByText("Queued (3)")).toBeInTheDocument();
+    });
+  });
+
+  it("shows an error and preserves input when steering fails while running", async () => {
+    const onSteer = vi
+      .fn()
+      .mockRejectedValue(new Error("Failed to queue message: boom"));
+    render(<Composer {...baseProps} isRunning onSteer={onSteer} />);
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    fireEvent.change(textarea, { target: { value: "will fail" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+
+    await waitFor(() => {
+      expect(screen.getByText(/boom/)).toBeInTheDocument();
+    });
+    expect(textarea).toHaveValue("will fail");
   });
 
   it("groups models from multiple configured providers", () => {

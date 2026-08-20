@@ -234,6 +234,22 @@ export class RuntimeClient {
     return res.json();
   }
 
+  static async steerSession(
+    sessionId: string,
+    content: string,
+  ): Promise<{ session_id: string; queued: number }> {
+    const res = await fetch(
+      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/steer`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    );
+    await expectOk(res, "Failed to queue message");
+    return res.json();
+  }
+
   static async cancelSession(
     sessionId: string,
     reason = "web user interrupt",

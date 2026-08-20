@@ -1,7 +1,13 @@
 // Must precede the store/App imports so the persisted store sees a real
 // localStorage during hydration.
 import "./test-local-storage";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  act,
+  fireEvent,
+} from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import App from "./App";
 import { useAppStore } from "./store";
@@ -50,6 +56,7 @@ const runtimeClientMocks = vi.hoisted(() => ({
   retryMcpConnectionsMock: vi.fn(),
   runStreamMock: vi.fn(),
   sessionEventsMock: vi.fn(),
+  steerSessionMock: vi.fn(),
 }));
 
 vi.mock("./lib/runtime/client", () => ({
@@ -82,6 +89,7 @@ vi.mock("./lib/runtime/client", () => ({
     retryMcpConnections: runtimeClientMocks.retryMcpConnectionsMock,
     runStream: runtimeClientMocks.runStreamMock,
     sessionEvents: runtimeClientMocks.sessionEventsMock,
+    steerSession: runtimeClientMocks.steerSessionMock,
   },
 }));
 
@@ -650,5 +658,39 @@ describe("App follow stream with delegated child sessions", () => {
     // reload (selectSession) for it.
     expect(runtimeClientMocks.sessionEventsMock).not.toHaveBeenCalled();
     expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
+  });
+
+  it("routes an Enter submit to steering while running instead of starting a new run", async () => {
+    const sessionId = "session-parent";
+    runtimeClientMocks.steerSessionMock.mockResolvedValue({
+      session_id: sessionId,
+      queued: 2,
+    });
+    useAppStore.setState({
+      runStatus: "running",
+      currentSessionId: sessionId,
+    });
+
+    render(<App />);
+    await flushAsync();
+
+    const textarea = screen.getByPlaceholderText(
+      "Ask VoidCode to do something...",
+    );
+    expect(textarea).not.toBeDisabled();
+    fireEvent.change(textarea, { target: { value: "hold on" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+
+    await waitFor(() => {
+      expect(runtimeClientMocks.steerSessionMock).toHaveBeenCalledWith(
+        sessionId,
+        "hold on",
+      );
+    });
+    // A running session must queue via steer, never fire a new run stream.
+    expect(runtimeClientMocks.runStreamMock).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByText("Queued (2)")).toBeInTheDocument();
+    });
   });
 });

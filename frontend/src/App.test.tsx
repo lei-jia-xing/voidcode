@@ -1520,7 +1520,7 @@ describe("App", () => {
     expect(screen.getByTestId("settings-panel-mock")).toBeInTheDocument();
   });
 
-  it("disables composer while running", () => {
+  it("keeps composer input enabled while running", () => {
     (useAppStore as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       ...mockStore,
       workspaces: {
@@ -1542,7 +1542,7 @@ describe("App", () => {
     const textarea = screen.getByPlaceholderText(
       "Ask VoidCode to do something...",
     );
-    expect(textarea).toBeDisabled();
+    expect(textarea).not.toBeDisabled();
   });
 
   it("renders run error banner when run fails", () => {

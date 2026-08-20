@@ -514,6 +514,13 @@ function App() {
     });
   };
 
+  const handleSteer = async (content: string) => {
+    if (!currentSessionId) {
+      throw new Error(t("chat.steerNoSession"));
+    }
+    return RuntimeClient.steerSession(currentSessionId, content);
+  };
+
   const currentSessionSummary = useMemo(
     () => sessions.find((s) => s.session.id === currentSessionId),
     [sessions, currentSessionId],
@@ -562,7 +569,6 @@ function App() {
   };
 
   const composerDisabled =
-    isRunning ||
     isReplayLoading ||
     isWaitingApproval ||
     isApprovalSubmitting ||
@@ -771,6 +777,7 @@ function App() {
               agentPreset={agentPreset}
               sessionMetadata={currentSessionState?.metadata}
               onSubmit={handleSendMessage}
+              onSteer={handleSteer}
               onCancel={cancelCurrentRun}
               onAgentPresetChange={setAgentPreset}
               providerModel={providerModel}

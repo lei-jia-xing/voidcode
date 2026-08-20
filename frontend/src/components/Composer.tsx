@@ -26,6 +26,7 @@ interface ComposerProps {
   onReasoningEffortChange?: (effort: string) => void;
   placeholder?: string;
   onSubmit: (message: string, options?: { skills?: string[] }) => void;
+  onSteer?: (content: string) => Promise<{ queued: number }>;
   onCancel?: () => void;
 }
 
@@ -58,6 +59,7 @@ export function Composer({
   onReasoningEffortChange,
   placeholder,
   onSubmit,
+  onSteer,
   onCancel,
 }: ComposerProps) {
   const { t } = useTranslation();
@@ -65,9 +67,20 @@ export function Composer({
   const [slashIndex, setSlashIndex] = useState(0);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [queuedCount, setQueuedCount] = useState<number | null>(null);
+  const [steerError, setSteerError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const agentMenuRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const steerFeedbackTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (steerFeedbackTimerRef.current !== null) {
+        window.clearTimeout(steerFeedbackTimerRef.current);
+      }
+    };
+  }, []);
 
   const configuredProviders = (providers ?? []).filter(
     (provider) => provider.configured,
@@ -200,11 +213,42 @@ export function Composer({
   const handleSubmit = () => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
+    if (isRunning) {
+      void handleRunningSubmit(trimmed);
+      return;
+    }
     onSubmit(trimmed);
     setInput("");
     setSlashIndex(0);
     const el = textareaRef.current;
     if (el) el.style.height = "auto";
+  };
+
+  const handleRunningSubmit = async (trimmed: string) => {
+    if (!onSteer) return;
+    try {
+      const result = await onSteer(trimmed);
+      setInput("");
+      setSlashIndex(0);
+      setSteerError(null);
+      setQueuedCount(result.queued);
+      const el = textareaRef.current;
+      if (el) el.style.height = "auto";
+      if (steerFeedbackTimerRef.current !== null) {
+        window.clearTimeout(steerFeedbackTimerRef.current);
+      }
+      steerFeedbackTimerRef.current = window.setTimeout(() => {
+        setQueuedCount(null);
+        steerFeedbackTimerRef.current = null;
+      }, 4000);
+    } catch (err) {
+      setQueuedCount(null);
+      setSteerError(
+        t("chat.steerError", {
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
   };
 
   const handleAction = () => {
@@ -269,6 +313,7 @@ export function Composer({
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     setSlashIndex(0);
+    if (steerError) setSteerError(null);
     resizeTextarea();
   };
 
@@ -498,8 +543,20 @@ export function Composer({
             </div>
           )}
         </div>
+        {(queuedCount !== null || steerError) && (
+          <div
+            role="status"
+            className={`mt-1.5 text-center text-[11px] ${
+              steerError
+                ? "text-[color:var(--vc-danger-text)]"
+                : "text-[var(--vc-text-subtle)]"
+            }`}
+          >
+            {steerError ?? t("chat.queued", { count: queuedCount as number })}
+          </div>
+        )}
         <p className="text-[11px] text-[var(--vc-text-subtle)] mt-1.5 text-center">
-          {t("chat.hint")}
+          {isRunning ? t("chat.hintRunning") : t("chat.hint")}
         </p>
       </div>
     </div>
