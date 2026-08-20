@@ -1217,14 +1217,12 @@ export const useAppStore = create<AppState>()(
           currentSessionId,
           currentSessionEvents,
           replayStatus,
-          runStatus,
           questionStatus,
         } = get();
 
         if (
           !currentSessionId ||
           replayStatus === "loading" ||
-          isRunLocked(runStatus) ||
           questionStatus === "submitting"
         ) {
           return;
@@ -1239,6 +1237,17 @@ export const useAppStore = create<AppState>()(
           return;
         }
 
+        // A pending question pauses the run: the backend emits
+        // runtime.question_requested and then closes the run stream, parking the
+        // session in the "waiting" state. runStatus can still read "running" in
+        // the window between the question event and the stream close, and gating
+        // the answer on isRunLocked there would silently drop the submission and
+        // strand the user (the composer is disabled while the session is
+        // "waiting", so the question card is the only input path). The presence
+        // of a pending question is the authoritative signal that the run is
+        // paused awaiting input, so the answer is not blocked by a stale
+        // run-lock; the backend still rejects answers whose request is no longer
+        // pending.
         set({ questionStatus: "submitting", questionError: null });
 
         try {

@@ -936,6 +936,93 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("continued");
   });
 
+  it("answers a pending question even when runStatus still reads running", async () => {
+    // The backend emits runtime.question_requested and then closes the run
+    // stream. Between that event and the frontend observing the stream close,
+    // runStatus can still read "running" (the streamed run's post-loop set has
+    // not run yet). In that window the composer is disabled (session status is
+    // "waiting"), so the question card is the only input path; a run-lock guard
+    // on answerQuestion would silently drop the answer and strand the user.
+    const sessionId = "session-question-race";
+    const requestId = "question-race-1";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "ask a direction" },
+      "runtime",
+      sessionId,
+    );
+    const questionRequested = makeEvent(
+      2,
+      "runtime.question_requested",
+      {
+        request_id: requestId,
+        tool: "question",
+        question_count: 1,
+        questions: [
+          {
+            header: "Direction",
+            question: "Which path?",
+            multiple: false,
+            options: [{ label: "left" }],
+          },
+        ],
+      },
+      "runtime",
+      sessionId,
+    );
+    const questionAnswered = makeEvent(
+      3,
+      "runtime.question_answered",
+      { request_id: requestId },
+      "runtime",
+      sessionId,
+    );
+    const responseReady = makeEvent(
+      4,
+      "graph.response_ready",
+      { output: "continued" },
+      "graph",
+      sessionId,
+    );
+    const completedResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [requestReceived, questionRequested, questionAnswered, responseReady],
+      "continued",
+    );
+
+    runtimeClientMocks.answerQuestionMock.mockResolvedValue(completedResponse);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "ask a direction"),
+    ]);
+
+    // Simulate the exact window: the question event has arrived (session is
+    // "waiting" and a pending request is present) but the stream has not yet
+    // closed, so runStatus is still "running".
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: makeSessionState(sessionId, "waiting"),
+      currentSessionEvents: [requestReceived, questionRequested],
+      replayStatus: "idle",
+      runStatus: "running",
+      questionStatus: "idle",
+    });
+
+    const store = useAppStore.getState();
+    await store.answerQuestion([{ header: "Direction", answers: ["left"] }]);
+
+    expect(runtimeClientMocks.answerQuestionMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      [{ header: "Direction", answers: ["left"] }],
+    );
+    const state = useAppStore.getState();
+    expect(state.questionStatus).toBe("idle");
+    expect(state.currentSessionState?.status).toBe("completed");
+    expect(state.currentSessionOutput).toBe("continued");
+  });
+
   it("handles deny and preserves failed replay through the real store", async () => {
     const sessionId = "session-deny";
     const requestId = "approval-deny";
