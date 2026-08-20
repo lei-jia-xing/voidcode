@@ -25,6 +25,8 @@ import {
   WorkspaceReviewSnapshot,
 } from "./types";
 
+import { SseFrameParser, parseSseDataPayload } from "./sse-parser";
+
 async function runtimeErrorMessage(
   res: Response,
   fallback: string,
@@ -65,40 +67,27 @@ function withShowThinking(path: string): string {
     : `${path}?show_thinking=true`;
 }
 
-function parseRuntimeStreamChunk(value: unknown): RuntimeStreamChunk {
-  if (!value || typeof value !== "object") {
-    throw new Error("runtime stream chunk must be an object");
-  }
-  const chunk = value as Partial<RuntimeStreamChunk>;
-  if (
-    chunk.kind !== "session" &&
-    chunk.kind !== "event" &&
-    chunk.kind !== "output"
-  ) {
-    throw new Error("runtime stream chunk has invalid kind");
-  }
-  if (
-    chunk.session !== null &&
-    (chunk.session === undefined || typeof chunk.session !== "object")
-  ) {
-    throw new Error("runtime stream chunk has invalid session");
-  }
-  if (chunk.event !== null && chunk.event !== undefined) {
-    if (
-      typeof chunk.event !== "object" ||
-      typeof chunk.event.sequence !== "number"
-    ) {
-      throw new Error("runtime stream event has invalid sequence");
+async function* readSseStream(
+  res: Response,
+  fallback: string,
+): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
+  await expectOk(res, fallback);
+  if (!res.body) throw new Error("No response body for stream");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SseFrameParser();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+      const chunk = parseSseDataPayload(frame);
+      if (chunk) yield chunk;
     }
   }
-  if (
-    chunk.output !== null &&
-    chunk.output !== undefined &&
-    typeof chunk.output !== "string"
-  ) {
-    throw new Error("runtime stream output must be a string or null");
+  for (const frame of parser.flush()) {
+    const chunk = parseSseDataPayload(frame);
+    if (chunk) yield chunk;
   }
-  return chunk as RuntimeStreamChunk;
 }
 
 export class RuntimeClient {
@@ -113,32 +102,7 @@ export class RuntimeClient {
       ),
       { signal },
     );
-    await expectOk(res, "Session event stream failed");
-    if (!res.body) throw new Error("No response body for session event stream");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done });
-      let boundary = buffer.indexOf("\n\n");
-      while (boundary >= 0) {
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        const data = frame
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).replace(/^ /, ""))
-          .join("\n");
-        if (data) {
-          const chunk = parseRuntimeStreamChunk(JSON.parse(data));
-          if (chunk.event) chunk.event.received_at = Date.now();
-          yield chunk;
-        }
-        boundary = buffer.indexOf("\n\n");
-      }
-      if (done) break;
-    }
+    yield* readSseStream(res, "Session event stream failed");
   }
 
   static async listWorkspaces(): Promise<WorkspaceRegistrySnapshot> {
@@ -391,108 +355,6 @@ export class RuntimeClient {
       body: JSON.stringify(request),
     });
 
-    await expectOk(res, "Stream request failed");
-    if (!res.body) throw new Error("No response body for stream");
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-
-    let buffer = "";
-    let dataLines: string[] = [];
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      let eolIndex = buffer.indexOf("\n");
-      while (eolIndex >= 0) {
-        const line = buffer.slice(0, eolIndex);
-        buffer = buffer.slice(eolIndex + 1);
-        const trimmedLine = line.replace(/\r$/, "");
-
-        if (trimmedLine === "") {
-          // Empty line indicates end of an SSE event
-          if (dataLines.length > 0) {
-            try {
-              const chunk = parseRuntimeStreamChunk(
-                JSON.parse(dataLines.join("\n")),
-              );
-              if (chunk.event) chunk.event.received_at = Date.now();
-              yield chunk;
-            } catch (e) {
-              console.warn(
-                "Failed to parse SSE data chunk:",
-                dataLines.join("\n"),
-                e,
-              );
-            }
-            dataLines = [];
-          }
-        } else if (trimmedLine.startsWith("data:")) {
-          const data = trimmedLine.slice(5).replace(/^ /, "");
-          dataLines.push(data);
-        }
-
-        eolIndex = buffer.indexOf("\n");
-      }
-    }
-
-    buffer += decoder.decode();
-
-    let eolIndex = buffer.indexOf("\n");
-    while (eolIndex >= 0) {
-      const line = buffer.slice(0, eolIndex);
-      buffer = buffer.slice(eolIndex + 1);
-      const trimmedLine = line.replace(/\r$/, "");
-
-      if (trimmedLine === "") {
-        if (dataLines.length > 0) {
-          try {
-            const chunk = parseRuntimeStreamChunk(
-              JSON.parse(dataLines.join("\n")),
-            );
-            if (chunk.event) chunk.event.received_at = Date.now();
-            yield chunk;
-          } catch (e) {
-            console.warn(
-              "Failed to parse SSE data chunk:",
-              dataLines.join("\n"),
-              e,
-            );
-          }
-          dataLines = [];
-        }
-      } else if (trimmedLine.startsWith("data:")) {
-        const data = trimmedLine.slice(5).replace(/^ /, "");
-        dataLines.push(data);
-      }
-
-      eolIndex = buffer.indexOf("\n");
-    }
-
-    if (buffer.length > 0) {
-      const trimmedLine = buffer.replace(/\r$/, "");
-      if (trimmedLine.startsWith("data:")) {
-        dataLines.push(trimmedLine.slice(5).replace(/^ /, ""));
-      }
-      buffer = "";
-    }
-
-    // Process any remaining buffered data after stream closes
-    if (dataLines.length > 0) {
-      try {
-        const chunk = parseRuntimeStreamChunk(JSON.parse(dataLines.join("\n")));
-        if (chunk.event) chunk.event.received_at = Date.now();
-        yield chunk;
-      } catch (e) {
-        console.warn(
-          "Failed to parse trailing SSE data chunk:",
-          dataLines.join("\n"),
-          e,
-        );
-      }
-    }
+    yield* readSseStream(res, "Stream request failed");
   }
 }
