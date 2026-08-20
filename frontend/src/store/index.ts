@@ -15,7 +15,6 @@ import {
   ProviderSummary,
   ProviderValidationResult,
   QuestionAnswer,
-  RuntimeNotification,
   RuntimeSessionDebugSnapshot,
   SkillSummary,
   RuntimeStatusSnapshot,
@@ -87,9 +86,6 @@ interface AppState {
   approvalError: string | null;
   questionStatus: "idle" | "submitting" | "success" | "error";
   questionError: string | null;
-  notifications: RuntimeNotification[];
-  notificationsStatus: AsyncStatus;
-  notificationsError: string | null;
   backgroundTasks: BackgroundTaskSummary[];
   backgroundTasksStatus: AsyncStatus;
   backgroundTasksError: string | null;
@@ -139,11 +135,8 @@ interface AppState {
   cancelCurrentRun: () => Promise<void>;
   resolveApproval: (decision: ApprovalDecision) => Promise<void>;
   answerQuestion: (answers: QuestionAnswer[]) => Promise<void>;
-  loadNotifications: () => Promise<void>;
-  acknowledgeNotification: (notificationId: string) => Promise<void>;
   loadBackgroundTasks: () => Promise<void>;
   loadBackgroundTaskOutput: (taskId: string | null) => Promise<void>;
-  cancelBackgroundTask: (taskId: string) => Promise<void>;
   loadSessionDebug: (sessionId?: string | null) => Promise<void>;
   loadSettings: () => Promise<void>;
   updateSettings: (settings: RuntimeSettingsUpdate) => Promise<void>;
@@ -373,9 +366,6 @@ export const useAppStore = create<AppState>()(
       approvalError: null,
       questionStatus: "idle",
       questionError: null,
-      notifications: [],
-      notificationsStatus: "idle",
-      notificationsError: null,
       backgroundTasks: [],
       backgroundTasksStatus: "idle",
       backgroundTasksError: null,
@@ -483,9 +473,6 @@ export const useAppStore = create<AppState>()(
             sessions: [],
             sessionsStatus: "idle",
             sessionsError: null,
-            notifications: [],
-            notificationsStatus: "idle",
-            notificationsError: null,
             backgroundTasks: [],
             backgroundTasksStatus: "idle",
             backgroundTasksError: null,
@@ -505,7 +492,6 @@ export const useAppStore = create<AppState>()(
             get().loadCommands(),
             get().loadStatus(),
             get().loadReview(),
-            get().loadNotifications(),
             get().loadBackgroundTasks(),
           ]);
         } catch (err) {
@@ -1106,7 +1092,6 @@ export const useAppStore = create<AppState>()(
             get().loadSessions(),
             get().loadStatus(),
             get().loadReview(),
-            get().loadNotifications(),
             get().loadBackgroundTasks(),
             currentSessionId
               ? get().loadSessionDebug(currentSessionId)
@@ -1278,7 +1263,6 @@ export const useAppStore = create<AppState>()(
             get().loadSessions(),
             get().loadStatus(),
             get().loadReview(),
-            get().loadNotifications(),
             get().loadBackgroundTasks(),
             get().loadSessionDebug(response.session.session.id),
           ]);
@@ -1307,41 +1291,8 @@ export const useAppStore = create<AppState>()(
             get().loadSessions(),
             get().loadStatus(),
             get().loadReview(),
-            get().loadNotifications(),
             get().loadBackgroundTasks(),
           ]);
-        }
-      },
-
-      loadNotifications: async () => {
-        set({ notificationsStatus: "loading", notificationsError: null });
-        try {
-          const notifications = await RuntimeClient.listNotifications();
-          set({
-            notifications,
-            notificationsStatus: "success",
-            notificationsError: null,
-          });
-        } catch (err) {
-          set({
-            notificationsStatus: "error",
-            notificationsError: (err as Error).message,
-          });
-        }
-      },
-
-      acknowledgeNotification: async (notificationId) => {
-        try {
-          const notification =
-            await RuntimeClient.acknowledgeNotification(notificationId);
-          set((state) => ({
-            notifications: state.notifications.map((item) =>
-              item.id === notification.id ? notification : item,
-            ),
-            notificationsError: null,
-          }));
-        } catch (err) {
-          set({ notificationsError: (err as Error).message });
         }
       },
 
@@ -1423,15 +1374,6 @@ export const useAppStore = create<AppState>()(
             backgroundTaskOutputStatus: "error",
             backgroundTaskOutputError: (err as Error).message,
           });
-        }
-      },
-
-      cancelBackgroundTask: async (taskId) => {
-        try {
-          await RuntimeClient.cancelBackgroundTask(taskId);
-          await get().loadBackgroundTasks();
-        } catch (err) {
-          set({ backgroundTasksError: (err as Error).message });
         }
       },
 

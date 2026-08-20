@@ -36,27 +36,26 @@ bun run preview
 ### 技术栈
 
 - **构建工具**: [Vite](https://vitejs.dev/) + [Bun](https://bun.sh/)
-- **框架**: [React](https://react.dev/) 18
+- **框架**: [React](https://react.dev/) 19
 - **语言**: [TypeScript](https://www.typescriptlang.org/)
 - **样式**: [Tailwind CSS](https://tailwindcss.com/)
 - **状态管理**: [Zustand](https://github.com/pmndrs/zustand)
-- **数据获取**: [TanStack Query](https://tanstack.com/query)
 - **图标**: [Lucide React](https://lucide.dev/)
 
 ### 项目结构
 
-> **注意：** 下方描述的是当前真实目录树，而不是预期中的未来结构。前端目前仍然相对扁平，核心逻辑主要集中在 `src/App.tsx`、`src/main.tsx`、`src/store/`、`src/lib/runtime/`、`src/i18n/`、`src/types/` 与 `src/components/RuntimeDebug.tsx`。
+> **注意：** 下方描述的是当前真实目录树，而不是预期中的未来结构。前端目前仍然相对扁平，核心逻辑主要集中在 `src/App.tsx`、`src/main.tsx`、`src/store/`、`src/lib/runtime/`、`src/i18n/` 与 `src/components/`。
 
 ```
 frontend/
 ├── src/
 │   ├── App.tsx           # 当前主界面壳层
 │   ├── main.tsx          # React 入口
-│   ├── components/       # 当前仅包含 RuntimeDebug 等少量组件
+│   ├── components/       # 运行时驱动面板与子组件
 │   ├── i18n/             # 国际化初始化与文案
 │   ├── lib/runtime/      # 运行时 HTTP/SSE 客户端
 │   ├── store/            # Zustand 状态存储
-│   ├── types/            # 前端类型定义（当前仍较薄）
+│   ├── types/            # 前端类型定义（re-export 运行时类型）
 │   └── index.css         # 全局样式入口
 ├── public/               # 静态资源
 └── index.html            # 入口 HTML

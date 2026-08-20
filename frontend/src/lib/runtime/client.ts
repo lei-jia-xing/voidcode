@@ -4,7 +4,6 @@ import {
   SkillSummary,
   BackgroundTaskOutput,
   ChildSessionContextResult,
-  BackgroundTaskState,
   BackgroundTaskSummary,
   RuntimeRequest,
   StoredSessionSummary,
@@ -16,7 +15,6 @@ import {
   ProviderModelsResult,
   ProviderSummary,
   ProviderValidationResult,
-  RuntimeNotification,
   RuntimeSessionDebugSnapshot,
   RuntimeSessionResult,
   RuntimeSettings,
@@ -328,23 +326,6 @@ export class RuntimeClient {
     return res.json();
   }
 
-  static async listNotifications(): Promise<RuntimeNotification[]> {
-    const res = await fetch(`/api/notifications`);
-    await expectOk(res, "Failed to load notifications");
-    return res.json();
-  }
-
-  static async acknowledgeNotification(
-    notificationId: string,
-  ): Promise<RuntimeNotification> {
-    const res = await fetch(
-      `/api/notifications/${encodeURIComponent(notificationId)}/ack`,
-      { method: "POST" },
-    );
-    await expectOk(res, "Failed to acknowledge notification");
-    return res.json();
-  }
-
   static async listBackgroundTasks(): Promise<BackgroundTaskSummary[]> {
     const res = await fetch(`/api/tasks`);
     await expectOk(res, "Failed to load background tasks");
@@ -358,32 +339,6 @@ export class RuntimeClient {
       `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
     );
     await expectOk(res, "Failed to load session background tasks");
-    return res.json();
-  }
-
-  static async getBackgroundTask(taskId: string): Promise<BackgroundTaskState> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`);
-    await expectOk(res, "Failed to load background task");
-    return res.json();
-  }
-
-  static async cancelBackgroundTask(
-    taskId: string,
-  ): Promise<BackgroundTaskState> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
-      method: "POST",
-    });
-    await expectOk(res, "Failed to cancel background task");
-    return res.json();
-  }
-
-  static async retryBackgroundTask(
-    taskId: string,
-  ): Promise<{ retry_of_task_id: string; task: BackgroundTaskState }> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
-      method: "POST",
-    });
-    await expectOk(res, "Failed to retry background task");
     return res.json();
   }
 

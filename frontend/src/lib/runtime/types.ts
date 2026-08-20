@@ -132,18 +132,6 @@ export interface CommandSummary {
   path?: string | null;
 }
 
-export interface CommandSummary {
-  name: string;
-  description: string;
-  source: string;
-  enabled: boolean;
-  hidden: boolean;
-  agent?: string | null;
-  model?: string | null;
-  subtask?: boolean;
-  path?: string | null;
-}
-
 export interface GitStatusSnapshot {
   state: GitStatusState;
   root?: string | null;
@@ -418,11 +406,7 @@ export interface BackgroundTaskOutput {
   output: string | null;
 }
 
-export interface ChildSessionContextResult {
-  task: BackgroundTaskResultPayload;
-  session_result: RuntimeSessionResult | null;
-  output: string | null;
-}
+export type ChildSessionContextResult = BackgroundTaskOutput;
 
 export interface RuntimeSessionResult {
   session: SessionState;
@@ -521,11 +505,8 @@ export interface RuntimeStreamChunk {
 export interface RuntimeSettings {
   provider?: string;
   provider_api_key_present?: boolean;
-  model?: string;
-}
-
-export interface RuntimeSettingsUpdate {
-  provider?: string;
   provider_api_key?: string;
   model?: string;
 }
+
+export type RuntimeSettingsUpdate = RuntimeSettings;

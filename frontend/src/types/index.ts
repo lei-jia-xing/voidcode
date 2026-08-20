@@ -1,2 +1,1 @@
-// Empty index for now, keeping for future types
-export {};
+export * from "../lib/runtime/types";

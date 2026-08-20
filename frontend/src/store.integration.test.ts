@@ -7,7 +7,6 @@ import type {
   EventEnvelope,
   QuestionAnswer,
   ReviewFileDiff,
-  RuntimeNotification,
   RuntimeResponse,
   RuntimeSessionDebugSnapshot,
   RuntimeStatusSnapshot,
@@ -208,14 +207,10 @@ const runtimeClientMocks = vi.hoisted(() => ({
         responses: QuestionAnswer[],
       ) => Promise<RuntimeResponse>
     >(),
-  listNotificationsMock: vi.fn<() => Promise<RuntimeNotification[]>>(),
-  acknowledgeNotificationMock:
-    vi.fn<(notificationId: string) => Promise<RuntimeNotification>>(),
   listBackgroundTasksMock: vi.fn<() => Promise<BackgroundTaskSummary[]>>(),
   listSessionBackgroundTasksMock:
     vi.fn<(sessionId: string) => Promise<BackgroundTaskSummary[]>>(),
   cancelSessionMock: vi.fn<(sessionId: string) => Promise<unknown>>(),
-  cancelBackgroundTaskMock: vi.fn<(taskId: string) => Promise<unknown>>(),
   getBackgroundTaskOutputMock:
     vi.fn<(taskId: string) => Promise<BackgroundTaskOutput>>(),
   getChildSessionContextMock:
@@ -259,13 +254,10 @@ vi.mock("./lib/runtime/client", () => ({
     getReviewDiff: runtimeClientMocks.getReviewDiffMock,
     resolveApproval: runtimeClientMocks.resolveApprovalMock,
     answerQuestion: runtimeClientMocks.answerQuestionMock,
-    listNotifications: runtimeClientMocks.listNotificationsMock,
-    acknowledgeNotification: runtimeClientMocks.acknowledgeNotificationMock,
     listBackgroundTasks: runtimeClientMocks.listBackgroundTasksMock,
     listSessionBackgroundTasks:
       runtimeClientMocks.listSessionBackgroundTasksMock,
     cancelSession: runtimeClientMocks.cancelSessionMock,
-    cancelBackgroundTask: runtimeClientMocks.cancelBackgroundTaskMock,
     getBackgroundTaskOutput: runtimeClientMocks.getBackgroundTaskOutputMock,
     getChildSessionContext: runtimeClientMocks.getChildSessionContextMock,
     getSessionDebug: runtimeClientMocks.getSessionDebugMock,
@@ -319,9 +311,6 @@ describe("useAppStore integration flow", () => {
       approvalError: null,
       questionStatus: "idle",
       questionError: null,
-      notifications: [],
-      notificationsStatus: "idle",
-      notificationsError: null,
       backgroundTasks: [],
       backgroundTasksStatus: "idle",
       backgroundTasksError: null,
@@ -382,7 +371,6 @@ describe("useAppStore integration flow", () => {
     });
     runtimeClientMocks.getSettingsMock.mockResolvedValue({});
     runtimeClientMocks.updateSettingsMock.mockResolvedValue({});
-    runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
     runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
     runtimeClientMocks.listSessionBackgroundTasksMock.mockResolvedValue([]);
     runtimeClientMocks.cancelSessionMock.mockResolvedValue({
@@ -393,7 +381,6 @@ describe("useAppStore integration flow", () => {
       run_id: "run-1",
       reason: "web user interrupt",
     });
-    runtimeClientMocks.cancelBackgroundTaskMock.mockResolvedValue({});
     runtimeClientMocks.getBackgroundTaskOutputMock.mockResolvedValue({
       task: {
         task_id: "task-1",
@@ -1143,27 +1130,13 @@ describe("useAppStore integration flow", () => {
   });
 
   it("reloads runtime ops data after switching workspaces", async () => {
-    const notification: RuntimeNotification = {
-      id: "notification-1",
-      session: { id: "session-1" },
-      kind: "completion",
-      status: "unread",
-      summary: "Task completed",
-      event_sequence: 1,
-      created_at: 1,
-      acknowledged_at: null,
-      payload: {},
-    };
     const task = makeBackgroundTaskSummary("task-1", "inspect workspace");
-    runtimeClientMocks.listNotificationsMock.mockResolvedValue([notification]);
     runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([task]);
 
     await useAppStore.getState().switchWorkspace("/new-workspace");
 
     const state = useAppStore.getState();
-    expect(runtimeClientMocks.listNotificationsMock).toHaveBeenCalled();
     expect(runtimeClientMocks.listBackgroundTasksMock).toHaveBeenCalled();
-    expect(state.notifications).toEqual([notification]);
     expect(state.backgroundTasks).toEqual([task]);
   });
 

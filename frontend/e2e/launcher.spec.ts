@@ -354,9 +354,6 @@ async function installMockRuntime(page: Page) {
       }),
     ),
   );
-  await page.route("**/api/notifications", async (route) =>
-    route.fulfill(jsonResponse([])),
-  );
   await page.route("**/api/tasks", async (route) =>
     route.fulfill(jsonResponse([])),
   );

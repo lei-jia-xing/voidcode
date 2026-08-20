@@ -287,9 +287,6 @@ describe("RuntimeClient integration contract", () => {
             }),
           } as Response;
         }
-        if (url === "/api/notifications") {
-          return { ok: true, json: async () => [] } as Response;
-        }
         if (url === "/api/tasks") {
           return { ok: true, json: async () => [] } as Response;
         }
@@ -321,14 +318,12 @@ describe("RuntimeClient integration contract", () => {
       "question-1",
       [{ header: "Direction", answers: ["left"] }],
     );
-    const notifications = await RuntimeClient.listNotifications();
     const tasks = await RuntimeClient.listBackgroundTasks();
     const debug = await RuntimeClient.getSessionDebug("session-1");
 
     expect(answer.output).toBe("answered");
-    expect(notifications).toEqual([]);
     expect(tasks).toEqual([]);
     expect(debug.prompt).toBe("read");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
