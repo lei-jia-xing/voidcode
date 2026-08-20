@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import Literal, cast
 
 from ..hook.config import RuntimeHooksConfig, RuntimeHookSurface
 from ..provider.errors import ProviderErrorKind, guidance_for_provider_error_kind
@@ -23,15 +23,16 @@ def failed_chunk(
     sequence: int,
     error: str,
     payload: dict[str, object] | None = None,
+    status: Literal["failed", "interrupted"] = "failed",
 ) -> RuntimeStreamChunk:
     failed_session = session_with_plan_state(
         SessionState(
             session=session.session,
-            status="failed",
+            status=status,
             turn=session.turn,
             metadata=session.metadata,
         ),
-        status="failed",
+        status=status,
         error=error,
     )
     failure_payload = {"error": error, **(payload or {})}

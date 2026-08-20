@@ -274,16 +274,23 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
     assert failed_events[-1].payload["kind"] == "interrupted"
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["reason"] == "cancel while tool in flight"
-    assert persisted.session.status == "failed"
+    # A user-cancelled run terminates ``interrupted`` (not ``failed``): the
+    # terminal-status derivation keys off the cancelled flag.
+    assert persisted.session.status == "interrupted"
 
-    # The sealed session rejects late events through BOTH append paths.
-    with pytest.raises(SessionSealedError):
-        store.append_session_events(
-            workspace=tmp_path,
-            session_id="race-1",
-            events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
-        )
-    with pytest.raises(SessionSealedError):
+    # An ``interrupted`` row is the mid-run/un-sealed state by design: the
+    # storage layer seals only {completed, failed} (``SESSION_STORAGE_SEAL_
+    # STATUSES``) so a fresh run / resume can re-open it. Sealing of an
+    # ``interrupted`` row with no active run is the runtime-level guard
+    # (``VoidCodeRuntime._sealed_session_status``), which gates the
+    # interaction queue — the storage append paths stay open for lifecycle
+    # re-entry.
+    assert store.append_session_events(
+        workspace=tmp_path,
+        session_id="race-1",
+        events=(("runtime.tool_completed", "tool", {"tool": "write", "status": "ok", "content": "late"}, None),),
+    )
+    assert (
         store.append_session_event(
             workspace=tmp_path,
             session_id="race-1",
@@ -291,6 +298,13 @@ def test_cancel_lands_while_tool_result_in_flight_drops_late_result(tmp_path: Pa
             source="graph",
             payload={"summary": "late"},
         )
+        is not None
+    )
+    # The runtime-level guard rejects late interaction-queue messages on the
+    # sealed interrupted row (no active run), matching the pre-fix failed-row
+    # behavior.
+    with pytest.raises(SessionSealedError):
+        runtime.queue_follow_up("race-1", "late follow-up")
 
 
 def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> None:

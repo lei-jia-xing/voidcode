@@ -69,7 +69,11 @@ from .workspace import SingleWorkspaceRuntimeCoordinator, WorkspaceOpenError
 
 logger = logging.getLogger(__name__)
 
-_SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+# Statuses after which the session-event follow stream closes instead of
+# polling forever. ``interrupted`` is a regular terminal state (user-cancelled
+# runs seal as ``interrupted`` with the ``runtime.failed{cancelled: true}``
+# event), so the follow stream must close on it exactly like completed/failed.
+_SESSION_TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted"})
 
 
 class RuntimeTransport(Protocol):

@@ -2783,6 +2783,62 @@ def test_transport_session_events_stops_replay_burst_on_client_disconnect() -> N
     assert len(replay_calls) == 1
 
 
+def test_transport_session_events_follow_closes_on_interrupted_session() -> None:
+    """Follow stream must close on an ``interrupted`` session.
+
+    A user-cancelled run now seals ``interrupted`` (the terminal-status
+    derivation keys off the ``cancelled`` flag), so the session-event follow
+    stream must close on ``interrupted`` exactly like ``completed``/``failed``
+    instead of polling the replayed snapshot forever.
+    """
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    runtime_session = importlib.import_module("voidcode.runtime.session")
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+
+    replay_calls: list[int] = []
+
+    class _InterruptedRuntime:
+        def replay_session(self, *, session_id: str) -> object:
+            replay_calls.append(len(replay_calls) + 1)
+            return contracts_module.RuntimeResponse(
+                session=runtime_session.SessionState(
+                    session=runtime_session.SessionRef(id=session_id),
+                    status="interrupted",
+                    turn=1,
+                    metadata={},
+                ),
+                events=(),
+                output=None,
+            )
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    app = runtime_http.RuntimeTransportApp(runtime_factory=cast(Any, _InterruptedRuntime))
+
+    sent: list[dict[str, object]] = []
+
+    async def _receive() -> dict[str, object]:
+        await asyncio.sleep(3600)  # half-open socket: a polling follow loop would hang here
+
+    async def _send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/sessions/interrupted-follow-session/events",
+        "query_string": b"after_sequence=0&follow=true",
+    }
+    # Terminates promptly (the interrupted status closes the follow loop)
+    # instead of polling the snapshot forever.
+    asyncio.run(asyncio.wait_for(app(scope, _receive, _send), timeout=5.0))
+
+    assert replay_calls == [1]
+    start_message = next(message for message in sent if cast(str, message["type"]) == "http.response.start")
+    assert cast(int, start_message["status"]) == 200
+
+
 def test_transport_session_events_stops_cleanly_when_send_raises_during_replay() -> None:
     runtime_http = importlib.import_module("voidcode.runtime.http")
     runtime_events = importlib.import_module("voidcode.runtime.events")

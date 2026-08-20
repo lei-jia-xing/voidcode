@@ -773,6 +773,7 @@ class RuntimeRunLoopCoordinator:
                     run_id=run_id_from_session_metadata(session.metadata),
                     reason=_abort_signal_reason(abort_signal),
                 ),
+                status="interrupted",
             )
         )
         return completed_chunk, failed_chunk
@@ -1154,6 +1155,7 @@ class RuntimeRunLoopCoordinator:
                         run_id=run_id_from_session_metadata(session.metadata),
                         reason=_abort_signal_reason(abort_signal),
                     ),
+                    status="interrupted",
                 )
             )
             yield failed_chunk
@@ -1213,6 +1215,7 @@ class RuntimeRunLoopCoordinator:
                         run_id=run_id_from_session_metadata(session.metadata),
                         reason=_abort_signal_reason(abort_signal),
                     ),
+                    status="interrupted",
                 )
             )
             yield failed_chunk
@@ -1736,6 +1739,7 @@ class RuntimeRunLoopCoordinator:
                     run_id=run_id_from_session_metadata(session.metadata),
                     reason=_abort_reason(active_graph_request),
                 ),
+                status="interrupted",
             )
         )
         yield failed_chunk
@@ -2232,12 +2236,20 @@ class RuntimeRunLoopCoordinator:
                 background_rate_limit_retry=(active_graph_request.metadata.get("background_rate_limit_retry") is True),
             )
             if isinstance(provider_decision, ProviderTerminalDecision) and (provider_decision.kind == "cancelled"):
+                # A ``cancelled`` provider error is the abort-aware provider
+                # surfacing a user/run cancellation (``abort_signal`` fired via
+                # the cancel endpoint or client disconnect) mid-stream. It is
+                # not a provider failure: the run ends ``interrupted`` (the
+                # ``runtime.failed{cancelled: true}`` event shape is preserved
+                # for client compatibility; the terminal-status derivation
+                # keys off the cancelled flag, never the event type).
                 failed_chunk, _ = self._persist_chunk(
                     chunk_builders.failed_chunk(
                         session=session,
                         sequence=sequence + 1,
                         error=str(provider_error),
                         payload=provider_decision.payload,
+                        status="interrupted",
                     )
                 )
                 yield failed_chunk
@@ -3401,6 +3413,7 @@ class RuntimeRunLoopCoordinator:
                         run_id=run_id_from_session_metadata(session.metadata),
                         reason=_abort_signal_reason(abort_signal),
                     ),
+                    status="interrupted",
                 )
             )
             yield failed_chunk
@@ -3460,6 +3473,7 @@ class RuntimeRunLoopCoordinator:
                         run_id=run_id_from_session_metadata(session.metadata),
                         reason=_abort_signal_reason(abort_signal),
                     ),
+                    status="interrupted",
                 )
             )
             yield failed_chunk

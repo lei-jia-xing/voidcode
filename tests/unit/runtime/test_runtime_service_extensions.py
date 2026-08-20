@@ -1150,6 +1150,55 @@ class _ScriptedModelProvider:
         return provider
 
 
+class _AbortableStreamingTurnProvider:
+    """Streams one delta, then blocks until the abort signal fires.
+
+    Mirrors the real abort-aware providers (``wrap_provider_stream``,
+    ``litellm_backend``): once ``abort_signal.cancelled`` is observed
+    mid-stream, the provider surfaces ``error_kind="cancelled"`` and a
+    ``done_reason="cancelled"`` so the graph converts the cancellation into
+    ``ProviderExecutionError(kind="cancelled")`` — the exact shape of the
+    ``provider stream cancelled`` path found in the persisted bug evidence.
+    """
+
+    def __init__(self, *, name: str, model_provider: _AbortableStreamingModelProvider) -> None:
+        self.name = name
+        self.model_provider = model_provider
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        return ProviderTurnResult(output="done")
+
+    def stream_turn(self, request: object) -> Iterator[ProviderStreamEvent]:
+        turn_request = cast(ProviderTurnRequest, request)
+        abort_signal = turn_request.abort_signal
+
+        def events() -> Iterator[ProviderStreamEvent]:
+            yield ProviderStreamEvent(kind="delta", channel="text", text="partial answer")
+            self.model_provider.started.set()
+            while True:
+                if abort_signal is not None and abort_signal.cancelled:
+                    yield ProviderStreamEvent(
+                        kind="error",
+                        channel="error",
+                        error="provider stream cancelled",
+                        error_kind="cancelled",
+                    )
+                    yield ProviderStreamEvent(kind="done", done_reason="cancelled")
+                    return
+                time.sleep(0.01)
+
+        return events()
+
+
+class _AbortableStreamingModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.started = threading.Event()
+
+    def turn_provider(self) -> _AbortableStreamingTurnProvider:
+        return _AbortableStreamingTurnProvider(name=self.name, model_provider=self)
+
+
 class _DistillAwareTurnProvider:
     def __init__(self, *, name: str, distill_output: str | None, distill_error: Exception | None) -> None:
         self.name = name
@@ -3606,7 +3655,10 @@ def test_runtime_provider_fallback_skips_cancelled_and_context_limit_errors(
 
     response = runtime.run(RuntimeRequest(prompt=f"no fallback for {error_kind}"))
 
-    assert response.session.status == "failed"
+    # A ``cancelled`` provider error is a cancellation, not a failure: the run
+    # terminates ``interrupted`` (the ``runtime.failed{cancelled: true}`` event
+    # shape is preserved); genuine provider errors stay ``failed``.
+    assert response.session.status == ("interrupted" if error_kind == "cancelled" else "failed")
     assert fallback.calls == 0
     assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
     assert not any(event.event_type == RUNTIME_PROVIDER_TRANSIENT_RETRY for event in response.events)
@@ -5182,6 +5234,70 @@ def test_runtime_cancel_session_interrupts_active_run(tmp_path: Path) -> None:
     assert failed_events[-1].payload["kind"] == "interrupted"
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["reason"] == "test cancellation"
+
+
+def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) -> None:
+    """User abort mid-provider-stream terminates the run as interrupted.
+
+    Regression for the persisted-bug evidence (session-33bde448… sealed
+    ``failed``): an abort-aware provider surfacing ``cancelled`` mid-stream
+    raises ``ProviderExecutionError(kind="cancelled")``, which the provider
+    error policy previously sealed as a plain ``runtime.failed`` row. The
+    terminal-status derivation must key off the cancelled flag: the session
+    ends ``interrupted`` while the ``runtime.failed{cancelled: true}`` event
+    shape is preserved for client compatibility.
+    """
+    provider = _AbortableStreamingModelProvider(name="primary")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(providers={"primary": provider}),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=(),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={"primary": LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))},
+            ),
+        ),
+    )
+
+    stream = runtime.run_stream(RuntimeRequest(prompt="abort the stream", session_id="stream-abort"))
+    first_chunk = None
+    for chunk in stream:
+        first_chunk = first_chunk or chunk
+        if provider.started.is_set():
+            break
+    assert provider.started.wait(timeout=2.0) is True
+
+    result = runtime.cancel_session("stream-abort", reason="stop the stream")
+    remaining_chunks = list(stream)
+
+    failed_events = [chunk.event for chunk in remaining_chunks if chunk.event is not None and chunk.event.event_type == "runtime.failed"]
+    assert first_chunk is not None
+    assert first_chunk.session.status == "running"
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    # Terminal chunk carries the interrupted session status (not failed).
+    assert remaining_chunks[-1].session.status == "interrupted"
+    assert remaining_chunks[-1].event is not None
+    assert remaining_chunks[-1].event.event_type == "runtime.failed"
+    # Backward-compatible event shape: runtime.failed with the cancelled flag,
+    # exactly the payload shape found in the persisted bug evidence.
+    assert failed_events
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["provider_error_kind"] == "cancelled"
+    assert failed_events[-1].payload["provider"] == "primary"
+    assert failed_events[-1].payload["model"] == "model-a"
+    assert failed_events[-1].payload["error"] == "provider stream cancelled"
+    # The persisted row must seal interrupted, never failed.
+    stored = runtime._session_store.load_session(
+        workspace=runtime._workspace,
+        session_id="stream-abort",
+    )
+    assert stored.session.status == "interrupted"
 
 
 def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
@@ -17839,7 +17955,7 @@ def test_runtime_failed_event_preserves_provider_error_details(tmp_path: Path) -
     }
 
 
-def test_runtime_provider_stream_cancelled_maps_to_failed_without_fallback(
+def test_runtime_provider_stream_cancelled_maps_to_interrupted_without_fallback(
     tmp_path: Path,
 ) -> None:
     registry = ModelProviderRegistry(
@@ -17863,7 +17979,10 @@ def test_runtime_provider_stream_cancelled_maps_to_failed_without_fallback(
         )
     )
 
-    assert response.session.status == "failed"
+    # A cancelled provider stream is a cancellation, not a failure: the run
+    # terminates ``interrupted`` while keeping the ``runtime.failed`` event
+    # shape with the cancelled flag for client compatibility.
+    assert response.session.status == "interrupted"
     assert response.events[-1].event_type == "runtime.failed"
     assert response.events[-1].payload["error"] == "cancelled by runtime"
     assert response.events[-1].payload["provider_error_kind"] == "cancelled"
