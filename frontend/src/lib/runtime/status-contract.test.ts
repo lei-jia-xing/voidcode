@@ -838,3 +838,227 @@ describe("Interrupted Status Contract", () => {
     expect(assistantMessage?.status).not.toBe("failed");
   });
 });
+
+describe("Live Stream Reasoning Contract", () => {
+  it("deduplicates each turn's aggregated reasoning_part against only that turn's streamed deltas", () => {
+    // Live wire order per turn (backend): streamed reasoning deltas (client
+    // only), then one aggregated runtime.reasoning_part, then the turn-head
+    // bookmarks (graph.loop_step / graph.model_turn), then tool events. The
+    // `thinking` accumulator spans the whole assistant turn sequence, so the
+    // aggregate must be deduplicated against the CURRENT turn's deltas only;
+    // comparing against all accumulated thinking would miss for every turn
+    // after the first and render each later thinking block doubled.
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "explore" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "reasoning",
+          kind: "delta",
+          text: "first turn part ",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "reasoning", kind: "delta", text: "one" },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: {
+          type: "reasoning",
+          text: "first turn part one",
+          preview: "first turn part one",
+          truncated: false,
+          source: "provider_stream",
+          visibility: "showable",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "graph.loop_step",
+        source: "graph",
+        payload: { step: 1, phase: "plan" },
+      },
+      {
+        session_id: "test",
+        sequence: 5,
+        event_type: "graph.model_turn",
+        source: "graph",
+        payload: { turn: 1, mode: "provider" },
+      },
+      {
+        session_id: "test",
+        sequence: 6,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          tool_status: {
+            invocation_id: "call_1",
+            tool_name: "read",
+            phase: "running",
+            status: "running",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Reading...",
+            },
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 7,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "reasoning",
+          kind: "delta",
+          text: "second turn part ",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 7,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "reasoning", kind: "delta", text: "two" },
+      },
+      {
+        session_id: "test",
+        sequence: 8,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: {
+          type: "reasoning",
+          text: "second turn part two",
+          preview: "second turn part two",
+          truncated: false,
+          source: "provider_stream",
+          visibility: "showable",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 9,
+        event_type: "graph.loop_step",
+        source: "graph",
+        payload: { step: 2, phase: "plan" },
+      },
+      {
+        session_id: "test",
+        sequence: 10,
+        event_type: "graph.model_turn",
+        source: "graph",
+        payload: { turn: 2, mode: "provider" },
+      },
+      {
+        session_id: "test",
+        sequence: 11,
+        event_type: "graph.response_ready",
+        source: "graph",
+        payload: { output_preview: "final complete answer" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage).toBeDefined();
+
+    const reasoningParts = (assistantMessage!.parts ?? []).filter(
+      (part) => part.kind === "reasoning",
+    );
+    expect(reasoningParts).toHaveLength(2);
+    expect(
+      reasoningParts.map((part) =>
+        part.kind === "reasoning" ? part.text : "",
+      ),
+    ).toEqual(["first turn part one", "second turn part two"]);
+
+    // The aggregated parts must not contain the streamed text twice.
+    for (const part of reasoningParts) {
+      if (part.kind !== "reasoning") continue;
+      expect(part.text).not.toContain(`${part.text}${part.text}`);
+    }
+
+    const textParts = (assistantMessage!.parts ?? []).filter(
+      (part) => part.kind === "text",
+    );
+    expect(textParts).toHaveLength(1);
+    expect(textParts[0].kind === "text" ? textParts[0].text : "").toBe(
+      "final complete answer",
+    );
+    expect(assistantMessage!.content).toBe("final complete answer");
+    expect(assistantMessage!.status).toBe("completed");
+  });
+
+  it("skips a truncated aggregated reasoning_part when the full text already streamed", () => {
+    // When the persisted aggregate is a truncated prefix (payload.truncated),
+    // the client already holds the full streamed text: appending the prefix
+    // would duplicate the reasoning block.
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "explore" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "reasoning",
+          kind: "delta",
+          text: "full chain of thought",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.reasoning_part",
+        source: "runtime",
+        payload: {
+          type: "reasoning",
+          text: "full chain of",
+          preview: "full chain of",
+          truncated: true,
+          source: "provider_stream",
+          visibility: "showable",
+        },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find(
+      (message) => message.role === "assistant",
+    );
+    const reasoningParts = (assistantMessage!.parts ?? []).filter(
+      (part) => part.kind === "reasoning",
+    );
+    expect(reasoningParts).toHaveLength(1);
+    expect(
+      reasoningParts[0].kind === "reasoning" && reasoningParts[0].text,
+    ).toBe("full chain of thought");
+  });
+});

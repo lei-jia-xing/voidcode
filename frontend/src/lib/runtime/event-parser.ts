@@ -585,6 +585,12 @@ export function deriveChatMessages(
   const messages: ChatMessage[] = [];
   let currentAssistant: ChatMessage | null = null;
   let requestOrdinal = 0;
+  // Streamed reasoning deltas of the CURRENT turn (client-only
+  // graph.provider_stream events). The aggregated runtime.reasoning_part is
+  // deduplicated against this turn's text only: `thinking` accumulates across
+  // turns, so comparing against it would miss for every turn after the first
+  // and the aggregate would be appended again (doubled thinking blocks).
+  let streamedReasoningText = "";
 
   for (const event of events) {
     const messageSessionId = event.session_id || fallbackSessionId || "session";
@@ -592,6 +598,7 @@ export function deriveChatMessages(
 
     if (event.event_type === "runtime.request_received") {
       requestOrdinal += 1;
+      streamedReasoningText = "";
 
       if (currentAssistant) {
         if (currentAssistant.status === "in_progress") {
@@ -635,15 +642,18 @@ export function deriveChatMessages(
           currentAssistant.thinkingStartedAt ??= event.received_at;
           currentAssistant.thinkingUpdatedAt = event.received_at;
         }
-        if (hasReasoningPayload) {
+        if (event.event_type === "runtime.reasoning_part") {
           // The backend persists one aggregated runtime.reasoning_part per
           // streamed turn so replay stays faithful. While the live stream is
-          // still open the same content was already accumulated delta by delta,
-          // so skip the aggregate when it duplicates the streamed text.
+          // still open, the same content was already accumulated delta by
+          // delta, so skip the aggregate when it duplicates the streamed text
+          // (or when the persisted text is only a truncated prefix of it).
           const alreadyStreamed =
-            event.event_type === "runtime.reasoning_part" &&
-            currentAssistant.thinking.join("") === reasoningText;
-          if (!alreadyStreamed) {
+            streamedReasoningText.length > 0 &&
+            (streamedReasoningText === reasoningText ||
+              event.payload?.truncated === true);
+          streamedReasoningText = "";
+          if (hasReasoningPayload && !alreadyStreamed) {
             currentAssistant.thinking.push(reasoningText);
             appendReasoningDeltaPart(
               currentAssistant,
@@ -651,8 +661,25 @@ export function deriveChatMessages(
               reasoningText,
             );
           }
+        } else if (hasReasoningPayload) {
+          streamedReasoningText += reasoningText;
+          currentAssistant.thinking.push(reasoningText);
+          appendReasoningDeltaPart(
+            currentAssistant,
+            event.sequence,
+            reasoningText,
+          );
         }
       }
+    } else if (
+      event.event_type === "graph.loop_step" ||
+      event.event_type === "graph.model_turn"
+    ) {
+      // Turn boundary: the current turn's aggregated reasoning_part has been
+      // emitted (or the turn produced no reasoning). Scope the streamed
+      // reasoning accumulator to one turn so a turn whose deltas were never
+      // followed by an aggregate cannot bleed into the next turn's dedup.
+      streamedReasoningText = "";
     } else if (
       event.event_type === "graph.provider_stream" &&
       event.payload?.channel === "text"
