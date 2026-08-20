@@ -434,6 +434,72 @@ class RuntimeTransportApp:
         path = cast(str, scope.get("path", "/"))
         show_thinking = self._show_thinking_from_scope(scope)
 
+        if await self._dispatch_api_route(
+            method=method,
+            path=path,
+            scope=scope,
+            receive=receive,
+            send=send,
+            show_thinking=show_thinking,
+        ):
+            return
+        await self._handle_static_file(path, send)
+
+    async def _dispatch_api_route(
+        self,
+        *,
+        method: str,
+        path: str,
+        scope: dict[str, object],
+        receive: Receive,
+        send: Send,
+        show_thinking: bool,
+    ) -> bool:
+        if await self._route_api_exact_paths(
+            method=method,
+            path=path,
+            receive=receive,
+            send=send,
+            show_thinking=show_thinking,
+        ):
+            return True
+        if await self._route_notification_paths(method=method, path=path, send=send):
+            return True
+        if await self._route_task_paths(
+            method=method,
+            path=path,
+            receive=receive,
+            send=send,
+            show_thinking=show_thinking,
+        ):
+            return True
+        if await self._route_session_paths(
+            method=method,
+            path=path,
+            scope=scope,
+            receive=receive,
+            send=send,
+            show_thinking=show_thinking,
+        ):
+            return True
+        if await self._route_provider_paths(method=method, path=path, send=send):
+            return True
+        if await self._route_review_diff_paths(method=method, path=path, send=send):
+            return True
+        if path == "/api" or path.startswith("/api/"):
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return True
+        return False
+
+    async def _route_api_exact_paths(
+        self,
+        *,
+        method: str,
+        path: str,
+        receive: Receive,
+        send: Send,
+        show_thinking: bool,
+    ) -> bool:
         if path == "/api/runtime/run/stream":
             if method != "POST":
                 await self._json_response(
@@ -441,9 +507,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_run_stream(receive, send, show_thinking=show_thinking)
-            return
+            return True
 
         if path == "/api/sessions":
             if method != "GET":
@@ -452,23 +518,23 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_sessions(send)
-            return
+            return True
 
         if path == "/api/tasks":
             if method == "GET":
                 await self._handle_list_background_tasks(send)
-                return
+                return True
             if method == "POST":
                 await self._handle_start_background_task(receive, send)
-                return
+                return True
             await self._json_response(
                 send,
                 status=405,
                 payload={"error": "method not allowed"},
             )
-            return
+            return True
 
         if path == "/api/notifications":
             if method != "GET":
@@ -477,23 +543,23 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_notifications(send)
-            return
+            return True
 
         if path == "/api/settings":
             if method == "GET":
                 await self._handle_get_settings(send)
-                return
+                return True
             if method == "POST":
                 await self._handle_update_settings(receive, send)
-                return
+                return True
             await self._json_response(
                 send,
                 status=405,
                 payload={"error": "method not allowed"},
             )
-            return
+            return True
 
         if path == "/api/workspaces":
             if method != "GET":
@@ -502,9 +568,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_workspaces(send)
-            return
+            return True
 
         if path == "/api/workspaces/open":
             if method != "POST":
@@ -513,9 +579,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_open_workspace(receive, send)
-            return
+            return True
 
         if path == "/api/providers":
             if method != "GET":
@@ -524,9 +590,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_providers(send)
-            return
+            return True
 
         if path == "/api/agents":
             if method != "GET":
@@ -535,9 +601,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_agents(send)
-            return
+            return True
 
         if path == "/api/skills":
             if method != "GET":
@@ -546,9 +612,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_skills(send)
-            return
+            return True
 
         if path == "/api/commands":
             if method != "GET":
@@ -557,9 +623,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_commands(send)
-            return
+            return True
 
         if path == "/api/commands":
             if method != "GET":
@@ -568,9 +634,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_list_commands(send)
-            return
+            return True
 
         if path == "/api/status":
             if method != "GET":
@@ -579,9 +645,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_get_status(send)
-            return
+            return True
 
         if path == "/api/status/mcp/retry":
             if method != "POST":
@@ -590,9 +656,9 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_retry_mcp(send)
-            return
+            return True
 
         if path == "/api/review":
             if method != "GET":
@@ -601,438 +667,461 @@ class RuntimeTransportApp:
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
+                return True
             await self._handle_get_review(send)
-            return
+            return True
 
+        return False
+
+    async def _route_notification_paths(self, *, method: str, path: str, send: Send) -> bool:
         notification_prefix = "/api/notifications/"
-        if path.startswith(notification_prefix):
-            notification_path = path.removeprefix(notification_prefix)
-            if not notification_path.endswith("/ack"):
-                await self._json_response(send, status=404, payload={"error": "not found"})
-                return
-            notification_id = notification_path.removesuffix("/ack")
-            if not notification_id:
-                await self._json_response(send, status=404, payload={"error": "not found"})
-                return
+        if not path.startswith(notification_prefix):
+            return False
+        notification_path = path.removeprefix(notification_prefix)
+        if not notification_path.endswith("/ack"):
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return True
+        notification_id = notification_path.removesuffix("/ack")
+        if not notification_id:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return True
+        if method != "POST":
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
+            return True
+        await self._handle_acknowledge_notification(
+            notification_id=notification_id,
+            send=send,
+        )
+        return True
+
+    async def _route_task_paths(
+        self,
+        *,
+        method: str,
+        path: str,
+        receive: Receive,
+        send: Send,
+        show_thinking: bool,
+    ) -> bool:
+        task_prefix = "/api/tasks/"
+        if not path.startswith(task_prefix):
+            return False
+        task_path = path.removeprefix(task_prefix)
+        is_cancel_route = task_path.endswith("/cancel")
+        is_output_route = task_path.endswith("/output")
+        is_retry_route = task_path.endswith("/retry")
+        is_steer_route = task_path.endswith("/steer")
+        task_id = (
+            task_path.removesuffix("/cancel")
+            if is_cancel_route
+            else task_path.removesuffix("/output")
+            if is_output_route
+            else task_path.removesuffix("/retry")
+            if is_retry_route
+            else task_path.removesuffix("/steer")
+            if is_steer_route
+            else task_path
+        )
+        try:
+            validate_background_task_id(task_id)
+        except ValueError:
+            await self._json_response(
+                send,
+                status=404,
+                payload={"error": "not found"},
+            )
+            return True
+        if is_cancel_route:
             if method != "POST":
                 await self._json_response(
                     send,
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
-            await self._handle_acknowledge_notification(
-                notification_id=notification_id,
+                return True
+            await self._handle_cancel_background_task(task_id=task_id, send=send)
+            return True
+        if is_retry_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_retry_background_task(task_id=task_id, send=send)
+            return True
+        if is_steer_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_steer_background_task(task_id=task_id, receive=receive, send=send)
+            return True
+        if is_output_route:
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_background_task_output(
+                task_id=task_id,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if method != "GET":
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
+            return True
+        await self._handle_background_task_status(task_id=task_id, send=send)
+        return True
+
+    async def _route_session_paths(
+        self,
+        *,
+        method: str,
+        path: str,
+        scope: dict[str, object],
+        receive: Receive,
+        send: Send,
+        show_thinking: bool,
+    ) -> bool:
+        session_prefix = "/api/sessions/"
+        if not path.startswith(session_prefix):
+            return False
+        session_path = path.removeprefix(session_prefix)
+        is_events_route = session_path.endswith("/events")
+        is_task_list_route = session_path.endswith("/tasks")
+        is_approval_route = session_path.endswith("/approval")
+        is_question_route = session_path.endswith("/question")
+        is_delegated_context_route = session_path.endswith("/delegated-context")
+        is_result_route = session_path.endswith("/result")
+        is_debug_route = session_path.endswith("/debug")
+        is_undo_route = session_path.endswith("/undo")
+        is_revert_route = session_path.endswith("/revert")
+        is_unrevert_route = session_path.endswith("/unrevert")
+        is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
+        is_resume_route = session_path.endswith("/resume")
+        session_id = (
+            session_path.removesuffix("/events")
+            if is_events_route
+            else session_path.removesuffix("/tasks")
+            if is_task_list_route
+            else session_path.removesuffix("/approval")
+            if is_approval_route
+            else session_path.removesuffix("/question")
+            if is_question_route
+            else session_path.removesuffix("/delegated-context")
+            if is_delegated_context_route
+            else session_path.removesuffix("/result")
+            if is_result_route
+            else session_path.removesuffix("/debug")
+            if is_debug_route
+            else session_path.removesuffix("/undo")
+            if is_undo_route
+            else session_path.removesuffix("/revert")
+            if is_revert_route
+            else session_path.removesuffix("/unrevert")
+            if is_unrevert_route
+            else session_path.removesuffix("/cancel")
+            if session_path.endswith("/cancel")
+            else session_path.removesuffix("/interrupt")
+            if session_path.endswith("/interrupt")
+            else session_path.removesuffix("/resume")
+            if is_resume_route
+            else session_path
+        )
+        try:
+            validate_session_id(session_id)
+        except ValueError:
+            await self._json_response(
+                send,
+                status=404,
+                payload={"error": "not found"},
+            )
+            return True
+        if is_task_list_route:
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_list_background_tasks_by_parent_session(
+                parent_session_id=session_id,
                 send=send,
             )
-            return
-
-        task_prefix = "/api/tasks/"
-        if path.startswith(task_prefix):
-            task_path = path.removeprefix(task_prefix)
-            is_cancel_route = task_path.endswith("/cancel")
-            is_output_route = task_path.endswith("/output")
-            is_retry_route = task_path.endswith("/retry")
-            is_steer_route = task_path.endswith("/steer")
-            task_id = (
-                task_path.removesuffix("/cancel")
-                if is_cancel_route
-                else task_path.removesuffix("/output")
-                if is_output_route
-                else task_path.removesuffix("/retry")
-                if is_retry_route
-                else task_path.removesuffix("/steer")
-                if is_steer_route
-                else task_path
-            )
-            try:
-                validate_background_task_id(task_id)
-            except ValueError:
-                await self._json_response(
-                    send,
-                    status=404,
-                    payload={"error": "not found"},
-                )
-                return
-            if is_cancel_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_cancel_background_task(task_id=task_id, send=send)
-                return
-            if is_retry_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_retry_background_task(task_id=task_id, send=send)
-                return
-            if is_steer_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_steer_background_task(task_id=task_id, receive=receive, send=send)
-                return
-            if is_output_route:
-                if method != "GET":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_background_task_output(
-                    task_id=task_id,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
+            return True
+        if is_delegated_context_route:
             if method != "GET":
                 await self._json_response(
                     send,
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
-            await self._handle_background_task_status(task_id=task_id, send=send)
-            return
-
-        session_prefix = "/api/sessions/"
-        if path.startswith(session_prefix):
-            session_path = path.removeprefix(session_prefix)
-            is_events_route = session_path.endswith("/events")
-            is_task_list_route = session_path.endswith("/tasks")
-            is_approval_route = session_path.endswith("/approval")
-            is_question_route = session_path.endswith("/question")
-            is_delegated_context_route = session_path.endswith("/delegated-context")
-            is_result_route = session_path.endswith("/result")
-            is_debug_route = session_path.endswith("/debug")
-            is_undo_route = session_path.endswith("/undo")
-            is_revert_route = session_path.endswith("/revert")
-            is_unrevert_route = session_path.endswith("/unrevert")
-            is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
-            is_resume_route = session_path.endswith("/resume")
-            session_id = (
-                session_path.removesuffix("/events")
-                if is_events_route
-                else session_path.removesuffix("/tasks")
-                if is_task_list_route
-                else session_path.removesuffix("/approval")
-                if is_approval_route
-                else session_path.removesuffix("/question")
-                if is_question_route
-                else session_path.removesuffix("/delegated-context")
-                if is_delegated_context_route
-                else session_path.removesuffix("/result")
-                if is_result_route
-                else session_path.removesuffix("/debug")
-                if is_debug_route
-                else session_path.removesuffix("/undo")
-                if is_undo_route
-                else session_path.removesuffix("/revert")
-                if is_revert_route
-                else session_path.removesuffix("/unrevert")
-                if is_unrevert_route
-                else session_path.removesuffix("/cancel")
-                if session_path.endswith("/cancel")
-                else session_path.removesuffix("/interrupt")
-                if session_path.endswith("/interrupt")
-                else session_path.removesuffix("/resume")
-                if is_resume_route
-                else session_path
-            )
-            try:
-                validate_session_id(session_id)
-            except ValueError:
-                await self._json_response(
-                    send,
-                    status=404,
-                    payload={"error": "not found"},
-                )
-                return
-            if is_task_list_route:
-                if method != "GET":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_list_background_tasks_by_parent_session(
-                    parent_session_id=session_id,
-                    send=send,
-                )
-                return
-            if is_delegated_context_route:
-                if method != "GET":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_child_session_context(
-                    session_id=session_id,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            session_id = (
-                session_path.removesuffix("/events")
-                if is_events_route
-                else session_path.removesuffix("/approval")
-                if is_approval_route
-                else session_path.removesuffix("/question")
-                if is_question_route
-                else session_path.removesuffix("/result")
-                if is_result_route
-                else session_path.removesuffix("/debug")
-                if is_debug_route
-                else session_path.removesuffix("/undo")
-                if is_undo_route
-                else session_path.removesuffix("/revert")
-                if is_revert_route
-                else session_path.removesuffix("/unrevert")
-                if is_unrevert_route
-                else session_path.removesuffix("/cancel")
-                if session_path.endswith("/cancel")
-                else session_path.removesuffix("/interrupt")
-                if session_path.endswith("/interrupt")
-                else session_path.removesuffix("/resume")
-                if is_resume_route
-                else session_path
-            )
-            if is_cancel_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_cancel_session(session_id=session_id, receive=receive, send=send)
-                return
-            if is_events_route:
-                if method != "GET":
-                    await self._json_response(send, status=405, payload={"error": "method not allowed"})
-                    return
-                raw_query = scope.get("query_string", b"")
-                query_string = raw_query.decode("utf-8") if isinstance(raw_query, bytes) else str(raw_query)
-                query = parse_qs(query_string)
-                raw_after = query.get("after_sequence", ["0"])[0]
-                try:
-                    after_sequence = int(raw_after)
-                except ValueError:
-                    await self._json_response(send, status=400, payload={"error": "after_sequence must be an integer"})
-                    return
-                if after_sequence < 0:
-                    await self._json_response(send, status=400, payload={"error": "after_sequence must be non-negative"})
-                    return
-                follow = query.get("follow", ["false"])[0].lower() == "true"
-                await self._handle_session_events(
-                    session_id=session_id,
-                    after_sequence=after_sequence,
-                    follow=follow,
-                    receive=receive,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            if is_approval_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_approval_resolution(
-                    session_id=session_id,
-                    receive=receive,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            if is_question_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_question_answer(
-                    session_id=session_id,
-                    receive=receive,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            if is_result_route:
-                if method != "GET":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_session_result(
-                    session_id=session_id,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            if is_debug_route:
-                if method != "GET":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_session_debug(
-                    session_id=session_id,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            if is_undo_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_session_undo(session_id=session_id, send=send)
-                return
-            if is_revert_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_session_revert(
-                    session_id=session_id,
-                    receive=receive,
-                    send=send,
-                )
-                return
-            if is_unrevert_route:
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_session_unrevert(session_id=session_id, send=send)
-                return
-            if is_resume_route:
-                # Explicit resume of an interrupted/failed-retryable session is
-                # a POST-only surface. It re-enters the graph loop (provider
-                # re-execution) and must never be triggered by a read.
-                if method != "POST":
-                    await self._json_response(
-                        send,
-                        status=405,
-                        payload={"error": "method not allowed"},
-                    )
-                    return
-                await self._handle_resume(
-                    session_id=session_id,
-                    send=send,
-                    show_thinking=show_thinking,
-                )
-                return
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return
-            # Session replay (frontend getSessionReplay) is READ-ONLY: it must
-            # never route into runtime.resume, which would re-execute the model
-            # for any row whose persisted checkpoint is 'interrupted' (which
-            # includes every session while it is running).
-            await self._handle_session_replay(
+                return True
+            await self._handle_child_session_context(
                 session_id=session_id,
                 send=send,
                 show_thinking=show_thinking,
             )
-            return
-
-        provider_prefix = "/api/providers/"
-        if path.startswith(provider_prefix):
-            provider_path = path.removeprefix(provider_prefix)
-            is_models_route = provider_path.endswith("/models")
-            is_inspect_route = provider_path.endswith("/inspect")
-            is_validate_route = provider_path.endswith("/validate")
-            if not is_models_route and not is_inspect_route and not is_validate_route:
-                await self._json_response(send, status=404, payload={"error": "not found"})
-                return
-            provider_name = (
-                provider_path.removesuffix("/models")
-                if is_models_route
-                else provider_path.removesuffix("/inspect")
-                if is_inspect_route
-                else provider_path.removesuffix("/validate")
-            )
-            if not provider_name:
-                await self._json_response(send, status=404, payload={"error": "not found"})
-                return
-            expected_method = "POST" if is_validate_route else "GET"
-            if method != expected_method:
+            return True
+        session_id = (
+            session_path.removesuffix("/events")
+            if is_events_route
+            else session_path.removesuffix("/approval")
+            if is_approval_route
+            else session_path.removesuffix("/question")
+            if is_question_route
+            else session_path.removesuffix("/result")
+            if is_result_route
+            else session_path.removesuffix("/debug")
+            if is_debug_route
+            else session_path.removesuffix("/undo")
+            if is_undo_route
+            else session_path.removesuffix("/revert")
+            if is_revert_route
+            else session_path.removesuffix("/unrevert")
+            if is_unrevert_route
+            else session_path.removesuffix("/cancel")
+            if session_path.endswith("/cancel")
+            else session_path.removesuffix("/interrupt")
+            if session_path.endswith("/interrupt")
+            else session_path.removesuffix("/resume")
+            if is_resume_route
+            else session_path
+        )
+        if is_cancel_route:
+            if method != "POST":
                 await self._json_response(
                     send,
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
-            if is_models_route:
-                await self._handle_provider_models(provider_name=provider_name, send=send)
-            elif is_inspect_route:
-                await self._handle_provider_inspect(provider_name=provider_name, send=send)
-            else:
-                await self._handle_provider_validation(provider_name=provider_name, send=send)
-            return
-
-        review_diff_prefix = "/api/review/diff/"
-        if path.startswith(review_diff_prefix):
-            diff_path = path.removeprefix(review_diff_prefix)
-            if not diff_path:
-                await self._json_response(send, status=404, payload={"error": "not found"})
-                return
+                return True
+            await self._handle_cancel_session(session_id=session_id, receive=receive, send=send)
+            return True
+        if is_events_route:
+            if method != "GET":
+                await self._json_response(send, status=405, payload={"error": "method not allowed"})
+                return True
+            raw_query = scope.get("query_string", b"")
+            query_string = raw_query.decode("utf-8") if isinstance(raw_query, bytes) else str(raw_query)
+            query = parse_qs(query_string)
+            raw_after = query.get("after_sequence", ["0"])[0]
+            try:
+                after_sequence = int(raw_after)
+            except ValueError:
+                await self._json_response(send, status=400, payload={"error": "after_sequence must be an integer"})
+                return True
+            if after_sequence < 0:
+                await self._json_response(send, status=400, payload={"error": "after_sequence must be non-negative"})
+                return True
+            follow = query.get("follow", ["false"])[0].lower() == "true"
+            await self._handle_session_events(
+                session_id=session_id,
+                after_sequence=after_sequence,
+                follow=follow,
+                receive=receive,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if is_approval_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_approval_resolution(
+                session_id=session_id,
+                receive=receive,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if is_question_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_question_answer(
+                session_id=session_id,
+                receive=receive,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if is_result_route:
             if method != "GET":
                 await self._json_response(
                     send,
                     status=405,
                     payload={"error": "method not allowed"},
                 )
-                return
-            await self._handle_get_review_diff(path=diff_path, send=send)
-            return
+                return True
+            await self._handle_session_result(
+                session_id=session_id,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if is_debug_route:
+            if method != "GET":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_session_debug(
+                session_id=session_id,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if is_undo_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_session_undo(session_id=session_id, send=send)
+            return True
+        if is_revert_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_session_revert(
+                session_id=session_id,
+                receive=receive,
+                send=send,
+            )
+            return True
+        if is_unrevert_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_session_unrevert(session_id=session_id, send=send)
+            return True
+        if is_resume_route:
+            # Explicit resume of an interrupted/failed-retryable session is
+            # a POST-only surface. It re-enters the graph loop (provider
+            # re-execution) and must never be triggered by a read.
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_resume(
+                session_id=session_id,
+                send=send,
+                show_thinking=show_thinking,
+            )
+            return True
+        if method != "GET":
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
+            return True
+        # Session replay (frontend getSessionReplay) is READ-ONLY: it must
+        # never route into runtime.resume, which would re-execute the model
+        # for any row whose persisted checkpoint is 'interrupted' (which
+        # includes every session while it is running).
+        await self._handle_session_replay(
+            session_id=session_id,
+            send=send,
+            show_thinking=show_thinking,
+        )
+        return True
 
-        if path == "/api" or path.startswith("/api/"):
+    async def _route_provider_paths(self, *, method: str, path: str, send: Send) -> bool:
+        provider_prefix = "/api/providers/"
+        if not path.startswith(provider_prefix):
+            return False
+        provider_path = path.removeprefix(provider_prefix)
+        is_models_route = provider_path.endswith("/models")
+        is_inspect_route = provider_path.endswith("/inspect")
+        is_validate_route = provider_path.endswith("/validate")
+        if not is_models_route and not is_inspect_route and not is_validate_route:
             await self._json_response(send, status=404, payload={"error": "not found"})
-            return
+            return True
+        provider_name = (
+            provider_path.removesuffix("/models")
+            if is_models_route
+            else provider_path.removesuffix("/inspect")
+            if is_inspect_route
+            else provider_path.removesuffix("/validate")
+        )
+        if not provider_name:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return True
+        expected_method = "POST" if is_validate_route else "GET"
+        if method != expected_method:
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
+            return True
+        if is_models_route:
+            await self._handle_provider_models(provider_name=provider_name, send=send)
+        elif is_inspect_route:
+            await self._handle_provider_inspect(provider_name=provider_name, send=send)
+        else:
+            await self._handle_provider_validation(provider_name=provider_name, send=send)
+        return True
 
-        await self._handle_static_file(path, send)
+    async def _route_review_diff_paths(self, *, method: str, path: str, send: Send) -> bool:
+        review_diff_prefix = "/api/review/diff/"
+        if not path.startswith(review_diff_prefix):
+            return False
+        diff_path = path.removeprefix(review_diff_prefix)
+        if not diff_path:
+            await self._json_response(send, status=404, payload={"error": "not found"})
+            return True
+        if method != "GET":
+            await self._json_response(
+                send,
+                status=405,
+                payload={"error": "method not allowed"},
+            )
+            return True
+        await self._handle_get_review_diff(path=diff_path, send=send)
+        return True
 
     @staticmethod
     def _content_type_for_suffix(suffix: str) -> str:
