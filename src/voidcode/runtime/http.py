@@ -58,6 +58,7 @@ from .question import QuestionResponse
 from .serialization import serialize_revert_marker, serialize_session_debug_snapshot
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
+from .storage_shared import SessionSealedError
 from .task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
@@ -96,6 +97,8 @@ class RuntimeTransport(Protocol):
     def retry_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState: ...
+
+    def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]: ...
 
     def cancel_session(
         self,
@@ -320,6 +323,17 @@ class _SessionRevertRequestPayload(_HttpBoundaryModel):
     def _validate_sequence(cls, value: object) -> int:
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError("must be a positive integer")
+        return value
+
+
+class _SteerSessionRequestPayload(_HttpBoundaryModel):
+    content: str | None = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _validate_content(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("must be a non-empty string")
         return value
 
 
@@ -819,6 +833,7 @@ class RuntimeTransportApp:
         is_unrevert_route = session_path.endswith("/unrevert")
         is_cancel_route = session_path.endswith("/cancel") or session_path.endswith("/interrupt")
         is_resume_route = session_path.endswith("/resume")
+        is_steer_route = session_path.endswith("/steer")
         session_id = (
             session_path.removesuffix("/events")
             if is_events_route
@@ -846,6 +861,8 @@ class RuntimeTransportApp:
             if session_path.endswith("/interrupt")
             else session_path.removesuffix("/resume")
             if is_resume_route
+            else session_path.removesuffix("/steer")
+            if is_steer_route
             else session_path
         )
         try:
@@ -907,6 +924,8 @@ class RuntimeTransportApp:
             if session_path.endswith("/interrupt")
             else session_path.removesuffix("/resume")
             if is_resume_route
+            else session_path.removesuffix("/steer")
+            if is_steer_route
             else session_path
         )
         if is_cancel_route:
@@ -918,6 +937,16 @@ class RuntimeTransportApp:
                 )
                 return True
             await self._handle_cancel_session(session_id=session_id, receive=receive, send=send)
+            return True
+        if is_steer_route:
+            if method != "POST":
+                await self._json_response(
+                    send,
+                    status=405,
+                    payload={"error": "method not allowed"},
+                )
+                return True
+            await self._handle_steer_session(session_id=session_id, receive=receive, send=send)
             return True
         if is_events_route:
             if method != "GET":
@@ -2089,6 +2118,39 @@ class RuntimeTransportApp:
             payload={"revert_marker": serialize_revert_marker(marker)},
         )
 
+    async def _handle_steer_session(
+        self,
+        *,
+        session_id: str,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        try:
+            content = self._parse_steer_session_request(await self._read_body(receive))
+        except ValueError as exc:
+            await self._json_response(send, status=400, payload={"error": str(exc)})
+            return
+        with self._active_request_scope():
+            runtime = self._runtime_factory()
+            try:
+                queued = runtime.queue_steering(
+                    session_id=session_id,
+                    content=content,
+                )
+            except SessionSealedError as exc:
+                await self._json_response(send, status=409, payload={"error": str(exc)})
+                return
+            except ValueError as exc:
+                await self._json_response(send, status=404, payload={"error": str(exc)})
+                return
+            finally:
+                self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
+        await self._json_response(
+            send,
+            status=200,
+            payload={"session_id": session_id, "queued": len(queued)},
+        )
+
     async def _handle_session_unrevert(self, *, session_id: str, send: Send) -> None:
         with self._active_request_scope():
             runtime = self._runtime_factory()
@@ -2264,6 +2326,17 @@ class RuntimeTransportApp:
             raise ValueError(_format_http_validation_error(error)) from exc
 
         return cast(str, payload.request_id), cast(PermissionResolution, payload.decision)
+
+    def _parse_steer_session_request(self, body: bytes) -> str:
+        raw_payload = _parse_json_body(body)
+        if not isinstance(raw_payload, dict):
+            raise ValueError("request body must be a JSON object")
+        try:
+            payload = _SteerSessionRequestPayload.model_validate(raw_payload)
+        except ValidationError as exc:
+            error = cast(dict[str, object], exc.errors(include_url=False)[0])
+            raise ValueError(_format_http_validation_error(error)) from exc
+        return cast(str, payload.content)
 
     def _parse_session_cancel_request(self, body: bytes) -> _SessionCancelRequestPayload:
         if not body.strip():

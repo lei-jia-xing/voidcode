@@ -421,6 +421,67 @@ def test_transport_session_cancel_endpoint_rejects_non_post() -> None:
     assert response.status == 405
 
 
+def test_transport_steer_session_endpoint_calls_runtime_queue_steering() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    RuntimeTransportApp = runtime_http.RuntimeTransportApp
+
+    class SteerSessionRuntime:
+        calls: list[tuple[str, str]] = []
+
+        def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
+            self.calls.append((session_id, content))
+            return ({"session_id": session_id, "content": content, "kind": "steering"},)
+
+    app = RuntimeTransportApp(runtime_factory=cast(Any, SteerSessionRuntime))
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/steer-session/steer",
+        body=json.dumps({"content": "focus on the tests"}).encode("utf-8"),
+    )
+
+    assert response.status == 200
+    assert response.json() == {"session_id": "steer-session", "queued": 1}
+    assert SteerSessionRuntime.calls == [("steer-session", "focus on the tests")]
+
+
+def test_transport_steer_session_rejects_empty_content() -> None:
+    runtime_http = importlib.import_module("voidcode.runtime.http")
+    RuntimeTransportApp = runtime_http.RuntimeTransportApp
+
+    class SteerSessionRuntime:
+        def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
+            raise AssertionError(f"queue_steering should not be called: {session_id!r} {content!r}")
+
+    app = RuntimeTransportApp(runtime_factory=cast(Any, SteerSessionRuntime))
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/steer-session/steer",
+        body=json.dumps({"content": "   "}).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert response.json() == {"error": "content must be a non-empty string"}
+
+
+def test_transport_steer_session_returns_not_found_for_unknown_session(tmp_path: Path) -> None:
+    create_runtime_app = _load_transport_app_factory()
+    app = create_runtime_app(workspace=tmp_path)
+
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/sessions/missing-session/steer",
+        body=json.dumps({"content": "focus"}).encode("utf-8"),
+    )
+
+    assert response.status == 404
+    assert response.json() == {"error": "unknown session: missing-session"}
+
+
 def _parse_sse_payloads(response: _TransportResponse) -> list[dict[str, object]]:
     frames = [frame for frame in response.body.decode("utf-8").split("\n\n") if frame]
     payloads: list[dict[str, object]] = []
