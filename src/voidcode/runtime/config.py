@@ -3200,15 +3200,6 @@ def serialize_runtime_tui_preferences(preferences: RuntimeTuiPreferences) -> dic
     return payload
 
 
-def _parse_provider_fallback_config(
-    raw_provider_fallback: object,
-) -> RuntimeProviderFallbackConfig | None:
-    return parse_provider_fallback_payload(
-        raw_provider_fallback,
-        source="runtime config field 'provider_fallback'",
-    )
-
-
 def _parse_providers_config(
     raw_providers: object,
     *,

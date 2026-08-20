@@ -31,9 +31,7 @@ from .contracts import (
     ReviewChangedFile,
     ReviewFileDiff,
     ReviewTreeNode,
-    RuntimeHookPresetSnapshot,
     RuntimeNotification,
-    RuntimeProviderContextSnapshot,
     RuntimeRequest,
     RuntimeRequestError,
     RuntimeResponse,
@@ -54,10 +52,10 @@ from .events import (
     DelegatedLifecycleEventPayload,
     EventEnvelope,
     redact_reasoning_payload,
-    runtime_policy_observability_payload,
 )
 from .permission import PermissionResolution
 from .question import QuestionResponse
+from .serialization import serialize_revert_marker, serialize_session_debug_snapshot
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .task import (
@@ -168,13 +166,6 @@ class RuntimeTransport(Protocol):
         question_request_id: str,
         responses: tuple[QuestionResponse, ...],
     ) -> RuntimeResponse: ...
-
-
-class RuntimeSessionDebugEventLike(Protocol):
-    sequence: int
-    event_type: str
-    source: str
-    payload: dict[str, object]
 
 
 class Receive(Protocol):
@@ -1953,7 +1944,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload=self._serialize_session_debug_snapshot(
+            payload=serialize_session_debug_snapshot(
                 snapshot,
                 show_thinking=show_thinking,
             ),
@@ -1972,7 +1963,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload={"revert_marker": self._serialize_revert_marker(marker)},
+            payload={"revert_marker": serialize_revert_marker(marker)},
         )
 
     async def _handle_session_revert(
@@ -2002,7 +1993,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload={"revert_marker": self._serialize_revert_marker(marker)},
+            payload={"revert_marker": serialize_revert_marker(marker)},
         )
 
     async def _handle_session_unrevert(self, *, session_id: str, send: Send) -> None:
@@ -2018,7 +2009,7 @@ class RuntimeTransportApp:
         await self._json_response(
             send,
             status=200,
-            payload={"revert_marker": self._serialize_revert_marker(marker)},
+            payload={"revert_marker": serialize_revert_marker(marker)},
         )
 
     async def _handle_approval_resolution(
@@ -2360,7 +2351,7 @@ class RuntimeTransportApp:
             "output": result.output,
             "error": result.error,
             "last_event_sequence": result.last_event_sequence,
-            "revert_marker": RuntimeTransportApp._serialize_revert_marker(result.revert_marker),
+            "revert_marker": serialize_revert_marker(result.revert_marker),
             "transcript": [
                 {
                     **cast(
@@ -2374,202 +2365,6 @@ class RuntimeTransportApp:
                 }
                 for event in result.transcript
             ],
-        }
-
-    @staticmethod
-    def _serialize_revert_marker(
-        marker: RuntimeSessionRevertMarker | None,
-    ) -> dict[str, object] | None:
-        if marker is None:
-            return None
-        return {"sequence": marker.sequence, "active": marker.active}
-
-    @staticmethod
-    def _serialize_session_debug_snapshot(
-        snapshot: RuntimeSessionDebugSnapshot,
-        *,
-        show_thinking: bool = False,
-    ) -> dict[str, object]:
-        runtime_policy = RuntimeTransportApp._runtime_policy_debug_payload(snapshot)
-        return {
-            "session": RuntimeTransportApp._serialize_session_state(snapshot.session),
-            **({"runtime_policy": runtime_policy} if runtime_policy is not None else {}),
-            "prompt": snapshot.prompt,
-            "persisted_status": snapshot.persisted_status,
-            "current_status": snapshot.current_status,
-            "active": snapshot.active,
-            "resumable": snapshot.resumable,
-            "replayable": snapshot.replayable,
-            "terminal": snapshot.terminal,
-            "resume_checkpoint_kind": snapshot.resume_checkpoint_kind,
-            "pending_approval": (
-                {
-                    "request_id": snapshot.pending_approval.request_id,
-                    "tool_name": snapshot.pending_approval.tool_name,
-                    "target_summary": snapshot.pending_approval.target_summary,
-                    "reason": snapshot.pending_approval.reason,
-                    "policy_mode": snapshot.pending_approval.policy_mode,
-                    "arguments": snapshot.pending_approval.arguments,
-                    "owner_session_id": snapshot.pending_approval.owner_session_id,
-                    "owner_parent_session_id": snapshot.pending_approval.owner_parent_session_id,
-                    "delegated_task_id": snapshot.pending_approval.delegated_task_id,
-                }
-                if snapshot.pending_approval is not None
-                else None
-            ),
-            "pending_question": (
-                {
-                    "request_id": snapshot.pending_question.request_id,
-                    "tool_name": snapshot.pending_question.tool_name,
-                    "question_count": snapshot.pending_question.question_count,
-                    "headers": list(snapshot.pending_question.headers),
-                }
-                if snapshot.pending_question is not None
-                else None
-            ),
-            "revert_marker": RuntimeTransportApp._serialize_revert_marker(snapshot.revert_marker),
-            "last_event_sequence": snapshot.last_event_sequence,
-            "last_relevant_event": RuntimeTransportApp._serialize_session_debug_event(
-                snapshot.last_relevant_event,
-                show_thinking=show_thinking,
-            ),
-            "last_failure_event": RuntimeTransportApp._serialize_session_debug_event(
-                snapshot.last_failure_event,
-                show_thinking=show_thinking,
-            ),
-            "failure": (
-                {
-                    "classification": snapshot.failure.classification,
-                    "message": snapshot.failure.message,
-                }
-                if snapshot.failure is not None
-                else None
-            ),
-            "last_tool": (
-                {
-                    "tool_name": snapshot.last_tool.tool_name,
-                    "status": snapshot.last_tool.status,
-                    "summary": snapshot.last_tool.summary,
-                    "arguments": snapshot.last_tool.arguments,
-                    "artifact": getattr(snapshot.last_tool, "artifact", {}),
-                    "sequence": snapshot.last_tool.sequence,
-                }
-                if snapshot.last_tool is not None
-                else None
-            ),
-            "provider_context": RuntimeTransportApp._serialize_provider_context_snapshot(snapshot.provider_context),
-            "hook_presets": RuntimeTransportApp._serialize_hook_preset_snapshot(snapshot.hook_presets),
-            "suggested_operator_action": snapshot.suggested_operator_action,
-            "operator_guidance": snapshot.operator_guidance,
-        }
-
-    @staticmethod
-    def _runtime_policy_debug_payload(
-        snapshot: RuntimeSessionDebugSnapshot,
-    ) -> dict[str, object] | None:
-        runtime_policy = snapshot.session.metadata.get("runtime_policy")
-        if not isinstance(runtime_policy, dict):
-            return None
-        return runtime_policy_observability_payload(cast(dict[str, object], runtime_policy))
-
-    @staticmethod
-    def _serialize_hook_preset_snapshot(
-        snapshot: RuntimeHookPresetSnapshot | None,
-    ) -> dict[str, object] | None:
-        if snapshot is None:
-            return None
-        return {
-            "refs": list(snapshot.refs),
-            "kinds": list(snapshot.kinds),
-            "source": snapshot.source,
-            "count": snapshot.count,
-        }
-
-    @staticmethod
-    def _serialize_provider_context_snapshot(
-        snapshot: RuntimeProviderContextSnapshot | None,
-    ) -> dict[str, object] | None:
-        if snapshot is None:
-            return None
-        return {
-            "provider": snapshot.provider,
-            "model": snapshot.model,
-            "segment_count": snapshot.segment_count,
-            "message_count": snapshot.message_count,
-            "context_window": snapshot.context_window,
-            "segments": [
-                {
-                    "index": segment.index,
-                    "role": segment.role,
-                    "source": segment.source,
-                    "content": segment.content,
-                    "content_truncated": segment.content_truncated,
-                    "tool_call_id": segment.tool_call_id,
-                    "tool_name": segment.tool_name,
-                    "tool_arguments": segment.tool_arguments,
-                    "metadata": segment.metadata,
-                }
-                for segment in snapshot.segments
-            ],
-            "provider_messages": [
-                {
-                    "index": message.index,
-                    "role": message.role,
-                    "source": message.source,
-                    "content": message.content,
-                    "content_truncated": message.content_truncated,
-                    "tool_call_id": message.tool_call_id,
-                    "tool_calls": list(message.tool_calls),
-                }
-                for message in snapshot.provider_messages
-            ],
-            "policy_decision": (
-                {
-                    "mode": snapshot.policy_decision.mode,
-                    "action": snapshot.policy_decision.action,
-                    "blocked": snapshot.policy_decision.blocked,
-                    "diagnostic_count": snapshot.policy_decision.diagnostic_count,
-                    "diagnostic_codes": list(snapshot.policy_decision.diagnostic_codes),
-                    "blocking_diagnostic_codes": list(snapshot.policy_decision.blocking_diagnostic_codes),
-                    "message": snapshot.policy_decision.message,
-                }
-                if snapshot.policy_decision is not None
-                else None
-            ),
-            "diagnostics": [
-                {
-                    "severity": diagnostic.severity,
-                    "code": diagnostic.code,
-                    "message": diagnostic.message,
-                    "source": diagnostic.source,
-                    "segment_indices": list(diagnostic.segment_indices),
-                    "suggested_fix": diagnostic.suggested_fix,
-                    "details": diagnostic.details,
-                    "policy_action": diagnostic.policy_action,
-                    "policy_blocking": diagnostic.policy_blocking,
-                }
-                for diagnostic in snapshot.diagnostics
-            ],
-        }
-
-    @staticmethod
-    def _serialize_session_debug_event(
-        event: object | None,
-        *,
-        show_thinking: bool = False,
-    ) -> dict[str, object] | None:
-        if event is None:
-            return None
-        typed_event = cast("RuntimeSessionDebugEventLike", event)
-        return {
-            "sequence": typed_event.sequence,
-            "event_type": typed_event.event_type,
-            "source": typed_event.source,
-            "payload": redact_reasoning_payload(
-                typed_event.event_type,
-                typed_event.payload,
-                show_thinking=show_thinking,
-            ),
         }
 
     @staticmethod

@@ -71,23 +71,19 @@ from ..runtime.contracts import (
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderReadinessResult,
-    RuntimeHookPresetSnapshot,
     RuntimeMemoryStatusSnapshot,
-    RuntimeProviderContextSnapshot,
     RuntimeRequest,
-    RuntimeSessionDebugSnapshot,
-    RuntimeSessionRevertMarker,
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
 )
 from ..runtime.events import (
     EventEnvelope,
     redact_reasoning_payload,
-    runtime_policy_observability_payload,
 )
 from ..runtime.memory import MemoryKind, MemoryRecord
 from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.question import QuestionResponse
+from ..runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot
 from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState, StoredSessionSummary
 from ..runtime.session_metadata_helpers import runtime_state_run_id
@@ -1477,202 +1473,6 @@ def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
     return _format_named_record("TASK", fields)
 
 
-def _serialize_session_debug_snapshot(
-    snapshot: RuntimeSessionDebugSnapshot,
-    *,
-    show_thinking: bool = False,
-) -> dict[str, object]:
-    session_payload: dict[str, object] = {"id": snapshot.session.session.id}
-    if snapshot.session.session.parent_id is not None:
-        session_payload["parent_id"] = snapshot.session.session.parent_id
-    runtime_policy = _runtime_policy_debug_payload(snapshot)
-    return {
-        "session": {
-            "session": session_payload,
-            "status": snapshot.session.status,
-            "turn": snapshot.session.turn,
-            "metadata": snapshot.session.metadata,
-        },
-        **({"runtime_policy": runtime_policy} if runtime_policy is not None else {}),
-        "prompt": snapshot.prompt,
-        "persisted_status": snapshot.persisted_status,
-        "current_status": snapshot.current_status,
-        "active": snapshot.active,
-        "resumable": snapshot.resumable,
-        "replayable": snapshot.replayable,
-        "terminal": snapshot.terminal,
-        "resume_checkpoint_kind": snapshot.resume_checkpoint_kind,
-        "pending_approval": (
-            {
-                "request_id": snapshot.pending_approval.request_id,
-                "tool_name": snapshot.pending_approval.tool_name,
-                "target_summary": snapshot.pending_approval.target_summary,
-                "reason": snapshot.pending_approval.reason,
-                "policy_mode": snapshot.pending_approval.policy_mode,
-                "arguments": snapshot.pending_approval.arguments,
-                "owner_session_id": snapshot.pending_approval.owner_session_id,
-                "owner_parent_session_id": snapshot.pending_approval.owner_parent_session_id,
-                "delegated_task_id": snapshot.pending_approval.delegated_task_id,
-            }
-            if snapshot.pending_approval is not None
-            else None
-        ),
-        "pending_question": (
-            {
-                "request_id": snapshot.pending_question.request_id,
-                "tool_name": snapshot.pending_question.tool_name,
-                "question_count": snapshot.pending_question.question_count,
-                "headers": list(snapshot.pending_question.headers),
-            }
-            if snapshot.pending_question is not None
-            else None
-        ),
-        "revert_marker": _serialize_revert_marker(snapshot.revert_marker),
-        "last_event_sequence": snapshot.last_event_sequence,
-        "last_relevant_event": _serialize_session_debug_event(
-            snapshot.last_relevant_event,
-            show_thinking=show_thinking,
-        ),
-        "last_failure_event": _serialize_session_debug_event(
-            snapshot.last_failure_event,
-            show_thinking=show_thinking,
-        ),
-        "failure": (
-            {
-                "classification": snapshot.failure.classification,
-                "message": snapshot.failure.message,
-            }
-            if snapshot.failure is not None
-            else None
-        ),
-        "last_tool": (
-            {
-                "tool_name": snapshot.last_tool.tool_name,
-                "status": snapshot.last_tool.status,
-                "summary": snapshot.last_tool.summary,
-                "arguments": snapshot.last_tool.arguments,
-                "artifact": getattr(snapshot.last_tool, "artifact", {}),
-                "sequence": snapshot.last_tool.sequence,
-            }
-            if snapshot.last_tool is not None
-            else None
-        ),
-        "provider_context": _serialize_provider_context_snapshot(snapshot.provider_context),
-        "hook_presets": _serialize_hook_preset_snapshot(snapshot.hook_presets),
-        "suggested_operator_action": snapshot.suggested_operator_action,
-        "operator_guidance": snapshot.operator_guidance,
-    }
-
-
-def _runtime_policy_debug_payload(
-    snapshot: RuntimeSessionDebugSnapshot,
-) -> dict[str, object] | None:
-    runtime_policy = snapshot.session.metadata.get("runtime_policy")
-    if not isinstance(runtime_policy, dict):
-        return None
-    return runtime_policy_observability_payload(cast(dict[str, object], runtime_policy))
-
-
-def _serialize_hook_preset_snapshot(
-    snapshot: RuntimeHookPresetSnapshot | None,
-) -> dict[str, object] | None:
-    if snapshot is None:
-        return None
-    return {
-        "refs": list(snapshot.refs),
-        "kinds": list(snapshot.kinds),
-        "source": snapshot.source,
-        "count": snapshot.count,
-    }
-
-
-def _serialize_provider_context_snapshot(
-    snapshot: RuntimeProviderContextSnapshot | None,
-) -> dict[str, object] | None:
-    if snapshot is None:
-        return None
-    return {
-        "provider": snapshot.provider,
-        "model": snapshot.model,
-        "segment_count": snapshot.segment_count,
-        "message_count": snapshot.message_count,
-        "context_window": snapshot.context_window,
-        "segments": [
-            {
-                "index": segment.index,
-                "role": segment.role,
-                "source": segment.source,
-                "content": segment.content,
-                "content_truncated": segment.content_truncated,
-                "tool_call_id": segment.tool_call_id,
-                "tool_name": segment.tool_name,
-                "tool_arguments": segment.tool_arguments,
-                "metadata": segment.metadata,
-            }
-            for segment in snapshot.segments
-        ],
-        "provider_messages": [
-            {
-                "index": message.index,
-                "role": message.role,
-                "source": message.source,
-                "content": message.content,
-                "content_truncated": message.content_truncated,
-                "tool_call_id": message.tool_call_id,
-                "tool_calls": list(message.tool_calls),
-            }
-            for message in snapshot.provider_messages
-        ],
-        "policy_decision": (
-            {
-                "mode": snapshot.policy_decision.mode,
-                "action": snapshot.policy_decision.action,
-                "blocked": snapshot.policy_decision.blocked,
-                "diagnostic_count": snapshot.policy_decision.diagnostic_count,
-                "diagnostic_codes": list(snapshot.policy_decision.diagnostic_codes),
-                "blocking_diagnostic_codes": list(snapshot.policy_decision.blocking_diagnostic_codes),
-                "message": snapshot.policy_decision.message,
-            }
-            if snapshot.policy_decision is not None
-            else None
-        ),
-        "diagnostics": [
-            {
-                "severity": diagnostic.severity,
-                "code": diagnostic.code,
-                "message": diagnostic.message,
-                "source": diagnostic.source,
-                "segment_indices": list(diagnostic.segment_indices),
-                "suggested_fix": diagnostic.suggested_fix,
-                "details": diagnostic.details,
-                "policy_action": diagnostic.policy_action,
-                "policy_blocking": diagnostic.policy_blocking,
-            }
-            for diagnostic in snapshot.diagnostics
-        ],
-    }
-
-
-def _serialize_session_debug_event(
-    event: object | None,
-    *,
-    show_thinking: bool = False,
-) -> dict[str, object] | None:
-    if event is None:
-        return None
-    typed_event = cast(EventEnvelope, event)
-    return {
-        "sequence": typed_event.sequence,
-        "event_type": typed_event.event_type,
-        "source": typed_event.source,
-        "payload": redact_reasoning_payload(
-            typed_event.event_type,
-            typed_event.payload,
-            show_thinking=show_thinking,
-        ),
-    }
-
-
 def _handle_sessions_resume_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
@@ -1692,7 +1492,7 @@ def _handle_sessions_resume_command(args: SessionsArgs) -> int:
                     "workspace": str(workspace),
                     "session_id": session_id,
                     "dry_run": True,
-                    "debug": _serialize_session_debug_snapshot(snapshot),
+                    "debug": serialize_session_debug_snapshot(snapshot),
                 }
             )
             return 0
@@ -1822,18 +1622,12 @@ def _handle_sessions_debug_command(args: SessionsArgs) -> int:
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
-    debug_payload = _serialize_session_debug_snapshot(
+    debug_payload = serialize_session_debug_snapshot(
         snapshot,
         show_thinking=show_thinking,
     )
     print(json.dumps(debug_payload, sort_keys=True))
     return 0
-
-
-def _serialize_revert_marker(marker: RuntimeSessionRevertMarker | None) -> dict[str, object] | None:
-    if marker is None:
-        return None
-    return {"sequence": marker.sequence, "active": marker.active}
 
 
 def _handle_sessions_undo_command(args: SessionsArgs) -> int:
@@ -1845,7 +1639,7 @@ def _handle_sessions_undo_command(args: SessionsArgs) -> int:
             marker = runtime.undo_session(session_id=session_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
+    print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
 
 
@@ -1863,7 +1657,7 @@ def _handle_sessions_revert_command(args: SessionsArgs) -> int:
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
+    print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
 
 
@@ -1876,7 +1670,7 @@ def _handle_sessions_unrevert_command(args: SessionsArgs) -> int:
             marker = runtime.unrevert_session(session_id=session_id)
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-    print_json({"session_id": session_id, "revert_marker": _serialize_revert_marker(marker)})
+    print_json({"session_id": session_id, "revert_marker": serialize_revert_marker(marker)})
     return 0
 
 

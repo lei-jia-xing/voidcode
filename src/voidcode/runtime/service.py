@@ -264,7 +264,6 @@ from .permission_path_helpers import extract_paths_from_patch
 from .permission_policy import (
     pending_approval_from_response,
     pending_question_from_response,
-    request_event_and_resolution_state,
     waiting_request_id_from_response,
 )
 from .policy import (
@@ -286,12 +285,6 @@ from .provider_inspection import (
     RuntimeProviderValidationProjector,
 )
 from .provider_metadata import (
-    contract_metadata_from_payload,
-    optional_bool,
-    optional_positive_float,
-    optional_positive_int,
-    optional_string,
-    optional_string_tuple,
     tool_feedback_mode,
     validate_reasoning_effort_capability,
 )
@@ -300,16 +293,13 @@ from .resume import RuntimeResumeCoordinator
 from .review import WorkspaceReviewService
 from .run_loop import RuntimeRunLoopCoordinator
 from .runtime_debug import (
-    artifact_debug_metadata,
     current_debug_status,
     debug_event,
     debug_failure,
-    debug_session_state_inconsistency,
     last_tool_summary,
     operator_guidance,
     payload_with_artifact_status,
     prompt_and_tool_results_from_debug_events,
-    provider_visible_tool_result_data,
 )
 from .runtime_surface import PermissionOutcome, RuntimeSurface
 from .session import (
@@ -1310,9 +1300,6 @@ class VoidCodeRuntime(RuntimeSurface):
             parent_session_id=context.parent_session_id if context is not None else None,
         )
 
-    def _release_mcp_session(self, session_id: str) -> tuple[EventEnvelope, ...]:
-        return release_mcp_session_events(self._mcp_manager, session_id=session_id, start_sequence=1)
-
     def cleanup_idle_mcp_sessions(
         self,
         *,
@@ -1650,6 +1637,52 @@ class VoidCodeRuntime(RuntimeSurface):
         run_id: str | None = None,
         abort_signal: ProviderAbortSignal | None = None,
     ) -> Iterator[RuntimeStreamChunk]:
+        prepared = self._prepare_stream_request_and_rehydration(
+            request,
+            session_id=session_id,
+            run_id=run_id,
+        )
+        session = self._assemble_stream_session_metadata(
+            prepared,
+            run_id=run_id,
+        )
+        session, sequence = yield from self._emit_stream_prelude_events(
+            prepared,
+            session,
+            0,
+        )
+        tooling = yield from self._start_stream_mcp_and_tooling(
+            prepared,
+            session,
+            sequence,
+        )
+        if tooling is None:
+            return
+        session, sequence, tool_registry, skill_registry = tooling
+        startup = yield from self._start_stream_acp_and_skills(
+            prepared,
+            session,
+            sequence,
+            tool_registry,
+            skill_registry,
+            abort_signal=abort_signal,
+        )
+        if startup is None:
+            return
+        session, sequence, graph, graph_request, tool_results = startup
+        loop = yield from self._run_stream_graph_loop(
+            graph=graph,
+            tool_registry=tool_registry,
+            session=session,
+            sequence=sequence,
+            graph_request=graph_request,
+            tool_results=tool_results,
+        )
+        yield from self._finalize_stream_run(*loop)
+
+    def _prepare_stream_request_and_rehydration(
+        self, request: RuntimeRequest, *, session_id: str | None, run_id: str | None
+    ) -> _PreparedStreamSession:
         resolved_session_id = session_id or self._resolve_session_id(request)
         effective_config = self.runtime_config_for_request(request)
         if self._graph_override is None:
@@ -1708,6 +1741,24 @@ class VoidCodeRuntime(RuntimeSurface):
         resolved_hook_presets = self._build_hook_preset_snapshot(
             effective_config.agent,
         )
+        return _PreparedStreamSession(
+            request=request,
+            resolved_session_id=resolved_session_id,
+            effective_config=effective_config,
+            request_metadata=request_metadata,
+            existing_session=existing_session,
+            rehydrated_conversation_segments=rehydrated_conversation_segments,
+            rehydrated_tool_results=rehydrated_tool_results,
+            resolved_hook_presets=resolved_hook_presets,
+        )
+
+    def _assemble_stream_session_metadata(self, prep: _PreparedStreamSession, *, run_id: str | None) -> SessionState:
+        request = prep.request
+        resolved_session_id = prep.resolved_session_id
+        effective_config = prep.effective_config
+        request_metadata = prep.request_metadata
+        existing_session = prep.existing_session
+        resolved_hook_presets = prep.resolved_hook_presets
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
         session_request_metadata.pop("show_thinking", None)
@@ -1779,7 +1830,14 @@ class VoidCodeRuntime(RuntimeSurface):
             turn=session.turn,
             parent_session_id=request.parent_session_id,
         )
+        return session
 
+    def _emit_stream_prelude_events(
+        self, prep: _PreparedStreamSession, session: SessionState, sequence: int
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int]]:
+        request = prep.request
+        effective_config = prep.effective_config
+        request_metadata = prep.request_metadata
         runtime_policy_snapshot = session.metadata.get("runtime_policy")
         request_received_payload: dict[str, object] = {
             "prompt": request.prompt,
@@ -1832,7 +1890,15 @@ class VoidCodeRuntime(RuntimeSurface):
                 session=session,
                 event=envelope,
             )
+        return session, sequence
 
+    def _start_stream_mcp_and_tooling(
+        self, prep: _PreparedStreamSession, session: SessionState, sequence: int
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, ToolRegistry, SkillRegistry] | None]:
+        request = prep.request
+        effective_config = prep.effective_config
+        request_metadata = prep.request_metadata
+        resolved_hook_presets = prep.resolved_hook_presets
         if self.should_skip_mcp_startup_for_request(
             request_metadata=request_metadata,
             effective_config=effective_config,
@@ -1859,7 +1925,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 yield persisted_chunk
             if mcp_failed_chunk is not None:
                 yield self._persist_emitted_chunk(mcp_failed_chunk)
-                return
+                return None
 
         tool_materialization = self._tool_materialization_for_effective_config(
             effective_config,
@@ -1899,8 +1965,24 @@ class VoidCodeRuntime(RuntimeSurface):
             )
             if failed_chunk is not None:
                 yield self._persist_emitted_chunk(failed_chunk)
-                return
+                return None
+        return session, sequence, tool_registry, skill_registry
 
+    def _start_stream_acp_and_skills(
+        self,
+        prep: _PreparedStreamSession,
+        session: SessionState,
+        sequence: int,
+        tool_registry: ToolRegistry,
+        skill_registry: SkillRegistry,
+        *,
+        abort_signal: ProviderAbortSignal | None,
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int, RuntimeGraph, GraphRunRequest, list[ToolResult]] | None]:
+        request = prep.request
+        effective_config = prep.effective_config
+        request_metadata = prep.request_metadata
+        rehydrated_conversation_segments = prep.rehydrated_conversation_segments
+        rehydrated_tool_results = prep.rehydrated_tool_results
         loaded_skill_names = skills.loaded_skill_names(skill_registry)
 
         startup_chunks, session, sequence, startup_failed_chunk = self._start_run_acp(
@@ -2034,7 +2116,18 @@ class VoidCodeRuntime(RuntimeSurface):
         )
         tool_results: list[ToolResult] = list(rehydrated_tool_results)
         graph = self.graph_for_session_metadata(session.metadata)
+        return session, sequence, graph, graph_request, tool_results
 
+    def _run_stream_graph_loop(
+        self,
+        *,
+        graph: RuntimeGraph,
+        tool_registry: ToolRegistry,
+        session: SessionState,
+        sequence: int,
+        graph_request: GraphRunRequest,
+        tool_results: list[ToolResult],
+    ) -> Generator[RuntimeStreamChunk, None, tuple[RuntimeStreamChunk | None, int, RuntimeStreamChunk | None, Exception | None]]:
         last_chunk: RuntimeStreamChunk | None = None
         last_sequence = sequence
         deferred_failed_chunk: RuntimeStreamChunk | None = None
@@ -2059,6 +2152,15 @@ class VoidCodeRuntime(RuntimeSurface):
         except Exception as exc:
             graph_loop_error = exc
 
+        return last_chunk, last_sequence, deferred_failed_chunk, graph_loop_error
+
+    def _finalize_stream_run(
+        self,
+        last_chunk: RuntimeStreamChunk | None,
+        last_sequence: int,
+        deferred_failed_chunk: RuntimeStreamChunk | None,
+        graph_loop_error: Exception | None,
+    ) -> Generator[RuntimeStreamChunk]:
         if last_chunk is None:
             if graph_loop_error is not None:
                 raise graph_loop_error
@@ -3412,34 +3514,10 @@ class VoidCodeRuntime(RuntimeSurface):
         return self._provider_auth_inspector.presence(provider_name).as_tuple()
 
     @staticmethod
-    def _optional_positive_int(value: object) -> int | None:
-        return optional_positive_int(value)
-
-    @staticmethod
-    def _optional_bool(value: object) -> bool | None:
-        return optional_bool(value)
-
-    @staticmethod
-    def _optional_positive_float(value: object) -> float | None:
-        return optional_positive_float(value)
-
-    @staticmethod
-    def _optional_string(value: object) -> str | None:
-        return optional_string(value)
-
-    @staticmethod
-    def _optional_string_tuple(value: object) -> tuple[str, ...] | None:
-        return optional_string_tuple(value)
-
-    @staticmethod
     def _tool_feedback_mode(
         value: object,
     ) -> Literal["standard", "synthetic_user_message"] | None:
         return tool_feedback_mode(value)
-
-    @staticmethod
-    def _contract_metadata_from_payload(payload: dict[str, object]) -> ProviderModelMetadata:
-        return contract_metadata_from_payload(payload)
 
     def list_agent_summaries(self) -> tuple[AgentSummary, ...]:
         summaries: list[AgentSummary] = []
@@ -3935,27 +4013,8 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     @staticmethod
-    def _debug_session_state_inconsistency(
-        *,
-        result: RuntimeSessionResult,
-        pending_approval: PendingApproval | None,
-        pending_question: PendingQuestion | None,
-        resume_checkpoint: dict[str, object] | None,
-    ) -> str | None:
-        return debug_session_state_inconsistency(
-            result=result,
-            pending_approval=pending_approval,
-            pending_question=pending_question,
-            resume_checkpoint=resume_checkpoint,
-        )
-
-    @staticmethod
     def _last_tool_summary(result: RuntimeSessionResult) -> RuntimeSessionDebugToolSummary | None:
         return last_tool_summary(result)
-
-    @staticmethod
-    def _artifact_debug_metadata(payload: dict[str, object]) -> dict[str, object]:
-        return artifact_debug_metadata(payload)
 
     @classmethod
     def _payload_with_artifact_status(cls, payload: dict[str, object]) -> dict[str, object]:
@@ -4050,10 +4109,6 @@ class VoidCodeRuntime(RuntimeSurface):
         events: tuple[EventEnvelope, ...],
     ) -> tuple[str, list[ToolResult]]:
         return prompt_and_tool_results_from_debug_events(events)
-
-    @staticmethod
-    def _provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, object]:
-        return provider_visible_tool_result_data(payload)
 
     def _debug_skill_prompt_context(self, metadata: dict[str, object]) -> str:
         snapshot = self._skill_snapshot_from_metadata(metadata)
@@ -4496,19 +4551,6 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
         return pending_approval_from_response(response)
-
-    @staticmethod
-    def _request_event_and_resolution_state(
-        events: tuple[EventEnvelope, ...],
-        *,
-        request_kind: Literal["approval", "question"],
-        request_id: str,
-    ) -> tuple[EventEnvelope | None, bool]:
-        return request_event_and_resolution_state(
-            events,
-            request_kind=request_kind,
-            request_id=request_id,
-        )
 
     def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
         return pending_question_from_response(response)
@@ -6335,6 +6377,18 @@ class VoidCodeRuntime(RuntimeSurface):
         if response is None:
             return False
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedStreamSession:
+    request: RuntimeRequest
+    resolved_session_id: str
+    effective_config: EffectiveRuntimeConfig
+    request_metadata: dict[str, object]
+    existing_session: RuntimeResponse | None
+    rehydrated_conversation_segments: tuple[RuntimeContextSegment, ...]
+    rehydrated_tool_results: tuple[ToolResult, ...]
+    resolved_hook_presets: ResolvedHookPresetSnapshot
 
 
 @dataclass(frozen=True, slots=True)
