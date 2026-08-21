@@ -1443,10 +1443,51 @@ class VoidCodeRuntime(RuntimeSurface):
                     final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
                     response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
                     self.persist_response(request=request, response=response)
+                    raise
+                if self._interrupt_requested_but_not_emitted(
+                    abort_signal=abort_signal,
+                    final_session=final_session,
+                    events=events,
+                ):
+                    # A client disconnect / user abort terminated the run before
+                    # it reached an abort checkpoint and emitted its terminal
+                    # cancelled event. Synthesize the terminal event, seal
+                    # ``interrupted``, and swallow the underlying exception — the
+                    # run was interrupted, not errored.
+                    # ``_interrupt_requested_but_not_emitted`` guarantees
+                    # ``final_session`` is non-None here.
+                    assert final_session is not None
+                    final_session = yield from self._synthesize_interrupted_terminal(
+                        session=final_session,
+                        events=events,
+                        run_id=run_id,
+                        reason=cast(str | None, getattr(abort_signal, "reason", None)),
+                    )
+                    if final_session.status == "waiting":
+                        final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
+                    response = RuntimeResponse(session=final_session, events=tuple(events), output=output)
+                    self.persist_response(request=request, response=response)
+                    return
                 raise
 
             if final_session is None:
                 raise ValueError("runtime stream emitted no chunks")
+
+            if self._interrupt_requested_but_not_emitted(
+                abort_signal=abort_signal,
+                final_session=final_session,
+                events=events,
+            ):
+                # Abnormal early termination on the normal path (e.g. the run
+                # loop ended without producing a terminal chunk while the abort
+                # signal was armed). Synthesize the interrupted terminal event so
+                # the cancel is always observed and durably persisted.
+                final_session = yield from self._synthesize_interrupted_terminal(
+                    session=final_session,
+                    events=events,
+                    run_id=run_id,
+                    reason=cast(str | None, getattr(abort_signal, "reason", None)),
+                )
 
             if final_session.status == "waiting":
                 final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
@@ -1487,6 +1528,62 @@ class VoidCodeRuntime(RuntimeSurface):
                         )
         finally:
             self._unregister_active_session_id(session_id, run_id=run_id)
+
+    def _interrupt_requested_but_not_emitted(
+        self,
+        *,
+        abort_signal: ProviderAbortSignal | None,
+        final_session: SessionState | None,
+        events: list[EventEnvelope],
+    ) -> bool:
+        """True when the user interrupted the run but no cancelled terminal event reached the stream.
+
+        The run loop emits ``runtime.failed{cancelled:true}`` at every abort
+        checkpoint (provider stream, tool execution, between turns, hooks,
+        finalize). A terminal session status of ``running`` combined with an
+        armed abort signal and no ``runtime.failed`` event therefore means the
+        run was terminated abnormally *before* it could emit its terminal event
+        (worker abandoned on client disconnect, an exception raised before the
+        next abort checkpoint, or the generator closed mid-frame). In those
+        cases we synthesize the event so the client always sees the cancel.
+        """
+        if abort_signal is None or not abort_signal.cancelled:
+            return False
+        if final_session is None or final_session.status != "running":
+            return False
+        return not any(event.event_type == "runtime.failed" for event in events)
+
+    def _synthesize_interrupted_terminal(
+        self,
+        *,
+        session: SessionState,
+        events: list[EventEnvelope],
+        run_id: str,
+        reason: str | None,
+    ) -> Generator[RuntimeStreamChunk, None, SessionState]:
+        """Persist a synthetic ``runtime.failed{cancelled:true}`` terminal event.
+
+        Belt-and-suspenders for the abnormal-interruption case detected by
+        ``_interrupt_requested_but_not_emitted``. Emits the exact
+        ``runtime.failed{cancelled: true}`` event shape the frontend parses
+        (kind=interrupted, cancelled=true), seals the session ``interrupted``,
+        and returns the interrupted session state.
+        """
+        failed_chunk = chunk_builders.failed_chunk(
+            session=session,
+            sequence=0,
+            error="run interrupted",
+            payload=chunk_builders.user_interrupted_payload(
+                run_id=run_id_from_session_metadata(session.metadata) or run_id,
+                reason=reason,
+            ),
+            status="interrupted",
+        )
+        persisted = self._persist_emitted_chunk(failed_chunk)
+        if persisted.event is not None:
+            events.append(persisted.event)
+        yield persisted
+        return persisted.session
 
     def run(self, request: RuntimeRequest) -> RuntimeResponse:
         events: list[EventEnvelope] = []

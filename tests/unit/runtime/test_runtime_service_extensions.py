@@ -5300,6 +5300,297 @@ def test_runtime_abort_during_provider_stream_seals_interrupted(tmp_path: Path) 
     assert stored.session.status == "interrupted"
 
 
+class _BlockingFinalAnswerGraph:
+    """Turn 1 emits a tool call; turn 2 blocks inside the final-answer step
+    until the abort signal fires.
+
+    Reproduces the run#2 shape from the persisted bug evidence (``北京天气``:
+    two ``web_search`` calls completed, then the model was about to emit its
+    final answer when the user stopped). The block gives the test a
+    deterministic window to cancel between tool completion and the terminal
+    step's abort checkpoint.
+    """
+
+    def __init__(self) -> None:
+        self.final_answer_started = threading.Event()
+
+    def step(
+        self,
+        request: GraphRunRequest,
+        tool_results: tuple[object, ...],
+        *,
+        session: SessionState,
+    ) -> _StubStep:
+        _ = session
+        if not tool_results:
+            return _StubStep(tool_call=ToolCall(tool_name="write", arguments={}))
+        self.final_answer_started.set()
+        abort_signal = request.abort_signal
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if abort_signal is not None and abort_signal.cancelled:
+                break
+            time.sleep(0.005)
+        return _StubStep(output="final answer", is_finished=True)
+
+
+class _AbortRaisesGenericStreamTurnProvider:
+    """Streams a delta, then raises a generic (non-cancelled) error once the
+    abort signal fires.
+
+    Unlike the abort-aware providers (which surface ``error_kind="cancelled"``
+    and flow through ``_apply_provider_error_policy``'s interrupted branch),
+    this provider dies with an unrelated exception right after the abort. The
+    run loop treats it as a real provider failure — it must NOT be
+    misclassified as an interrupt (``不误伤真实失败路径``).
+    """
+
+    def __init__(self, *, name: str, model_provider: _AbortRaisesGenericModelProvider) -> None:
+        self.name = name
+        self.model_provider = model_provider
+
+    def propose_turn(self, request: object) -> ProviderTurnResult:
+        return ProviderTurnResult(output="done")
+
+    def stream_turn(self, request: object) -> Iterator[ProviderStreamEvent]:
+        turn_request = cast(ProviderTurnRequest, request)
+        abort_signal = turn_request.abort_signal
+
+        def events() -> Iterator[ProviderStreamEvent]:
+            yield ProviderStreamEvent(kind="delta", channel="text", text="partial answer")
+            self.model_provider.started.set()
+            while True:
+                if abort_signal is not None and abort_signal.cancelled:
+                    # A generic crash, NOT a cancelled provider error: the run
+                    # loop cannot classify this as an interrupt on its own.
+                    raise RuntimeError("provider network vanished after cancel")
+                time.sleep(0.005)
+
+        return events()
+
+
+class _AbortRaisesGenericModelProvider:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+        self.started = threading.Event()
+
+    def turn_provider(self) -> _AbortRaisesGenericStreamTurnProvider:
+        return _AbortRaisesGenericStreamTurnProvider(name=self.name, model_provider=self)
+
+
+def _assert_interrupted_terminal_event(
+    *,
+    chunks: list[RuntimeStreamChunk],
+    session_id: str,
+    runtime: VoidCodeRuntime,
+) -> None:
+    """Assert the stream carried a terminal ``runtime.failed{cancelled:true}``
+    event and the persisted row sealed ``interrupted``."""
+    failed_events = [chunk.event for chunk in chunks if chunk.event is not None and chunk.event.event_type == "runtime.failed"]
+    assert failed_events, f"expected a terminal runtime.failed event for {session_id}"
+    assert failed_events[-1].payload["cancelled"] is True
+    assert failed_events[-1].payload["kind"] == "interrupted"
+    stored = runtime._session_store.load_session(
+        workspace=runtime._workspace,
+        session_id=session_id,
+    )
+    assert stored.session.status == "interrupted"
+
+
+def test_runtime_abort_after_tool_then_during_final_answer_seals_interrupted(
+    tmp_path: Path,
+) -> None:
+    """Regression: user stops between the final tool completing and the model
+    emitting its final answer — the run#2 shape. Every interrupt must emit a
+    persisted ``runtime.failed{cancelled:true}`` terminal event and seal the
+    session ``interrupted`` (previously the run could end at the tool boundary
+    with no terminal event, leaving the frontend to misreport the interrupt as
+    a stream failure)."""
+    tool = _AbortBeforeInvokeTool()
+    graph = _BlockingFinalAnswerGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        tool_registry=ToolRegistry.from_tools([tool]),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    stream = runtime.run_stream(RuntimeRequest(prompt="weather", session_id="tool-then-answer-abort"))
+    chunks: list[RuntimeStreamChunk] = []
+
+    def _drain() -> None:
+        for chunk in stream:
+            chunks.append(chunk)
+
+    # The run loop blocks synchronously inside the final-answer step, so it
+    # must be drained on a separate thread — exactly how the HTTP cancel
+    # endpoint (a different request/thread) interrupts a live run.
+    drain_thread = threading.Thread(target=_drain, daemon=True)
+    drain_thread.start()
+    assert graph.final_answer_started.wait(timeout=3.0), "final answer step should have started"
+
+    result = runtime.cancel_session("tool-then-answer-abort", reason="stop before answer")
+    drain_thread.join(timeout=5.0)
+
+    assert result.status == "interrupted"
+    assert result.interrupted is True
+    _assert_interrupted_terminal_event(
+        chunks=chunks,
+        session_id="tool-then-answer-abort",
+        runtime=runtime,
+    )
+
+
+def test_runtime_abort_abnormal_termination_synthesizes_interrupted_terminal(
+    tmp_path: Path,
+) -> None:
+    """Regression: the abort signal fires but the run loop terminates without
+    ever emitting a terminal event (final_session left ``running`` — the
+    persisted-bug evidence for run#2, where the DB ended at the last tool
+    completion with no ``runtime.failed`` and the row stuck at ``interrupted``).
+
+    The service-level safety net must synthesize the
+    ``runtime.failed{cancelled:true}`` terminal event and seal ``interrupted``.
+    A live run loop dies before an abort checkpoint only via a non-provider
+    exception (provider errors always surface a terminal failed/interrupted
+    event through ``_apply_provider_error_policy``), so this is exercised
+    through the synthesis helpers directly against a persisted row — the exact
+    code path ``run_with_persistence`` invokes on abnormal termination."""
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    session_id = "abnormal-termination-synth"
+    run_id = "run-abnormal"
+    session = SessionState(
+        session=SessionRef(id=session_id),
+        status="running",
+        turn=1,
+        metadata={"runtime_state": {"run_id": run_id}},
+    )
+    # A live run always has a persisted row (created at stream start); create it
+    # so the synthesized event can append.
+    runtime._session_store.save_interrupted_checkpoint(
+        workspace=runtime._workspace,
+        session_id=session_id,
+        prompt="probe",
+        session_metadata=session.metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+
+    class _AbortSignal:
+        cancelled = True
+        reason = "stop now"
+
+    events: list[EventEnvelope] = []
+
+    # Detection only fires for an armed abort signal + non-terminal status +
+    # no already-emitted runtime.failed event.
+    assert (
+        runtime._interrupt_requested_but_not_emitted(
+            abort_signal=_AbortSignal(),
+            final_session=session,
+            events=events,
+        )
+        is True
+    )
+    assert (
+        runtime._interrupt_requested_but_not_emitted(
+            abort_signal=None,
+            final_session=session,
+            events=events,
+        )
+        is False
+    )
+    completed = SessionState(
+        session=SessionRef(id="other"),
+        status="completed",
+        turn=1,
+        metadata={},
+    )
+    assert (
+        runtime._interrupt_requested_but_not_emitted(
+            abort_signal=_AbortSignal(),
+            final_session=completed,
+            events=events,
+        )
+        is False
+    )
+
+    # Synthesis emits the canonical cancelled terminal event and persists it.
+    chunks = list(
+        runtime._synthesize_interrupted_terminal(
+            session=session,
+            events=events,
+            run_id=run_id,
+            reason="stop now",
+        )
+    )
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert chunk.event is not None
+    assert chunk.event.event_type == "runtime.failed"
+    assert chunk.session.status == "interrupted"
+    assert chunk.event.payload["cancelled"] is True
+    assert chunk.event.payload["kind"] == "interrupted"
+    assert chunk.event.payload["reason"] == "stop now"
+    assert chunk.event.payload["run_id"] == run_id
+    stored = runtime._session_store.load_session(
+        workspace=runtime._workspace,
+        session_id=session_id,
+    )
+    assert stored.session.status == "interrupted"
+
+
+def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
+    """Real provider failures are never misclassified as interrupts: a generic
+    (non-cancelled) provider error raised after the abort signal fires must
+    surface as a real ``runtime.failed`` (status ``failed``) and seal ``failed``
+    — the abort does not erase a genuine failure (``不误伤真实失败路径``)."""
+    provider = _AbortRaisesGenericModelProvider(name="primary")
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        model_provider_registry=ModelProviderRegistry(providers={"primary": provider}),
+        config=RuntimeConfig(
+            execution_engine="provider",
+            model="primary/model-a",
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="primary/model-a",
+                fallback_models=(),
+            ),
+            providers=RuntimeProvidersConfig(
+                custom={"primary": LiteLLMProviderConfig(transient_retry=ProviderTransientRetryConfig(max_retries=0))},
+            ),
+        ),
+    )
+    stream = runtime.run_stream(
+        RuntimeRequest(
+            prompt="abort the stream",
+            session_id="provider-error-abort",
+            metadata={"provider_stream": True},
+        )
+    )
+    chunks: list[RuntimeStreamChunk] = []
+    for chunk in stream:
+        chunks.append(chunk)
+        if provider.started.is_set():
+            break
+    assert provider.started.wait(timeout=2.0) is True
+
+    result = runtime.cancel_session("provider-error-abort", reason="stop after provider crash")
+    with pytest.raises(RuntimeError, match="provider network vanished after cancel"):
+        chunks.extend(stream)
+
+    assert result.status == "interrupted"  # the cancel endpoint still reports the interrupt
+    failed_chunks = [chunk for chunk in chunks if chunk.event is not None and chunk.event.event_type == "runtime.failed"]
+    assert failed_chunks, "expected the real provider failure to surface"
+    assert failed_chunks[-1].session.status == "failed"
+    assert failed_chunks[-1].event.payload.get("cancelled") is not True
+    stored = runtime._session_store.load_session(
+        workspace=runtime._workspace,
+        session_id="provider-error-abort",
+    )
+    assert stored.session.status == "failed"
+
+
 def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     tmp_path: Path,
 ) -> None:

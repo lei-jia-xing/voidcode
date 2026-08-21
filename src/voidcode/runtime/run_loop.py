@@ -1434,6 +1434,21 @@ class RuntimeRunLoopCoordinator:
             )
 
             if is_final_step:
+                # Finalize-window abort guard: ``_finalize_step_state`` above
+                # checks the abort signal at its entry, but a user interrupt can
+                # land during ``_persist_step_events``/finalize after that check.
+                # Without this guard the run would break out as ``completed`` and
+                # the cancellation would be silently lost — the client needs the
+                # terminal ``runtime.failed{cancelled: true}`` event to render the
+                # interrupt. Emit it before the final-step artifacts so the run
+                # still ends ``interrupted``.
+                if _is_abort_requested(active_graph_request):
+                    yield from self._emit_interrupted_failure(
+                        session=session,
+                        sequence=sequence,
+                        active_graph_request=active_graph_request,
+                    )
+                    return
                 yield from self._emit_final_step_artifacts(
                     runtime=runtime,
                     session=current_chunk_session,
