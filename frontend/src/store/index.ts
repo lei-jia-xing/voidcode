@@ -27,6 +27,12 @@ import {
 
 const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 
+// The active run's AbortController. runTask creates one per run and passes its
+// signal to RuntimeClient.runStream; cancelCurrentRun aborts it to
+// deterministically tear down the stream. Module scope (not store state) keeps
+// the controller out of the persisted store.
+let activeRunAbortController: AbortController | null = null;
+
 interface AppState {
   language: "en" | "zh-CN";
 
@@ -82,6 +88,7 @@ interface AppState {
   replayError: string | null;
   runStatus: "idle" | "running" | "cancelling" | "success" | "error";
   runError: string | null;
+  cancelRequested: boolean;
   approvalStatus: "idle" | "submitting" | "success" | "error";
   approvalError: string | null;
   questionStatus: "idle" | "submitting" | "success" | "error";
@@ -362,6 +369,7 @@ export const useAppStore = create<AppState>()(
       replayError: null,
       runStatus: "idle",
       runError: null,
+      cancelRequested: false,
       approvalStatus: "idle",
       approvalError: null,
       questionStatus: "idle",
@@ -957,9 +965,12 @@ export const useAppStore = create<AppState>()(
         }
 
         const nextReplayRequestId = get().replayRequestId + 1;
+        const abortController = new AbortController();
+        activeRunAbortController = abortController;
         set({
           runStatus: "running",
           runError: null,
+          cancelRequested: false,
           currentSessionOutput: null,
           approvalStatus: "idle",
           approvalError: null,
@@ -1038,11 +1049,14 @@ export const useAppStore = create<AppState>()(
         };
 
         try {
-          const stream = RuntimeClient.runStream({
-            prompt,
-            session_id: effectiveSessionId,
-            metadata: metadata,
-          });
+          const stream = RuntimeClient.runStream(
+            {
+              prompt,
+              session_id: effectiveSessionId,
+              metadata: metadata,
+            },
+            abortController.signal,
+          );
 
           let streamFailureMessage: string | null = null;
           let streamInterrupted = false;
@@ -1070,22 +1084,25 @@ export const useAppStore = create<AppState>()(
             });
           }
 
+          // A run is interrupted when any signal agrees: an SSE cancellation
+          // event, the user's cancel request (cancelRequested / cancelling),
+          // or the authoritative backend session row landed as "interrupted"
+          // even if no cancellation event accompanied the stream close.
+          const sessionStatus = get().currentSessionState?.status;
+          const interrupted =
+            streamInterrupted ||
+            get().runStatus === "cancelling" ||
+            get().cancelRequested ||
+            sessionStatus === "interrupted";
           const failed =
-            !streamInterrupted &&
-            (streamFailureMessage !== null ||
-              get().currentSessionState?.status === "failed");
-          const wasCancelling = get().runStatus === "cancelling";
+            !interrupted &&
+            (streamFailureMessage !== null || sessionStatus === "failed");
           set({
-            runStatus:
-              streamInterrupted || wasCancelling
-                ? "idle"
-                : failed
-                  ? "error"
-                  : "success",
-            runError:
-              failed && !wasCancelling
-                ? (streamFailureMessage ?? "runtime session failed")
-                : null,
+            runStatus: interrupted ? "idle" : failed ? "error" : "success",
+            runError: failed
+              ? (streamFailureMessage ?? "runtime session failed")
+              : null,
+            cancelRequested: false,
           });
           const currentSessionId = get().currentSessionId;
           await Promise.all([
@@ -1098,10 +1115,20 @@ export const useAppStore = create<AppState>()(
               : Promise.resolve(),
           ]);
         } catch (err) {
-          const wasCancelling = get().runStatus === "cancelling";
+          // A torn-down stream during a user interrupt surfaces as an
+          // AbortError (or any rejection once the cancel flag is set), and
+          // the backend session row may already be "interrupted". None of
+          // these are real failures: settle to idle without an error banner.
+          const errName = (err as Error)?.name;
+          const interrupted =
+            errName === "AbortError" ||
+            get().runStatus === "cancelling" ||
+            get().cancelRequested ||
+            get().currentSessionState?.status === "interrupted";
           set({
-            runStatus: wasCancelling ? "idle" : "error",
-            runError: wasCancelling ? null : (err as Error).message,
+            runStatus: interrupted ? "idle" : "error",
+            runError: interrupted ? null : (err as Error).message,
+            cancelRequested: false,
           });
         }
       },
@@ -1115,7 +1142,13 @@ export const useAppStore = create<AppState>()(
         set({
           runStatus: "cancelling",
           runError: null,
+          cancelRequested: true,
         });
+
+        // Deterministically tear down the local stream first: the resulting
+        // AbortError settles the run to idle, independent of whether the
+        // cancel POST succeeds or the backend emits an SSE cancellation event.
+        activeRunAbortController?.abort();
 
         if (!currentSessionId) {
           return;
@@ -1123,10 +1156,10 @@ export const useAppStore = create<AppState>()(
 
         try {
           await RuntimeClient.cancelSession(currentSessionId);
-        } catch (err) {
-          if (get().runStatus === "cancelling") {
-            set({ runStatus: "running", runError: (err as Error).message });
-          }
+        } catch {
+          // The local abort already closed the stream; stay in "cancelling"
+          // until it settles to idle. Never flip back to "running": the
+          // interrupt intent stands even when the cancel POST fails.
         }
       },
 

@@ -277,6 +277,7 @@ function resetStore() {
     replayError: null,
     runStatus: "idle",
     runError: null,
+    cancelRequested: false,
     approvalStatus: "idle",
     approvalError: null,
     questionStatus: "idle",
@@ -600,6 +601,92 @@ describe("App follow stream with delegated child sessions", () => {
       "interrupted",
     );
     expect(screen.getByText("Interrupted")).toBeInTheDocument();
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+  });
+
+  it("shows no error banner and an Interrupted session when Stop aborts the stream mid-run", async () => {
+    const sessionId = "session-1";
+    runtimeClientMocks.runStreamMock.mockImplementation(async function* (
+      _request: unknown,
+      signal?: AbortSignal,
+    ) {
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "running"),
+        event: makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "do it" },
+          "runtime",
+          sessionId,
+        ),
+        output: null,
+      };
+      // The backend lands the session row as interrupted, then the
+      // frontend's aborted fetch tears the stream down: the next read
+      // rejects with AbortError before any SSE cancellation event arrives.
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "interrupted"),
+        event: null,
+        output: null,
+      };
+      await new Promise<never>((_, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () =>
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            ),
+          { once: true },
+        );
+      });
+    });
+    runtimeClientMocks.cancelSessionMock.mockResolvedValue({
+      session_id: sessionId,
+      status: "interrupted",
+      interrupted: true,
+      cancelled: true,
+      run_id: "run-1",
+      reason: "web user interrupt",
+    });
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      {
+        session: { id: sessionId },
+        status: "interrupted",
+        turn: 1,
+        prompt: "do it",
+        updated_at: 1,
+      },
+    ]);
+
+    render(<App />);
+    await flushAsync();
+
+    let runPromise!: Promise<void>;
+    await act(async () => {
+      runPromise = useAppStore.getState().runTask("do it");
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(useAppStore.getState().runStatus).toBe("running");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop generation" }));
+    await act(async () => {
+      await runPromise;
+    });
+    await flushAsync();
+
+    // The torn-down stream is not a failure: no error banner, the run
+    // settles to idle, and the session is the backend's authoritative
+    // interrupted row (even though no SSE cancellation event was emitted).
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+    expect(useAppStore.getState().currentSessionState?.status).toBe(
+      "interrupted",
+    );
+    expect(screen.queryByText(/^Error:/)).not.toBeInTheDocument();
     expect(screen.queryByText("Failed")).not.toBeInTheDocument();
   });
 

@@ -364,11 +364,13 @@ export class RuntimeClient {
 
   static async *runStream(
     request: RuntimeRequest,
+    signal?: AbortSignal,
   ): AsyncGenerator<RuntimeStreamChunk, void, unknown> {
     const res = await fetch(withShowThinking(`/api/runtime/run/stream`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
+      signal,
     });
 
     yield* readSseStream(res, "Stream request failed");

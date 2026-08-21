@@ -229,14 +229,16 @@ const runtimeClientMocks = vi.hoisted(() => ({
       message: string;
     }>
   >(),
-  runStreamMock:
-    vi.fn<
-      (request: {
+  runStreamMock: vi.fn<
+    (
+      request: {
         prompt: string;
         session_id?: string | null;
         metadata?: Record<string, unknown>;
-      }) => AsyncGenerator<RuntimeStreamChunk, void, unknown>
-    >(),
+      },
+      signal?: AbortSignal,
+    ) => AsyncGenerator<RuntimeStreamChunk, void, unknown>
+  >(),
 }));
 
 vi.mock("./lib/runtime/client", () => ({
@@ -2144,6 +2146,139 @@ describe("useAppStore integration flow", () => {
     expect(useAppStore.getState().runError).toBeNull();
   });
 
+  it("settles to idle without an error when cancelling aborts the stream mid-run", async () => {
+    const sessionId = "abort-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read slow.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    // The mock mirrors a real fetch aborted mid-read: the generator rejects
+    // with AbortError the moment the store's controller aborts.
+    runtimeClientMocks.runStreamMock.mockImplementation(async function* (
+      _request,
+      signal?: AbortSignal,
+    ) {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await new Promise<never>((_, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () =>
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            ),
+          { once: true },
+        );
+      });
+    });
+
+    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useAppStore.getState().runStatus).toBe("running");
+    // The run's AbortSignal is handed to the stream, not just a plain request.
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][1]).toBeInstanceOf(
+      AbortSignal,
+    );
+
+    const cancelPromise = useAppStore.getState().cancelCurrentRun();
+    await cancelPromise;
+    await runPromise;
+
+    // A torn-down stream during a user interrupt is not a failure: the run
+    // settles to idle with no error banner, even though no SSE cancellation
+    // event was ever emitted.
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+  });
+
+  it("keeps the run idle without an error banner when the cancel POST fails and the stream aborts", async () => {
+    const sessionId = "cancel-post-fail-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "read slow.txt" },
+      "runtime",
+      sessionId,
+    );
+
+    runtimeClientMocks.runStreamMock.mockImplementation(async function* (
+      _request,
+      signal?: AbortSignal,
+    ) {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      await new Promise<never>((_, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () =>
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            ),
+          { once: true },
+        );
+      });
+    });
+    runtimeClientMocks.cancelSessionMock.mockRejectedValue(
+      new Error("cancel post failed"),
+    );
+
+    const runPromise = useAppStore.getState().runTask("read slow.txt");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const cancelPromise = useAppStore.getState().cancelCurrentRun();
+    await cancelPromise;
+    await runPromise;
+
+    expect(runtimeClientMocks.cancelSessionMock).toHaveBeenCalledWith(
+      sessionId,
+    );
+    // The failed cancel POST must not flip the run back to "running"; the
+    // abort tears the stream down and the run settles to idle.
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+  });
+
+  it("settles a run to idle when the stream ends with an interrupted session status and no cancellation event", async () => {
+    const sessionId = "interrupted-final-session";
+
+    async function* stream(): AsyncGenerator<
+      RuntimeStreamChunk,
+      void,
+      unknown
+    > {
+      // The backend session row is the authoritative fact: it landed as
+      // "interrupted", but no runtime.failed{cancelled:true} event and no
+      // user cancel accompanied the stream close.
+      yield {
+        kind: "session",
+        session: makeSessionState(sessionId, "interrupted"),
+        event: null,
+        output: null,
+      };
+    }
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(
+        sessionId,
+        "interrupted",
+        "read interrupted.txt",
+      ),
+    ]);
+
+    await useAppStore.getState().runTask("read interrupted.txt");
+
+    expect(useAppStore.getState().runStatus).toBe("idle");
+    expect(useAppStore.getState().runError).toBeNull();
+    expect(useAppStore.getState().currentSessionState?.status).toBe(
+      "interrupted",
+    );
+  });
+
   it("surfaces runtime failed stream details as run errors", async () => {
     const sessionId = "failed-provider-session";
     const requestReceived = makeEvent(
@@ -2215,7 +2350,7 @@ describe("useAppStore integration flow", () => {
       },
     });
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "analyze repo",
       session_id: null,
       metadata: {
@@ -2255,7 +2390,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("write hello.c");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "write hello.c",
       session_id: null,
       metadata: {
@@ -2309,7 +2444,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("think carefully");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "think carefully",
       session_id: null,
       metadata: {
@@ -2371,7 +2506,7 @@ describe("useAppStore integration flow", () => {
       metadata: { reasoning_effort: "xhigh" },
     });
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "plain run",
       session_id: null,
       metadata: {
@@ -2433,7 +2568,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("run current provider alias");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run current provider alias",
       session_id: null,
       metadata: {
@@ -2491,7 +2626,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("run unique alias");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run unique alias",
       session_id: null,
       metadata: {
@@ -2549,7 +2684,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("run qualified alias");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run qualified alias",
       session_id: null,
       metadata: {
@@ -2613,7 +2748,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("run ambiguous alias");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run ambiguous alias",
       session_id: null,
       metadata: {
@@ -2671,7 +2806,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("run unknown alias");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "run unknown alias",
       session_id: null,
       metadata: {
@@ -2748,7 +2883,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("new run", { sessionId: null });
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "new run",
       session_id: null,
       metadata: {
@@ -2787,7 +2922,7 @@ describe("useAppStore integration flow", () => {
       sessionId: null,
     });
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "start new",
       session_id: null,
       metadata: {
@@ -2888,7 +3023,7 @@ describe("useAppStore integration flow", () => {
     await useAppStore.getState().runTask("hydrated qualified model");
 
     expect(useAppStore.getState().providerModel).toBe("kimi-k2.6");
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "hydrated qualified model",
       session_id: null,
       metadata: {
@@ -2940,7 +3075,7 @@ describe("useAppStore integration flow", () => {
 
     await useAppStore.getState().runTask("use configured model");
 
-    expect(runtimeClientMocks.runStreamMock).toHaveBeenCalledWith({
+    expect(runtimeClientMocks.runStreamMock.mock.calls[0][0]).toEqual({
       prompt: "use configured model",
       session_id: null,
       metadata: {

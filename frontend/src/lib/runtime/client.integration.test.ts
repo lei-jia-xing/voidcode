@@ -138,6 +138,52 @@ describe("RuntimeClient integration contract", () => {
     expect(chunks[1].output).toBe("done");
   });
 
+  it("passes an abort signal to the run stream fetch and rejects with AbortError when aborted", async () => {
+    const encoder = new TextEncoder();
+    const abortController = new AbortController();
+    // Simulate a real fetch whose body stream is torn down by the signal:
+    // the reader rejects with AbortError once aborted.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"kind":"event","session":{"session":{"id":"session-1"},"status":"running","turn":1,"metadata":{}},"event":null,"output":null}\n\n',
+          ),
+        );
+        abortController.signal.addEventListener(
+          "abort",
+          () =>
+            controller.error(
+              new DOMException("The operation was aborted.", "AbortError"),
+            ),
+          { once: true },
+        );
+      },
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      body,
+    } as Response);
+
+    const stream = RuntimeClient.runStream(
+      { prompt: "read slow.txt" },
+      abortController.signal,
+    );
+
+    const first = await stream.next();
+    expect(first.done).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/runtime/run/stream"),
+      expect.objectContaining({ signal: abortController.signal }),
+    );
+
+    abortController.abort();
+    await expect(stream.next()).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
+
   it("preserves failed shell display metadata and details from streamed events", async () => {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
