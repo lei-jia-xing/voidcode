@@ -493,7 +493,81 @@ describe("ChatThread", () => {
     expect(firstPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(secondPos & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
+  it("keeps tool-channel provider text out of the structured tool card", () => {
+    const rawToolCall = '{"name":"read","arguments":{"path":"README.md"}}';
+    const events: EventEnvelope[] = [
+      {
+        session_id: "session-1",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "read README.md" },
+      },
+      {
+        session_id: "session-1",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "tool", kind: "content", text: rawToolCall },
+      },
+      {
+        session_id: "session-1",
+        sequence: 3,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          tool_call_id: "read-1",
+          arguments: { path: "README.md" },
+          tool_status: {
+            invocation_id: "read-1",
+            tool_name: "read",
+            phase: "running",
+            status: "running",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+            },
+          },
+        },
+      },
+      {
+        session_id: "session-1",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "read-1",
+          status: "ok",
+          arguments: { path: "README.md" },
+          content: "README contents",
+          tool_status: {
+            invocation_id: "read-1",
+            tool_name: "read",
+            phase: "completed",
+            status: "completed",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+            },
+          },
+        },
+      },
+    ];
 
+    const { container } = render(
+      <ChatThread {...baseProps} messages={deriveChatMessages(events, null)} />,
+    );
+
+    expect(screen.queryByText(rawToolCall)).not.toBeInTheDocument();
+    expect(container.querySelectorAll('[data-tool-row="read"]')).toHaveLength(
+      1,
+    );
+    expect(screen.getByText("read")).toBeInTheDocument();
+  });
   it("re-parses markdown only for the active streaming message when a delta arrives", () => {
     const markdownMock = ReactMarkdown as unknown as Mock;
     markdownMock.mockClear();

@@ -388,7 +388,7 @@ describe("Tool Status Contract", () => {
     });
   });
 
-  it("ignores runtime.tool_completed without tool_status", () => {
+  it("renders runtime.tool_completed without tool_status", () => {
     const events: EventEnvelope[] = [
       {
         session_id: "test",
@@ -405,6 +405,8 @@ describe("Tool Status Contract", () => {
         payload: {
           tool: "read",
           tool_call_id: "call_read",
+          status: "ok",
+          arguments: { path: "README.md" },
           path: "README.md",
           content: "contents",
         },
@@ -414,7 +416,351 @@ describe("Tool Status Contract", () => {
     const messages = deriveChatMessages(events, null);
     const assistantMessage = messages.find((m) => m.role === "assistant");
 
-    expect(assistantMessage?.tools).toEqual([]);
+    expect(assistantMessage?.tools).toHaveLength(1);
+    expect(assistantMessage?.tools[0]).toMatchObject({
+      id: "call_read",
+      name: "read",
+      status: "completed",
+      arguments: { path: "README.md" },
+      content: "contents",
+    });
+    expect(assistantMessage?.parts).toEqual([
+      { kind: "tool", sequence: 2, toolKey: "call_read" },
+    ]);
+  });
+  it("correlates raw graph request, started, and completed events", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Read a file" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          tool_call_id: "call_raw",
+          arguments: { path: "README.md" },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "call_raw",
+          execution_intent: {
+            tool_call_id: "call_raw",
+            tool_name: "read",
+            arguments: { path: "README.md", line_start: 1 },
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "read",
+          tool_call_id: "call_raw",
+          status: "ok",
+          arguments: {},
+          content: "file contents",
+          data: { path: "README.md" },
+        },
+      },
+    ];
+
+    const assistantMessage = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+
+    expect(assistantMessage?.tools).toHaveLength(1);
+    expect(assistantMessage?.tools[0]).toMatchObject({
+      id: "call_raw",
+      name: "read",
+      status: "completed",
+      arguments: { path: "README.md", line_start: 1 },
+      content: "file contents",
+    });
+    expect(assistantMessage?.parts).toEqual([
+      { kind: "tool", sequence: 2, toolKey: "call_raw" },
+    ]);
+  });
+  it("ignores tool-channel provider text while retaining one lifecycle tool", () => {
+    const rawToolCall = '{"name":"read","arguments":{"path":"README.md"}}';
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Read a file" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: { channel: "tool", kind: "content", text: rawToolCall },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          tool_call_id: "call-tool-channel",
+          arguments: { path: "README.md" },
+          tool_status: {
+            invocation_id: "call-tool-channel",
+            tool_name: "read",
+            phase: "running",
+            status: "running",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+            },
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "read",
+          tool_call_id: "call-tool-channel",
+          status: "ok",
+          arguments: { path: "README.md" },
+          content: "file contents",
+          tool_status: {
+            invocation_id: "call-tool-channel",
+            tool_name: "read",
+            phase: "completed",
+            status: "completed",
+            display: {
+              kind: "context",
+              title: "Read",
+              summary: "Read README.md",
+            },
+          },
+        },
+      },
+    ];
+
+    const assistantMessage = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+
+    expect(assistantMessage?.content).not.toContain(rawToolCall);
+    expect(assistantMessage?.tools).toHaveLength(1);
+    expect(assistantMessage?.parts).toEqual([
+      { kind: "tool", sequence: 3, toolKey: "call-tool-channel" },
+    ]);
+  });
+  it("binds a generated start id to a pending raw graph request", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Read" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.tool_request_created",
+        source: "graph",
+        payload: {
+          tool: "read",
+          arguments: { path: "README.md", line_start: 1 },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "runtime-tool-read",
+          execution_intent: {
+            arguments: { path: "README.md", line_start: 1 },
+          },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "read",
+          tool_call_id: "runtime-tool-read",
+          status: "ok",
+          content: "contents",
+        },
+      },
+    ];
+
+    const assistantMessage = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.tools).toHaveLength(1);
+    expect(assistantMessage?.tools[0]).toMatchObject({
+      id: "runtime-tool-read",
+      name: "read",
+      status: "completed",
+      arguments: { path: "README.md", line_start: 1 },
+    });
+    expect(assistantMessage?.parts).toEqual([
+      { kind: "tool", sequence: 2, toolKey: "read#2" },
+    ]);
+  });
+  it("does not merge an identified call into an unidentified sibling", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Read two files" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          execution_intent: { arguments: { path: "a.txt" } },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "read",
+          tool_call_id: "call-b",
+          arguments: { path: "b.txt" },
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 4,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "read",
+          tool_call_id: "call-b",
+          status: "ok",
+          content: "b contents",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 5,
+        event_type: "runtime.tool_completed",
+        source: "tool",
+        payload: {
+          tool: "read",
+          tool_call_id: "runtime-tool-read",
+          arguments: { path: "a.txt" },
+          status: "ok",
+          content: "a contents",
+        },
+      },
+    ];
+
+    const assistantMessage = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.tools).toEqual([
+      expect.objectContaining({
+        id: "runtime-tool-read",
+        name: "read",
+        status: "completed",
+        arguments: { path: "a.txt" },
+        content: "a contents",
+      }),
+      expect.objectContaining({
+        id: "call-b",
+        name: "read",
+        status: "completed",
+        arguments: { path: "b.txt" },
+        content: "b contents",
+      }),
+    ]);
+    expect(assistantMessage?.parts).toEqual([
+      { kind: "tool", sequence: 2, toolKey: "read#2" },
+      { kind: "tool", sequence: 3, toolKey: "call-b" },
+    ]);
+  });
+
+  it("prefers tool_status identity and display over raw fields", () => {
+    const events: EventEnvelope[] = [
+      {
+        session_id: "test",
+        sequence: 1,
+        event_type: "runtime.request_received",
+        source: "runtime",
+        payload: { prompt: "Read" },
+      },
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "runtime.tool_started",
+        source: "runtime",
+        payload: {
+          tool: "raw_read",
+          tool_call_id: "raw-id",
+          arguments: { path: "raw.txt" },
+          execution_intent: { arguments: { path: "intent.txt" } },
+          display: {
+            kind: "context",
+            title: "Raw Read",
+            summary: "Raw display",
+          },
+          tool_status: {
+            invocation_id: "status-id",
+            tool_name: "status_read",
+            status: "running",
+            display: {
+              kind: "context",
+              title: "Status Read",
+              summary: "Status display",
+            },
+          },
+        },
+      },
+    ];
+
+    const assistantMessage = deriveChatMessages(events, null).find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage?.tools[0]).toMatchObject({
+      id: "status-id",
+      name: "status_read",
+      status: "running",
+      summary: "Status display",
+      display: { summary: "Status display" },
+      arguments: { path: "raw.txt" },
+    });
   });
 
   it("records frontend receive time for reasoning duration when present", () => {
