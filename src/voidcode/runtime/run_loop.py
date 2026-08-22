@@ -117,6 +117,7 @@ from .session_metadata_helpers import (
     session_with_todo_state,
     todo_state_matches_payload,
 )
+from .skill_metadata import skill_snapshot_from_metadata
 from .storage import SessionStore
 from .tool_display import build_tool_display, build_tool_status
 from .tool_execution import RuntimeToolExecutor
@@ -712,12 +713,13 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
         last_event_sequence: int,
     ) -> None:
+        current_turn_results = [result for result in tool_results if getattr(result, "source", None) != "replayed_conversation"]
         self._session_store.save_interrupted_checkpoint(
             workspace=self._workspace,
             session_id=session.session.id,
             prompt=prompt,
             session_metadata=session.metadata,
-            tool_results=_serialized_tool_results(tool_results),
+            tool_results=_serialized_tool_results(current_turn_results),
             last_event_sequence=last_event_sequence,
             output=None,
             create_if_missing=False,
@@ -1923,31 +1925,14 @@ class RuntimeRunLoopCoordinator:
         runtime = self._surface
         current_graph_request = active_graph_request
         current_prompt = current_graph_request.prompt
-        current_segments = current_graph_request.assembled_context.segments
         session = session_with_context_window_metadata(session, context_window)
-        skill_prompt_context = ""
-        preserved_system_segments: list[str] = []
-        for segment in current_segments:
-            if segment.role != "system" or not isinstance(segment.content, str):
-                continue
-            segment_source = segment.metadata.get("source") if isinstance(segment.metadata, dict) else None
-            if segment_source in {
-                "hook_preset_guidance",
-                "runtime_file_rules",
-                "directory_readme_context",
-            }:
-                continue
-            if segment.content.startswith("Runtime-managed todo state is active"):
-                continue
-            preserved_system_segments.append(segment.content)
-            if segment.content.startswith("Runtime-managed skills are active for this turn."):
-                skill_prompt_context = segment.content
+        persisted_skill_snapshot = skill_snapshot_from_metadata(session.metadata)
+        skill_prompt_context = persisted_skill_snapshot.skill_prompt_context if persisted_skill_snapshot is not None else ""
         assembled_context = runtime.assemble_provider_context(
             prompt=current_prompt,
             tool_results=context_window.tool_results,
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context,
-            preserved_system_segments=tuple(preserved_system_segments),
             replayed_conversation_segments=_replayed_conversation_segments(current_graph_request),
         )
         context_window_payload = {

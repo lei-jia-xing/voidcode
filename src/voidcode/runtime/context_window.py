@@ -1468,7 +1468,6 @@ def assemble_provider_context(
     prompt_profile_name: str | None = None,
     hook_preset_context: str = "",
     context_transform_result: RuntimeContextTransformResult | None = None,
-    preserved_system_segments: tuple[str, ...] = (),
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: ContextProjection | None = None,
     workspace_memory_context: str = "",
@@ -1541,7 +1540,6 @@ def assemble_provider_context(
         prompt=prompt,
         runtime_instruction_precedence=runtime_instruction_precedence,
         agent_prompt_context=agent_prompt_context,
-        preserved_system_segments=preserved_system_segments,
         skill_prompt_context=skill_prompt_context,
         context_transform_result=transform_result,
         pending_state_section=(

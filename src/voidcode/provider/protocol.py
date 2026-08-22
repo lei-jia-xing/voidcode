@@ -14,7 +14,10 @@ from .model_catalog import ProviderModelMetadata
 type ProviderMessageRole = Literal["system", "user", "assistant", "tool"]
 type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
-type ProviderDoneReason = Literal["completed", "cancelled", "error"]
+type ProviderCacheRetention = Literal["none", "short", "long"]
+# Provider-native finish reasons are intentionally preserved at the adapter boundary.
+# ``unknown`` means the upstream omitted a reason; it is not a successful ``stop``.
+type ProviderDoneReason = Literal["stop", "tool_calls", "length", "content_filter", "function_call", "cancelled", "error", "unknown"]
 type ProviderErrorKind = Literal[
     "missing_auth",
     "invalid_model",
@@ -57,6 +60,7 @@ class ProviderTurnRequest:
     model_metadata: ProviderModelMetadata | None = None
     session_id: str | None = None
     reasoning_effort: str | None = None
+    cache_retention: ProviderCacheRetention | None = None
     attempt: int = 0
     abort_signal: ProviderAbortSignal | None = None
 
@@ -194,13 +198,15 @@ class ProviderAssembledContext(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ProviderTokenUsage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    uncached_input_tokens: int = 0
+    # ``None`` means the provider did not report that metric; zero is an
+    # observed zero. Keeping this distinction is required for cache telemetry.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    uncached_input_tokens: int | None = None
 
-    def metadata_payload(self) -> dict[str, int]:
+    def metadata_payload(self) -> dict[str, int | None]:
         return {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -211,10 +217,12 @@ class ProviderTokenUsage:
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return (self.input_tokens or 0) + (self.output_tokens or 0)
 
     @property
     def cache_hit_rate(self) -> float | None:
+        if self.cache_read_tokens is None or self.uncached_input_tokens is None:
+            return None
         denominator = self.cache_read_tokens + self.uncached_input_tokens
         if denominator <= 0:
             return None
@@ -231,6 +239,8 @@ class ProviderTurnResult:
     # message.reasoning / thinking_blocks) so non-streaming turns can persist
     # the same runtime.reasoning_part the streaming path aggregates.
     reasoning: str | None = None
+    done_reason: ProviderDoneReason = "unknown"
+    metadata: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.tool_call is not None and not self.tool_calls:
@@ -257,6 +267,28 @@ class ProviderStreamEvent:
     usage: ProviderTokenUsage | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class WirePrefixDescriptor:
+    """Identity of a final wire prefix, not a cache-hit claim.
+
+    ``materialized_message_count`` counts every final wire message, while the
+    canonical bytes only include its stable system prefix and tool schemas.
+    """
+
+    canonical_bytes: bytes
+    canonical_hash: str
+    materialized_message_count: int
+    tool_generation: str
+    assembly_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderWireMaterialization:
+    messages: list[dict[str, object]]
+    tools: list[dict[str, object]]
+    prefix: WirePrefixDescriptor
+
+
 def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStreamEvent:
     if event.kind in {"delta", "content"} and event.text is None:
         raise ValueError(f"provider stream event '{event.kind}' requires text")
@@ -266,7 +298,8 @@ def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStrea
         return ProviderStreamEvent(
             kind="done",
             channel=event.channel,
-            done_reason="completed",
+            done_reason="unknown",
+            metadata=event.metadata,
             usage=event.usage,
         )
     return event
@@ -323,7 +356,7 @@ def wrap_provider_stream(
             break
 
     if not done_seen:
-        yield ProviderStreamEvent(kind="done", done_reason="completed")
+        yield ProviderStreamEvent(kind="done", done_reason="unknown")
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +366,8 @@ class ProviderExecutionError(ValueError):
     model_name: str
     message: str
     retryable: bool = False
+    fallback_allowed: bool = False
+    retry_after: float | None = None
     details: dict[str, object] | None = None
 
     def __str__(self) -> str:

@@ -76,6 +76,8 @@ def openai_provider_config(config: OpenAIProviderConfig | None) -> LiteLLMProvid
         ),
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map=dict(_DEFAULT_MODEL_MAPS["openai"]),
+        openai_organization=None if config is None else config.organization,
+        openai_project=None if config is None else config.project,
     )
 
 
@@ -90,6 +92,10 @@ def anthropic_provider_config(config: AnthropicProviderConfig | None) -> LiteLLM
         ),
         timeout_seconds=None if config is None else config.timeout_seconds,
         model_map=dict(_DEFAULT_MODEL_MAPS["anthropic"]),
+        anthropic_version=None if config is None else config.version,
+        anthropic_beta_headers=() if config is None else config.beta_headers,
+        anthropic_messages_compatible=True,
+        cache_retention="none" if config is None else config.cache_retention,
     )
 
 
@@ -147,4 +153,11 @@ def litellm_provider_config(config: LiteLLMProviderConfig | None) -> LiteLLMProv
         ssl_verify=config.ssl_verify,
         timeout_seconds=config.timeout_seconds,
         model_map=dict(config.model_map),
+        transient_retry=config.transient_retry,
+        openai_organization=config.openai_organization,
+        openai_project=config.openai_project,
+        anthropic_version=config.anthropic_version,
+        anthropic_beta_headers=config.anthropic_beta_headers,
+        anthropic_messages_compatible=config.anthropic_messages_compatible,
+        cache_retention=config.cache_retention,
     )

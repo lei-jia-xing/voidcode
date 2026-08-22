@@ -17,9 +17,7 @@ class AnthropicModelProvider:
         return anthropic_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
-        adapted_config = LiteLLMProviderConfig(
-            api_key=None if self.config is None else self.config.api_key,
-            base_url=None if self.config is None else self.config.base_url,
-            timeout_seconds=None if self.config is None else self.config.timeout_seconds,
+        return LiteLLMBackendSingleAgentProvider(
+            name=self.name,
+            config=self.provider_config(),
         )
-        return LiteLLMBackendSingleAgentProvider(name=self.name, config=adapted_config)

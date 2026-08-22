@@ -1717,7 +1717,24 @@ def test_provider_run_rehydrates_prior_raw_tool_results_for_existing_session(
     assert continued_context.tool_results[0].data["raw_content"] == "alpha\nbeta"
     assert continued_context.tool_results[0].data["tool_call_id"] == "read-1"
     assert continued_context.tool_results[0].data["arguments"] == {"path": "sample.txt"}
-    assert second_turn_context.tool_results == continued_context.tool_results
+
+    def provider_visible_tool_result(result: object) -> tuple[object, ...]:
+        data = dict(getattr(result, "data", {}))
+        data.pop("tool_call_id", None)
+        data.pop("arguments", None)
+        return (
+            getattr(result, "tool_name", None),
+            getattr(result, "status", None),
+            getattr(result, "content", None),
+            getattr(result, "error", None),
+            data,
+        )
+
+    assert [provider_visible_tool_result(result) for result in second_turn_context.tool_results] == [
+        provider_visible_tool_result(result) for result in continued_context.tool_results
+    ]
+    assert getattr(continued_context.tool_results[0], "source", None) is None
+    assert getattr(second_turn_context.tool_results[0], "source", None) == "replayed_conversation"
     replayed_segments = [
         segment
         for segment in second_turn_context.segments
@@ -1929,7 +1946,7 @@ def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_c
     rehydrated_segments = cast(
         Any,
         runtime,
-    )._rehydrated_conversation_segments_for_existing_session(
+    ).replayed_conversation_segments_for_existing_session(
         session_id="shared-child-session",
         parent_session_id="parent-two",
     )
@@ -5646,7 +5663,7 @@ def test_cli_run_command_approval_deny_blocks_write_under_tty_and_replays_failur
     assert "RESULT" in transcript
     assert denied_file.exists() is False
 
-    assert resume_result.returncode == 0
+    assert resume_result.returncode == 13
     assert "EVENT runtime.approval_requested" in resume_result.stdout
     assert "EVENT runtime.approval_resolved" in resume_result.stdout
     assert "EVENT runtime.tool_completed" in resume_result.stdout

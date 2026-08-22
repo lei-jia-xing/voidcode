@@ -41,7 +41,7 @@ def test_wrap_provider_stream_appends_done_when_missing() -> None:
 
     chunks = list(events)
     assert chunks[0] == ProviderStreamEvent(kind="delta", text="hello")
-    assert chunks[1] == ProviderStreamEvent(kind="done", done_reason="completed")
+    assert chunks[1] == ProviderStreamEvent(kind="done", done_reason="unknown")
 
 
 def test_normalize_provider_stream_event_preserves_done_usage() -> None:
@@ -49,7 +49,7 @@ def test_normalize_provider_stream_event_preserves_done_usage() -> None:
 
     event = normalize_provider_stream_event(ProviderStreamEvent(kind="done", usage=usage))
 
-    assert event == ProviderStreamEvent(kind="done", done_reason="completed", usage=usage)
+    assert event == ProviderStreamEvent(kind="done", done_reason="unknown", usage=usage)
 
 
 def test_wrap_provider_stream_emits_cancelled_when_abort_is_pre_set() -> None:

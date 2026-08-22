@@ -10,6 +10,7 @@ import pytest
 
 from voidcode.provider.anthropic import AnthropicModelProvider
 from voidcode.provider.config import (
+    AnthropicProviderConfig,
     GoogleProviderAuthConfig,
     GoogleProviderConfig,
     LiteLLMProviderConfig,
@@ -420,7 +421,7 @@ def test_provider_adapter_stream_turn_emits_happy_path_chunks(
     assert [event.kind for event in events] == ["delta", "delta", "done"]
     assert events[0] == ProviderStreamEvent(kind="delta", channel="text", text="hello ")
     assert events[1] == ProviderStreamEvent(kind="delta", channel="text", text="world")
-    assert events[2] == ProviderStreamEvent(kind="done", done_reason="completed")
+    assert events[2] == ProviderStreamEvent(kind="done", done_reason="stop")
 
 
 def test_provider_adapter_wraps_internal_tool_property_schema(
@@ -760,7 +761,6 @@ def test_provider_adapter_propose_turn_returns_token_usage(
     assert result.usage == ProviderTokenUsage(
         input_tokens=12,
         output_tokens=4,
-        uncached_input_tokens=12,
     )
 
 
@@ -786,8 +786,8 @@ def test_provider_adapter_stream_turn_returns_final_token_usage(
     assert events == [
         ProviderStreamEvent(
             kind="done",
-            done_reason="completed",
-            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2, uncached_input_tokens=10),
+            done_reason="stop",
+            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2),
         )
     ]
 
@@ -811,8 +811,8 @@ def test_provider_adapter_stream_turn_consumes_trailing_usage_chunk(
     assert events == [
         ProviderStreamEvent(
             kind="done",
-            done_reason="completed",
-            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2, uncached_input_tokens=10),
+            done_reason="stop",
+            usage=ProviderTokenUsage(input_tokens=10, output_tokens=2),
         )
     ]
 
@@ -3210,7 +3210,7 @@ def test_provider_adapter_stream_turn_emits_tool_event_when_model_streams_tool_r
             channel="tool",
             text=('{"tool_name": "read", "arguments": {"path": "sample.txt"}, "tool_call_id": "read"}'),
         ),
-        ProviderStreamEvent(kind="done", done_reason="completed"),
+        ProviderStreamEvent(kind="done", done_reason="tool_calls"),
     ]
 
 
@@ -3260,7 +3260,7 @@ def test_provider_adapter_stream_turn_emits_final_tool_snapshot_for_updates(
             channel="tool",
             text=('{"tool_name": "read", "arguments": {"path": "sample.txt"}, "tool_call_id": "read"}'),
         ),
-        ProviderStreamEvent(kind="done", done_reason="completed"),
+        ProviderStreamEvent(kind="done", done_reason="tool_calls"),
     ]
 
 
@@ -3312,7 +3312,7 @@ def test_provider_adapter_stream_turn_coalesces_tool_arguments_by_index(
                 '"tool_call_id": "read_2"}]}'
             ),
         ),
-        ProviderStreamEvent(kind="done", done_reason="completed"),
+        ProviderStreamEvent(kind="done", done_reason="tool_calls"),
     ]
 
 
@@ -3359,7 +3359,7 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning_cont
             metadata={"source": "delta.reasoning"},
         ),
         ProviderStreamEvent(kind="delta", channel="text", text="Done."),
-        ProviderStreamEvent(kind="done", done_reason="completed"),
+        ProviderStreamEvent(kind="done", done_reason="stop"),
     ]
 
 
@@ -3406,7 +3406,7 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_reasoning(
             metadata={"source": "delta.reasoning"},
         ),
         ProviderStreamEvent(kind="delta", channel="text", text="Done."),
-        ProviderStreamEvent(kind="done", done_reason="completed"),
+        ProviderStreamEvent(kind="done", done_reason="stop"),
     ]
 
 
@@ -3453,7 +3453,7 @@ def test_provider_adapter_stream_turn_emits_reasoning_events_from_thinking_block
             metadata={"source": "delta.thinking_blocks"},
         ),
         ProviderStreamEvent(kind="delta", channel="text", text="Visible answer"),
-        ProviderStreamEvent(kind="done", done_reason="completed"),
+        ProviderStreamEvent(kind="done", done_reason="stop"),
     ]
 
 
@@ -3678,3 +3678,113 @@ def test_provider_error_mapping_from_stream_payload_preserves_provider_identity(
     assert exc.model_name == "demo"
     assert exc.details is not None
     assert exc.details["source"] == "stream"
+
+
+def test_provider_adapter_preserves_assistant_text_and_object_tool_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIModelProvider().turn_provider()
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="completion",
+        completion_content="I will inspect it.",
+        tool_calls=[
+            {
+                "id": "call-read",
+                "function": {"name": "read", "arguments": {"path": "sample.txt"}},
+            }
+        ],
+    )
+
+    result = provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert result.output == "I will inspect it."
+    assert result.tool_calls[0].arguments == {"path": "sample.txt"}
+    assert result.done_reason == "unknown"
+
+
+def test_wire_prefix_descriptor_is_final_materialization_seam() -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    request = _build_turn_request_with_skill(model_name="openai")
+
+    first_wire = provider._build_messages(request)
+    second_wire = provider._build_messages(request)
+
+    assert first_wire.prefix.canonical_bytes
+    assert first_wire.prefix.canonical_hash == second_wire.prefix.canonical_hash
+    assert first_wire.prefix.materialized_message_count == len(first_wire.messages)
+    assert first_wire.prefix.tool_generation
+
+
+def test_non_anthropic_cache_retention_is_explicitly_unsupported() -> None:
+    provider = LiteLLMBackendSingleAgentProvider(
+        name="openai",
+        config=LiteLLMProviderConfig(cache_retention="short"),
+    )
+
+    with pytest.raises(ProviderExecutionError, match="Anthropic Messages-compatible") as exc_info:
+        _ = provider.propose_turn(_build_turn_request(model_name="openai"))
+
+    assert exc_info.value.kind == "unsupported_feature"
+
+
+def test_anthropic_cache_adapter_marks_prefix_and_reports_gateway_write_then_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import voidcode.provider.litellm_backend as backend_module
+
+    provider = AnthropicModelProvider(
+        config=AnthropicProviderConfig(cache_retention="short"),
+    ).turn_provider()
+    request = _build_turn_request_with_skill(model_name="anthropic")
+    warmed_prefixes: set[str] = set()
+    observed_payloads: list[dict[str, object]] = []
+
+    def completion(*args: Any, **kwargs: Any):
+        _ = args
+        payload = dict(kwargs)
+        observed_payloads.append(payload)
+        key = json.dumps({"messages": payload["messages"], "tools": payload["tools"]}, sort_keys=True)
+        usage = (
+            {"prompt_tokens": 128, "cache_read_input_tokens": 128}
+            if key in warmed_prefixes
+            else {"prompt_tokens": 128, "cache_creation_input_tokens": 128}
+        )
+        warmed_prefixes.add(key)
+        return _StubCompletionResponse(content="ok", usage=usage)
+
+    if backend_module.litellm_module is None:
+
+        class _FakeLiteLLM:
+            def completion(self, *args: Any, **kwargs: Any):
+                return completion(*args, **kwargs)
+
+        monkeypatch.setattr(backend_module, "litellm_module", _FakeLiteLLM())
+    else:
+        monkeypatch.setattr(backend_module.litellm_module, "completion", completion)
+
+    first = provider.propose_turn(request)
+    second = provider.propose_turn(request)
+    changed = provider.propose_turn(replace(request, available_tools=(replace(request.available_tools[0], description="read line ranges"),)))
+
+    marker = cast(list[dict[str, object]], observed_payloads[0]["tools"])[-1]["cache_control"]
+    assert marker == {"type": "ephemeral", "ttl": "5m"}
+    assert first.usage is not None and first.usage.cache_write_tokens == 128 and first.usage.cache_read_tokens is None
+    assert second.usage is not None and second.usage.cache_read_tokens == 128 and second.usage.cache_write_tokens is None
+    assert changed.usage is not None and changed.usage.cache_write_tokens == 128 and changed.usage.cache_read_tokens is None
+
+
+def test_anthropic_long_cache_retention_marks_system_when_tools_are_absent() -> None:
+    provider = AnthropicModelProvider(
+        config=AnthropicProviderConfig(cache_retention="long"),
+    ).turn_provider()
+    request = replace(_build_turn_request_with_skill(model_name="anthropic"), available_tools=())
+
+    wire = provider._build_messages(request)
+
+    system_content = wire.messages[0]["content"]
+    assert isinstance(system_content, list)
+    block = cast(dict[str, object], system_content[0])
+    assert block["type"] == "text"
+    assert "# Summarize" in block["text"]
+    assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

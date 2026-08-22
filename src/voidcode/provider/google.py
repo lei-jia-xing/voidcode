@@ -17,6 +17,8 @@ class GoogleModelProvider:
         return google_provider_config(self.config)
 
     def turn_provider(self) -> TurnProvider:
+        if self.config is not None and (self.config.project is not None or self.config.region is not None):
+            raise ValueError("google project and region are unsupported by the LiteLLM adapter")
         api_key = None
         auth_header = None
         auth_scheme = "bearer"

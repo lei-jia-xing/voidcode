@@ -395,7 +395,6 @@ def build_prompt_assembly_plan(
     prompt: str,
     runtime_instruction_precedence: str,
     agent_prompt_context: str = "",
-    preserved_system_segments: Iterable[str] = (),
     skill_prompt_context: str = "",
     context_transform_result: RuntimeContextTransformResult | None = None,
     pending_state_section: PromptAssemblySection | None = None,
@@ -532,13 +531,6 @@ def build_prompt_assembly_plan(
             tier=prompt_activation_section.tier,
             layer="prompt_activation",
             metadata=prompt_activation_section.metadata,
-        )
-    for segment_content in preserved_system_segments:
-        append_system(
-            segment_content,
-            source="preserved_system_segment",
-            tier="instruction",
-            layer="base_safety",
         )
     append_system(
         _STRICT_MEMORY_USAGE_GUIDANCE,

@@ -1816,7 +1816,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     session_id=resolved_session_id,
                     metadata=queued_metadata,
                 )
-        rehydrated_conversation_segments = self._rehydrated_conversation_segments_for_existing_session(
+        rehydrated_conversation_segments = self.replayed_conversation_segments_for_existing_session(
             stored=existing_session,
             parent_session_id=request.parent_session_id,
         )
@@ -5231,12 +5231,13 @@ class VoidCodeRuntime(RuntimeSurface):
         # marker is invisible to the model while distinguishing history.
         return tuple(replace(result, source="replayed_conversation") for result in self._eligible_rehydrated_tool_results(tool_results))
 
-    @staticmethod
-    def _rehydrated_conversation_segments_for_existing_session(
+    def replayed_conversation_segments_for_existing_session(
+        self,
         *,
         stored: RuntimeResponse | None = None,
         session_id: str | None = None,
         parent_session_id: str | None,
+        current_prompt: str | None = None,
     ) -> tuple[RuntimeContextSegment, ...]:
         if stored is None and session_id is not None:
             return ()
@@ -5252,9 +5253,19 @@ class VoidCodeRuntime(RuntimeSurface):
         # current request's prompt is appended by the assembler after this
         # history, so the provider message list ends with the new user message
         # instead of trailing tool messages from a previous run.
+        current_request_sequence: int | None = None
+        if current_prompt is not None:
+            matching_requests = [
+                event.sequence
+                for event in stored.events
+                if event.event_type == "runtime.request_received" and event.payload.get("prompt") == current_prompt
+            ]
+            current_request_sequence = matching_requests[-1] if matching_requests else None
         segments: list[RuntimeContextSegment] = []
         tool_index = 0
         for event in stored.events:
+            if current_request_sequence is not None and event.sequence >= current_request_sequence:
+                break
             if event.event_type == "runtime.request_received":
                 prompt = event.payload.get("prompt")
                 if not isinstance(prompt, str) or not prompt.strip():
@@ -5380,7 +5391,6 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
-        preserved_system_segments: tuple[str, ...] = (),
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
     ) -> RuntimeAssembledContext:
         # Mode guidance flows through the context transform registry: resolve
@@ -5456,7 +5466,6 @@ class VoidCodeRuntime(RuntimeSurface):
             hook_preset_context=hook_preset_context,
             context_transform_result=context_transform_result,
             skill_prompt_context=skill_prompt_context,
-            preserved_system_segments=preserved_system_segments,
             loaded_skills=loaded_skills,
             preserved_continuity_state=continuity_state_from_session_metadata(session_metadata),
             workspace_memory_context=workspace_memory_context,

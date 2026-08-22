@@ -116,9 +116,16 @@ class RuntimeSurface(Protocol):
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
-        preserved_system_segments: tuple[str, ...] = (),
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
     ) -> RuntimeAssembledContext: ...
+    def replayed_conversation_segments_for_existing_session(
+        self,
+        *,
+        stored: RuntimeResponse | None = None,
+        session_id: str | None = None,
+        parent_session_id: str | None,
+        current_prompt: str | None = None,
+    ) -> tuple[RuntimeContextSegment, ...]: ...
 
     # --- tool / skill registry composition (resume-oriented) ---
     def tool_registry_for_effective_config(

@@ -45,7 +45,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         prompt="fix the failing test",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="agent prompt",
-        preserved_system_segments=("preserved-a",),
         skill_prompt_context="skill context",
         pending_state_section=PromptAssemblySection(
             role="system",
@@ -70,7 +69,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "preserved_system_segment",
         "runtime_memory_usage_guidance",
         "skill_prompt",
         "runtime_tool_policy_summary",
@@ -84,7 +82,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     assert plan.sections[-1].role == "user"
     assert plan.sections[-1].content == "fix the failing test"
     assert [section.tier for section in plan.sections] == [
-        "instruction",
         "instruction",
         "instruction",
         "instruction",
@@ -105,7 +102,6 @@ def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
         prompt="continue",
         runtime_instruction_precedence="same text",
         agent_prompt_context="same text",
-        preserved_system_segments=("same text",),
         skill_prompt_context="same text",
     )
 

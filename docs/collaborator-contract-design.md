@@ -182,7 +182,6 @@ class RuntimeSurface(Protocol):
         tool_results: tuple[ToolResult, ...],
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
-        preserved_system_segments: tuple[str, ...] = (),
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
     ) -> RuntimeAssembledContext: ...
 

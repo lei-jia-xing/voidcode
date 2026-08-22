@@ -40,6 +40,8 @@ from .protocol import (
     ProviderTokenUsage,
     ProviderTurnRequest,
     ProviderTurnResult,
+    ProviderWireMaterialization,
+    WirePrefixDescriptor,
 )
 from .reasoning_effort import clamp_effort_to_supported, map_effort_for_provider, normalize_reasoning_effort
 from .trace import write_provider_trace
@@ -57,11 +59,19 @@ _LITELLM_DEBUG_ENABLED = False
 _LITELLM_DEBUG_HANDLER: logging.Handler | None = None
 
 
-def _usage_int(raw: object) -> int:
+def _usage_int(raw: object) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, int | float):
-        return 0
+        return None
     value = int(raw)
-    return value if value > 0 else 0
+    return value if value >= 0 else None
+
+
+def _first_usage_int(*values: object) -> int | None:
+    for value in values:
+        parsed = _usage_int(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | None:
@@ -71,18 +81,27 @@ def _extract_token_usage(payload: dict[str, object]) -> ProviderTokenUsage | Non
     usage = cast(dict[str, object], raw_usage)
     details = usage.get("prompt_tokens_details")
     details_dict = cast(dict[str, object], details) if isinstance(details, dict) else {}
-    input_tokens = _usage_int(usage.get("prompt_tokens")) or _usage_int(usage.get("input_tokens"))
-    cache_read_tokens = (
-        _usage_int(usage.get("cache_read_input_tokens")) or _usage_int(usage.get("cached_tokens")) or _usage_int(details_dict.get("cached_tokens"))
+    input_tokens = _first_usage_int(usage.get("prompt_tokens"), usage.get("input_tokens"))
+    cache_read_tokens = _first_usage_int(
+        usage.get("cache_read_input_tokens"),
+        usage.get("cached_tokens"),
+        details_dict.get("cached_tokens"),
     )
-    parsed = ProviderTokenUsage(
+    cache_write_tokens = _first_usage_int(
+        usage.get("cache_creation_input_tokens"),
+        details_dict.get("cache_creation_input_tokens"),
+    )
+    output_tokens = _first_usage_int(usage.get("completion_tokens"), usage.get("output_tokens"))
+    observed = any(value is not None for value in (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens))
+    if not observed:
+        return None
+    return ProviderTokenUsage(
         input_tokens=input_tokens,
-        output_tokens=_usage_int(usage.get("completion_tokens")) or _usage_int(usage.get("output_tokens")),
+        output_tokens=output_tokens,
         cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=(_usage_int(usage.get("cache_creation_input_tokens")) or _usage_int(details_dict.get("cache_creation_input_tokens"))),
-        uncached_input_tokens=max(0, input_tokens - cache_read_tokens),
+        cache_write_tokens=cache_write_tokens,
+        uncached_input_tokens=(max(0, input_tokens - cache_read_tokens) if input_tokens is not None and cache_read_tokens is not None else None),
     )
-    return parsed if parsed.total_tokens > 0 or parsed.cache_read_tokens > 0 or parsed.cache_write_tokens > 0 else None
 
 
 def _merge_extra_body(kwargs: dict[str, object], extra_body: dict[str, object]) -> None:
@@ -221,7 +240,7 @@ def _model_requires_reasoning_content_with_tool_calls(
 class _StreamedToolCallAccumulator:
     tool_call_id: str | None = None
     tool_name: str | None = None
-    arguments: str = ""
+    arguments: str | dict[str, object] = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +426,7 @@ class LiteLLMBackendSingleAgentProvider:
         )
         return cast(dict[str, object], stripped) if isinstance(stripped, dict) else {}
 
-    def _build_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
+    def _assemble_messages(self, request: ProviderTurnRequest) -> list[dict[str, object]]:
         assembled_context = request.assembled_context
         original_to_provider, _provider_to_original = self._provider_tool_name_maps(request)
         mapped_model_name = self._mapped_model_name_for_request(request)
@@ -565,16 +584,94 @@ class LiteLLMBackendSingleAgentProvider:
             messages.append({"role": segment.role, "content": segment.content})
         return messages
 
+    def _build_messages(self, request: ProviderTurnRequest) -> ProviderWireMaterialization:
+        """Return the final wire payload and its stable-prefix descriptor."""
+        messages = self._assemble_messages(request)
+        original_to_provider, _provider_to_original = self._provider_tool_name_maps(request)
+        tools = [self._to_tool_schema(tool, original_to_provider=original_to_provider) for tool in request.available_tools]
+        self._apply_anthropic_cache_policy(messages=messages, tools=tools, request=request)
+        stable_messages: list[dict[str, object]] = []
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            stable_messages.append(message)
+        raw_prompt_cache = request.assembled_context.metadata.get("prompt_cache")
+        assembly_version = 1
+        if isinstance(raw_prompt_cache, dict):
+            raw_version = raw_prompt_cache.get("version")
+            if isinstance(raw_version, int) and not isinstance(raw_version, bool):
+                assembly_version = raw_version
+        tool_bytes = json.dumps(tools, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        canonical_bytes = json.dumps(
+            {
+                "assembly_version": assembly_version,
+                "messages": stable_messages,
+                "tools": tools,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return ProviderWireMaterialization(
+            messages=messages,
+            tools=tools,
+            prefix=WirePrefixDescriptor(
+                canonical_bytes=canonical_bytes,
+                canonical_hash=hashlib.sha256(canonical_bytes).hexdigest(),
+                materialized_message_count=len(messages),
+                tool_generation=hashlib.sha256(tool_bytes).hexdigest(),
+                assembly_version=assembly_version,
+            ),
+        )
+
+    def _apply_anthropic_cache_policy(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        request: ProviderTurnRequest,
+    ) -> None:
+        retention = request.cache_retention
+        if retention is None and self.config is not None:
+            retention = self.config.cache_retention
+        if retention in {None, "none"}:
+            return
+        if self.config is None or not self.config.anthropic_messages_compatible:
+            raise ProviderExecutionError(
+                kind="unsupported_feature",
+                provider_name=request.provider_name or self.name,
+                model_name=request.model_name or "unknown",
+                message="prompt cache retention requires an explicit Anthropic Messages-compatible provider configuration",
+                fallback_allowed=True,
+            )
+        cache_control: dict[str, object] = {"type": "ephemeral", "ttl": "5m" if retention == "short" else "1h"}
+        if tools:
+            tools[-1]["cache_control"] = cache_control
+            return
+        for message in reversed(messages):
+            if message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = [{"type": "text", "text": content, "cache_control": cache_control}]
+                return
+        raise ProviderExecutionError(
+            kind="unsupported_feature",
+            provider_name=request.provider_name or self.name,
+            model_name=request.model_name or "unknown",
+            message="Anthropic prompt caching requires a system prefix or tool schema breakpoint",
+            fallback_allowed=True,
+        )
+
     @staticmethod
     def _provider_request_diagnostics(
         *,
         messages: list[dict[str, object]],
         request: ProviderTurnRequest,
+        wire_prefix: WirePrefixDescriptor,
     ) -> dict[str, object]:
         message_sizes = [_message_size_chars(message) for message in messages]
-        largest_index = None
-        if messages:
-            largest_index = max(range(len(message_sizes)), key=lambda index: message_sizes[index])
+        largest_index = max(range(len(message_sizes)), key=lambda index: message_sizes[index]) if messages else None
         largest_message: dict[str, object] | None = None
         if largest_index is not None:
             largest = messages[largest_index]
@@ -583,24 +680,16 @@ class LiteLLMBackendSingleAgentProvider:
                 "role": largest.get("role"),
                 "size_chars": message_sizes[largest_index],
             }
-            content = largest.get("content")
-            if isinstance(content, str):
-                if content.startswith(_SYNTHETIC_TOOL_FEEDBACK_PREFIX):
-                    largest_message["source"] = "synthetic_tool_feedback"
-                elif content.startswith(_CONTINUITY_SUMMARY_PREFIX):
-                    largest_message["source"] = "continuity_summary"
-
-        synthetic_tool_feedback_size = 0
-        continuity_summary_size = 0
-        for message in messages:
-            content = message.get("content")
-            if not isinstance(content, str):
-                continue
-            if content.startswith(_SYNTHETIC_TOOL_FEEDBACK_PREFIX):
-                synthetic_tool_feedback_size += len(content)
-            if content.startswith(_CONTINUITY_SUMMARY_PREFIX):
-                continuity_summary_size += len(content)
-
+        synthetic_tool_feedback_size = sum(
+            len(content)
+            for message in messages
+            if isinstance((content := message.get("content")), str) and content.startswith(_SYNTHETIC_TOOL_FEEDBACK_PREFIX)
+        )
+        continuity_summary_size = sum(
+            len(content)
+            for message in messages
+            if isinstance((content := message.get("content")), str) and content.startswith(_CONTINUITY_SUMMARY_PREFIX)
+        )
         context_window = request.context_window
         return {
             "message_count": len(messages),
@@ -611,20 +700,24 @@ class LiteLLMBackendSingleAgentProvider:
             "continuity_summary_size_chars": continuity_summary_size,
             "compacted": context_window.compacted,
             "prompt_cache_identity": request.prompt_cache_identity,
+            "wire_prefix": {
+                "canonical_hash": wire_prefix.canonical_hash,
+                "materialized_message_count": wire_prefix.materialized_message_count,
+                "tool_generation": wire_prefix.tool_generation,
+                "assembly_version": wire_prefix.assembly_version,
+            },
         }
 
-    def _log_provider_request_diagnostics(
-        self,
-        *,
-        messages: list[dict[str, object]],
-        request: ProviderTurnRequest,
-    ) -> None:
-        diagnostics = self._provider_request_diagnostics(messages=messages, request=request)
+    def _log_provider_request_diagnostics(self, *, wire: ProviderWireMaterialization, request: ProviderTurnRequest) -> None:
+        diagnostics = self._provider_request_diagnostics(
+            messages=wire.messages,
+            request=request,
+            wire_prefix=wire.prefix,
+        )
         logger.debug(
-            "provider request diagnostics: provider=%s model=%s messages=%d "
-            "estimated_chars=%d retained_tool_results=%d synthetic_tool_feedback_size=%d "
-            "continuity_summary_size=%d largest_message=%s compacted=%s "
-            "stable_prefix_hash=%s tool_generation=%s",
+            "provider request diagnostics: provider=%s model=%s messages=%d estimated_chars=%d "
+            "retained_tool_results=%d synthetic_tool_feedback_size=%d continuity_summary_size=%d "
+            "largest_message=%s compacted=%s wire_prefix_hash=%s tool_generation=%s",
             request.provider_name or self.name,
             request.model_name or "unknown",
             diagnostics["message_count"],
@@ -634,9 +727,62 @@ class LiteLLMBackendSingleAgentProvider:
             diagnostics["continuity_summary_size_chars"],
             diagnostics["largest_message"],
             diagnostics["compacted"],
-            cast(dict[str, object], diagnostics["prompt_cache_identity"]).get("stable_prefix_hash"),
-            cast(dict[str, object], diagnostics["prompt_cache_identity"]).get("tool_generation"),
+            wire.prefix.canonical_hash,
+            wire.prefix.tool_generation,
         )
+
+    @staticmethod
+    def _response_metadata(payload: Mapping[str, object]) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        request_id = payload.get("id")
+        if isinstance(request_id, str) and request_id:
+            metadata["request_id"] = request_id
+        served_model = payload.get("model")
+        if isinstance(served_model, str) and served_model:
+            metadata["served_model"] = served_model
+        return metadata
+
+    @staticmethod
+    def _done_reason(value: object) -> str:
+        if not isinstance(value, str):
+            return "unknown"
+        normalized = value.strip().lower()
+        if normalized in {"stop", "end_turn"}:
+            return "stop"
+        if normalized in {"tool_calls", "tool_use"}:
+            return "tool_calls"
+        if normalized == "function_call":
+            return "function_call"
+        if normalized in {"length", "max_tokens"}:
+            return "length"
+        if normalized == "content_filter":
+            return "content_filter"
+        if normalized == "error":
+            return "error"
+        return "unknown"
+
+    @staticmethod
+    def _parse_tool_arguments(value: object) -> dict[str, object]:
+        if isinstance(value, dict):
+            return dict(cast(dict[str, object], value))
+        if not isinstance(value, str) or not value.strip():
+            return {}
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(cast(dict[str, object], decoded)) if isinstance(decoded, dict) else {}
+
+    @staticmethod
+    def _merge_tool_argument_fragment(previous: str | dict[str, object], fragment: object) -> str | dict[str, object]:
+        if isinstance(fragment, str):
+            prefix = previous if isinstance(previous, str) else json.dumps(previous, ensure_ascii=False, sort_keys=True)
+            return prefix + fragment
+        if not isinstance(fragment, dict):
+            return previous
+        merged = LiteLLMBackendSingleAgentProvider._parse_tool_arguments(previous) if isinstance(previous, str) else dict(previous)
+        merged.update(cast(dict[str, object], fragment))
+        return merged
 
     def _auth_kwargs(self) -> dict[str, object]:
         if self.config is None:
@@ -677,16 +823,7 @@ class LiteLLMBackendSingleAgentProvider:
                 tool_name_obj,
                 provider_to_original=provider_to_original or {},
             )
-            parsed_arguments: dict[str, object] = {}
-            arguments_obj = function.get("arguments")
-            if isinstance(arguments_obj, str) and arguments_obj.strip():
-                try:
-                    decoded = json.loads(arguments_obj)
-                except json.JSONDecodeError:
-                    parsed_arguments = {}
-                else:
-                    if isinstance(decoded, dict):
-                        parsed_arguments = cast(dict[str, object], decoded)
+            parsed_arguments = LiteLLMBackendSingleAgentProvider._parse_tool_arguments(function.get("arguments"))
             tool_call_id_obj = raw_call.get("id")
             explicit_tool_call_id = tool_call_id_obj if isinstance(tool_call_id_obj, str) else None
             fallback_tool_call_id = (
@@ -788,15 +925,15 @@ class LiteLLMBackendSingleAgentProvider:
 
     def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
         model_identifier = self._model_identifier(request)
-        original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
+        _original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
         timeout_seconds = (
             _DEFAULT_COMPLETION_TIMEOUT_SECONDS if self.config is None or self.config.timeout_seconds is None else self.config.timeout_seconds
         )
-        messages = self._build_messages(request)
-        self._log_provider_request_diagnostics(messages=messages, request=request)
+        wire = self._build_messages(request)
+        self._log_provider_request_diagnostics(wire=wire, request=request)
         payload: dict[str, object] = {
             "model": model_identifier,
-            "messages": messages,
+            "messages": wire.messages,
             "stream": False,
             "api_base": self._api_base(),
             "timeout": timeout_seconds,
@@ -805,10 +942,9 @@ class LiteLLMBackendSingleAgentProvider:
         }
         payload.update(self._completion_kwargs_for_request(request))
         self._apply_ssl_verify_payload(payload)
-        if request.available_tools:
-            payload["tools"] = [self._to_tool_schema(tool, original_to_provider=original_to_provider) for tool in request.available_tools]
+        if wire.tools:
+            payload["tools"] = wire.tools
             payload["tool_choice"] = "auto"
-
         try:
             response = self._call_litellm_completion(cast(dict[str, Any], payload))
             response_payload = cast(dict[str, object], response.model_dump())
@@ -824,30 +960,27 @@ class LiteLLMBackendSingleAgentProvider:
                 },
             )
             usage = _extract_token_usage(response_payload)
+            metadata = self._response_metadata(response_payload)
             raw_choices = response_payload.get("choices")
             if not isinstance(raw_choices, list) or not raw_choices:
-                return ProviderTurnResult(output="", usage=usage)
-            choices = cast(list[object], raw_choices)
-            first_choice_obj = choices[0]
+                return ProviderTurnResult(output="", usage=usage, metadata=metadata)
+            first_choice_obj = raw_choices[0]
             if not isinstance(first_choice_obj, dict):
-                return ProviderTurnResult(output="", usage=usage)
-            message_obj = cast(dict[str, object], first_choice_obj).get("message")
+                return ProviderTurnResult(output="", usage=usage, metadata=metadata)
+            first_choice = cast(dict[str, object], first_choice_obj)
+            message_obj = first_choice.get("message")
             if not isinstance(message_obj, dict):
-                return ProviderTurnResult(output="", usage=usage)
+                return ProviderTurnResult(output="", usage=usage, metadata=metadata)
             message = cast(dict[str, object], message_obj)
-            reasoning = _extract_non_stream_reasoning(message)
-
-            tool_calls = self._extract_tool_calls(
-                message,
-                provider_to_original=provider_to_original,
-            )
-            if tool_calls:
-                return ProviderTurnResult(tool_calls=tool_calls, usage=usage, reasoning=reasoning)
-
             content_obj = message.get("content")
-            if isinstance(content_obj, str):
-                return ProviderTurnResult(output=content_obj, usage=usage, reasoning=reasoning)
-            return ProviderTurnResult(output="", usage=usage, reasoning=reasoning)
+            return ProviderTurnResult(
+                tool_calls=self._extract_tool_calls(message, provider_to_original=provider_to_original),
+                output=content_obj if isinstance(content_obj, str) else "",
+                usage=usage,
+                reasoning=_extract_non_stream_reasoning(message),
+                done_reason=cast(Any, self._done_reason(first_choice.get("finish_reason"))),
+                metadata=metadata,
+            )
         except Exception as exc:
             raise self._map_exception(
                 exc,
@@ -857,15 +990,15 @@ class LiteLLMBackendSingleAgentProvider:
 
     def stream_turn(self, request: ProviderTurnRequest) -> Iterator[ProviderStreamEvent]:
         model_identifier = self._model_identifier(request)
-        original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
+        _original_to_provider, provider_to_original = self._provider_tool_name_maps(request)
         timeout_seconds = (
             _DEFAULT_COMPLETION_TIMEOUT_SECONDS if self.config is None or self.config.timeout_seconds is None else self.config.timeout_seconds
         )
-        messages = self._build_messages(request)
-        self._log_provider_request_diagnostics(messages=messages, request=request)
+        wire = self._build_messages(request)
+        self._log_provider_request_diagnostics(wire=wire, request=request)
         payload: dict[str, object] = {
             "model": model_identifier,
-            "messages": messages,
+            "messages": wire.messages,
             "stream": True,
             "api_base": self._api_base(),
             "timeout": timeout_seconds,
@@ -874,15 +1007,16 @@ class LiteLLMBackendSingleAgentProvider:
         }
         payload.update(self._stream_completion_kwargs_for_request(request))
         self._apply_ssl_verify_payload(payload)
-        if request.available_tools:
-            payload["tools"] = [self._to_tool_schema(tool, original_to_provider=original_to_provider) for tool in request.available_tools]
+        if wire.tools:
+            payload["tools"] = wire.tools
             payload["tool_choice"] = "auto"
-
         try:
             stream = cast(Iterator[Any], self._call_litellm_completion(cast(dict[str, Any], payload)))
             streamed_tool_calls: dict[int, _StreamedToolCallAccumulator] = {}
             latest_usage: ProviderTokenUsage | None = None
             raw_chunks: list[object] = []
+            done_reason = "unknown"
+            response_metadata: dict[str, object] = {}
             for chunk in stream:
                 if request.abort_signal is not None and request.abort_signal.cancelled:
                     yield ProviderStreamEvent(
@@ -895,6 +1029,7 @@ class LiteLLMBackendSingleAgentProvider:
                     return
                 chunk_payload = cast(dict[str, object], chunk.model_dump())
                 raw_chunks.append(chunk_payload)
+                response_metadata.update(self._response_metadata(chunk_payload))
                 latest_usage = _extract_token_usage(chunk_payload) or latest_usage
                 raw_choices = chunk_payload.get("choices")
                 if not isinstance(raw_choices, list) or not raw_choices:
@@ -960,17 +1095,16 @@ class LiteLLMBackendSingleAgentProvider:
                                 name_obj = function.get("name")
                                 if isinstance(name_obj, str) and name_obj:
                                     tool_name = name_obj
-                                arguments_obj = function.get("arguments")
-                                if isinstance(arguments_obj, str) and arguments_obj:
-                                    arguments += arguments_obj
+                                arguments = self._merge_tool_argument_fragment(
+                                    arguments,
+                                    function.get("arguments"),
+                                )
                             streamed_tool_calls[index] = _StreamedToolCallAccumulator(
                                 tool_call_id=tool_call_id,
                                 tool_name=tool_name,
                                 arguments=arguments,
                             )
-                finish_reason = first_choice.get("finish_reason")
-                if isinstance(finish_reason, str) and finish_reason:
-                    continue
+                done_reason = self._done_reason(first_choice.get("finish_reason"))
         except Exception as exc:
             raise self._map_exception(
                 exc,
@@ -1019,7 +1153,8 @@ class LiteLLMBackendSingleAgentProvider:
 
         yield ProviderStreamEvent(
             kind="done",
-            done_reason="completed",
+            done_reason=cast(Any, done_reason),
+            metadata=response_metadata or None,
             usage=latest_usage,
         )
         write_provider_trace(

@@ -1358,6 +1358,11 @@ class RuntimeResumeCoordinator:
         )
         validate_session_workspace(stored.session, session_id=session_id, workspace=self._workspace)
         tool_results = list(self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)))
+        replayed_conversation_segments = runtime.replayed_conversation_segments_for_existing_session(
+            stored=stored,
+            parent_session_id=stored.session.session.parent_id,
+            current_prompt=prompt,
+        )
         session = session_with_run_id(
             SessionState(
                 session=stored.session.session,
@@ -1391,6 +1396,7 @@ class RuntimeResumeCoordinator:
                 applied_context=resumed_skill_snapshot.skill_prompt_context,
                 selected_skill_names=resumed_skill_snapshot.selected_skill_names,
             ),
+            replayed_conversation_segments=replayed_conversation_segments,
         )
         session = session_with_context_window_payload_metadata(
             session,
@@ -1615,12 +1621,6 @@ class RuntimeResumeCoordinator:
                 raise ValueError("persisted resume checkpoint tool result error must be a string or null")
             if error_kind is not None and not isinstance(error_kind, str):
                 raise ValueError("persisted resume checkpoint tool result error_kind must be a string or null")
-            if error_summary is not None and not isinstance(error_summary, str):
-                raise ValueError("persisted resume checkpoint tool result error_summary must be a string or null")
-            if error_details is not None and not isinstance(error_details, dict):
-                raise ValueError("persisted resume checkpoint tool result error_details must be an object or null")
-            if retry_guidance is not None and not isinstance(retry_guidance, str):
-                raise ValueError("persisted resume checkpoint tool result retry_guidance must be a string or null")
             parsed.append(
                 ToolResult(
                     tool_name=tool_name,
@@ -1629,9 +1629,10 @@ class RuntimeResumeCoordinator:
                     data=sanitize_tool_result_data(cast(dict[str, object], data)),
                     error=error,
                     error_kind=error_kind,
-                    error_summary=error_summary,
+                    error_summary=cast(str | None, error_summary),
                     error_details=(cast(dict[str, object], error_details) if isinstance(error_details, dict) else None),
-                    retry_guidance=retry_guidance,
+                    retry_guidance=cast(str | None, retry_guidance),
+                    source="checkpoint",
                 )
             )
         return tuple(parsed)

@@ -1147,6 +1147,41 @@ def test_tool_results_from_events_preserves_successful_null_content() -> None:
     ]
 
 
+def test_session_storage_checkpoint_rejects_unmatched_request_prompt() -> None:
+    build_checkpoint: Any = _private_attr(SqliteSessionStore, "_resume_checkpoint_base")
+    response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id="checkpoint-mismatch"),
+            status="failed",
+            turn=1,
+            metadata={},
+        ),
+        events=(
+            EventEnvelope(
+                session_id="checkpoint-mismatch",
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": "older prompt"},
+            ),
+            EventEnvelope(
+                session_id="checkpoint-mismatch",
+                sequence=2,
+                event_type="runtime.tool_completed",
+                source="tool",
+                payload={"tool": "read", "status": "ok", "content": "old"},
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cannot identify current turn request"):
+        build_checkpoint(
+            request=RuntimeRequest(prompt="current prompt", session_id="checkpoint-mismatch"),
+            response=response,
+            kind="provider_failure_retryable",
+        )
+
+
 def test_session_storage_load_resume_checkpoint_rejects_corrupt_json(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     request = RuntimeRequest(prompt="go", session_id="checkpoint-corrupt-json")

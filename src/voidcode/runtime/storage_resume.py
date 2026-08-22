@@ -44,6 +44,18 @@ class _ResumeStorageMixin(_MixinBase):
         last_event_sequence: int | None = None,
     ) -> dict[str, object]:
         snapshot_hash, snapshot_version, binding_snapshot = cls._checkpoint_skill_snapshot(response.session.metadata)
+        request_events = [
+            event for event in response.events if event.event_type == "runtime.request_received" and event.payload.get("prompt") == request.prompt
+        ]
+        has_request_event = any(event.event_type == "runtime.request_received" for event in response.events)
+        if not request_events and has_request_event:
+            raise ValueError("cannot identify current turn request in persisted session events")
+        current_request_sequence = request_events[-1].sequence if request_events else None
+        current_events = (
+            tuple(event for event in response.events if current_request_sequence is None or event.sequence >= current_request_sequence)
+            if current_request_sequence is not None
+            else ()
+        )
         return {
             "version": 1,
             "kind": kind,
@@ -56,7 +68,7 @@ class _ResumeStorageMixin(_MixinBase):
             "skill_snapshot_hash": snapshot_hash,
             "skill_snapshot_version": snapshot_version,
             "skill_binding_snapshot": binding_snapshot,
-            "tool_results": cls._tool_results_from_events(response.events),
+            "tool_results": cls._tool_results_from_events(current_events),
             "last_event_sequence": (cls._session_last_event_sequence(response.events) if last_event_sequence is None else last_event_sequence),
             "output": response.output,
         }

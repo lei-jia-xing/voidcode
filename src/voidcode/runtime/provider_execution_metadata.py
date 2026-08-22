@@ -64,7 +64,9 @@ def session_with_provider_usage_metadata(
             return raw_value
         raise ValueError(f"persisted provider_usage.cumulative.{key} must be an integer")
 
-    cumulative_payload = {key: _int_value(key) + value for key, value in usage_payload.items()}
+    cumulative_payload: dict[str, int] = {}
+    for key, value in usage_payload.items():
+        cumulative_payload[key] = _int_value(key) if value is None else _int_value(key) + value
     latest_payload = {
         **usage_payload,
         "cache_hit_rate": usage.cache_hit_rate,

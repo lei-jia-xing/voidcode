@@ -6,16 +6,22 @@ considered complete until implementation and focused tests provide evidence.
 
 ## Context Assembly And Caching
 
-- [x] Define a production cache-key contract (stable-prefix hash, dynamic-suffix
-  hash, tool materialization generation, provider/model identity) and expose hit
-  metadata from provider execution. Prompt hashes and a provider request
-  `prompt_cache_identity` are now available; LiteLLM request diagnostics now log
-  the non-content hash dimensions (`stable_prefix_hash` / `tool_generation` /
-  provider/model identity) from the provider request layer. Actual provider
-  cache hit/miss reporting remains.
-- [x] Move session/config-stable instruction sections before the dynamic boundary;
-  keep date, git status, touched-file rules, README context, task state,
-  continuity, tool results, and the current user request dynamic.
+- [x] Define the final provider-wire prefix descriptor. LiteLLM now exposes
+  canonical bytes/hash for the stable system-message prefix plus materialized
+  tools, message count, tool generation, and assembly version. It is a
+  deterministic diagnostic identity, **not** evidence of an actual cache hit.
+  Provider usage retains unknown fields as `null` rather than treating them as
+  observed zero.
+- [x] Materialize the minimal Anthropic Messages-compatible cache policy. Only
+  the explicit Anthropic adapter supports `cache_retention: short|long`, adding
+  an ephemeral `cache_control` breakpoint to the final tool prefix (or system
+  prefix when no tools exist), with `5m`/`1h` TTL respectively. Non-compatible
+  provider configurations reject retention as `unsupported_feature`; fake
+  gateway coverage proves write on turn one, read on turn two, and a tool-schema
+  change produces a fresh write rather than a false hit.
+- [x] Keep session/config-stable instruction sections before the dynamic
+  boundary; date, git status, touched-file rules, README context, task state,
+  continuity, tool results, and the current user request stay dynamic.
 - [ ] Cache git/environment observations and refresh them on meaningful workspace
   changes instead of every prompt assembly.
 - [ ] Deduplicate and version rule/README injections by normalized path and file
@@ -43,11 +49,12 @@ considered complete until implementation and focused tests provide evidence.
 ## Evidence Already Found
 
 - `src/voidcode/tools/guidance.py` preserves `path_argument_keys` and has regression coverage.
-- `src/voidcode/runtime/prompt_assembly.py` places the dynamic boundary before
-  workflow, skills, hooks, memory, and tool policy sections.
-- `tests/unit/runtime/test_prompt_stable_prefix.py` hashes a prefix for tests,
-  but no provider cache reuse contract is implemented there.
-- Runtime context metadata now exposes deterministic stable-prefix and
-  dynamic-suffix hashes; LiteLLM request diagnostics log the provider/model
-  identity, `stable_prefix_hash`, and `tool_generation` dimensions from the
-  provider request layer; provider cache hit reporting remains to be wired.
+- `src/voidcode/runtime/prompt_assembly.py` places skills, workspace memory,
+  and tool policy before the dynamic boundary; reactive rules, runtime state,
+  tool results, and the current user request follow it.
+- `src/voidcode/provider/litellm_backend.py` owns the final wire descriptor;
+  prompt-assembly hashes remain assembly diagnostics and are never represented
+  as an actual provider-cache hit.
+- Focused provider tests cover canonical finish reasons, object/string tool
+  arguments, assistant text paired with tool calls, unknown usage, and the
+  explicit unsupported Anthropic cache-retention path.

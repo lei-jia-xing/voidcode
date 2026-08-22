@@ -235,7 +235,7 @@ VoidCode 的 Provider 抽象层输出标准化的流式事件包。
 - `text`: 流片段文本（仅 `delta` / `content`）。
 - `error`: 错误描述（仅 `error`）。
 - `error_kind`: 错误分类（`rate_limit`, `context_limit`, `invalid_model`, `transient_failure`, `cancelled`）。
-- `done_reason`: 完成原因（`completed`, `cancelled`, `error`）。
+- `done_reason`: 上游终态原因；保留为 `stop`、`tool_calls`、`function_call`、`length`、`content_filter`、`cancelled`、`error` 或 `unknown`。`unknown` 表示上游未报告终态，不能视为成功完成。
 
 ### 取消与超时行为
 

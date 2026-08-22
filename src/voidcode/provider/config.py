@@ -136,6 +136,7 @@ class _AnthropicProviderConfigPayload(_ProviderPayloadModel):
     discovery_base_url: BoundaryOptionalString = None
     version: BoundaryOptionalString = None
     beta_headers: BoundaryStringList = ()
+    cache_retention: Literal["none", "short", "long"] = "none"
     timeout_seconds: BoundaryOptionalTimeout = None
     transient_retry: _ProviderTransientRetryConfigPayload | None = None
 
@@ -463,6 +464,7 @@ class AnthropicProviderConfig:
     discovery_base_url: str | None = None
     version: str | None = None
     beta_headers: tuple[str, ...] = ()
+    cache_retention: Literal["none", "short", "long"] = "none"
     timeout_seconds: float | None = None
     transient_retry: ProviderTransientRetryConfig | None = None
     beta_headers_explicit: bool = field(default=False, compare=False, repr=False)
@@ -527,6 +529,12 @@ class LiteLLMProviderConfig:
     timeout_seconds: float | None = None
     model_map: dict[str, str] = field(default_factory=dict)
     transient_retry: ProviderTransientRetryConfig | None = None
+    openai_organization: str | None = None
+    openai_project: str | None = None
+    anthropic_version: str | None = None
+    anthropic_beta_headers: tuple[str, ...] = ()
+    anthropic_messages_compatible: bool = False
+    cache_retention: Literal["none", "short", "long"] = "none"
     auth_scheme_explicit: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -735,6 +743,7 @@ def _merge_anthropic_provider_config(
         discovery_base_url=_prefer_primary(primary.discovery_base_url, fallback.discovery_base_url),
         version=_prefer_primary(primary.version, fallback.version),
         beta_headers=(primary.beta_headers if primary.beta_headers_explicit else fallback.beta_headers),
+        cache_retention=(primary.cache_retention if primary.cache_retention != "none" else fallback.cache_retention),
         beta_headers_explicit=primary.beta_headers_explicit or fallback.beta_headers_explicit,
         timeout_seconds=_prefer_primary(primary.timeout_seconds, fallback.timeout_seconds),
         transient_retry=_prefer_primary(primary.transient_retry, fallback.transient_retry),
@@ -1211,6 +1220,7 @@ def _parse_anthropic_provider_config(
         discovery_base_url=payload.discovery_base_url,
         version=payload.version,
         beta_headers=payload.beta_headers,
+        cache_retention=payload.cache_retention,
         beta_headers_explicit="beta_headers" in payload.model_fields_set,
         timeout_seconds=payload.timeout_seconds,
         transient_retry=_parse_transient_retry_config(
@@ -1576,6 +1586,8 @@ def _serialize_anthropic_provider_config(
         payload["version"] = provider.version
     if provider.beta_headers or provider.beta_headers_explicit:
         payload["beta_headers"] = list(provider.beta_headers)
+    if provider.cache_retention != "none":
+        payload["cache_retention"] = provider.cache_retention
     if provider.timeout_seconds is not None:
         payload["timeout_seconds"] = provider.timeout_seconds
     if provider.transient_retry is not None:

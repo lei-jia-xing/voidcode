@@ -19145,7 +19145,6 @@ def test_runtime_persists_assembled_context_token_estimate(
         prompt="检查构建输出",
         tool_results=(ToolResult(tool_name="read", status="ok", content="hello world", data={}),),
         session_metadata=session_metadata,
-        preserved_system_segments=("Follow project instructions.",),
     )
     session = SessionState(
         session=SessionRef("assembled-context-session"),
