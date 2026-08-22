@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { RuntimeClient } from "../lib/runtime/client";
+import { failureMessageFromEvent } from "../lib/runtime/event-parser";
 import {
   AgentSummary,
   ApprovalDecision,
@@ -87,6 +88,7 @@ interface AppState {
   replayStatus: "idle" | "loading" | "success" | "error";
   replayError: string | null;
   runStatus: "idle" | "running" | "cancelling" | "success" | "error";
+  runOrigin: "local" | "external" | null;
   runError: string | null;
   cancelRequested: boolean;
   approvalStatus: "idle" | "submitting" | "success" | "error";
@@ -104,6 +106,7 @@ interface AppState {
   sessionDebugStatus: AsyncStatus;
   sessionDebugError: string | null;
   replayRequestId: number;
+  replayTargetSessionId: string | null;
 
   settings: RuntimeSettings | null;
   settingsStatus: "idle" | "loading" | "success" | "error";
@@ -186,26 +189,29 @@ function runStatusForReplay(session: SessionState): AppState["runStatus"] {
 function isRunLocked(runStatus: AppState["runStatus"]): boolean {
   return runStatus === "running" || runStatus === "cancelling";
 }
-
 function runtimeFailureMessage(event: EventEnvelope): string | null {
-  if (event.event_type !== "runtime.failed") {
-    return null;
-  }
-  if (isRuntimeCancellationEvent(event)) {
-    return null;
-  }
-  const details = event.payload.provider_error_details;
-  if (details && typeof details === "object" && !Array.isArray(details)) {
-    const exceptionMessage = (details as Record<string, unknown>)
-      .exception_message;
-    if (typeof exceptionMessage === "string" && exceptionMessage.trim()) {
-      return exceptionMessage.trim();
-    }
-  }
-  const error = event.payload.error;
-  return typeof error === "string" && error.trim()
-    ? error.trim()
-    : "runtime failed";
+  return failureMessageFromEvent(event);
+}
+
+function isGenericFailureMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized === "failed" ||
+    normalized === "runtime failed" ||
+    normalized === "runtime session failed" ||
+    normalized === "session failed" ||
+    normalized === "provider retry exhausted"
+  );
+}
+
+function preferFailureMessage(
+  current: string | null,
+  candidate: string | null,
+): string | null {
+  if (!candidate) return current;
+  if (!current || isGenericFailureMessage(current)) return candidate;
+  if (isGenericFailureMessage(candidate)) return current;
+  return candidate;
 }
 
 function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
@@ -368,6 +374,7 @@ export const useAppStore = create<AppState>()(
       replayStatus: "idle",
       replayError: null,
       runStatus: "idle",
+      runOrigin: null,
       runError: null,
       cancelRequested: false,
       approvalStatus: "idle",
@@ -385,6 +392,7 @@ export const useAppStore = create<AppState>()(
       sessionDebugStatus: "idle",
       sessionDebugError: null,
       replayRequestId: 0,
+      replayTargetSessionId: null,
 
       settings: null,
       settingsStatus: "idle",
@@ -425,6 +433,19 @@ export const useAppStore = create<AppState>()(
       },
 
       switchWorkspace: async (path) => {
+        // A workspace switch invalidates every in-flight local stream. Abort
+        // it before replacing state and bump the replay token so late chunks
+        // cannot leak into the new workspace.
+        activeRunAbortController?.abort();
+        activeRunAbortController = null;
+        set({
+          replayRequestId: get().replayRequestId + 1,
+          runStatus: "idle",
+          runOrigin: null,
+          cancelRequested: false,
+          workspaceSwitchStatus: "loading",
+          workspaceSwitchError: null,
+        });
         set({
           workspaceSwitchStatus: "loading",
           workspaceSwitchError: null,
@@ -458,9 +479,9 @@ export const useAppStore = create<AppState>()(
             currentSessionEvents: [],
             currentSessionOutput: null,
             childSessionParentId: null,
-            replayStatus: "idle",
             replayError: null,
             runStatus: "idle",
+            runOrigin: null,
             runError: null,
             approvalStatus: "idle",
             approvalError: null,
@@ -813,7 +834,11 @@ export const useAppStore = create<AppState>()(
           Boolean(sessionId) &&
           childParentSessionId !== null &&
           sessionId === childParentSessionId;
-        if (isRunLocked(get().runStatus) && !allowChildParentReturn) {
+        if (
+          isRunLocked(get().runStatus) &&
+          get().runOrigin !== "external" &&
+          !allowChildParentReturn
+        ) {
           return;
         }
 
@@ -860,6 +885,10 @@ export const useAppStore = create<AppState>()(
 
         const requestId = get().replayRequestId + 1;
         const previousSessionId = get().currentSessionId;
+        const previousSessionState = get().currentSessionState;
+        const previousSessionEvents = get().currentSessionEvents;
+        const previousSessionOutput = get().currentSessionOutput;
+        const previousChildParentId = get().childSessionParentId;
         set({
           currentSessionId: sessionId,
           currentSessionState: null,
@@ -868,6 +897,7 @@ export const useAppStore = create<AppState>()(
           replayStatus: "loading",
           replayError: null,
           replayRequestId: requestId,
+          replayTargetSessionId: sessionId,
           runStatus: "idle",
           runError: null,
           approvalStatus: "idle",
@@ -915,7 +945,12 @@ export const useAppStore = create<AppState>()(
               runStatus: childContext.session_result?.session
                 ? runStatusForReplay(childContext.session_result.session)
                 : "idle",
+              runOrigin:
+                childContext.session_result?.session?.status === "running"
+                  ? "external"
+                  : null,
               replayStatus: "success",
+              replayError: null,
             });
             await get().loadBackgroundTasks();
             return;
@@ -936,25 +971,42 @@ export const useAppStore = create<AppState>()(
             currentSessionEvents: replay.events,
             currentSessionOutput: replay.output,
             childSessionParentId: null,
+            runStatus: runStatusForReplay(replay.session),
+            runOrigin: replay.session.status === "running" ? "external" : null,
             replayStatus: "success",
+            replayError: null,
+            replayTargetSessionId: null,
           });
           await get().loadBackgroundTasks();
-        } catch {
+        } catch (err) {
           if (
             get().replayRequestId !== requestId ||
             get().currentSessionId !== sessionId
           ) {
             return;
           }
-
+          const hasPreviousTranscript =
+            previousSessionId !== null ||
+            previousSessionState !== null ||
+            previousSessionEvents.length > 0 ||
+            previousSessionOutput !== null;
           set({
-            currentSessionId: null,
-            currentSessionState: null,
-            currentSessionEvents: [],
-            currentSessionOutput: null,
-            childSessionParentId: null,
-            replayStatus: "idle",
-            replayError: null,
+            currentSessionId: hasPreviousTranscript ? previousSessionId : null,
+            currentSessionState: hasPreviousTranscript
+              ? previousSessionState
+              : null,
+            currentSessionEvents: hasPreviousTranscript
+              ? previousSessionEvents
+              : [],
+            currentSessionOutput: hasPreviousTranscript
+              ? previousSessionOutput
+              : null,
+            childSessionParentId: hasPreviousTranscript
+              ? previousChildParentId
+              : null,
+            replayStatus: hasPreviousTranscript ? "error" : "idle",
+            replayError: hasPreviousTranscript ? (err as Error).message : null,
+            replayTargetSessionId: hasPreviousTranscript ? sessionId : null,
           });
         }
       },
@@ -969,6 +1021,7 @@ export const useAppStore = create<AppState>()(
         activeRunAbortController = abortController;
         set({
           runStatus: "running",
+          runOrigin: "local",
           runError: null,
           cancelRequested: false,
           currentSessionOutput: null,
@@ -1061,13 +1114,17 @@ export const useAppStore = create<AppState>()(
           let streamFailureMessage: string | null = null;
           let streamInterrupted = false;
           for await (const chunk of stream) {
+            if (get().replayRequestId !== nextReplayRequestId) return;
             if (chunk.event) {
               streamInterrupted =
                 isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
-              streamFailureMessage =
-                runtimeFailureMessage(chunk.event) ?? streamFailureMessage;
+              streamFailureMessage = preferFailureMessage(
+                streamFailureMessage,
+                runtimeFailureMessage(chunk.event),
+              );
             }
             set((state) => {
+              if (state.replayRequestId !== nextReplayRequestId) return state;
               const newEvents = chunk.event
                 ? [...state.currentSessionEvents, chunk.event]
                 : state.currentSessionEvents;
@@ -1115,10 +1172,10 @@ export const useAppStore = create<AppState>()(
               : Promise.resolve(),
           ]);
         } catch (err) {
+          if (get().replayRequestId !== nextReplayRequestId) return;
           // A torn-down stream during a user interrupt surfaces as an
-          // AbortError (or any rejection once the cancel flag is set), and
-          // the backend session row may already be "interrupted". None of
-          // these are real failures: settle to idle without an error banner.
+          // AbortError (or any rejection once the cancel flag is set), and the
+          // backend session row may already be interrupted.
           const errName = (err as Error)?.name;
           const interrupted =
             errName === "AbortError" ||
@@ -1433,12 +1490,14 @@ export const useAppStore = create<AppState>()(
         try {
           const sessionDebug =
             await RuntimeClient.getSessionDebug(targetSessionId);
+          if (get().currentSessionId !== targetSessionId) return;
           set({
             sessionDebug,
             sessionDebugStatus: "success",
             sessionDebugError: null,
           });
         } catch (err) {
+          if (get().currentSessionId !== targetSessionId) return;
           set({
             sessionDebug: null,
             sessionDebugStatus: "error",
@@ -1489,15 +1548,16 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "app-storage",
-      partialize: (state) => ({
-        language: state.language,
-        agentPreset: state.agentPreset,
-        providerModel: state.providerModel,
-        reasoningEffort: state.reasoningEffort,
-        currentSessionId: state.currentSessionId,
-        sessionSidebarWidth: state.sessionSidebarWidth,
-        reviewMode: state.reviewMode,
-      }),
+      partialize: (state) =>
+        ({
+          language: state.language,
+          agentPreset: state.agentPreset,
+          providerModel: state.providerModel,
+          reasoningEffort: state.reasoningEffort,
+          currentSessionId: state.currentSessionId,
+          sessionSidebarWidth: state.sessionSidebarWidth,
+          reviewMode: state.reviewMode,
+        }) as unknown as AppState,
     },
   ),
 );

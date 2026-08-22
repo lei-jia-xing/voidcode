@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   X,
@@ -44,6 +44,7 @@ export function OpenProjectModal({
   onSwitchWorkspace,
 }: OpenProjectModalProps) {
   const { t } = useTranslation();
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [manualPath, setManualPath] = useState("");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -59,6 +60,15 @@ export function OpenProjectModal({
       setDidInitiateSwitch(false);
     }
   }, [didInitiateSwitch, workspaceSwitchStatus, onClose]);
+  useEffect(() => {
+    if (!isOpen) return;
+    dialogRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   const filteredRecent = useMemo(() => {
     if (!query) return recentWorkspaces.slice(0, RECENT_WORKSPACE_UI_LIMIT);
@@ -117,9 +127,19 @@ export function OpenProjectModal({
         aria-label={t("common.close")}
       />
 
-      <div className="relative w-full max-w-lg bg-[var(--vc-bg)] border border-[color:var(--vc-border-subtle)] rounded-xl shadow-2xl flex flex-col max-h-[80vh]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="project-dialog-title"
+        tabIndex={-1}
+        className="relative w-full max-w-lg bg-[var(--vc-bg)] border border-[color:var(--vc-border-subtle)] rounded-xl shadow-2xl flex flex-col max-h-[80vh]"
+      >
         <div className="flex items-center justify-between px-5 h-14 border-b border-[color:var(--vc-border-subtle)] flex-shrink-0">
-          <h2 className="text-base font-semibold text-[var(--vc-text-primary)]">
+          <h2
+            id="project-dialog-title"
+            className="text-base font-semibold text-[var(--vc-text-primary)]"
+          >
             {t("project.openTitle")}
           </h2>
           <ControlButton

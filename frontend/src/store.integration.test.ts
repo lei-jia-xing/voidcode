@@ -2318,6 +2318,62 @@ describe("useAppStore integration flow", () => {
       "litellm.AuthenticationError: Insufficient balance.",
     );
   });
+  it("keeps a transient provider error over a generic terminal failure", async () => {
+    const sessionId = "transient-provider-error-session";
+    const requestReceived = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "say ok" },
+      "runtime",
+      sessionId,
+    );
+    const providerError = makeEvent(
+      2,
+      "graph.provider_stream",
+      {
+        channel: "error",
+        kind: "error",
+        error: "Provider authentication failed for deepseek.",
+        error_kind: "missing_auth",
+      },
+      "graph",
+      sessionId,
+    );
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "running", requestReceived);
+      yield makeStreamChunk(sessionId, "running", providerError);
+      yield makeStreamChunk(sessionId, "failed", null);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "failed", "say ok"),
+    ]);
+
+    await useAppStore.getState().runTask("say ok");
+
+    const state = useAppStore.getState();
+    expect(state.currentSessionState?.status).toBe("failed");
+    expect(state.runStatus).toBe("error");
+    expect(state.runError).toBe("Provider authentication failed for deepseek.");
+  });
+
+  it("uses the generic fallback when a failed session has no error event", async () => {
+    const sessionId = "generic-failure-session";
+
+    async function* stream() {
+      yield makeStreamChunk(sessionId, "failed", null);
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+
+    await useAppStore.getState().runTask("fail without details");
+
+    const state = useAppStore.getState();
+    expect(state.runStatus).toBe("error");
+    expect(state.runError).toBe("runtime session failed");
+  });
 
   it("passes runtime metadata through runTask options including store config defaults", async () => {
     const sessionId = "session-meta";

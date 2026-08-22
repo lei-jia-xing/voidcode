@@ -55,7 +55,7 @@
 ## 前端 (React + Bun)
 
 ### 今日已实现
-- [x] **UI 框架**：React 18、Tailwind CSS 和 Lucide React 外壳。
+- [x] **UI 框架**：React 19、Tailwind CSS 和 Lucide React 外壳（版本以 `frontend/package.json` 为准）。
 - [x] **组件库**：布局、导航和消息线程 UI 组件。
 - [x] **最小运行时传输接入**：前端现在通过 Zustand store 和运行时客户端消费真实的会话列表、会话重放、流式运行事件、审批/question 处理、review tree / diff、runtime status 与设置路径。
 - [x] **前端工具**：基于 Vite 的开发服务器，支持 Bun、ESLint 和 Prettier。

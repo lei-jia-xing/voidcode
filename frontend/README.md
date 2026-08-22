@@ -78,22 +78,27 @@ frontend/
 
 1. **HTTP API / SSE** - 用于会话管理、会话重放和流式运行事件交付
 
-**注意：** 当前前端已经具备可工作的运行时传输客户端和本地后端路径，能够消费会话列表、重放数据、流式运行事件、审批/question 处理结果、review tree / diff、workspace registry、runtime status 和设置投影。它仍然不是一个完整产品化的 runtime-driven Web 客户端，但已经不只是概念验证或纯静态壳层。
-
-默认 Web 提交会使用 `leader` 单 agent 路径和 `deepseek/deepseek-v4-pro` 模型；除非调用方显式传入正整数预算，否则前端不会向运行时发送 `max_steps`。API Key 不会进入浏览器状态或请求体；启动后端时通过环境变量提供：
+**后端启动与 provider 选择：** 前端不会把 API key 写入浏览器状态或请求体。首次无凭据验证使用确定性引擎：
 
 ```bash
-DEEPSEEK_API_KEY=<your-key> uv run voidcode serve --workspace . --port 8000
+VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode serve --workspace . --port 8000
 ```
 
-如果需要启动完整 Web launcher，则先构建前端资源，然后运行：
+需要真实 provider 时只配置一个明确的 provider/model，例如：
+
+```bash
+OPENAI_API_KEY=<your-key> VOIDCODE_MODEL=openai/gpt-4o-mini \
+  uv run voidcode serve --workspace . --port 8000
+```
+
+如果需要启动完整 Web launcher，先构建前端资源，然后运行：
 
 ```bash
 mise run frontend:build
-uv run voidcode web --workspace . --port 8000
+uv run voidcode web --workspace . --port 8000 --no-open
 ```
 
-自动化测试或脚本应使用 `uv run voidcode web --no-open ...`，避免 launcher 在 Playwright 或 CI 流程中额外弹出浏览器窗口。
+自动化测试或脚本应使用 `--no-open`，避免 launcher 在 Playwright 或 CI 流程中额外弹出浏览器窗口。
 
 ## 贡献
 

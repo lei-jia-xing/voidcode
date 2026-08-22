@@ -2100,16 +2100,70 @@ function ApprovalCard({
           </ControlButton>
         </div>
       </div>
+      {(approval.command ||
+        approval.path ||
+        approval.parameters ||
+        approval.impact) && (
+        <dl className="mt-3 grid gap-2 border-t border-[color:var(--vc-border-subtle)] pt-3 text-xs">
+          {approval.command && (
+            <div>
+              <dt className="text-[var(--vc-text-subtle)]">
+                {t("approval.command")}
+              </dt>
+              <dd className="mt-0.5 break-words font-mono text-[var(--vc-text-muted)]">
+                {approval.command}
+              </dd>
+            </div>
+          )}
+          {approval.path && (
+            <div>
+              <dt className="text-[var(--vc-text-subtle)]">
+                {t("approval.path")}
+              </dt>
+              <dd className="mt-0.5 break-words font-mono text-[var(--vc-text-muted)]">
+                {approval.path}
+              </dd>
+            </div>
+          )}
+          {approval.parameters && (
+            <div>
+              <dt className="text-[var(--vc-text-subtle)]">
+                {t("approval.parameters")}
+              </dt>
+              <dd className="mt-0.5 break-words font-mono text-[var(--vc-text-muted)]">
+                {approval.parameters}
+              </dd>
+            </div>
+          )}
+          {approval.impact && (
+            <div>
+              <dt className="text-[var(--vc-text-subtle)]">
+                {t("approval.impact")}
+              </dt>
+              <dd className="mt-0.5 break-words text-[var(--vc-text-muted)]">
+                {approval.impact}
+              </dd>
+            </div>
+          )}
+        </dl>
+      )}
     </div>
   );
 }
 
-function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
+function StatusIndicator({
+  status,
+  error,
+}: {
+  status: ChatMessage["status"];
+  error?: string | null;
+}) {
+  const { t } = useTranslation();
   if (status === "in_progress") {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
         <Loader2 className="w-3 h-3 animate-spin" />
-        Responding...
+        {t("chat.responding")}
       </span>
     );
   }
@@ -2117,7 +2171,7 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
         <PauseCircle className="w-3 h-3" />
-        Waiting for input
+        {t("chat.waiting")}
       </span>
     );
   }
@@ -2125,7 +2179,7 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-danger-text)]">
         <AlertCircle className="w-3 h-3" />
-        Failed
+        {error || t("task.status.failed")}
       </span>
     );
   }
@@ -2133,7 +2187,7 @@ function StatusIndicator({ status }: { status: ChatMessage["status"] }) {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-[var(--vc-text-muted)]">
         <CircleSlash className="w-3 h-3" />
-        Interrupted
+        {t("chat.interrupted")}
       </span>
     );
   }
@@ -2206,7 +2260,10 @@ export const ChatThread = memo(function ChatThread({
             <div key={message.id} className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1 min-h-4">
-                  <StatusIndicator status={message.status} />
+                  <StatusIndicator
+                    status={message.status}
+                    error={message.error}
+                  />
                 </div>
                 <div className="space-y-3">
                   {message.parts !== undefined ? (
@@ -2238,6 +2295,11 @@ export const ChatThread = memo(function ChatThread({
                         />
                       )}
                     </>
+                  )}
+                  {message.error && message.status !== "failed" && (
+                    <div className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-danger-border)] bg-[var(--vc-danger-bg)] px-3 py-2 text-xs text-[var(--vc-danger-text)]">
+                      {message.error}
+                    </div>
                   )}
                   {message.approval && isWaitingApproval && (
                     <ApprovalCard

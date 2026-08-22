@@ -25,10 +25,10 @@
 | 任务执行失败 | CLI 打印 `EVENT runtime.failed`，RESULT 为空或含错误信息 | `failed` | `runtime.failed` 事件的 `error` payload |
 | 会话未找到 | `sessions resume` 或 HTTP `/api/sessions/{id}` 返回 404 | 无记录 | SQLite `sessions` 表中是否存在对应 `session_id` |
 | 后台子任务卡住 | `tasks list` 显示 `queued` 或 `running` 但长时间无进展 | 父会话可能 `running` 或 `waiting` | `background_tasks` 表的 `status`、`error`、`cancellation_cause` 列 |
-| 数据库损坏或 schema 不匹配 | 启动任何命令即报 `sqlite runtime schema mismatch`，并提示 `Reset the runtime database with \`uv run voidcode storage reset\` or remove '<path>' plus matching -wal/-shm files.` | 不可用 | `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 文件是否存在、`PRAGMA user_version` 是否匹配、schema 是否与代码中 `_CANONICAL_SCHEMA` 一致 |
+| 数据库损坏或 schema 不匹配 | 启动任何命令即报 `sqlite runtime schema mismatch`，并提示 `uv run voidcode storage reset` 或删除 `<path>` 及对应 `-wal/-shm` 文件。 | 不可用 | `$XDG_STATE_HOME/voidcode/sessions.sqlite3` 文件是否存在、`PRAGMA user_version` 是否匹配、schema 是否与代码中 `_CANONICAL_SCHEMA` 一致 |
 | 工作区路径错误 | 命令报 `workspace does not exist` | 不可用 | `--workspace` 参数指向的目录是否存在 |
-| 配置解析失败 | `doctor` 返回非零退出码，或 `config show` 报错 | 不可用 | `.voidcode/config.json`（如存在）是否为合法 JSON |
-| Provider / model 未就绪 | `doctor` 报 `provider.readiness`，`runtime.failed` 含 `provider_error_kind` | `failed` 或不可用 | `voidcode config show` 的 `provider_readiness` 与 `context_budget` |
+| 配置解析失败 | `doctor` 返回非零退出码，或 `config show` 报 `invalid runtime config` | 不可用 | 工作区根目录 `.voidcode.json`（不是 `.voidcode/config.json`）是否为合法 JSON |
+| Provider / model 未就绪 | `doctor` 报 `provider.readiness`，`runtime.failed` 含 `provider_error_kind` | `failed` 或不可用 | `voidcode provider inspect <provider>`、`voidcode config show` 的 readiness 与 fallback |
 | HTTP 服务未启动 | `curl` 连接被拒绝 | 不适用 | `voidcode serve` 进程是否在运行、端口是否被占用 |
 
 ---
@@ -188,6 +188,7 @@ Common recovery actions:
 - `unsupported_feature`: disable streaming/tool features for that provider or switch provider/model.
 
 ### 3.3 SQLite 直接检查
+以下 SQLite 查询假定系统安装了 `sqlite3` 和 `jq`。如果没有它们，优先使用 `voidcode storage diagnostics --json`、`voidcode sessions debug --json` 和 `voidcode sessions list --json`；这些命令不需要直接打开数据库。
 
 数据库路径：`$XDG_STATE_HOME/voidcode/sessions.sqlite3`（POSIX 默认 `~/.local/state/voidcode/sessions.sqlite3`，可通过 `VOIDCODE_DB_PATH` 覆盖）
 

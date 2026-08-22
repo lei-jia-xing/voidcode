@@ -86,8 +86,18 @@ def _redact_provider_error_detail(value: object) -> object:
     return value
 
 
+def redact_provider_error_message(value: str) -> str:
+    """Return provider-facing error text with credential-like values masked."""
+    return _redact_secret_text(value)
+
+
+def redact_provider_error_details(value: object) -> object:
+    """Recursively redact provider diagnostics before runtime persistence."""
+    return _redact_provider_error_detail(value)
+
+
 def _provider_error_details(payload: dict[str, Any]) -> dict[str, object]:
-    return cast(dict[str, object], _redact_provider_error_detail(payload))
+    return cast(dict[str, object], redact_provider_error_details(payload))
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,7 +316,7 @@ def parse_provider_api_error(payload: dict[str, Any]) -> ParsedProviderError:
     )
     return ParsedProviderError(
         kind=kind,
-        message=message,
+        message=redact_provider_error_message(message),
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,
@@ -332,7 +342,7 @@ def parse_provider_stream_error(payload: dict[str, Any]) -> ParsedProviderError:
     )
     return ParsedProviderError(
         kind=kind,
-        message=message,
+        message=redact_provider_error_message(message),
         details=details,
         retryable=retryable,
         fallback_allowed=fallback_allowed,

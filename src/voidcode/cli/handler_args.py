@@ -50,6 +50,7 @@ class SessionsArgs:
     response: tuple[str, ...] = ()
     response_json: str | None = None
     json: bool = False
+    include_children: bool = False
     output: Path | None = None
     format: str = "zip"
     redact: bool = True

@@ -33,46 +33,43 @@ The roadmap remains intentionally narrow: ship a stable, demoable single-agent M
 
 The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.13**.
 
-> **Current state:** the repository already has a real CLI → runtime → single-agent loop with multi-step execution, session persistence and resume, and inline approval in TTY mode. Provider-backed execution is the product path by default. Deterministic execution remains available as an explicit test/dev/no-key harness. It also exposes a minimal local HTTP/SSE transport. The TUI and web frontend both exist, but neither is yet at full CLI parity.
+> **Current state:** the repository has a real CLI → runtime loop with session persistence, resumable approval/question waits, and a minimal HTTP/SSE transport. Provider-backed execution is the product path; deterministic execution is the repeatable no-key path used for local demos and tests.
 
 ```bash
 # Install toolchain and Python dependencies
 mise install
 uv sync --extra dev
 
-# Install frontend dependencies
-mise run frontend:install
-
 # Explore the CLI
 uv run voidcode --help
 
-# Run deterministic explicitly for test/dev/no-key harness workflows
+# Deterministic, offline first run (no credentials and no model ambiguity)
 VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "read README.md" --workspace .
 
-# Run the provider-backed product path after configuring credentials and a model
-OPENCODE_API_KEY=... VOIDCODE_MODEL=opencode-go/glm-5 uv run voidcode run "read README.md" --workspace .
+# Optional provider path: configure one provider and one model explicitly
+OPENAI_API_KEY=... VOIDCODE_MODEL=openai/gpt-4o-mini \
+  uv run voidcode run "read README.md" --workspace .
 
-# Run a write task that requires approval
+# A write task pauses for approval in a TTY
 uv run voidcode run "write hello.txt hello world" --workspace . --approval-mode ask
 
-# List persisted sessions
+# List main sessions; add --include-children for delegated child sessions
 uv run voidcode sessions list --workspace .
 ```
 
 ## Configuration
 
-Workspace-local runtime config lives in `.voidcode.json` at the workspace root. To enable IDE auto-completion and validation, point the `$schema` field at the published JSON Schema:
+Workspace-local runtime config lives in `.voidcode.json` at the workspace root (not `.voidcode/config.json`). To enable IDE auto-completion and validation, point `$schema` at the published JSON Schema:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.config.schema.json",
-  "approval_mode": "ask",
-  "model": "opencode-go/glm-5"
+  "execution_engine": "deterministic",
+  "approval_mode": "ask"
 }
 ```
 
-User-level overrides resolve from `~/.config/voidcode/config.json` (XDG default). Environment variables (`VOIDCODE_MODEL`, `VOIDCODE_APPROVAL_MODE`, `VOIDCODE_EXECUTION_ENGINE`, etc.) override file config; see [`.env.example`](./.env.example) for the full surface.
-
+For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level overrides resolve from `~/.config/voidcode/config.json`; environment variables override file config. See [`.env.example`](./.env.example).
 ## Architecture overview
 
 VoidCode uses a runtime-centric architecture: **runtime** is the system control plane, **graph** is the execution/orchestration layer, and LangGraph currently powers only the deterministic reference/debug slice.

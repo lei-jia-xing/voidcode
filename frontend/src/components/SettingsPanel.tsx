@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
@@ -528,18 +528,23 @@ export function SettingsPanel({
   onSave,
 }: SettingsPanelProps) {
   const { t } = useTranslation();
+  const dialogRef = useRef<HTMLFormElement>(null);
   const [provider, setProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [activeSection, setActiveSection] =
     useState<SettingsSectionKey>("general");
-
   useEffect(() => {
-    if (isOpen) {
-      onLoad();
-      onLoadProviders?.();
-    }
-  }, [isOpen, onLoad, onLoadProviders]);
+    if (!isOpen) return;
+    onLoad();
+    onLoadProviders?.();
+    dialogRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose, onLoad, onLoadProviders]);
 
   useEffect(() => {
     if (settings) {
@@ -571,6 +576,11 @@ export function SettingsPanel({
         aria-label={t("common.close")}
       />
       <form
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-dialog-title"
+        tabIndex={-1}
         className="relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] shadow-2xl"
         onSubmit={(event) => {
           event.preventDefault();
@@ -578,7 +588,10 @@ export function SettingsPanel({
         }}
       >
         <div className="flex h-14 items-center justify-between border-b border-[color:var(--vc-border-subtle)] px-6">
-          <h2 className="text-base font-semibold text-[var(--vc-text-primary)]">
+          <h2
+            id="settings-dialog-title"
+            className="text-base font-semibold text-[var(--vc-text-primary)]"
+          >
             {t("settings.title")}
           </h2>
           <ControlButton

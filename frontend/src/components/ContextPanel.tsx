@@ -30,7 +30,7 @@ export function ContextPanel({
   const providerContext = debug?.provider_context ?? null;
 
   return (
-    <aside className="relative flex h-full w-[420px] flex-shrink-0 flex-col border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)]">
+    <aside className="fixed inset-y-0 right-0 z-30 flex h-full w-[min(100vw,420px)] flex-shrink-0 flex-col border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] md:relative md:z-auto md:w-[420px]">
       <header className="flex flex-shrink-0 items-center justify-between border-b border-[color:var(--vc-border-subtle)] px-4 py-2.5">
         <span className="flex items-center gap-2 text-sm font-medium text-[var(--vc-text-primary)]">
           <FileCode2 className="h-4 w-4" />

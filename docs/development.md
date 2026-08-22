@@ -44,8 +44,7 @@ uv run voidcode tasks output <task-id> --workspace .
 uv run voidcode tasks cancel <task-id> --workspace .
 ```
 
-CLI 的默认输出面向人工阅读：`run` 会隐藏原始事件转储，只展示关键进度、最终结果和 session id。需要脚本消费时使用 `--json`；在 JSON 模式下，stdout 仅保留机器可解析的 JSON，进度/诊断信息输出到 stderr。
-
+CLI 的默认输出面向人工阅读：`run` 会在 TTY 中逐事件输出并处理 approval/question；`sessions resume`/`answer` 也通过 stream API 显示增量事件。使用 `--json` 时，stdout 是一个完整 JSON 对象（包含事件列表、session 状态与 output），不是逐行 progress stream；脚本不得把 stdout 当作实时 progress。非交互阻塞会返回 approval-required 或 question-required 非零退出码并给出下一条命令。
 ## mise 任务
 
 仓库定义了以下 `mise` 任务：
@@ -55,8 +54,8 @@ CLI 的默认输出面向人工阅读：`run` 会隐藏原始事件转储，只�
 - `mise run lint` → `uv run ruff check .`
 - `mise run format` → `uv run ruff format .`
 - `mise run typecheck` → `uv run ty check src`
-- `mise run test` / `mise run test:fast` → 使用 xdist work-stealing 并行运行主要 unit tests，跳过 integration、fuzz-style tests 和大型 runtime extension 回归文件
-- `mise run test:all` → 使用 xdist work-stealing 运行完整 Python 测试套件
+- `mise run test` / `mise run test:fast` → 使用 xdist work-stealing 并行运行 `tests/unit`，跳过标记为 slow/fuzz 的测试
+- `mise run test:all` → 使用 xdist work-stealing 运行完整 Python pytest 套件（含 integration、slow、fuzz）
 - `mise run test:coverage` → 使用 xdist work-stealing 运行完整套件并收集 coverage
 - `mise run build` → `uv build`
 

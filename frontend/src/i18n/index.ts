@@ -13,9 +13,22 @@ const resources = {
   },
 };
 
+function initialLanguage(): "en" | "zh-CN" {
+  if (typeof window === "undefined") return "en";
+  try {
+    const persisted = window.localStorage.getItem("app-storage");
+    const parsed = persisted
+      ? (JSON.parse(persisted) as { state?: { language?: string } })
+      : null;
+    return parsed?.state?.language === "zh-CN" ? "zh-CN" : "en";
+  } catch {
+    return "en";
+  }
+}
+
 i18n.use(initReactI18next).init({
   resources,
-  lng: "en", // default language, overridden by store
+  lng: initialLanguage(),
   fallbackLng: "en",
   interpolation: {
     escapeValue: false,

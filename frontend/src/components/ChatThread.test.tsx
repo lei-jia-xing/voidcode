@@ -124,6 +124,31 @@ describe("ChatThread", () => {
     expect(screen.getByText("Interrupted")).toBeInTheDocument();
     expect(screen.queryByText("Failed")).not.toBeInTheDocument();
   });
+  it("renders provider failure text instead of a generic Failed badge", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-provider-failure",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [],
+            approval: null,
+            status: "failed",
+            error: "Provider authentication failed for deepseek.",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByText("Provider authentication failed for deepseek."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+  });
 
   it("uses pretext to reserve streamed assistant text height", () => {
     render(

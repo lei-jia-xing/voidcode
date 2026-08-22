@@ -267,12 +267,14 @@ export function ReviewPanel({
   return (
     <aside
       aria-label={title}
-      className="relative border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0 flex flex-col min-w-0"
+      className="fixed inset-y-0 right-0 z-30 w-full max-w-[100vw] border-l border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0 flex flex-col min-w-0 md:relative md:z-auto md:w-auto"
       style={{ width: `${panelWidth}px` }}
     >
-      <button
-        type="button"
+      <div
+        role="separator"
+        tabIndex={0}
         aria-label={resizeLabel}
+        aria-orientation="vertical"
         className={`absolute inset-y-0 left-0 z-10 w-2 -translate-x-1 cursor-col-resize transition-colors hover:bg-[var(--vc-border-strong)] ${
           isResizing ? "bg-[var(--vc-border-strong)]" : "bg-transparent"
         }`}

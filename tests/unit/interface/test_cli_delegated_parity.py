@@ -139,6 +139,13 @@ class _WriteThenDoneGraph:
         return SimpleNamespace(tool_call=None, output="done", events=(), is_finished=True)
 
 
+def _stream_for_response(response: Any) -> Any:
+    chunks = [SimpleNamespace(kind="event", session=response.session, event=event, output=None) for event in response.events]
+    if response.output is not None:
+        chunks.append(SimpleNamespace(kind="output", session=response.session, event=None, output=response.output))
+    return iter(chunks)
+
+
 # ---------------------------------------------------------------------------
 # 1. CLI parser surface: delegated-lifecycle subcommands must exist
 # ---------------------------------------------------------------------------
@@ -241,8 +248,7 @@ def test_cli_run_delegates_task_via_task_tool_in_graph(tmp_path: Path) -> None:
 
 
 def test_cli_sessions_resume_resolves_approval_allow() -> None:
-    """``voidcode sessions resume --approval-request-id X --approval-decision allow``
-    must resolve a pending approval and continue the session."""
+    """Approval resume uses the runtime stream API and reports completion."""
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
@@ -270,9 +276,8 @@ def test_cli_sessions_resume_resolves_approval_allow() -> None:
         ),
         output="done\n",
     )
-
     with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
-        runtime_class.return_value.resume.return_value = response
+        runtime_class.return_value.resume_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
                 "sessions",
@@ -286,18 +291,12 @@ def test_cli_sessions_resume_resolves_approval_allow() -> None:
                 "allow",
             ]
         )
-
     assert result == 0
-    runtime_class.return_value.resume.assert_called_once_with(
-        "waiting-session",
-        approval_request_id="req-1",
-        approval_decision="allow",
-    )
+    runtime_class.return_value.resume_stream.assert_called_once_with("waiting-session", approval_request_id="req-1", approval_decision="allow")
 
 
 def test_cli_sessions_resume_resolves_approval_deny() -> None:
-    """``voidcode sessions resume --approval-decision deny`` must deny the
-    pending approval and mark the session as failed."""
+    """A supplied deny is distinct from an unsupplied approval requirement."""
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
@@ -325,9 +324,8 @@ def test_cli_sessions_resume_resolves_approval_deny() -> None:
         ),
         output=None,
     )
-
     with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
-        runtime_class.return_value.resume.return_value = response
+        runtime_class.return_value.resume_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
                 "sessions",
@@ -341,13 +339,12 @@ def test_cli_sessions_resume_resolves_approval_deny() -> None:
                 "deny",
             ]
         )
-
-    assert result == 0
-    assert runtime_class.return_value.resume.call_args.kwargs["approval_decision"] == "deny"
+    assert result == cli.EXIT_APPROVAL_DENIED
+    assert runtime_class.return_value.resume_stream.call_args.kwargs["approval_decision"] == "deny"
 
 
 def test_cli_sessions_answer_resolves_pending_question() -> None:
-    """``voidcode sessions answer`` must call the runtime-owned question path."""
+    """Question answer uses the runtime stream API."""
     cli = importlib.import_module("voidcode.cli.app")
     workspace = Path("/tmp/demo-workspace")
     response = SimpleNamespace(
@@ -368,9 +365,8 @@ def test_cli_sessions_answer_resolves_pending_question() -> None:
         ),
         output="answered\n",
     )
-
     with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
-        runtime_class.return_value.answer_question.return_value = response
+        runtime_class.return_value.answer_question_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
                 "sessions",
@@ -384,10 +380,9 @@ def test_cli_sessions_answer_resolves_pending_question() -> None:
                 "yes",
             ]
         )
-
     assert result == 0
-    runtime_class.return_value.answer_question.assert_called_once()
-    call = runtime_class.return_value.answer_question.call_args
+    runtime_class.return_value.answer_question_stream.assert_called_once()
+    call = runtime_class.return_value.answer_question_stream.call_args
     assert call.args == ("question-session",)
     assert call.kwargs["question_request_id"] == "question-1"
     responses = call.kwargs["responses"]
@@ -409,9 +404,8 @@ def test_cli_sessions_answer_accepts_json_responses() -> None:
         events=(),
         output=None,
     )
-
     with patch.object(cli, "VoidCodeRuntime", autospec=True) as runtime_class:
-        runtime_class.return_value.answer_question.return_value = response
+        runtime_class.return_value.answer_question_stream.return_value = _stream_for_response(response)
         result = cli.main(
             [
                 "sessions",
@@ -425,9 +419,8 @@ def test_cli_sessions_answer_accepts_json_responses() -> None:
                 '[{"header":"Confirm","answers":["yes","ship it"]}]',
             ]
         )
-
     assert result == 0
-    responses = runtime_class.return_value.answer_question.call_args.kwargs["responses"]
+    responses = runtime_class.return_value.answer_question_stream.call_args.kwargs["responses"]
     assert responses[0].header == "Confirm"
     assert responses[0].answers == ("yes", "ship it")
 
@@ -760,7 +753,7 @@ def test_cli_run_non_interactive_skips_approval_loop(capsys: Any) -> None:
                 with patch.object(cli.sys, "stderr", _StubStderr()):
                     result = cli.main(["run", "write x.txt hi", "--workspace", "/tmp/demo-workspace"])
 
-    assert result == 13
+    assert result == 17
     runtime.resume_stream.assert_not_called()
     captured = capsys.readouterr()
     assert captured.out == ""

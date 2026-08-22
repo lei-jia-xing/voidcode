@@ -797,6 +797,38 @@ describe("Interrupted Status Contract", () => {
     );
     expect(assistantMessage?.status).toBe("failed");
   });
+  it("preserves provider stream error text on the failed assistant message", () => {
+    const events: EventEnvelope[] = [
+      requestEvent(1),
+      {
+        session_id: "test",
+        sequence: 2,
+        event_type: "graph.provider_stream",
+        source: "graph",
+        payload: {
+          channel: "error",
+          kind: "error",
+          error: "Provider authentication failed for deepseek.",
+        },
+      },
+      {
+        session_id: "test",
+        sequence: 3,
+        event_type: "runtime.failed",
+        source: "runtime",
+        payload: { error: "provider retry exhausted" },
+      },
+    ];
+
+    const messages = deriveChatMessages(events, null);
+    const assistantMessage = messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(assistantMessage).toMatchObject({
+      status: "failed",
+      error: "Provider authentication failed for deepseek.",
+    });
+  });
 
   it("maps a cancelled runtime.failed to interrupted, not failed", () => {
     const events: EventEnvelope[] = [

@@ -15,35 +15,30 @@
 
 1. **CLI 执行与内联审批**：运行一个受监管的、需要审批的写入任务。
    ```bash
-   # 强制进入审批模式运行一个非只读任务
-   uv run voidcode run "write hello.txt contents" --workspace . --approval-mode ask
+   # 无凭据、可重复的本地演示路径
+   VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode run "write hello.txt contents" --workspace . --approval-mode ask
    ```
-   *预期结果*：
-   - CLI 打印简洁的审批进度摘要。
-   - CLI 弹出类似于 `Approve write for write hello.txt? [y/N]: ` 的审批提示（具体的 target summary 可能包含工具名和路径）。
-   - 输入 `y` 后，CLI 继续执行并显示最终输出和 session id。
-   - 如需完整机器可解析事件流，使用 `uv run voidcode run --json ...`；JSON 模式会把最终结果写到 stdout，并把运行进度保留在 stderr。
+   如需 provider-backed 路径，必须明确选择一个 provider/model（例如 `OPENAI_API_KEY=... VOIDCODE_MODEL=openai/gpt-4o-mini`），不要混用 OpenCode、DeepSeek 和多个默认模型。
+   *预期结果*：CLI 在 TTY 中显示审批提示；输入 `y` 后继续并显示最终输出。非 TTY 会返回独立的 approval-required 退出码，并打印可复制的 `sessions resume ... --approval-decision allow` 命令；提供 `deny` 后的恢复命令返回 approval-denied 语义。
 
 2. **会话持久化**：验证会话及其审批状态已记录。
    ```bash
    uv run voidcode sessions list --workspace .
    ```
-   *预期结果*：CLI 以表格样式列出 session id、状态、turn、更新时间与 prompt；脚本消费可使用 `--json` 输出稳定 JSON 数组。
+   默认列表是主会话；使用 `--include-children` 才包含 delegated child sessions。脚本消费使用 `--json`。
 
-3. **会话恢复**：在不重新执行工具的情况下重放整个交互过程。
+3. **会话恢复**：使用 stream API 输出增量事件；已完成会话是 replay，中断会话则按 checkpoint continue。
    ```bash
    uv run voidcode sessions resume <session-id> --workspace .
    ```
-   *预期结果*：CLI 从持久化存储中检索并完整渲染所有历史事件及 `RESULT` 块。
+   *预期结果*：CLI 增量渲染事件和 `RESULT`，并根据最终 session status 返回退出码。
 
 4. **失败诊断观察面**：通过 CLI 或 HTTP 读取 runtime-owned debug snapshot。
    ```bash
    uv run voidcode sessions debug <session-id> --workspace .
-
-   # 或者在 HTTP 服务启动后读取同一份诊断视图
    curl http://127.0.0.1:8000/api/sessions/<session-id>/debug
    ```
-   *预期结果*：可以直接看到当前/持久化 session status、是否 active、是否可 resume / replay、最近相关事件、最近失败分类，以及建议的下一步操作，而不需要直接读 SQLite 或源码。
+   *预期结果*：可以看到当前/持久化 status、是否 active、是否可 resume/replay、最近事件和建议操作。
 
 5. **HTTP 传输观察**：通过 API 暴露会话状态。
    ```bash
@@ -54,6 +49,7 @@
    curl http://127.0.0.1:8000/api/sessions
    ```
    *预期结果*：终端 B 收到包含该会话元数据（含 `prompt` 和 `status`）的 JSON 数组，并可进一步访问 `/api/sessions/<session-id>/debug` 获取诊断快照。
+在 `run --json` 或 `sessions answer --json` 中，stdout 只输出一个 JSON 对象（含 `events`、session 状态和 output）；TTY 人类事件流使用普通模式。不要把 JSON stdout 当作逐行 progress stream。
 
 ## 验证阶梯
 

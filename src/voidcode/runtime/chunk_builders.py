@@ -35,7 +35,8 @@ def failed_chunk(
         status=status,
         error=error,
     )
-    failure_payload = {"error": error, **(payload or {})}
+    failure_payload = dict(payload or {})
+    failure_payload["error"] = error
     failure_payload = with_runtime_failure_details(failure_payload)
     return RuntimeStreamChunk(
         kind="event",

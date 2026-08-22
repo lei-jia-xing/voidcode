@@ -163,12 +163,14 @@ function App() {
     sessionsStatus,
     sessionsError,
     selectSession,
+    replayTargetSessionId,
     runTask,
     cancelCurrentRun,
     resolveApproval,
     replayStatus,
     replayError,
     runStatus,
+    runOrigin,
     runError,
     approvalStatus,
     approvalError,
@@ -197,11 +199,14 @@ function App() {
   const [showFileTree, setShowFileTree] = useState(false);
   const [showCodeReview, setShowCodeReview] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [sessionEventError, setSessionEventError] = useState<string | null>(
+    null,
+  );
   const [isSessionSidebarExpanded, setIsSessionSidebarExpanded] =
     useState(true);
   const hydratedInitialSessionRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
-  const lastMessageCountRef = useRef(0);
+  const lastMessageSignatureRef = useRef("");
   const sessionEventCursorRef = useRef(0);
   // Mirrors selectedBackgroundTaskOutputId for the follow-stream effect. The
   // effect must NOT depend on that state directly: its own body refreshes the
@@ -214,7 +219,10 @@ function App() {
     selectedBackgroundTaskOutputIdRef.current = selectedBackgroundTaskOutputId;
   }, [selectedBackgroundTaskOutputId]);
 
-  const isRunning = runStatus === "running" || runStatus === "cancelling";
+  const isRunning =
+    runStatus === "running" ||
+    runStatus === "cancelling" ||
+    currentSessionState?.status === "running";
   const isReplayLoading = replayStatus === "loading";
   const isApprovalSubmitting = approvalStatus === "submitting";
   const isWaitingApproval = currentSessionState?.status === "waiting";
@@ -384,7 +392,8 @@ function App() {
     // full reload right after every completed run.
     if (
       !currentSessionId ||
-      isRunning ||
+      (runStatus === "running" && runOrigin !== "external") ||
+      runStatus === "cancelling" ||
       (currentSessionState?.status != null &&
         TERMINAL_DISPLAY_SESSION_STATUSES[currentSessionState.status] === true)
     ) {
@@ -444,20 +453,21 @@ function App() {
           await selectSession(currentSessionId);
         }
       } catch (error) {
-        if (!controller.signal.aborted)
-          console.warn("Session event stream failed", error);
+        if (!controller.signal.aborted) {
+          setSessionEventError((error as Error).message);
+        }
       }
     })();
     return () => controller.abort();
   }, [
     currentSessionId,
     currentSessionState,
-    isRunning,
+    runOrigin,
+    runStatus,
     loadBackgroundTaskOutput,
     loadBackgroundTasks,
     selectSession,
   ]);
-
   useEffect(() => {
     if (showContext && currentSessionId) {
       void loadSessionDebug(currentSessionId);
@@ -502,22 +512,20 @@ function App() {
   }, [currentSessionId, isRunning, selectSession, sessionsStatus]);
 
   useEffect(() => {
-    const nextLength = displayedMessages.length;
-    if (nextLength > lastMessageCountRef.current) {
-      lastMessageCountRef.current = nextLength;
-      const el = chatScrollRef.current;
-      // Only follow when the user is already at the bottom (within a small
-      // threshold). Never yank the viewport away from a user who scrolled up
-      // to read earlier content.
-      if (
-        el &&
-        el.scrollHeight - el.scrollTop - el.clientHeight <
-          SCROLL_FOLLOW_THRESHOLD_PX
-      ) {
-        el.scrollTop = el.scrollHeight;
-      }
+    const signature = displayedMessages
+      .map((message) => `${message.id}:${message.content.length}`)
+      .join("|");
+    if (signature === lastMessageSignatureRef.current) return;
+    lastMessageSignatureRef.current = signature;
+    const el = chatScrollRef.current;
+    if (
+      el &&
+      el.scrollHeight - el.scrollTop - el.clientHeight <
+        SCROLL_FOLLOW_THRESHOLD_PX
+    ) {
+      el.scrollTop = el.scrollHeight;
     }
-  }, [displayedMessages.length]);
+  }, [displayedMessages]);
 
   const handleSendMessage = async (
     message: string,
@@ -605,7 +613,10 @@ function App() {
     !hasCurrentWorkspace &&
     (workspacesStatus === "idle" || workspacesStatus === "loading");
   const currentBranch = statusSnapshot?.git?.branch?.trim() || null;
-
+  const workspaceLoadError =
+    !hasCurrentWorkspace && workspacesStatus === "error"
+      ? workspacesError
+      : null;
   return (
     <div className="flex h-screen bg-[var(--vc-bg)] text-[var(--vc-text-muted)] font-sans overflow-hidden selection:bg-[var(--vc-border-strong)] selection:text-[var(--vc-text-primary)]">
       <SessionSidebar
@@ -620,9 +631,13 @@ function App() {
         isExpanded={isSessionSidebarExpanded}
         onSidebarWidthChange={setSessionSidebarWidth}
         onExpandedChange={setIsSessionSidebarExpanded}
-        onSelectSession={selectSession}
+        onSelectSession={(sessionId) => {
+          void selectSession(sessionId);
+          setIsSessionSidebarExpanded(false);
+        }}
         onOpenProjects={() => setShowProjects(true)}
         onOpenSettings={() => setShowSettings(true)}
+        onRefreshSessions={loadSessions}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -737,8 +752,36 @@ function App() {
             )}
 
             {replayError && (
-              <div className="flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-text-muted)]">
-                {t("session.replayError", { message: replayError })}
+              <div className="flex flex-wrap items-center justify-between gap-3 flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+                <span>
+                  {t("session.replayError", { message: replayError })}
+                </span>
+                <ControlButton
+                  compact
+                  variant="secondary"
+                  onClick={() => {
+                    if (replayTargetSessionId)
+                      void selectSession(replayTargetSessionId);
+                  }}
+                >
+                  {t("common.retry")}
+                </ControlButton>
+              </div>
+            )}
+            {sessionEventError && (
+              <div className="flex flex-wrap items-center justify-between gap-3 flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+                <span>
+                  {t("session.eventsFollowError", {
+                    message: sessionEventError,
+                  })}
+                </span>
+                <ControlButton
+                  compact
+                  variant="secondary"
+                  onClick={() => setSessionEventError(null)}
+                >
+                  {t("common.dismiss")}
+                </ControlButton>
               </div>
             )}
             {runError && (
@@ -797,6 +840,7 @@ function App() {
             <TodoPanel snapshot={activeTodoSnapshot} />
 
             <Composer
+              key={`${workspaces?.current?.path ?? "no-workspace"}:${currentSessionId ?? "new"}`}
               disabled={composerDisabled}
               isRunning={isRunning}
               agentPreset={agentPreset}
@@ -816,6 +860,24 @@ function App() {
               onReasoningEffortChange={setReasoningEffort}
             />
           </>
+        ) : workspaceLoadError ? (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <div className="w-full max-w-md rounded-2xl border border-[color:var(--vc-danger-border)] bg-[var(--vc-surface-1)] p-6 text-center">
+              <div className="text-lg font-semibold text-[var(--vc-text-primary)]">
+                {t("project.loadFailedTitle")}
+              </div>
+              <p className="mt-2 text-sm text-[var(--vc-danger-text)]">
+                {workspaceLoadError}
+              </p>
+              <ControlButton
+                variant="primary"
+                onClick={() => void loadWorkspaces()}
+                className="mt-5"
+              >
+                {t("common.retry")}
+              </ControlButton>
+            </div>
+          </div>
         ) : isWorkspaceBootLoading ? (
           <div className="flex flex-1 items-center justify-center p-6">
             <div className="flex items-center gap-3 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-3 text-sm text-[var(--vc-text-muted)]">

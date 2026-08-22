@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol, TypedDict, TypeGuard, cast
+from typing import Protocol, TypedDict, TypeGuard, Unpack, cast
 
 import click
 
@@ -16,9 +16,11 @@ from .. import __version__
 from ..acp.stdio import StdioAcpServer
 from ..cli_support import (
     EXIT_APPROVAL_DENIED,
+    EXIT_APPROVAL_REQUIRED,
     EXIT_CONFIG_ERROR,
     EXIT_INVALID_COMMAND,
     EXIT_INVALID_RESOURCE,
+    EXIT_PROVIDER_ERROR,
     EXIT_RUNTIME_ERROR,
     EXIT_SUCCESS,
     EXIT_USAGE_ERROR,
@@ -199,6 +201,23 @@ def _runtime_session(
         _close_runtime(runtime)
 
 
+def _load_runtime_config_for_cli(
+    workspace: Path,
+    **kwargs: Unpack[_RunCommandConfigKwargs],
+) -> RuntimeConfig:
+    """Load config at a CLI boundary without leaking parser tracebacks."""
+    try:
+        return load_runtime_config(workspace, **kwargs)
+    except ValueError as exc:
+        raise CliError(code=EXIT_CONFIG_ERROR, message=f"invalid runtime config: {exc}") from None
+
+
+def _safe_detail(value: object, *, limit: int = 160) -> str:
+    text = str(value) if value is not None else ""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _emit_output(
     args: object,
     payload: object,
@@ -229,16 +248,15 @@ def _handle_run_command(args: RunArgs) -> int:
     }
     if cli_model is not None:
         config_kwargs["model"] = cli_model
-    config = load_runtime_config(workspace, **config_kwargs)
+    config = _load_runtime_config_for_cli(workspace, **config_kwargs)
     with _runtime_session(workspace, config) as runtime:
         metadata: dict[str, object] = {}
         if args.agent is not None:
             metadata["agent"] = {"preset": args.agent}
         if args.skills:
             metadata["skills"] = list(args.skills)
-        runtime_mode = args.runtime_mode
-        if runtime_mode is not None:
-            metadata["mode"] = runtime_mode
+        if args.runtime_mode is not None:
+            metadata["mode"] = args.runtime_mode
         if args.read_only:
             metadata["read_only"] = True
         if args.max_steps is not None:
@@ -247,7 +265,7 @@ def _handle_run_command(args: RunArgs) -> int:
             metadata["reasoning_effort"] = cli_reasoning_effort
         provider_stream = args.provider_stream
         if provider_stream is not None:
-            metadata["provider_stream"] = args.provider_stream
+            metadata["provider_stream"] = provider_stream
         elif trace_output:
             metadata["provider_stream"] = True
         request = RuntimeRequest(
@@ -278,16 +296,9 @@ def _handle_run_command(args: RunArgs) -> int:
             else:
                 print(incomplete_stream_message, file=sys.stderr, flush=True)
             return EXIT_RUNTIME_ERROR
-
         blocked_event = _pending_blocked_event(result.session, _last_event(result))
         if json_output:
-            print_json(
-                _runtime_stream_payload(
-                    result,
-                    workspace=workspace,
-                    show_thinking=show_thinking,
-                )
-            )
+            print_json(_runtime_stream_payload(result, workspace=workspace, show_thinking=show_thinking))
             if not interactive and blocked_event is not None:
                 return _blocked_exit_code(blocked_event)
             if result.session.status == "failed":
@@ -302,7 +313,7 @@ def _handle_run_command(args: RunArgs) -> int:
                 return EXIT_RUNTIME_ERROR
         elif not interactive:
             if blocked_event is not None:
-                _print_noninteractive_blocked(result, blocked_event)
+                _print_noninteractive_blocked(result, blocked_event, workspace=workspace)
                 return _blocked_exit_code(blocked_event)
             _print_plain_runtime_output(result.output)
             _print_runtime_failure_footer(runtime, result, workspace=workspace)
@@ -314,10 +325,7 @@ def _handle_run_command(args: RunArgs) -> int:
 def _handle_acp_command(args: AcpArgs) -> int:
     workspace = args.workspace
     acp_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
-    config = load_runtime_config(
-        workspace,
-        approval_mode=acp_approval_mode,
-    )
+    config = _load_runtime_config_for_cli(workspace, approval_mode=acp_approval_mode)
     with _runtime_session(workspace, config) as runtime:
         server = StdioAcpServer(runtime=runtime, workspace=workspace)
         return server.serve()
@@ -347,14 +355,24 @@ def _run_with_inline_approval(
 
     while interactive:
         approval_event = _pending_approval_event(result.session, _last_event(result))
-        if approval_event is None:
+        question_event = _pending_question_event(result.session, _last_event(result))
+        if approval_event is None and question_event is None:
             break
-        resumed_result = _consume_runtime_stream(
-            runtime.resume_stream(
+        if approval_event is not None:
+            resumed_chunks = runtime.resume_stream(
                 session_id=result.session.session.id,
                 approval_request_id=_approval_request_id(approval_event),
                 approval_decision=_prompt_for_approval(approval_event),
-            ),
+            )
+        else:
+            assert question_event is not None
+            resumed_chunks = runtime.answer_question_stream(
+                result.session.session.id,
+                question_request_id=str(question_event.payload["request_id"]),
+                responses=_prompt_for_question(question_event),
+            )
+        resumed_result = _consume_runtime_stream(
+            resumed_chunks,
             emit_events=emit_events,
             trace_printer=trace_printer,
             show_thinking=show_thinking,
@@ -364,11 +382,10 @@ def _run_with_inline_approval(
                 reason="cli KeyboardInterrupt",
             ),
         )
-        merged_events = (*result.events, *resumed_result.events)
         result = RuntimeStreamResult(
             output=resumed_result.output,
             session=resumed_result.session,
-            events=merged_events,
+            events=(*result.events, *resumed_result.events),
         )
 
     if interactive and (not emit_events or trace_events):
@@ -487,7 +504,7 @@ def _pending_blocked_event(
 
 def _blocked_exit_code(event: EventEnvelope) -> int:
     if event.event_type == "runtime.approval_requested":
-        return EXIT_APPROVAL_DENIED
+        return EXIT_APPROVAL_REQUIRED
     return EXIT_RUNTIME_ERROR
 
 
@@ -496,19 +513,34 @@ def _approval_request_id(event: EventEnvelope) -> str:
 
 
 def _prompt_for_approval(event: EventEnvelope) -> PermissionResolution:
-    tool = str(event.payload["tool"])
-    target_summary = event.payload.get("target_summary")
-    if isinstance(target_summary, str) and target_summary:
-        prompt = f"Approve {tool} for {target_summary}? [y/N]: "
-    else:
-        prompt = f"Approve {tool}? [y/N]: "
+    tool = _safe_detail(event.payload.get("tool"), limit=64)
+    target_summary = _safe_detail(event.payload.get("target_summary"), limit=160)
+    prompt = f"Approve {tool} for {target_summary}? [y/N]: " if target_summary else f"Approve {tool}? [y/N]: "
     sys.stderr.write(prompt)
     sys.stderr.flush()
     response = sys.stdin.readline()
-    normalized = response.strip().lower()
-    if normalized in {"y", "yes"}:
-        return "allow"
-    return "deny"
+    return "allow" if response.strip().lower() in {"y", "yes"} else "deny"
+
+
+def _prompt_for_question(event: EventEnvelope) -> tuple[QuestionResponse, ...]:
+    raw_questions = event.payload.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raw_questions = [{"header": "response", "question": "Answer"}]
+    responses: list[QuestionResponse] = []
+    for index, raw_question in enumerate(raw_questions, start=1):
+        question = cast(dict[str, object], raw_question) if isinstance(raw_question, dict) else {}
+        header = _safe_detail(question.get("header") or f"question-{index}", limit=64)
+        text = _safe_detail(question.get("question") or "Answer", limit=240)
+        options = question.get("options")
+        option_hint = ""
+        if isinstance(options, list) and options:
+            labels = [_safe_detail(item.get("label"), limit=64) for item in options if isinstance(item, dict) and item.get("label")]
+            if labels:
+                option_hint = f" [{', '.join(labels)}]"
+        sys.stderr.write(f"Question {header}: {text}{option_hint}\n> ")
+        sys.stderr.flush()
+        responses.append(QuestionResponse(header=header, answers=(sys.stdin.readline().strip(),)))
+    return tuple(responses)
 
 
 def _print_runtime_response(
@@ -704,6 +736,7 @@ def _print_trace_todos(payload: dict[str, object]) -> None:
 
 
 def _print_trace_final(result: RuntimeStreamResult) -> None:
+    print(f"Session id: {result.session.session.id}", flush=True)
     if result.output is None:
         return
     print("\nResult", flush=True)
@@ -892,23 +925,31 @@ def _blocked_payload(result: RuntimeStreamResult, event: EventEnvelope) -> dict[
     }
 
 
-def _print_noninteractive_blocked(result: RuntimeStreamResult, event: EventEnvelope) -> None:
+def _print_noninteractive_blocked(
+    result: RuntimeStreamResult,
+    event: EventEnvelope,
+    *,
+    workspace: Path | None = None,
+) -> None:
+    workspace_arg = f" --workspace {shlex.quote(str(workspace))}" if workspace is not None else ""
+    session_id = result.session.session.id
+    request_id = _safe_detail(event.payload.get("request_id"), limit=96)
+    tool = _safe_detail(event.payload.get("tool"), limit=64)
     if event.event_type == "runtime.question_requested":
         print(
-            "error: question response required"
-            f" for {event.payload.get('tool')}; resume session {result.session.session.id} "
-            f"with question request {event.payload.get('request_id')}",
+            f"error: question response required for {tool}; "
+            f"answer with: voidcode sessions answer {session_id}{workspace_arg} "
+            f"--question-request-id {request_id} --response <answer>",
             file=sys.stderr,
             flush=True,
         )
         return
-    tool = event.payload.get("tool")
-    target_summary = event.payload.get("target_summary")
-    target_suffix = f" for {target_summary}" if isinstance(target_summary, str) else ""
+    target = _safe_detail(event.payload.get("target_summary"), limit=160)
+    target_suffix = f" for {target}" if target else ""
     print(
-        "error: approval required"
-        f" for {tool}{target_suffix}; resume session {result.session.session.id} "
-        f"with approval request {_approval_request_id(event)}",
+        f"error: approval required for {tool}{target_suffix}; "
+        f"resume with: voidcode sessions resume {session_id}{workspace_arg} "
+        f"--approval-request-id {request_id} --approval-decision allow",
         file=sys.stderr,
         flush=True,
     )
@@ -917,11 +958,9 @@ def _print_noninteractive_blocked(result: RuntimeStreamResult, event: EventEnvel
 def _handle_sessions_list_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     with _runtime_session(workspace) as runtime:
-        # The flat session list is the main-session surface: delegated child
-        # sessions belong only to the child-session view and stay reachable
-        # through the task/delegated-context endpoints, so exclude them here
-        # (mirrors the HTTP transport list filter).
-        sessions = [summary for summary in runtime.list_sessions() if summary.session.parent_id is None]
+        sessions = list(runtime.list_sessions())
+    if not args.include_children:
+        sessions = [summary for summary in sessions if summary.session.parent_id is None]
 
     def _print_sessions() -> None:
         for session in sessions:
@@ -931,6 +970,7 @@ def _handle_sessions_list_command(args: SessionsArgs) -> int:
         args,
         {
             "workspace": str(workspace),
+            "scope": "all" if args.include_children else "main",
             "sessions": [serialize_stored_session_summary(session) for session in sessions],
         },
         _print_sessions,
@@ -1244,7 +1284,12 @@ def _background_task_next_steps(
         )
         steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
     elif question_request_id is not None and child_session_id is not None:
-        steps.append(f"Inspect waiting child session before answering questions: voidcode sessions debug {child_session_id} {workspace_arg}")
+        steps.append(
+            "Answer question: "
+            f"voidcode sessions answer {child_session_id} {workspace_arg} "
+            f"--question-request-id {question_request_id} --response <answer>"
+        )
+        steps.append(f"Inspect waiting child session: voidcode sessions debug {child_session_id} {workspace_arg}")
         steps.append(f"Cancel delegated task: voidcode tasks cancel {task_id} {workspace_arg}")
     elif status in {"queued", "running"}:
         steps.append(f"Refresh state: voidcode tasks status {task_id} {workspace_arg}")
@@ -1473,40 +1518,87 @@ def _format_background_task_summary(task: StoredBackgroundTaskSummary) -> str:
     return _format_named_record("TASK", fields)
 
 
+def _runtime_response_result(response: object) -> RuntimeStreamResult:
+    typed = cast("RuntimeResponseLike", response)
+    return RuntimeStreamResult(
+        output=typed.output,
+        session=typed.session,
+        events=cast(tuple[EventEnvelope, ...], typed.events),
+    )
+
+
+def _session_result_exit_code(result: RuntimeStreamResult) -> int:
+    blocked_event = _pending_blocked_event(result.session, _last_event(result))
+    if blocked_event is not None:
+        return _blocked_exit_code(blocked_event)
+    if any(event.event_type == "runtime.approval_resolved" and event.payload.get("decision") == "deny" for event in result.events):
+        return EXIT_APPROVAL_DENIED
+    if result.session.status == "failed":
+        return EXIT_RUNTIME_ERROR
+    if result.session.status == "waiting":
+        return EXIT_RUNTIME_ERROR
+    return EXIT_SUCCESS
+
+
+def _consume_session_stream(
+    chunks: Iterator[RuntimeStreamChunk],
+    *,
+    fallback: Callable[[], object],
+    show_thinking: bool,
+    on_interrupt: Callable[[str, str | None], object] | None = None,
+) -> RuntimeStreamResult:
+    try:
+        return _consume_runtime_stream(
+            chunks,
+            emit_events=True,
+            show_thinking=show_thinking,
+            on_interrupt=on_interrupt,
+        )
+    except ValueError as exc:
+        # Keeps adapters written against the pre-stream runtime contract
+        # usable while real runtimes always take the stream path.
+        if str(exc) != "runtime stream emitted no chunks":
+            raise
+        return _runtime_response_result(fallback())
+
+
 def _handle_sessions_resume_command(args: SessionsArgs) -> int:
     workspace = args.workspace
     session_id = args.session_id
     assert session_id is not None
-    dry_run = args.dry_run
-    approval_decision = args.approval_decision
-    approval_decision_typed: PermissionResolution | None = cast(PermissionResolution | None, approval_decision)
-    show_thinking = args.show_thinking
-    with _runtime_session(workspace) as runtime:
-        if dry_run:
+    if args.dry_run:
+        with _runtime_session(workspace) as runtime:
             try:
                 snapshot = runtime.session_debug_snapshot(session_id=session_id)
             except ValueError as exc:
                 raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-            print_json(
-                {
-                    "workspace": str(workspace),
-                    "session_id": session_id,
-                    "dry_run": True,
-                    "debug": serialize_session_debug_snapshot(snapshot),
-                }
-            )
-            return 0
+        print_json({"workspace": str(workspace), "session_id": session_id, "dry_run": True, "debug": serialize_session_debug_snapshot(snapshot)})
+        return EXIT_SUCCESS
+    approval_decision: PermissionResolution | None = cast(PermissionResolution | None, args.approval_decision)
+    with _runtime_session(workspace) as runtime:
         try:
-            result = runtime.resume(
-                session_id,
-                approval_request_id=args.approval_request_id,
-                approval_decision=approval_decision_typed,
+            result = _consume_session_stream(
+                runtime.resume_stream(
+                    session_id,
+                    approval_request_id=args.approval_request_id,
+                    approval_decision=approval_decision,
+                ),
+                fallback=lambda: runtime.resume(
+                    session_id,
+                    approval_request_id=args.approval_request_id,
+                    approval_decision=approval_decision,
+                ),
+                show_thinking=args.show_thinking,
+                on_interrupt=lambda interrupted_session_id, run_id: runtime.cancel_session(
+                    interrupted_session_id,
+                    run_id=run_id,
+                    reason="sessions resume KeyboardInterrupt",
+                ),
             )
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-
-    _print_runtime_response(result, show_thinking=show_thinking)
-    return 0
+    _print_runtime_response(result, show_thinking=args.show_thinking)
+    return _session_result_exit_code(result)
 
 
 def _handle_sessions_answer_command(args: SessionsArgs) -> int:
@@ -1515,39 +1607,47 @@ def _handle_sessions_answer_command(args: SessionsArgs) -> int:
     assert session_id is not None
     question_request_id = args.question_request_id
     assert question_request_id is not None
-    show_thinking = args.show_thinking
     try:
-        responses = _parse_question_responses(
-            response=args.response,
-            response_json=args.response_json,
-        )
+        responses = _parse_question_responses(response=args.response, response_json=args.response_json)
     except CliError:
         raise
     except (json.JSONDecodeError, ValueError) as exc:
-        raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-
+        raise CliError(code=EXIT_USAGE_ERROR, message=str(exc)) from None
     with _runtime_session(workspace) as runtime:
         try:
-            result = runtime.answer_question(
-                session_id,
-                question_request_id=question_request_id,
-                responses=responses,
+            result = _consume_session_stream(
+                runtime.answer_question_stream(
+                    session_id,
+                    question_request_id=question_request_id,
+                    responses=responses,
+                ),
+                fallback=lambda: runtime.answer_question(
+                    session_id,
+                    question_request_id=question_request_id,
+                    responses=responses,
+                ),
+                show_thinking=args.show_thinking,
+                on_interrupt=lambda interrupted_session_id, run_id: runtime.cancel_session(
+                    interrupted_session_id,
+                    run_id=run_id,
+                    reason="sessions answer KeyboardInterrupt",
+                ),
             )
         except NoPendingQuestionError as exc:
             raise CliError(code=EXIT_INVALID_RESOURCE, message=str(exc)) from None
         except ValueError as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
-
-    return _emit_output(
-        args,
-        {
-            "workspace": str(workspace),
-            "session": serialize_session_state(result.session),
-            "events": [serialize_event(event, show_thinking=show_thinking) for event in result.events],
-            "output": result.output,
-        },
-        lambda: _print_runtime_response(result, show_thinking=show_thinking),
-    )
+    payload = {
+        "workspace": str(workspace),
+        "session": serialize_session_state(result.session),
+        "events": [serialize_event(event, show_thinking=args.show_thinking) for event in result.events],
+        "output": result.output,
+    }
+    if args.json:
+        print_json(payload)
+    else:
+        _print_runtime_response(result, show_thinking=args.show_thinking)
+    return _session_result_exit_code(result)
 
 
 def _session_bundle_options_from_args(args: SessionsArgs) -> SessionBundleOptions:
@@ -1580,7 +1680,10 @@ def _handle_sessions_export_command(args: SessionsArgs) -> int:
 
     if output_path is None:
         output_path = Path(f"{session_id}.vcsession.zip")
-    written = write_session_bundle(bundle, path=output_path, fmt=cast(SessionBundleFormat | None, fmt))
+    try:
+        written = write_session_bundle(bundle, path=output_path, fmt=cast(SessionBundleFormat | None, fmt))
+    except OSError as exc:
+        raise CliError(code=EXIT_RUNTIME_ERROR, message=f"cannot write session bundle {output_path}: {exc}") from None
     print_json(
         {
             "workspace": str(workspace),
@@ -1605,10 +1708,12 @@ def _handle_sessions_import_command(args: SessionsArgs) -> int:
                 bundle_path=bundle_path,
                 dry_run=dry_run,
             )
+        except OSError as exc:
+            raise CliError(code=EXIT_RUNTIME_ERROR, message=f"cannot read session bundle {bundle_path}: {exc}") from None
         except (ValueError, SessionBundleError) as exc:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
     print_json({"workspace": str(workspace), "import": result.to_payload()})
-    return 0
+    return EXIT_SUCCESS
 
 
 def _handle_sessions_debug_command(args: SessionsArgs) -> int:
@@ -1923,10 +2028,7 @@ def _handle_storage_reset_command(args: StorageArgs) -> int:
 def _handle_server_command(args: ServerArgs) -> int:
     workspace = args.workspace
     server_approval_mode: PermissionDecision | None = cast(PermissionDecision | None, args.approval_mode)
-    config = load_runtime_config(
-        workspace,
-        approval_mode=server_approval_mode,
-    )
+    config = _load_runtime_config_for_cli(workspace, approval_mode=server_approval_mode)
     server_entry = args.server_entry
     if server_entry is None:
         raise CliError(code=EXIT_RUNTIME_ERROR, message="server entry function is not configured")
@@ -1941,7 +2043,7 @@ def _handle_server_command(args: ServerArgs) -> int:
     else:
         server_entry(**common_kwargs)
 
-    return 0
+    return EXIT_SUCCESS
 
 
 def _handle_config_show_command(args: ConfigArgs) -> int:
@@ -2239,13 +2341,16 @@ def _handle_provider_models_command(args: ProviderArgs) -> int:
     }
     if refresh and result.source == "fallback":
         print(
-            f"WARN provider.models.refresh provider={provider} source=fallback reason={result.last_error}",
+            f"WARN provider.models.refresh provider={provider} source=fallback reason={result.last_error or 'remote discovery unavailable'}; "
+            "use the configured model explicitly or check provider credentials.",
             file=sys.stderr,
             flush=True,
         )
 
     print(json.dumps(payload))
-    return 0
+    if refresh and result.source == "fallback":
+        return EXIT_PROVIDER_ERROR
+    return EXIT_SUCCESS
 
 
 def _provider_model_metadata_payload(
@@ -2348,7 +2453,12 @@ def _handle_provider_inspect_command(args: ProviderArgs) -> int:
             raise CliError(code=EXIT_RUNTIME_ERROR, message=str(exc)) from None
 
     print(json.dumps(_provider_inspect_payload(result, workspace=workspace), sort_keys=True))
-    return 0
+    readiness = result.readiness
+    if readiness is not None and not readiness.ok:
+        return EXIT_PROVIDER_ERROR
+    if not result.validation.ok:
+        return EXIT_PROVIDER_ERROR
+    return EXIT_SUCCESS
 
 
 class EventLikeProtocol(Protocol):
@@ -2746,16 +2856,12 @@ def sessions() -> None:
     pass
 
 
-@sessions.command(name="list", help="List persisted sessions.")
+@sessions.command(name="list", help="List persisted main sessions (use --include-children for delegated children).")
 @_workspace_option("Workspace root used to resolve the local session database.")
+@click.option("--include-children", is_flag=True, help="Include delegated child sessions in the listing.")
 @_json_option("Output persisted sessions as JSON.")
-def sessions_list(workspace: Path, json_output: bool) -> int:
-    return _handle_sessions_list_command(
-        SessionsArgs(
-            workspace=workspace,
-            json=json_output,
-        )
-    )
+def sessions_list(workspace: Path, include_children: bool, json_output: bool) -> int:
+    return _handle_sessions_list_command(SessionsArgs(workspace=workspace, include_children=include_children, json=json_output))
 
 
 @sessions.command(help="Replay a persisted session response.")

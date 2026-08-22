@@ -15,6 +15,9 @@ EXIT_USAGE_ERROR = 2
 EXIT_CONFIG_ERROR = 10
 EXIT_PROVIDER_ERROR = 11
 EXIT_RUNTIME_ERROR = 12
+# A non-interactive run stopped before a decision was supplied. This is
+# intentionally distinct from EXIT_APPROVAL_DENIED (a supplied deny).
+EXIT_APPROVAL_REQUIRED = 17
 EXIT_APPROVAL_DENIED = 13
 EXIT_CANCELLED = 14
 EXIT_INVALID_COMMAND = 15

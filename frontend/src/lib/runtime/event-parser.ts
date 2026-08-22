@@ -20,6 +20,62 @@ function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
   );
 }
 
+function nonEmptyFailureValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Extract the most useful provider/runtime failure text from an event. */
+export function failureMessageFromEvent(event: EventEnvelope): string | null {
+  const payload = event.payload ?? {};
+  if (event.event_type === "runtime.failed") {
+    if (isRuntimeCancellationEvent(event)) return null;
+    const providerDetails = objectPayload(payload.provider_error_details);
+    const errorDetails = objectPayload(payload.error_details);
+    return (
+      nonEmptyFailureValue(providerDetails?.exception_message) ??
+      nonEmptyFailureValue(providerDetails?.message) ??
+      nonEmptyFailureValue(errorDetails?.exception_message) ??
+      nonEmptyFailureValue(payload.error_summary) ??
+      nonEmptyFailureValue(payload.error) ??
+      nonEmptyFailureValue(payload.message)
+    );
+  }
+
+  if (
+    event.event_type === "graph.provider_stream" &&
+    (payload.channel === "error" || payload.kind === "error")
+  ) {
+    return (
+      nonEmptyFailureValue(payload.error) ??
+      nonEmptyFailureValue(payload.text) ??
+      nonEmptyFailureValue(payload.error_summary) ??
+      nonEmptyFailureValue(payload.message)
+    );
+  }
+
+  return null;
+}
+function isGenericFailureMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized === "failed" ||
+    normalized === "runtime failed" ||
+    normalized === "runtime session failed" ||
+    normalized === "session failed" ||
+    normalized === "provider retry exhausted"
+  );
+}
+
+function preferFailureMessage(
+  current: string | null | undefined,
+  candidate: string | null,
+): string | null | undefined {
+  if (!candidate) return current;
+  if (!current || isGenericFailureMessage(current)) return candidate;
+  if (isGenericFailureMessage(candidate)) return current;
+  return candidate;
+}
+
 export interface DerivedTask {
   id: string;
   titleKey: string;
@@ -37,6 +93,7 @@ export interface ChatMessage {
   thinking: string[];
   thinkingStartedAt?: number;
   thinkingUpdatedAt?: number;
+  error?: string | null;
   tools: {
     id?: string;
     partKey?: string;
@@ -62,6 +119,10 @@ export interface ChatMessage {
     requestId: string;
     tool: string;
     targetSummary: string;
+    command?: string;
+    path?: string;
+    parameters?: string;
+    impact?: string;
   } | null;
   question?: {
     requestId: string;
@@ -79,6 +140,16 @@ export type MessagePart =
 
 type ChatTool = ChatMessage["tools"][number];
 
+function safeApprovalText(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const raw = typeof value === "string" ? value : JSON.stringify(value);
+  if (!raw) return undefined;
+  const redacted = raw.replace(
+    /((?:api[_ -]?key|token|secret|password)\s*[:=]\s*)([^\s,;]+)/gi,
+    "$1[redacted]",
+  );
+  return redacted.length > 240 ? `${redacted.slice(0, 237)}…` : redacted;
+}
 function objectPayload(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
@@ -680,11 +751,13 @@ export function deriveChatMessages(
       // reasoning accumulator to one turn so a turn whose deltas were never
       // followed by an aggregate cannot bleed into the next turn's dedup.
       streamedReasoningText = "";
-    } else if (
-      event.event_type === "graph.provider_stream" &&
-      event.payload?.channel === "text"
-    ) {
+    } else if (event.event_type === "graph.provider_stream") {
       if (currentAssistant) {
+        const failureMessage = failureMessageFromEvent(event);
+        currentAssistant.error = preferFailureMessage(
+          currentAssistant.error,
+          failureMessage,
+        );
         const delta =
           typeof event.payload?.text === "string"
             ? event.payload.text
@@ -736,7 +809,13 @@ export function deriveChatMessages(
         currentAssistant.approval = {
           requestId: String(event.payload?.request_id || ""),
           tool: blockedTool,
-          targetSummary: String(event.payload?.target_summary || ""),
+          targetSummary: safeApprovalText(event.payload?.target_summary) ?? "",
+          command: safeApprovalText(event.payload?.command),
+          path: safeApprovalText(event.payload?.path),
+          parameters: safeApprovalText(
+            event.payload?.parameters ?? event.payload?.args,
+          ),
+          impact: safeApprovalText(event.payload?.impact),
         };
       }
     } else if (event.event_type === "runtime.question_requested") {
@@ -788,6 +867,11 @@ export function deriveChatMessages(
       }
     } else if (event.event_type === "runtime.failed") {
       if (currentAssistant) {
+        const failureMessage = failureMessageFromEvent(event);
+        currentAssistant.error = preferFailureMessage(
+          currentAssistant.error,
+          failureMessage,
+        );
         // A cancelled/interrupted run is distinct from a real failure: surface
         // it as "interrupted" so the UI never shows a failed banner/badge.
         currentAssistant.status = isRuntimeCancellationEvent(event)

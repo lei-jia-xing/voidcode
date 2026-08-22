@@ -2355,11 +2355,16 @@ def test_run_command_does_not_prompt_or_resume_when_not_interactive(capsys: Any)
 
     captured = capsys.readouterr()
 
-    assert result == 13
+    runtime.resume_stream.assert_not_called()
+    assert result == 17
     runtime.resume_stream.assert_not_called()
     assert captured.out == ""
     assert stderr.writes == [
-        "error: approval required for write for sample.txt; resume session demo-session with approval request req-1",
+        (
+            "error: approval required for write for sample.txt; resume with: "
+            "voidcode sessions resume demo-session --workspace /tmp/demo-workspace "
+            "--approval-request-id req-1 --approval-decision allow"
+        ),
         "\n",
     ]
     assert captured.err == ""
@@ -2402,7 +2407,7 @@ def test_run_command_json_reports_non_interactive_approval_block(capsys: Any) ->
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
 
-    assert result == 13
+    assert result == 17
     runtime.resume_stream.assert_not_called()
     assert payload["session"]["status"] == "waiting"
     assert payload["blocked"] == {
@@ -2462,7 +2467,11 @@ def test_run_command_non_interactive_question_block_returns_failure(capsys: Any)
     runtime.resume_stream.assert_not_called()
     assert captured.out == ""
     assert stderr.writes == [
-        "error: question response required for question; resume session question-session with question request question-1",
+        (
+            "error: question response required for question; answer with: "
+            "voidcode sessions answer question-session --workspace /tmp/demo-workspace "
+            "--question-request-id question-1 --response <answer>"
+        ),
         "\n",
     ]
     assert captured.err == ""
@@ -3570,6 +3579,7 @@ def test_provider_inspect_command_outputs_provider_capabilities() -> None:
         ("EXIT_CANCELLED", 14),
         ("EXIT_INVALID_COMMAND", 15),
         ("EXIT_INVALID_RESOURCE", 16),
+        ("EXIT_APPROVAL_REQUIRED", 17),
     ],
 )
 def test_cli_error_propagates_correct_exit_code(

@@ -36,6 +36,7 @@ export interface SessionSidebarProps {
   onSelectSession: (sessionId: string) => void;
   onOpenProjects: () => void;
   onOpenSettings: () => void;
+  onRefreshSessions?: () => Promise<void>;
 }
 
 const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
@@ -82,6 +83,7 @@ export function SessionSidebar({
   onSelectSession,
   onOpenProjects,
   onOpenSettings,
+  onRefreshSessions,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
   const [isResizing, setIsResizing] = useState(false);
@@ -170,183 +172,193 @@ export function SessionSidebar({
   };
 
   return (
-    <aside
-      className={`relative border-r border-[var(--vc-border-subtle)] bg-[var(--vc-bg)] flex flex-col justify-between flex-shrink-0 transition-[width] duration-200 ${
-        isExpanded ? "w-16 md:w-[var(--session-sidebar-width)]" : "w-16 md:w-16"
-      }`}
-      style={sidebarStyle}
-    >
+    <>
       {isExpanded && (
-        <hr
-          tabIndex={0}
-          aria-label={t("sidebar.resize")}
-          aria-orientation="vertical"
-          aria-valuemin={MIN_SESSION_SIDEBAR_WIDTH}
-          aria-valuemax={Math.round(maxSidebarWidth)}
-          aria-valuenow={Math.round(clampedSidebarWidth)}
-          className={`absolute inset-y-0 right-0 z-20 hidden w-[var(--vc-space-2)] translate-x-1/2 cursor-col-resize touch-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vc-focus-ring)] md:block ${
-            isResizing
-              ? "bg-[var(--vc-border-strong)]"
-              : "bg-transparent hover:bg-[var(--vc-border-strong)]"
-          }`}
-          onKeyDown={handleResizeKeyDown}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            setIsResizing(true);
-            resizeToWidth(event.clientX);
-          }}
+        <button
+          type="button"
+          aria-label={t("sidebar.closeMobile")}
+          className="fixed inset-0 z-30 bg-[var(--vc-overlay-bg)] md:hidden"
+          onClick={() => onExpandedChange(false)}
         />
       )}
-      <div className="flex-1 overflow-hidden flex flex-col">
-        <div className="h-14 flex items-center justify-center md:justify-start md:px-4 border-b border-[color:var(--vc-border-subtle)] text-[var(--vc-text-primary)] font-bold tracking-tight">
-          <Code2 className="w-6 h-6 md:mr-3" />
-          {isExpanded && (
-            <span className="hidden md:block text-lg">{t("app.title")}</span>
+      <aside
+        className={`relative z-40 border-r border-[var(--vc-border-subtle)] bg-[var(--vc-bg)] flex flex-col justify-between flex-shrink-0 transition-[width] duration-200 ${
+          isExpanded
+            ? "fixed inset-y-0 left-0 w-[min(88vw,344px)] md:relative md:inset-auto md:w-[var(--session-sidebar-width)]"
+            : "w-16 md:w-16"
+        }`}
+        style={sidebarStyle}
+      >
+        {isExpanded && (
+          <div
+            role="separator"
+            tabIndex={0}
+            aria-label={t("sidebar.resize")}
+            aria-orientation="vertical"
+            aria-valuemin={MIN_SESSION_SIDEBAR_WIDTH}
+            aria-valuemax={Math.round(maxSidebarWidth)}
+            aria-valuenow={Math.round(clampedSidebarWidth)}
+            className={`absolute inset-y-0 right-0 z-20 hidden w-[var(--vc-space-2)] translate-x-1/2 cursor-col-resize touch-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vc-focus-ring)] md:block ${
+              isResizing
+                ? "bg-[var(--vc-border-strong)]"
+                : "bg-transparent hover:bg-[var(--vc-border-strong)]"
+            }`}
+            onKeyDown={handleResizeKeyDown}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setIsResizing(true);
+              resizeToWidth(event.clientX);
+            }}
+          />
+        )}
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="h-14 flex items-center justify-center md:justify-start md:px-4 border-b border-[color:var(--vc-border-subtle)] text-[var(--vc-text-primary)] font-bold tracking-tight">
+            <Code2 className="w-6 h-6 md:mr-3" />
+            {isExpanded && <span className="text-lg">{t("app.title")}</span>}
+          </div>
+
+          <div className="p-3 flex-1 overflow-y-auto">
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-2">
+                  <div className="text-xs font-semibold text-[var(--vc-text-subtle)] uppercase tracking-wider">
+                    {t("nav.workspace")}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onExpandedChange(!isExpanded)}
+                    className="rounded-md p-1 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
+                    aria-label={t(
+                      isExpanded ? "sidebar.collapse" : "sidebar.expand",
+                    )}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 space-y-3">
+                  <div className="flex items-start gap-2">
+                    <div className="mt-0.5 rounded-lg bg-[var(--vc-surface-2)] p-2 text-[var(--vc-text-muted)]">
+                      <FolderOpen className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-[var(--vc-text-primary)] truncate">
+                        {currentWorkspace?.label ?? t("project.openTitle")}
+                      </div>
+                      <div className="text-[11px] font-mono text-[var(--vc-text-subtle)] truncate">
+                        {currentWorkspace?.path ?? "—"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={onOpenProjects}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-[color:var(--vc-border-strong)] bg-[var(--vc-text-primary)] px-3 py-2 text-xs font-medium text-[var(--vc-bg)] transition-opacity hover:opacity-90"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      {t("project.openTitle")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-[var(--vc-text-subtle)] uppercase tracking-wider mb-3 px-2">
+                  {t("session.listHeader")}
+                </div>
+                <div className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => onSelectSession("")}
+                    disabled={isRunning || isReplayLoading}
+                    className={`w-full flex items-center justify-start px-3 py-2 rounded-lg border transition-colors gap-2 ${
+                      !currentSessionId
+                        ? "border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)]"
+                        : "border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
+                    }`}
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span className="font-medium text-sm">
+                      {t("session.newSession")}
+                    </span>
+                  </button>
+                  {rootSessions.map((s) => (
+                    <SessionListItem
+                      key={s.session.id}
+                      sessionSummary={s}
+                      isActive={currentSessionId === s.session.id}
+                      isDisabled={isRunning || isReplayLoading}
+                      onSelectSession={onSelectSession}
+                    />
+                  ))}
+                </div>
+                {sessionsStatus === "loading" && (
+                  <p className="mt-3 px-2 text-xs text-[var(--vc-text-subtle)]">
+                    {t("session.loadingList")}
+                  </p>
+                )}
+                {sessionsError && (
+                  <div className="mt-3 px-2 text-xs text-[var(--vc-danger-text)]">
+                    <p>{t("session.loadError", { message: sessionsError })}</p>
+                    <button
+                      type="button"
+                      onClick={() => void onRefreshSessions?.()}
+                      className="mt-2 underline underline-offset-2 hover:text-[var(--vc-text-primary)]"
+                    >
+                      {t("common.retry")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {!isExpanded && (
+            <div className="p-3 space-y-3 flex flex-col items-center">
+              <button
+                type="button"
+                onClick={() => onExpandedChange(true)}
+                className="rounded-md p-2 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
+                aria-label={t("sidebar.expand")}
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={onOpenProjects}
+                className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-strong)] bg-[var(--vc-text-primary)] flex items-center justify-center text-[var(--vc-bg)]"
+                aria-label={t("project.openTitle")}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] flex items-center justify-center text-[var(--vc-text-muted)]"
+                aria-label={t("nav.settings")}
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+            </div>
           )}
         </div>
 
-        <div
-          className={`p-3 flex-1 overflow-y-auto ${isExpanded ? "hidden md:block" : "hidden"}`}
-        >
-          <div className="space-y-3">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between px-2">
-                <div className="text-xs font-semibold text-[var(--vc-text-subtle)] uppercase tracking-wider">
-                  {t("nav.workspace")}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onExpandedChange(!isExpanded)}
-                  className="rounded-md p-1 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-                  aria-label={t(
-                    isExpanded ? "sidebar.collapse" : "sidebar.expand",
-                  )}
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 space-y-3">
-                <div className="flex items-start gap-2">
-                  <div className="mt-0.5 rounded-lg bg-[var(--vc-surface-2)] p-2 text-[var(--vc-text-muted)]">
-                    <FolderOpen className="w-4 h-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium text-[var(--vc-text-primary)] truncate">
-                      {currentWorkspace?.label ?? t("project.openTitle")}
-                    </div>
-                    <div className="text-[11px] font-mono text-[var(--vc-text-subtle)] truncate">
-                      {currentWorkspace?.path ?? "—"}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={onOpenProjects}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-[color:var(--vc-border-strong)] bg-[var(--vc-text-primary)] px-3 py-2 text-xs font-medium text-[var(--vc-bg)] transition-opacity hover:opacity-90"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    {t("project.openTitle")}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div className="text-xs font-semibold text-[var(--vc-text-subtle)] uppercase tracking-wider mb-3 px-2">
-                {t("session.listHeader")}
-              </div>
-              <div className="space-y-1">
-                <button
-                  type="button"
-                  onClick={() => onSelectSession("")}
-                  disabled={isRunning || isReplayLoading}
-                  className={`w-full flex items-center justify-start px-3 py-2 rounded-lg border transition-colors gap-2 ${
-                    !currentSessionId
-                      ? "border-[color:var(--vc-border-strong)] bg-[var(--vc-surface-2)] text-[var(--vc-text-primary)]"
-                      : "border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-                  }`}
-                >
-                  <Plus className="w-4 h-4" />
-                  <span className="font-medium text-sm">
-                    {t("session.newSession")}
-                  </span>
-                </button>
-                {rootSessions.map((s) => (
-                  <SessionListItem
-                    key={s.session.id}
-                    sessionSummary={s}
-                    isActive={currentSessionId === s.session.id}
-                    isDisabled={isRunning || isReplayLoading}
-                    onSelectSession={onSelectSession}
-                  />
-                ))}
-              </div>
-              {sessionsStatus === "loading" && (
-                <p className="mt-3 px-2 text-xs text-[var(--vc-text-subtle)]">
-                  {t("session.loadingList")}
-                </p>
-              )}
-              {sessionsError && (
-                <p className="mt-3 px-2 text-xs text-[var(--vc-danger-text)]">
-                  {t("session.loadError", { message: sessionsError })}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {!isExpanded && (
-          <div className="p-3 space-y-3 hidden md:flex md:flex-col md:items-center">
-            <button
-              type="button"
-              onClick={() => onExpandedChange(!isExpanded)}
-              className="rounded-md p-2 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-              aria-label={t("sidebar.expand")}
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-
-            <div className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] flex items-center justify-center text-[var(--vc-text-muted)]">
-              <FolderOpen className="w-4 h-4" />
-            </div>
-
-            <button
-              type="button"
-              onClick={onOpenProjects}
-              className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-strong)] bg-[var(--vc-text-primary)] flex items-center justify-center text-[var(--vc-bg)] transition-opacity hover:opacity-90"
-              aria-label={t("project.openTitle")}
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-
+        {isExpanded && (
+          <div className="border-t border-[color:var(--vc-border-subtle)] p-3">
             <button
               type="button"
               onClick={onOpenSettings}
-              className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] flex items-center justify-center text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-2)] hover:text-[var(--vc-text-primary)] transition-colors"
-              aria-label={t("nav.settings")}
+              className="w-full flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-muted)] transition-colors hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
             >
               <Settings className="w-4 h-4" />
+              <span>{t("nav.settings")}</span>
             </button>
           </div>
         )}
-      </div>
-
-      {isExpanded && (
-        <div className="hidden border-t border-[color:var(--vc-border-subtle)] p-3 md:block">
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="w-full flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-muted)] transition-colors hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-          >
-            <Settings className="w-4 h-4" />
-            <span>{t("nav.settings")}</span>
-          </button>
-        </div>
-      )}
-    </aside>
+      </aside>
+    </>
   );
 }
 
@@ -361,6 +373,7 @@ function SessionListItem({
   isDisabled: boolean;
   onSelectSession: (sessionId: string) => void;
 }) {
+  const { t } = useTranslation();
   const displayTitle = buildSessionDisplayTitle(
     sessionSummary.prompt,
     sessionSummary.session.id,
@@ -371,14 +384,26 @@ function SessionListItem({
       type="button"
       onClick={() => onSelectSession(sessionSummary.session.id)}
       disabled={isDisabled}
-      className={`w-full flex items-center px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
+      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg transition-colors overflow-hidden border ${
         isActive
           ? "bg-[var(--vc-surface-2)] border-[color:var(--vc-border-strong)] text-[var(--vc-text-primary)]"
           : "border-transparent text-[var(--vc-text-muted)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
       }`}
       title={displayTitle}
     >
+      <span
+        className={`h-2 w-2 shrink-0 rounded-full ${statusTone(sessionSummary.status)}`}
+        aria-label={t(`session.status.${sessionSummary.status}`)}
+        title={t(`session.status.${sessionSummary.status}`)}
+      />
       <span className="font-medium text-sm truncate">{displayTitle}</span>
     </button>
   );
+}
+function statusTone(status: StoredSessionSummary["status"]): string {
+  if (status === "running") return "bg-[var(--vc-accent)] animate-pulse";
+  if (status === "waiting") return "bg-[var(--vc-warning-text)]";
+  if (status === "failed") return "bg-[var(--vc-danger-text)]";
+  if (status === "completed") return "bg-[var(--vc-success-text)]";
+  return "bg-[var(--vc-text-subtle)]";
 }
