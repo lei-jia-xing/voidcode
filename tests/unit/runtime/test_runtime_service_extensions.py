@@ -14322,9 +14322,9 @@ def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: 
         "latest": {
             "input_tokens": 10,
             "output_tokens": 3,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
-            "uncached_input_tokens": 0,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "uncached_input_tokens": None,
             "cache_hit_rate": None,
         },
         "latest_run_id": latest_run_id,

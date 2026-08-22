@@ -6,7 +6,7 @@ import urllib.parse
 from dataclasses import dataclass
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
-BLOCKED_HOSTNAMES = frozenset({"localhost", "metadata", "metadata.google.internal"})
+BLOCKED_HOSTNAMES = ("localhost", "metadata", "metadata.google.internal")
 
 
 @dataclass(frozen=True, slots=True)

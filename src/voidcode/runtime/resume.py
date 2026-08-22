@@ -463,7 +463,7 @@ class RuntimeResumeCoordinator:
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
                 "resume": True,
-                "resume_kind": "approval",
+                "runtime_resume": True,
                 "approval_request_id": pending.request_id,
                 "provider_attempt": (
                     session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
@@ -770,6 +770,7 @@ class RuntimeResumeCoordinator:
             metadata={
                 **session.metadata,
                 "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                "runtime_resume": True,
                 "provider_attempt": (
                     session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
                 ),
@@ -800,7 +801,7 @@ class RuntimeResumeCoordinator:
                 payload={
                     **binding_mismatch_payload,
                     "resume": True,
-                    "approval_request_id": pending.request_id,
+                    "runtime_resume": True,
                 },
             )
             loop_events.append(mismatch_event)
@@ -1414,8 +1415,8 @@ class RuntimeResumeCoordinator:
             assembled_context=assembled_context,
             metadata={
                 **session.metadata,
-                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
                 **({"resume_kind": resume_kind} if resume_kind is not None else {}),
+                "runtime_resume": True,
                 "provider_attempt": (
                     session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
                 ),

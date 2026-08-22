@@ -1928,6 +1928,19 @@ class RuntimeRunLoopCoordinator:
         session = session_with_context_window_metadata(session, context_window)
         persisted_skill_snapshot = skill_snapshot_from_metadata(session.metadata)
         skill_prompt_context = persisted_skill_snapshot.skill_prompt_context if persisted_skill_snapshot is not None else ""
+        if (
+            not skill_prompt_context
+            and persisted_skill_snapshot is not None
+            and persisted_skill_snapshot.source == "run"
+            and current_graph_request.metadata.get("runtime_resume") is not True
+            and current_graph_request.assembled_context is not None
+        ):
+            for segment in current_graph_request.assembled_context.segments:
+                if segment.role != "system" or not isinstance(segment.content, str):
+                    continue
+                if isinstance(segment.metadata, dict) and segment.metadata.get("source") == "skill_prompt":
+                    skill_prompt_context = segment.content
+                    break
         assembled_context = runtime.assemble_provider_context(
             prompt=current_prompt,
             tool_results=context_window.tool_results,

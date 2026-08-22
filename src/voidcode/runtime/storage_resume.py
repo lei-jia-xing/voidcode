@@ -47,6 +47,15 @@ class _ResumeStorageMixin(_MixinBase):
         request_events = [
             event for event in response.events if event.event_type == "runtime.request_received" and event.payload.get("prompt") == request.prompt
         ]
+        if not request_events:
+            steering_prefix = f"{request.prompt}\n\nRuntime steering messages:"
+            request_events = [
+                event
+                for event in response.events
+                if event.event_type == "runtime.request_received"
+                and isinstance(event.payload.get("prompt"), str)
+                and cast(str, event.payload["prompt"]).startswith(steering_prefix)
+            ]
         has_request_event = any(event.event_type == "runtime.request_received" for event in response.events)
         if not request_events and has_request_event:
             raise ValueError("cannot identify current turn request in persisted session events")
