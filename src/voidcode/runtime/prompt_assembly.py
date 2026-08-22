@@ -405,6 +405,7 @@ def build_prompt_assembly_plan(
     prompt_profile_name: str | None = None,
     session_runtime_state: object | None = None,
     prompt_activation_section: PromptAssemblySection | None = None,
+    tool_catalog_context: str = "",
 ) -> PromptAssemblyPlan:
     sections: list[PromptAssemblySection] = []
     seen_system_contents: set[str] = set()
@@ -557,6 +558,12 @@ def build_prompt_assembly_plan(
         source="runtime_tool_policy_summary",
         tier="instruction",
         layer="tool_policy_summary",
+    )
+    append_system(
+        tool_catalog_context,
+        source="runtime_tool_catalog",
+        tier="instruction",
+        layer="tool_catalog",
     )
     append_system(
         dynamic_boundary_marker(),

@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
+from typing import Literal
 
 from ..tools.contracts import Tool, ToolDefinition
-from ..tools.guidance import definition_with_guidance
 from .config import RuntimeAgentConfig, RuntimeHooksConfig
 from .edit_schema_policy import EditSchemaResolver
 from .tool_provider import BuiltinToolProvider
@@ -65,6 +65,26 @@ def agent_required_tool_patterns(agent: RuntimeAgentConfig | None) -> tuple[str,
         if agent.tools.default is not None:
             patterns.extend(agent.tools.default)
     return tuple(patterns)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCatalogEntry:
+    """Deterministic, fact-only projection of a live registry tool."""
+
+    name: str
+    visibility: Literal["essential", "discoverable"]
+    read_only: bool
+    documentation_uri: str
+    replay_policy: Literal["safe", "never"]
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "visibility": self.visibility,
+            "read_only": self.read_only,
+            "documentation_uri": self.documentation_uri,
+            "replay_policy": self.replay_policy,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,7 +163,23 @@ class ToolRegistry:
         )
 
     def definitions(self) -> tuple[ToolDefinition, ...]:
-        return tuple(definition_with_guidance(tool.definition) for tool in self.tools.values())
+        return tuple(tool.definition for tool in self.tools.values())
+
+    def _provider_tools(
+        self,
+        *,
+        essential_only: bool,
+        allowlist_patterns: Iterable[str] = (),
+    ) -> tuple[Tool, ...]:
+        """Return the live registry tools visible in a provider projection."""
+        if not essential_only:
+            return tuple(self.tools.values())
+        patterns = tuple(allowlist_patterns)
+        return tuple(
+            tool
+            for tool in self.tools.values()
+            if tool.definition.name in ESSENTIAL_TOOL_NAMES or tool_required_by_allowlist_patterns(tool.definition.name, patterns)
+        )
 
     def provider_definitions(
         self,
@@ -156,13 +192,59 @@ class ToolRegistry:
         allowlist pattern) are exposed top-level; the rest remain registered
         and dispatchable via ``invoke_tool``.
         """
-        patterns = tuple(allowlist_patterns)
-        visible = (
-            tool
-            for tool in self.tools.values()
-            if tool.definition.name in ESSENTIAL_TOOL_NAMES or tool_required_by_allowlist_patterns(tool.definition.name, patterns)
+        return tuple(
+            tool.definition
+            for tool in self._provider_tools(
+                essential_only=True,
+                allowlist_patterns=allowlist_patterns,
+            )
         )
-        return tuple(definition_with_guidance(tool.definition) for tool in visible)
+
+    def capability_catalog(
+        self,
+        *,
+        essential_only: bool = False,
+        allowlist_patterns: Iterable[str] = (),
+    ) -> tuple[ToolCatalogEntry, ...]:
+        """Project the same live provider scope into deterministic catalog rows."""
+        entries = tuple(
+            ToolCatalogEntry(
+                name=tool.definition.name,
+                visibility=("essential" if tool.definition.name in ESSENTIAL_TOOL_NAMES else "discoverable"),
+                read_only=tool.definition.read_only,
+                documentation_uri=f"voidcode://tool/{tool.definition.name}",
+                replay_policy=tool.definition.effective_replay_policy,
+            )
+            for tool in self._provider_tools(
+                essential_only=essential_only,
+                allowlist_patterns=allowlist_patterns,
+            )
+        )
+        return tuple(sorted(entries, key=lambda entry: entry.name))
+
+    def capability_catalog_prompt(
+        self,
+        *,
+        essential_only: bool = False,
+        allowlist_patterns: Iterable[str] = (),
+    ) -> str:
+        """Render a stable, fact-only catalog section for provider prompts."""
+        entries = self.capability_catalog(
+            essential_only=essential_only,
+            allowlist_patterns=allowlist_patterns,
+        )
+        lines = ["Runtime tool catalog (facts only; not authorization):"]
+        for entry in entries:
+            lines.extend(
+                (
+                    f"- name: {entry.name}",
+                    f"  visibility: {entry.visibility}",
+                    f"  read_only: {str(entry.read_only).lower()}",
+                    f"  replay_policy: {entry.replay_policy}",
+                    f"  documentation: {entry.documentation_uri}",
+                )
+            )
+        return "\n".join(lines)
 
     def resolve(self, tool_name: str) -> Tool:
         try:

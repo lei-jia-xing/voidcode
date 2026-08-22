@@ -65,6 +65,27 @@ Runtime 暴露给 agent 的工具元数据遵循以下 shape：
 - `input_schema`：参数对象的最小 schema；
 - `read_only`：runtime permission 默认策略的主要输入。
 
+### Provider-visible metadata与按需 guidance
+
+provider 侧的 `ToolDefinition` 只发送 Python tool definition 提供的短、准确
+`description` 与 canonical `input_schema`，以及 runtime 治理所需的
+`read_only` 等元数据。provider-visible description 不包含 `src/voidcode/tools/*.txt`
+中的长篇操作 guidance；不要把 sidecar guidance 复制进 description 或 schema。
+
+工具的完整操作说明只通过现有的内部 URL 按需读取：
+
+```text
+read(path="voidcode://tool/<name>")
+```
+
+该 URI 从当前 live registry 解析工具，返回完整 sidecar `guidance`、当前
+`input_schema` 和 `read_only`。因此它也适用于 essential/discoverable split
+下未列在 provider 顶层的工具。读取文档不会授权或执行工具；需要调用时仍
+使用顶层工具或 `invoke_tool`，并由 runtime 重新执行 allowlist、permission、
+approval 和 replay policy 检查。动态 MCP/local tool 的事实以当前 registry、
+`ToolResult.data` 和 runtime metadata/events 为准，不以 provider description
+或过期文档文本推断。
+
 ### Tool call
 
 Agent 发起工具调用时只提交工具名与参数对象：
@@ -207,6 +228,32 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 ## 当前可用工具目录
 
 默认内置 registry 当前包含下列工具。`lsp` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。文件格式化不通过独立工具暴露：`edit` / `write` / `multi_edit` / `apply_patch` 写后自动执行 format-on-write，由 formatter 配置（`formatter.enabled` / `hooks.enabled` / formatter presets）控制。
+
+### Deterministic runtime tool catalog
+
+Provider prompts may include a deterministic `runtime_tool_catalog` section. The
+catalog is projected from the **current scoped live tool registry** used for the
+request; it is not a second tool-discovery or authorization mechanism. Its rows
+are stable facts about the tools in that current scope and contain:
+
+- `name`: the runtime tool name;
+- `visibility`: `essential` or `discoverable`, using the existing
+  `ESSENTIAL_TOOL_NAMES` split;
+- `read_only`: the tool definition's read-only fact;
+- `replay_policy`: the effective replay policy (`safe` or `never`);
+- `documentation_uri`: `voidcode://tool/<name>` for on-demand tool
+  documentation.
+
+The catalog is informational only: it does **not** grant permission, widen an
+agent allowlist, or bypass runtime lookup, policy, approval, or replay
+enforcement. The provider prompt places this independent catalog section after
+`runtime_tool_policy_summary` and before `runtime_dynamic_boundary`.
+
+When essential-only presentation is enabled, the catalog follows the current
+scoped registry and shows essential tools plus tools selected by the existing
+allowlist behavior. When essential-only presentation is disabled, it shows the
+complete current scoped registry. In both cases, `visibility: discoverable`
+describes a non-essential tool; it is not an authorization decision.
 
 ### Workspace 读取与搜索工具
 
@@ -776,12 +823,17 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 - 分组：dynamic external capability
 - 只读：否，默认触发 approval
-- 可用性：只有当 MCP server 启动并暴露工具时才出现在 registry。
+- 可用性：只有当 MCP server 启动并暴露工具时才出现在当前 registry；provider 顶层是否列出还受 essential/discoverable split 与 allowlist 影响。
 - 用途：代理调用 MCP server tool。
 - 参数：
 
-参数 shape 来自 MCP tool 自身的 `input_schema`。agent 必须以 registry 暴露的 `ToolDefinition.input_schema` 为准：
-
+参数 shape 来自 MCP tool 自身的 live `input_schema`。如果该工具出现在
+provider-visible `ToolDefinition` 中，provider 会收到这份 canonical schema
+与短 description；如果它是 discoverable，则先通过
+`read(path="voidcode://tool/mcp/<server>/<tool>")` 读取当前 schema 和完整
+guidance，再用 `invoke_tool` 调用。不要把 MCP 动态事实写死在 provider
+prompt 或 sidecar 文档中；server 返回的事实以 `ToolResult.data` 与 runtime
+metadata/events 为准。
 ```json
 {
   "tool_name": "mcp/github/search_issues",

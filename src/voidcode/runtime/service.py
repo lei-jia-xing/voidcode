@@ -2180,6 +2180,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_metadata=session.metadata,
             skill_prompt_context=skill_prompt_context,
             replayed_conversation_segments=rehydrated_conversation_segments,
+            tool_registry=tool_registry,
         )
         session = session_with_context_window_payload_metadata(
             session,
@@ -5392,6 +5393,7 @@ class VoidCodeRuntime(RuntimeSurface):
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
+        tool_registry: ToolRegistry | None = None,
     ) -> RuntimeAssembledContext:
         # Mode guidance flows through the context transform registry: resolve
         # the effective mode once, render its guidance text, and let the
@@ -5406,6 +5408,15 @@ class VoidCodeRuntime(RuntimeSurface):
         if mode_resolution.mode != "normal":
             mode_guidance_context = MODE_DEFINITIONS[mode_resolution.mode].description
         effective_config = self.effective_runtime_config_from_metadata(session_metadata)
+        if tool_registry is None:
+            tool_registry = self.tool_registry_for_effective_config(
+                effective_config,
+                metadata=session_metadata,
+            )
+        tool_catalog_context = tool_registry.capability_catalog_prompt(
+            essential_only=(effective_config.tools is not None and effective_config.tools.essential_only is True),
+            allowlist_patterns=agent_required_tool_patterns(effective_config.agent),
+        )
         provider_attempt = provider_attempt_from_metadata(session_metadata)
         policy = self._context_window_policy_from_config(
             effective_config.context_window,
@@ -5472,6 +5483,7 @@ class VoidCodeRuntime(RuntimeSurface):
             workspace=self._workspace,
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
             replayed_conversation_segments=replayed_conversation_segments,
+            tool_catalog_context=tool_catalog_context,
         )
         raw_delegation = session_metadata.get("delegation")
         delegation = parse_delegation_metadata(raw_delegation)

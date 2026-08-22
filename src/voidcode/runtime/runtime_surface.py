@@ -117,6 +117,7 @@ class RuntimeSurface(Protocol):
         session_metadata: dict[str, object],
         skill_prompt_context: str = "",
         replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
+        tool_registry: ToolRegistry | None = None,
     ) -> RuntimeAssembledContext: ...
     def replayed_conversation_segments_for_existing_session(
         self,

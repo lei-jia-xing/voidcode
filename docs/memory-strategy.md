@@ -108,7 +108,7 @@ anomalyco/opencode 的核心也更偏：
 
 - session/message/part persistence
 - compaction
-- instruction files (`AGENTS.md` / `CLAUDE.md` / `CONTEXT.md`)
+- instruction files (`AGENTS.md`; runtime rules use `RULE_FILE_NAME='AGENTS.md'`)
 - replay / resume
 
 它说明了一件事：对于 coding agent runtime 来说，**高保真 session truth + compaction + instruction context** 本身就已经是一条非常强的主线，不必一开始就把长期 memory 做成核心卖点。

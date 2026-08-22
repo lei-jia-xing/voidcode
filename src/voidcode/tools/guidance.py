@@ -3,10 +3,7 @@ from __future__ import annotations
 from functools import cache
 from pathlib import Path
 
-from .contracts import ToolDefinition
-
 _GUIDANCE_DIR = Path(__file__).resolve().parent
-_GUIDANCE_SEPARATOR = "\n\nAgent usage guidance:\n"
 
 _TOOL_GUIDANCE_FILES = {
     "ast_grep": "ast_grep.txt",
@@ -56,22 +53,3 @@ def guidance_for_tool(tool_name: str) -> str:
     if filename is None:
         return ""
     return load_tool_guidance(filename)
-
-
-def definition_with_guidance(definition: ToolDefinition) -> ToolDefinition:
-    guidance = guidance_for_tool(definition.name)
-    if not guidance:
-        return definition
-    if definition.name.startswith("mcp/"):
-        if guidance in definition.description:
-            return definition
-        description = f"{definition.description.rstrip()}{_GUIDANCE_SEPARATOR}{guidance}"
-    else:
-        description = guidance
-    return ToolDefinition(
-        name=definition.name,
-        description=description,
-        input_schema=definition.input_schema,
-        read_only=definition.read_only,
-        path_argument_keys=definition.path_argument_keys,
-    )

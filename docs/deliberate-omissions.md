@@ -27,7 +27,7 @@ What voidcode can do but defers to skills, hooks, or external tooling.
 
 | Area | Extension | Mechanism |
 |------|-----------|-----------|
-| Long-term memory | Cross-session knowledge, user preferences, project facts | Workspace-scoped keyword memory (`runtime/memory.py`: SQLite `memories` + CLI `voidcode memory *` + config `memory` section) alongside workspace files (`AGENTS.md`, `CONTEXT.md`); broader long-term pipeline deferred |
+| Long-term memory | Cross-session knowledge, user preferences, project facts | Workspace-scoped keyword memory (`runtime/memory.py`: SQLite `memories` + CLI `voidcode memory *` + config `memory` section) alongside workspace `AGENTS.md` rules; broader long-term pipeline deferred |
 | Plan mode | Structured planning before execution | Write plans to files; no dedicated runtime mode |
 | MCP servers | External tool providers | Runtime/session-scoped, config-gated (`runtime/mcp.py`) |
 | Custom agents | New agent roles beyond the preset set | Agent manifest declarations in `agent/`; runtime executes, not defines |

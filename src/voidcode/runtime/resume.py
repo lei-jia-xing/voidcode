@@ -427,7 +427,10 @@ class RuntimeResumeCoordinator:
             validate_reasoning_effort_capability(effective_config)
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_effective_config(effective_config)
+        tool_registry = runtime.tool_registry_for_effective_config(
+            effective_config,
+            metadata=session.metadata,
+        )
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
@@ -444,6 +447,7 @@ class RuntimeResumeCoordinator:
                 applied_context=resumed_skill_snapshot.skill_prompt_context,
                 selected_skill_names=resumed_skill_snapshot.selected_skill_names,
             ),
+            tool_registry=tool_registry,
         )
         session = session_with_context_window_payload_metadata(
             session,
@@ -733,7 +737,10 @@ class RuntimeResumeCoordinator:
             validate_reasoning_effort_capability(effective_config)
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_effective_config(effective_config)
+        tool_registry = runtime.tool_registry_for_effective_config(
+            effective_config,
+            metadata=session.metadata,
+        )
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
 
         resumed_skill_snapshot = runtime.build_skill_snapshot(
@@ -752,6 +759,7 @@ class RuntimeResumeCoordinator:
                 applied_context=resumed_skill_snapshot.skill_prompt_context,
                 selected_skill_names=resumed_skill_snapshot.selected_skill_names,
             ),
+            tool_registry=tool_registry,
         )
         session = session_with_context_window_payload_metadata(
             session,
@@ -1380,7 +1388,10 @@ class RuntimeResumeCoordinator:
             validate_reasoning_effort_capability(effective_config)
         except ValueError as exc:
             raise RuntimeRequestError(str(exc)) from exc
-        tool_registry = runtime.tool_registry_for_effective_config(effective_config)
+        tool_registry = runtime.tool_registry_for_effective_config(
+            effective_config,
+            metadata=session.metadata,
+        )
         skill_registry = runtime.skill_registry_for_effective_config(effective_config)
         resumed_skill_snapshot = runtime.build_skill_snapshot(
             skill_registry,
@@ -1398,6 +1409,7 @@ class RuntimeResumeCoordinator:
                 selected_skill_names=resumed_skill_snapshot.selected_skill_names,
             ),
             replayed_conversation_segments=replayed_conversation_segments,
+            tool_registry=tool_registry,
         )
         session = session_with_context_window_payload_metadata(
             session,

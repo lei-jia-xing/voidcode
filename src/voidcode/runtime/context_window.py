@@ -1475,6 +1475,7 @@ def assemble_provider_context(
     replay_retained_tool_messages: bool = True,
     replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
     summary_projector: Callable[[Mapping[str, object]], str] | None = None,
+    tool_catalog_context: str = "",
 ) -> RuntimeAssembledContext:
     context_window = prepare_provider_context(
         prompt=prompt,
@@ -1565,6 +1566,7 @@ def assemble_provider_context(
         artifact_reference_sections=artifact_reference_sections,
         prompt_profile_name=prompt_profile_name,
         prompt_activation_section=activation_decision.section,
+        tool_catalog_context=tool_catalog_context,
         session_runtime_state={
             "metadata": session_metadata,
             "workspace_root": str(workspace) if workspace is not None else None,

@@ -8,8 +8,40 @@ import pytest
 
 from voidcode.runtime.service import ToolRegistry
 from voidcode.tools import ReadTool, ToolCall
+from voidcode.tools.contracts import ToolDefinition
+from voidcode.tools.guidance import guidance_for_tool
 from voidcode.tools.read import MAX_ATTACHMENT_BYTES, MAX_LINE_LENGTH
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
+
+
+class _FakeToolCatalog:
+    def __init__(self, definition: ToolDefinition) -> None:
+        self.definition = definition
+
+    def lookup(self, tool_name: str) -> ToolDefinition | None:
+        return self.definition if tool_name == self.definition.name else None
+
+
+def test_read_tool_tool_uri_returns_complete_guidance_and_live_schema(tmp_path: Path) -> None:
+    definition = ToolDefinition(
+        name="read",
+        description="Short provider description",
+        input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+        read_only=True,
+    )
+    tool = ReadTool()
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader", tool_catalog=_FakeToolCatalog(definition))):
+        result = tool.invoke(
+            ToolCall(tool_name="read", arguments={"path": "voidcode://tool/read"}),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["guidance"] == guidance_for_tool("read")
+    assert result.data["input_schema"] == definition.input_schema
+    assert guidance_for_tool("read") in result.data["raw_content"]
+    assert '"path"' in result.data["raw_content"]
 
 
 def test_read_tool_reads_text_file_with_offset_and_limit(tmp_path: Path) -> None:

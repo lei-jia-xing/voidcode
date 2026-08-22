@@ -339,7 +339,6 @@ def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: 
                     "hook_preset_guidance",
                     "mode_guidance",
                     "runtime_file_rules",
-                    "directory_readme_context",
                 ],
                 "sources": ["runtime_file_rules"],
             }
@@ -375,7 +374,6 @@ def test_assemble_provider_context_tracks_hook_preset_guidance_transform() -> No
                     "hook_preset_guidance",
                     "mode_guidance",
                     "runtime_file_rules",
-                    "directory_readme_context",
                 ],
                 "sources": ["hook_preset_guidance"],
             }

@@ -20,22 +20,28 @@ considered complete until implementation and focused tests provide evidence.
   gateway coverage proves write on turn one, read on turn two, and a tool-schema
   change produces a fresh write rather than a false hit.
 - [x] Keep session/config-stable instruction sections before the dynamic
-  boundary; date, git status, touched-file rules, README context, task state,
+  boundary; date, git status, touched-file rules, AGENTS rule context, task state,
   continuity, tool results, and the current user request stay dynamic.
 - [ ] Cache git/environment observations and refresh them on meaningful workspace
   changes instead of every prompt assembly.
-- [ ] Deduplicate and version rule/README injections by normalized path and file
+- [ ] Deduplicate and version AGENTS rule injections by normalized path and file
   revision so ordering or repeated tool results do not cause avoidable misses.
 
 ## Agent-Facing Tool Contracts
 
-- [x] Preserve `ToolDefinition.path_argument_keys` whenever definitions are
-  decorated with guidance.
-- [x] Make every input schema explicit about required fields, constraints, enums,
-  and field-level descriptions. `read` now documents path, offset, limit,
-  and continuation semantics; `write` and `multi_edit` now document their
-  replacement semantics; `grep` now documents explicit literal/regex selection
-  and search filters; the broader tool surface remains.
+- [x] Keep provider-visible `ToolDefinition` layered: send the Python definition's
+  short accurate `description`, canonical `input_schema`, and runtime governance
+  metadata; do not inject sidecar guidance into provider descriptions.
+- [x] Serve complete per-tool guidance on demand through
+  `read(path="voidcode://tool/<name>")`. The URI resolves the live registry and
+  returns `guidance` together with the current schema and `read_only` metadata.
+- [x] Keep every input schema explicit about required fields, constraints, enums,
+  and field-level descriptions. `read` now documents path, offset, limit, and
+  continuation semantics; `write` and `multi_edit` now document their replacement
+  semantics; `grep` now documents explicit literal/regex selection and search
+  filters; the broader tool surface remains.
+- [x] Keep dynamic facts in `ToolResult.data` and runtime metadata/events rather
+  than treating provider descriptions or sidecar guidance as live state.
 - [x] Reconcile `grep`'s regex description with its actual explicit-switch
   behavior and retry guidance.
 - [x] Converge on `content` as a short human summary and put machine-readable
@@ -48,7 +54,8 @@ considered complete until implementation and focused tests provide evidence.
 
 ## Evidence Already Found
 
-- `src/voidcode/tools/guidance.py` preserves `path_argument_keys` and has regression coverage.
+- `src/voidcode/runtime/tool_registry.py` returns live provider definitions without sidecar decoration; focused registry/provider tests prove descriptions and canonical schemas remain unchanged.
+- `src/voidcode/tools/guidance.py` remains the sidecar loader used by `read` tool-documentation URIs; focused read tests prove guidance and live schema are returned together.
 - `src/voidcode/runtime/prompt_assembly.py` places skills, workspace memory,
   and tool policy before the dynamic boundary; reactive rules, runtime state,
   tool results, and the current user request follow it.

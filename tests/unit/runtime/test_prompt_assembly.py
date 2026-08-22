@@ -97,6 +97,22 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     ]
 
 
+def test_build_prompt_assembly_plan_places_catalog_between_policy_and_boundary() -> None:
+    plan = build_prompt_assembly_plan(
+        prompt="continue",
+        runtime_instruction_precedence="runtime first",
+        tool_catalog_context="Runtime tool catalog (facts only; not authorization):\n- name: read",
+    )
+
+    sources = [section.source for section in plan.sections]
+    policy_index = sources.index("runtime_tool_policy_summary")
+    catalog_index = sources.index("runtime_tool_catalog")
+    boundary_index = sources.index("runtime_dynamic_boundary")
+    assert policy_index < catalog_index < boundary_index
+    assert plan.sections[catalog_index].tier == "instruction"
+    assert plan.sections[catalog_index].metadata["layer"] == "tool_catalog"
+
+
 def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
     plan = build_prompt_assembly_plan(
         prompt="continue",

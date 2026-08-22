@@ -351,7 +351,7 @@ def test_runtime_context_window_config_serializes_for_session_resume() -> None:
 
 
 def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> None:
-    _ = (tmp_path / "README.md").write_text("context window\n", encoding="utf-8")
+    _ = (tmp_path / "AGENTS.md").write_text("context window\n", encoding="utf-8")
     context_window = RuntimeContextWindowConfig(
         model_context_window_tokens=500,
         reserved_output_tokens=100,
@@ -365,7 +365,7 @@ def test_runtime_persists_context_window_config_for_resume(tmp_path: Path) -> No
         ),
     )
 
-    response = runtime.run(RuntimeRequest(prompt="read README.md"))
+    response = runtime.run(RuntimeRequest(prompt="read AGENTS.md"))
     payload = cast(dict[str, object], response.session.metadata["runtime_config"])
 
     assert payload["context_window"] == serialize_runtime_context_window_config(context_window)
@@ -1484,23 +1484,6 @@ def test_runtime_agent_payload_parses_context_transform_references() -> None:
         preset="leader",
         prompt_profile="leader",
         context_transform_refs=("hook_preset_guidance", "runtime_file_rules"),
-        execution_engine="provider",
-    )
-
-
-def test_runtime_agent_payload_parses_directory_readme_context_reference() -> None:
-    agent = parse_runtime_agent_payload(
-        {
-            "preset": "leader",
-            "context_transform_refs": ["directory_readme_context"],
-        },
-        source="test payload",
-    )
-
-    assert agent == RuntimeAgentConfig(
-        preset="leader",
-        prompt_profile="leader",
-        context_transform_refs=("directory_readme_context",),
         execution_engine="provider",
     )
 

@@ -144,6 +144,88 @@ def test_provider_path_exposes_everything_by_default(tmp_path: Path) -> None:
     assert "web_search" in names
 
 
+def _runtime_tool_catalog(graph: _ScriptedGraph, config: RuntimeConfig, *, workspace: Path) -> str:
+    runtime = VoidCodeRuntime(
+        workspace=workspace,
+        graph=graph,
+        config=config,
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    events, _outputs, _ = _run_events(runtime, graph, session_id=f"tool-catalog-{id(graph)}")
+    assert events
+    recorded = [request for request in graph.requests if request.available_tools]
+    assert recorded
+    catalog_segments = [
+        segment.content
+        for segment in recorded[0].assembled_context.segments
+        if segment.role == "system" and segment.metadata is not None and segment.metadata.get("source") == "runtime_tool_catalog"
+    ]
+    assert len(catalog_segments) == 1
+    return catalog_segments[0] or ""
+
+
+def _catalog_names(catalog: str) -> set[str]:
+    return {line.removeprefix("- name: ") for line in catalog.splitlines() if line.startswith("- name: ")}
+
+
+def test_tool_catalog_essential_only_projects_current_scoped_registry(tmp_path: Path) -> None:
+    catalog = _runtime_tool_catalog(
+        _ScriptedGraph(_ScriptedStep(output="done", is_finished=True)),
+        RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(essential_only=True),
+            agent=RuntimeAgentConfig(
+                preset="leader",
+                tools=RuntimeToolsConfig(allowlist=("web_search", "multi_edit", "read", "grep")),
+            ),
+        ),
+        workspace=tmp_path,
+    )
+
+    assert _catalog_names(catalog) == {"read", "grep", "web_search", "multi_edit"}
+    assert "- name: read\n  visibility: essential" in catalog
+    assert "- name: web_search\n  visibility: discoverable" in catalog
+    assert "documentation: voidcode://tool/web_search" in catalog
+    assert "replay_policy: safe" in catalog.split("- name: web_search", 1)[1].split("- name:", 1)[0]
+
+
+def test_tool_catalog_default_mode_keeps_full_current_registry(tmp_path: Path) -> None:
+    catalog = _runtime_tool_catalog(
+        _ScriptedGraph(_ScriptedStep(output="done", is_finished=True)),
+        RuntimeConfig(execution_engine="deterministic"),
+        workspace=tmp_path,
+    )
+
+    names = _catalog_names(catalog)
+    assert ESSENTIAL_TOOL_NAMES <= names
+    assert {"apply_patch", "multi_edit", "web_search"} <= names
+    assert "- name: apply_patch\n  visibility: discoverable" in catalog
+    assert "documentation: voidcode://tool/apply_patch" in catalog
+
+
+def test_catalog_matches_provider_projection_for_read_only_scoped_registry(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_ScriptedGraph(_ScriptedStep(output="done", is_finished=True)),
+        config=RuntimeConfig(
+            execution_engine="deterministic",
+            tools=RuntimeToolsConfig(essential_only=True),
+        ),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    effective_config = runtime._initial_effective_config
+    scoped_registry = runtime.tool_registry_for_effective_config(
+        effective_config,
+        metadata={"read_only": True},
+    )
+
+    provider_names = {definition.name for definition in runtime.provider_tool_definitions(scoped_registry, effective_config)}
+    catalog_names = {entry.name for entry in scoped_registry.capability_catalog(essential_only=True)}
+    assert provider_names == catalog_names
+    assert "write" not in catalog_names
+    assert "shell_exec" in catalog_names
+
+
 def test_provider_path_keeps_allowlist_required_tools_top_level(tmp_path: Path) -> None:
     graph = _ScriptedGraph(_ScriptedStep(output="done", is_finished=True))
     available = _runtime_available_tools(

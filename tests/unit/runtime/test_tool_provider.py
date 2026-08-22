@@ -645,23 +645,29 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
     assert "local/echo" not in registry.tools
 
 
-def test_builtin_tool_definitions_include_sidecar_guidance() -> None:
+def test_builtin_tool_definitions_keep_python_descriptions_without_sidecars() -> None:
     registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
     definitions = {definition.name: definition for definition in registry.definitions()}
 
-    assert definitions["write"].description.startswith("Writes a file to the local workspace.")
-    assert "new file or intentionally replacing the whole file" in definitions["write"].description
-    assert "a prior read is not required" in definitions["write"].description
-    assert "Prefer this tool when the desired file content is already known" in definitions["write"].description
-    assert "Provide the complete final content directly" in definitions["write"].description
-    assert "Do not create placeholder files" in definitions["write"].description
-    assert "produced or transformed by running a real program" in definitions["write"].description
-    assert "Do not use this tool to start a long-lived dev server" in definitions["shell_exec"].description
-    assert "When the desired file content is already known" in definitions["shell_exec"].description
-    assert "Use shell execution when the work is inherently command-driven" in definitions["shell_exec"].description
-    assert definitions["ast_grep"].description.startswith("Use ast-grep tools for structural code matching")
-    assert definitions["web_fetch"].description.startswith("- Fetches content from a specified URL")
-    assert "http or https URL" in definitions["web_fetch"].description
+    assert definitions["write"].description == "Write a UTF-8 text file inside the current workspace."
+    assert definitions["shell_exec"].description == "Execute a command inside the current workspace."
+    assert definitions["ast_grep"].description == "Structural code search and rewrite with ast-grep."
+    for definition in definitions.values():
+        guidance = guidance_for_tool(definition.name)
+        assert "Agent usage guidance:" not in definition.description
+        if guidance:
+            assert guidance not in definition.description
+
+
+def test_provider_definitions_preserve_live_definition_schema_and_metadata() -> None:
+    registry = ToolRegistry.from_tools(BuiltinToolProvider().provide_tools())
+    definition = next(item for item in registry.definitions() if item.name == "edit")
+    tool = registry.tools["edit"]
+
+    assert definition is tool.definition
+    assert definition.input_schema is tool.definition.input_schema
+    assert definition.read_only is tool.definition.read_only
+    assert definition.replay_policy == tool.definition.replay_policy
 
 
 def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
@@ -700,7 +706,7 @@ def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() ->
     assert "Do not read a running child transcript just to peek" in guidance_for_tool("background_output")
 
 
-def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
+def test_dynamic_mcp_tool_definitions_keep_server_description_without_sidecar() -> None:
     def _requester(
         *,
         server_name: str,
@@ -723,8 +729,8 @@ def test_dynamic_mcp_tool_definitions_include_shared_policy_guidance() -> None:
     definition = registry.definitions()[0]
 
     assert definition.name == "mcp/echo/echo"
-    assert "Agent usage guidance:" in definition.description
-    assert "Dynamic MCP tools are runtime-discovered" in definition.description
+    assert definition.description == "Echo input"
+    assert guidance_for_tool(definition.name) not in definition.description
 
 
 def test_dynamic_mcp_tool_definitions_apply_server_safety_hints() -> None:

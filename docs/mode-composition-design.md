@@ -73,7 +73,7 @@ return f"Workflow mode: {mode.id}. {mode.description} Guidance only; does not ex
 `src/voidcode/runtime/context_transforms.py` 已具备完整组合机制：
 
 - `RuntimeContextTransformRegistry`：按 `(priority, provider_id)` 排序（`ordered_providers`），支持 `filtered(provider_ids)` 裁剪与统一 `build_result`；
-- 已有 3 个 provider：`HookPresetGuidanceTransformProvider`（priority 100）、`RuntimeFileRulesTransformProvider`（200）、`DirectoryReadmeContextTransformProvider`（250）；
+- 已有 3 个 provider：`HookPresetGuidanceTransformProvider`（priority 100）、`ModeGuidanceTransformProvider`（150）、`RuntimeFileRulesTransformProvider`（200）；context file 仅支持 `AGENTS.md`。
 - `RuntimeContextTransformInjection` 携带 `role` / `content` / `metadata`；`validate_runtime_context_transform_refs` 已能按 registry 校验 refs 合法性；
 - hook preset guidance 已经走这条通道（`build_provider_context_transform_result` 注入 `build_prompt_assembly_plan`）。
 
@@ -196,7 +196,7 @@ def resolve_mode(
 | --- | --- | --- |
 | `is_plan_mode_blocked` 直接读 `RuntimeMode`（`mode == "plan"`） | 改读 `ModeResolution.read_only`（保留 operation_class 纵深防御：非只读工具 + 显式 write/execute 一律 deny） | `permission.py`；`service.py::_resolve_permission` 传 read_only |
 | `tool_scope.py` 自己的静态 `runtime_mode` / `runtime_read_only` / `effective_read_only` 副本 | 删除静态副本，`RuntimeToolScopeResolver` 消费同一份推导（共享 `resolve_mode` 或传入的 read_only）；`shell_exec` 放行特例保留并显式记录 | `tool_scope.py` |
-| `_workflow_mode_prompt_context` 渲染文本 → `workflow_mode_prompt_context` 槽位 | mode guidance 经 `transform_refs` → `RuntimeContextTransformRegistry.filtered(refs)` → `build_provider_context_transform_result` → prompt 注入；与 hook preset / file rules / directory readme 同一条通道、同一套 priority/ordering/injection metadata | `service.py`、`prompt_assembly.py`（删槽位）、`context_transforms.py`（新增 mode guidance provider） |
+| `_workflow_mode_prompt_context` 渲染文本 → `workflow_mode_prompt_context` 槽位 | mode guidance 经 `transform_refs` → `RuntimeContextTransformRegistry.filtered(refs)` → `build_provider_context_transform_result` → prompt 注入；与 hook preset / AGENTS file rules 同一条通道、同一套 priority/ordering/injection metadata | `service.py`、`prompt_assembly.py`（删槽位）、`context_transforms.py`（新增 mode guidance provider） |
 | `hook_preset_refs_for_mode_and_agent` 合并 mode refs + agent refs | mode 不再携带 hook preset refs；只留 `hook_preset_refs_for_agent`；`_build_hook_preset_snapshot` 去掉 mode 参数 | `hook_preset_metadata.py`、`service.py` |
 | `_stricter_runtime_mode` rank 表（normal/analyze/plan） | mode 继承收敛为 read_only 合并（parent read_only OR child read_only，现有 line 5894-5897 已是这个形态）；mode 字段本身按同样规则取更严格者 | `service.py` |
 | workflow snapshot 版本化校验（v2） | 删除；`mode` 是稳定标量，无需快照契约 | `workflow_snapshot.py`、`contracts.py` |

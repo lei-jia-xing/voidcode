@@ -86,7 +86,7 @@ VoidCode 当前的 "workflow" 概念散落在多个互不知晓的子系统里�
 `src/voidcode/runtime/context_transforms.py` 已经具备完整的组合机制：
 
 - `RuntimeContextTransformRegistry`：按 `(priority, provider_id)` 排序的 provider 集合，支持 `filtered()`（按 refs 裁剪）与统一的 `build_result()`。
-- provider 带显式 metadata：`HookPresetGuidanceTransformProvider`（`priority=100`）、`RuntimeFileRulesTransformProvider`（`priority=200`）、`DirectoryReadmeContextTransformProvider`（`priority=250`）。
+- provider 带显式 metadata：`HookPresetGuidanceTransformProvider`（`priority=100`）、`ModeGuidanceTransformProvider`（`priority=150`）、`RuntimeFileRulesTransformProvider`（`priority=200`，仅 `AGENTS.md`）。
 - `RuntimeContextTransformInjection` 携带 `role` / `content` / `metadata`，`service.py` 通过 `build_provider_context_transform_result` 把结果注入 `build_prompt_assembly_plan`。
 
 矛盾在于：**hook presets 已经走这条可组合通道**（`HookPresetGuidanceTransformProvider`），而 `workflow_mode`、`skill`、`memory`、`agent` 各自绕开 registry，走独立硬编码槽位。也就是说，仓库里同时存在"正确的组合缝"和"N 条平行通道"，且后者占多数。
@@ -108,7 +108,7 @@ VoidCode 不需要复制 OMP 的机制数量；它需要的是把"同一套组�
 
 删除 `/start-work` 与 continuation loop 之后，剩下的 workflow 相关代码按下述方向收口：
 
-1. **policy / guidance 类槽位全部收进 `RuntimeContextTransformRegistry`**：`workflow_mode_prompt_context`、`skill_prompt_context`、memory-usage 指导（`_STRICT_MEMORY_USAGE_GUIDANCE`）、workspace memory recall（`workspace_memory_context`）都改为 registry 里的 provider；file-rules、directory-readme、hook preset guidance 保持现状（它们已经在 registry 里）。每个 provider 自带 priority / ordering / injection metadata，通过现有 `RuntimeContextTransformInjection` 结构进入 prompt。
+1. **policy / guidance 类槽位全部收进 `RuntimeContextTransformRegistry`**：`workflow_mode_prompt_context`、`skill_prompt_context`、memory-usage 指导（`_STRICT_MEMORY_USAGE_GUIDANCE`）、workspace memory recall（`workspace_memory_context`）都改为 registry 里的 provider；AGENTS file-rules、hook preset guidance 保持现状（它们已经在 registry 里）。每个 provider 自带 priority / ordering / injection metadata，通过现有 `RuntimeContextTransformInjection` ...
 2. **`WorkflowMode` 降级为命名 transform 组合**：`mode = refs: [...] + description`，经 registry 解析成 injection，不再有独立 `workflow_mode_prompt_context` 槽位。mode 只声明"引用哪些 provider、附带什么描述"，不再携带注入位置与顺序知识。
 3. **`build_prompt_assembly_plan` 对 policy tier 只做遍历 `context_transform_result.injections`**：删除 6 个命名槽位参数和对应的固定 `append_system` 调用，policy tier 的内容与顺序完全由 registry 决定；`prompt_assembly.py` 不再需要知道"有哪些 policy"。
 4. **结构性槽位保留，不进 registry**：`base_safety`（`_BASE_SAFETY_GUIDANCE`）、`env_card`（stable / dynamic）、`identity header`（`agent_identity_header`）、capability block、tool policy summary、dynamic boundary、todo / task 状态、continuity summary 等属于运行时结构性内容，不是 policy 注入，继续由 `build_prompt_assembly_plan` 直接拼装。

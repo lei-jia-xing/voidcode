@@ -52,8 +52,8 @@ VoidCode 缺失的能力：rulebook、memory 整合管线、模型化 compaction
 ### 6. 内部 URL 命名空间 / 按需工具文档
 
 - **omp**：`skill://` `rule://` `memory://` `artifact://` `xd://` `omp://` `agent://` `history://` `local://` `mcp://`；工具文档按需 `xd://<tool>`。
-- **voidcode**：无内部 URL 命名空间；用专用工具（`skill`、`background_output`）+ `artifact:` 字符串前缀；工具 schema 恒在 provider tool list。
-- **判定**：设计取舍；voidcode 用工具而非 URL。
+- **voidcode**：提供 runtime-owned `voidcode://tool/<name>` 工具文档 URI。essential 工具（以及 allowlist 明确选中的工具）进入 provider 顶层；discoverable 工具仍在 live registry 中，通过 `read(path="voidcode://tool/<name>")` 按需返回完整 guidance、当前 `input_schema` 与治理 metadata，再经 `invoke_tool` 调用。provider-visible `ToolDefinition` 只携带 Python definition 的短 description 与 canonical schema；MCP/local 动态事实以 registry、`ToolResult.data` 和 runtime metadata/events 为准。
+- **判定**：OMP 提供更广的通用内部 URL 命名空间；VoidCode 当前只为工具文档提供 runtime-owned URI，并以 essential/discoverable 分层控制 provider 暴露范围。
 
 ## 结论
 
@@ -61,7 +61,7 @@ VoidCode 缺失的能力：rulebook、memory 整合管线、模型化 compaction
 
 - 差异不在「是否按需加载」，而在**eager/按需的边界划在哪里**。
 - voidcode 的响应式 context files 是刻意的 token 经济选择，但代价是缺少 user 级规则、@import、sticky 规则与指针能力。
-- 按需能力差距集中在 rulebook、memory 整合管线与内部 URL 命名空间；compaction 的差距是「确定性 vs 模型驱动」的哲学差异，而非能力缺失。
+- 按需能力差距集中在 rulebook 与 memory 整合管线；VoidCode 的工具文档 URI 和 essential/discoverable 分层已落地。compaction 的差距是「确定性 vs 模型驱动」的哲学差异，而非能力缺失。
 
 ## 证据索引
 
