@@ -115,3 +115,27 @@ def test_read_tool_serves_canonical_rule_uri(tmp_path: Path) -> None:
 def test_rulebook_catalog_uses_voidcode_rules_directory_only(tmp_path: Path) -> None:
     (tmp_path / "RULES.md").write_text("Root rules must not be loaded.\n", encoding="utf-8")
     assert build_rule_catalog(tmp_path).entries == ()
+
+
+def test_rulebook_requires_canonical_application_metadata(tmp_path: Path) -> None:
+    rules_root = tmp_path / ".voidcode" / "rules"
+    cases = (
+        ("always", "alias-always", "application: always"),
+        ("always", "alias-sticky", "application: sticky"),
+        ("discoverable", "alias-on-demand", "application: on-demand"),
+        ("discoverable", "alias-on_demand", "application: on_demand"),
+        ("discoverable", "alias-apply-key", "apply: always_apply"),
+        ("always", "path-fallback", ""),
+        ("always", "unknown-application", "application: unsupported"),
+        ("always", "uppercase-application", "application: ALWAYS_APPLY"),
+        ("always", "uppercase-name", "name: Unsafe\napplication: always_apply"),
+    )
+    for directory, name, metadata in cases:
+        path = rules_root / directory / f"{name}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"---\nname: {name}\n{metadata}\n---\nThis rule must not load.\n",
+            encoding="utf-8",
+        )
+
+    assert build_rule_catalog(tmp_path).entries == ()

@@ -332,16 +332,16 @@ def _parse_rule_document(path: Path, text: str, *, workspace_root: Path) -> Rule
         body = "\n".join(lines[end + 1 :])
     relative = path.relative_to(workspace_root).as_posix()
     raw_name = fields.get("name") or path.stem
-    name = raw_name.strip().lower()
+    name = raw_name.strip()
     if _RULE_NAME_PATTERN.fullmatch(name) is None or "/" in name or "\\" in name:
         return None
-    application_value = fields.get("application", fields.get("apply", ""))
-    if application_value in {"always", "always_apply", "sticky"}:
+    application_value = fields.get("application")
+    if application_value == "always_apply":
         application: RuleApplication = "always_apply"
-    elif application_value in {"discoverable", "on_demand", "on-demand"}:
+    elif application_value == "discoverable":
         application = "discoverable"
     else:
-        application = "always_apply" if "/always/" in f"/{relative}" else "discoverable"
+        return None
     scope_value = fields.get("scope", "workspace")
     if scope_value not in {"workspace", "repo"}:
         return None

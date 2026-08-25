@@ -77,7 +77,7 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 P1 rulebook implementation notes:
 
-- Catalog roots are workspace-local `.voidcode/rules/`; frontmatter supports `name`, `description`, `application` (`always_apply` or `discoverable`), `scope` (`workspace` or `repo`), and bounded integer `precedence`.
+- Catalog roots are workspace-local `.voidcode/rules/`; frontmatter uses a required exact `application` value (`always_apply` or `discoverable`) plus optional `name`, `description`, `scope` (`workspace` or `repo`), and bounded integer `precedence`.
 - Prompt assembly injects bounded always-apply bodies and discoverable metadata only. Runtime policy remains authoritative; rule text cannot grant tools, approvals, delegation, or MCP capabilities.
 - `read(path="voidcode://rule/<name>")` validates a single safe slug, resolves only the catalog, and applies line/byte bounds. Session metadata persists sorted rule metadata and a canonical snapshot hash; replay ignores entries whose current bytes no longer match the snapshot.
 - `src/voidcode/tools/task.py` — `load_skills` 强制子会话 skill 正文加载。
