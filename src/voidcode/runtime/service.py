@@ -21,6 +21,7 @@ from ..command import (
 )
 from ..command.models import CommandDefinition
 from ..graph.contracts import GraphRunRequest, RuntimeGraph
+from ..hook.plan import ResolvedHookPlan, hook_plan_from_session_metadata, materialize_hook_plan
 from ..hook.presets import (
     ResolvedHookPresetSnapshot,
     hook_preset_snapshot_from_payload,
@@ -1839,6 +1840,13 @@ class VoidCodeRuntime(RuntimeSurface):
                     "request_metadata": {key: value for key, value in request_metadata.items()},
                 },
             )
+        resolved_hook_plan = hook_plan_from_session_metadata(existing_session.session.metadata) if existing_session is not None else None
+        if resolved_hook_plan is None:
+            resolved_hook_plan = materialize_hook_plan(
+                self._config.hooks,
+                agent_hook_refs=hook_preset_refs_for_agent(effective_config.agent),
+                agent_source=(effective_config.agent.preset if effective_config.agent is not None else "leader"),
+            )
         resolved_hook_presets = self._build_hook_preset_snapshot(
             effective_config.agent,
         )
@@ -1851,6 +1859,7 @@ class VoidCodeRuntime(RuntimeSurface):
             rehydrated_conversation_segments=rehydrated_conversation_segments,
             rehydrated_tool_results=rehydrated_tool_results,
             resolved_hook_presets=resolved_hook_presets,
+            resolved_hook_plan=resolved_hook_plan,
         )
 
     def _assemble_stream_session_metadata(self, prep: _PreparedStreamSession, *, run_id: str | None) -> SessionState:
@@ -1860,6 +1869,7 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata = prep.request_metadata
         existing_session = prep.existing_session
         resolved_hook_presets = prep.resolved_hook_presets
+        resolved_hook_plan = prep.resolved_hook_plan
         session_request_metadata = dict(request_metadata)
         session_request_metadata.pop("background_rate_limit_retry", None)
         session_request_metadata.pop("show_thinking", None)
@@ -1903,6 +1913,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     parent_snapshot=parent_runtime_policy,
                 ).as_payload(),
                 **({"resolved_hook_presets": resolved_hook_presets.to_payload()} if resolved_hook_presets.presets else {}),
+                "resolved_hook_plan": resolved_hook_plan.to_payload(),
                 "runtime_state": runtime_state_metadata_payload(
                     run_id=run_id,
                     acp_state=self._acp_adapter.current_state(),
@@ -6672,6 +6683,7 @@ class _PreparedStreamSession:
     rehydrated_conversation_segments: tuple[RuntimeContextSegment, ...]
     rehydrated_tool_results: tuple[ToolResult, ...]
     resolved_hook_presets: ResolvedHookPresetSnapshot
+    resolved_hook_plan: ResolvedHookPlan
 
 
 @dataclass(frozen=True, slots=True)

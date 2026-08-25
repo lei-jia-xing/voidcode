@@ -30,6 +30,7 @@ from ..runtime.events import (
 )
 from ..security.shell_policy import non_interactive_shell_env
 from .config import RuntimeHooksConfig, RuntimeHookSurface
+from .plan import ResolvedHookPlan
 
 
 def _empty_payload() -> Mapping[str, object]:
@@ -77,6 +78,7 @@ class HookExecutionRequest:
     environment: Mapping[str, str]
     sequence_start: int
     policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
+    plan: ResolvedHookPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,16 +92,24 @@ class LifecycleHookExecutionRequest:
     sequence_start: int
     payload: Mapping[str, object] = field(default_factory=_empty_payload)
     policy: HookExecutionPolicy = field(default_factory=HookExecutionPolicy)
+    plan: ResolvedHookPlan | None = None
 
 
 def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
     hooks = request.hooks
-    if hooks is None or hooks.enabled is not True:
+    plan = request.plan
+    if (hooks is None or hooks.enabled is not True) and (plan is None or not plan.enabled):
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
     if request.environment.get(request.recursion_env_var) == "1":
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
 
-    commands = hooks.pre_tool if request.phase == "pre" else hooks.post_tool
+    if plan is not None:
+        commands = plan.commands_for_surface("pre_tool" if request.phase == "pre" else "post_tool")
+        timeout_seconds = plan.timeout_seconds
+    else:
+        assert hooks is not None
+        commands = hooks.pre_tool if request.phase == "pre" else hooks.post_tool
+        timeout_seconds = hooks.timeout_seconds
     last_sequence = request.sequence_start
     events: list[HookExecutionEvent] = []
     diagnostics: list[str] = []
@@ -136,8 +146,8 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
                 command=command,
                 workspace=request.workspace,
                 environment={**request.environment, request.recursion_env_var: "1"},
+                timeout_seconds=timeout_seconds,
                 injected_env=non_interactive_shell_env(_hook_command_text(command)),
-                timeout_seconds=hooks.timeout_seconds,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             error_text = f"tool {request.phase}-hook failed for {request.tool_name}: {exc}"
@@ -202,7 +212,8 @@ def run_tool_hooks(request: HookExecutionRequest) -> HookExecutionOutcome:
 
 def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecutionOutcome:
     hooks = request.hooks
-    if hooks is None or hooks.enabled is not True:
+    plan = request.plan
+    if (hooks is None or hooks.enabled is not True) and (plan is None or not plan.enabled):
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
     if request.environment.get(request.recursion_env_var) == "1":
         return HookExecutionOutcome(events=(), last_sequence=request.sequence_start)
@@ -210,7 +221,13 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
         msg = f"tool hook surface must use run_tool_hooks: {request.surface}"
         raise ValueError(msg)
 
-    commands = hooks.commands_for_surface(request.surface)
+    if plan is not None:
+        commands = plan.commands_for_surface(request.surface)
+        timeout_seconds = plan.timeout_seconds
+    else:
+        assert hooks is not None
+        commands = hooks.commands_for_surface(request.surface)
+        timeout_seconds = hooks.timeout_seconds
     last_sequence = request.sequence_start
     events: list[HookExecutionEvent] = []
     diagnostics: list[str] = []
@@ -255,7 +272,7 @@ def run_lifecycle_hooks(request: LifecycleHookExecutionRequest) -> HookExecution
                     request.recursion_env_var: "1",
                 },
                 injected_env=non_interactive_shell_env(_hook_command_text(command)),
-                timeout_seconds=hooks.timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             error_text = f"lifecycle hook failed for {request.surface}: {exc}"

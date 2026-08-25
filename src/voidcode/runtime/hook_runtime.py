@@ -14,6 +14,7 @@ from ..hook.executor import (
     run_lifecycle_hooks,
     run_tool_hooks,
 )
+from ..hook.plan import hook_plan_from_session_metadata
 from .contracts import RuntimeStreamChunk
 from .events import EventEnvelope
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
@@ -73,6 +74,7 @@ def run_tool_hooks_for_session(
     outcome: HookExecutionOutcome = run_tool_hooks(
         HookExecutionRequest(
             hooks=hooks,
+            plan=hook_plan_from_session_metadata(session.metadata),
             workspace=workspace,
             session_id=session.session.id,
             tool_name=tool_name,
@@ -100,6 +102,7 @@ def run_lifecycle_hooks_for_session(
     outcome: HookExecutionOutcome = run_lifecycle_hooks(
         LifecycleHookExecutionRequest(
             hooks=hooks,
+            plan=hook_plan_from_session_metadata(session.metadata),
             workspace=workspace,
             session_id=session.session.id,
             surface=surface,

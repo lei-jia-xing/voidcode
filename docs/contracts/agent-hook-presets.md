@@ -55,12 +55,14 @@ runtime 可以从两个位置看到 agent hook preset refs：
 
 ## 合并与 materialization 规则
 
-当前实现负责 catalog / validation，并会把已解析 hook preset 作为 runtime policy 与 provider-context guidance 的输入。materialization 必须遵守以下规则：
+当前实现负责 catalog / validation，并会把已解析 hook preset 作为 runtime policy 与 provider-context guidance 的输入。声明式 lifecycle plan 进一步把**显式** `RuntimeHooksConfig` command argv 解析成 runtime-owned binding；preset metadata 只能成为 validated binding metadata，不能生成 command 或 authority。
 
-1. builtin manifest refs 与 runtime config refs 都只能引用 catalog 中存在的 preset；
-2. runtime 会把 resolved preset snapshot 持久化到 session metadata 或 provider context，但不能让 agent 层决定执行时机；
+规则如下：
+
+1. builtin manifest refs 与 runtime config refs 都只能引用 catalog 中存在的 preset；unknown ref、非法 action / scope 必须 fail fast；
+2. runtime 会把 resolved preset metadata 与 plan snapshot 持久化到 session metadata，但不能让 agent 层决定执行时机；
 3. materialized guidance 只能收窄或提醒角色行为，不能扩大 tool allowlist、permission 或 delegation budget；
-4. replay 应展示已持久化的 session truth，不能用新的 hook preset catalog 重新解释它；
+4. replay/resume 应展示并使用已持久化的 session truth，不能用新的 hook preset catalog 重新解释已解析 plan；
 5. 如果未来支持用户自定义 hook preset，必须先定义独立 schema 与 precedence，不能复用 formatter preset 命名空间。
 
 ## Runtime Harness Policy hook semantics

@@ -14,6 +14,7 @@ _ALLOWED_HOOK_ACTIONS = frozenset({"observe", "report", "cancel", "guidance"})
 _ALLOWED_HOOK_SCOPES = (
     "session_start",
     "session_end",
+    "session_idle",
     "pre_tool",
     "post_tool",
     "background_task_registered",

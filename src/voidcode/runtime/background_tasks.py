@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from ..hook.config import RuntimeHookSurface
 from ..hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
+from ..hook.plan import hook_plan_from_session_metadata
 from ..provider.models import ResolvedProviderConfig
 from .acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
 from .active_session import ACTIVE_SESSION_REGISTRY
@@ -2525,15 +2526,6 @@ class RuntimeBackgroundTaskSupervisor:
         every hook/storage error so a hook cannot strand a worker in ``running``.
         """
         hooks = self._config.hooks
-        if hooks is None or hooks.enabled is not True:
-            return
-        if not hooks.commands_for_surface(surface):
-            return
-
-        # The executor's sequence is only a local starting hint. Storage owns
-        # the authoritative sequence, so use the target's current watermark and
-        # adopt the envelopes returned by append_session_events rather than
-        # exposing the executor's sequence values.
         try:
             target_response = self._session_store.load_session(
                 workspace=self._workspace,
@@ -2555,6 +2547,24 @@ class RuntimeBackgroundTaskSupervisor:
                 task.task.id,
             )
             return
+        plan = hook_plan_from_session_metadata(target_response.session.metadata)
+        if plan is None and (hooks is None or hooks.enabled is not True):
+            return
+        if plan is not None and not plan.enabled:
+            return
+        if plan is not None:
+            commands = plan.commands_for_surface(surface)
+            failure_mode = plan.failure_mode
+        else:
+            assert hooks is not None
+            commands = hooks.commands_for_surface(surface)
+            failure_mode = hooks.failure_mode
+        if not commands:
+            return
+        # The executor's sequence is only a local starting hint. Storage owns
+        # the authoritative sequence, so use the target's current watermark and
+        # adopt the envelopes returned by append_session_events rather than
+        # exposing the executor's sequence values.
 
         sequence_start = target_response.events[-1].sequence if target_response.events else 0
         try:
@@ -2584,6 +2594,7 @@ class RuntimeBackgroundTaskSupervisor:
             outcome = run_lifecycle_hooks(
                 LifecycleHookExecutionRequest(
                     hooks=hooks,
+                    plan=plan,
                     workspace=self._workspace,
                     session_id=session_id,
                     surface=surface,
@@ -2643,12 +2654,12 @@ class RuntimeBackgroundTaskSupervisor:
                 )
 
         if outcome.failed_error is not None:
-            log = logger.error if hooks.failure_mode == "fail" else logger.warning
+            log = logger.error if failure_mode == "fail" else logger.warning
             log(
                 "background task lifecycle hook failed (surface=%s, task=%s, failure_mode=%s): %s",
                 surface,
                 task.task.id,
-                hooks.failure_mode,
+                failure_mode,
                 outcome.failed_error,
             )
 

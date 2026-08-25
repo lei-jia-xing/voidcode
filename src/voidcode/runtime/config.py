@@ -1140,6 +1140,7 @@ def _apply_formatter_config(
         on_background_task_completed=base_hooks.on_background_task_completed,
         on_background_task_failed=base_hooks.on_background_task_failed,
         on_background_task_cancelled=base_hooks.on_background_task_cancelled,
+        on_background_task_interrupted=base_hooks.on_background_task_interrupted,
         on_background_task_notification_enqueued=base_hooks.on_background_task_notification_enqueued,
         on_background_task_result_read=base_hooks.on_background_task_result_read,
         on_delegated_result_available=base_hooks.on_delegated_result_available,
