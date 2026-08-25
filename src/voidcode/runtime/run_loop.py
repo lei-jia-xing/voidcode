@@ -28,7 +28,8 @@ from ..tools.contracts import (
     RuntimeToolTimeoutError,
     ToolCall,
     ToolDefinition,
-    ToolErrorDetails,
+    ToolDiagnostics,
+    ToolDiagnosticsDetails,
     ToolResult,
 )
 from ..tools.guards import read_tracking_for_tool_results
@@ -260,14 +261,8 @@ def _tool_completed_payload(
         "content": tool_result.content,
         "error": tool_result.error,
     }
-    if tool_result.error_kind is not None:
-        completed_payload["error_kind"] = tool_result.error_kind
-    if tool_result.error_summary is not None:
-        completed_payload["error_summary"] = tool_result.error_summary
-    if tool_result.error_details is not None:
-        completed_payload["error_details"] = tool_result.error_details
-    if tool_result.retry_guidance is not None:
-        completed_payload["retry_guidance"] = tool_result.retry_guidance
+    if tool_result.diagnostics is not None:
+        completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
     completed_payload.setdefault("tool", tool_result.tool_name)
 
     completed_display = build_tool_display(
@@ -288,13 +283,7 @@ def _tool_completed_payload(
 
 
 def _serialized_tool_results(tool_results: list[ToolResult]) -> tuple[dict[str, object], ...]:
-    """Serialize in-flight tool results into the interrupted-checkpoint shape.
-
-    Mirrors ``SqliteSessionStore._tool_results_from_events`` so the persisted
-    checkpoint is accepted verbatim by ``tool_results_from_checkpoint`` in
-    ``resume.py``: identity keys ``tool_name``/``status``/``data``/``content``/
-    ``error`` plus, only when errored, the optional error detail fields.
-    """
+    """Serialize in-flight tool results into the strict checkpoint shape."""
     serialized: list[dict[str, object]] = []
     for result in tool_results:
         is_err = result.status == "error"
@@ -306,14 +295,8 @@ def _serialized_tool_results(tool_results: list[ToolResult]) -> tuple[dict[str, 
             "error": result.error if result.error is not None and is_err else None,
         }
         if is_err:
-            if result.error_kind is not None:
-                entry["error_kind"] = result.error_kind
-            if result.error_summary is not None:
-                entry["error_summary"] = result.error_summary
-            if result.error_details is not None:
-                entry["error_details"] = dict(result.error_details)
-            if result.retry_guidance is not None:
-                entry["retry_guidance"] = result.retry_guidance
+            if result.diagnostics is not None:
+                entry["diagnostics"] = result.diagnostics.as_payload()
         serialized.append(entry)
     return tuple(serialized)
 
@@ -403,17 +386,26 @@ def _tool_error_details(
     error: str,
     error_kind: str | None = None,
     extra: dict[str, object] | None = None,
-) -> ToolErrorDetails:
-    details: ToolErrorDetails = {
-        "tool_name": tool_name,
-        "message": error,
-        "summary": _tool_error_summary(error),
-    }
-    if error_kind is not None:
-        details["error_kind"] = error_kind
+) -> ToolDiagnosticsDetails:
+    details: ToolDiagnosticsDetails = {"tool_name": tool_name}
     if extra:
         details.update(extra)
     return details
+
+
+def _tool_error_diagnostics(
+    *,
+    tool_name: str,
+    error: str,
+    error_kind: str | None = None,
+    extra_details: dict[str, object] | None = None,
+) -> ToolDiagnostics:
+    return ToolDiagnostics(
+        kind=error_kind,
+        summary=_tool_error_summary(error),
+        details=_tool_error_details(tool_name=tool_name, error=error, error_kind=error_kind, extra=extra_details),
+        guidance=_tool_error_retry_guidance(error),
+    )
 
 
 def _tool_error_payload(
@@ -423,22 +415,15 @@ def _tool_error_payload(
     error_kind: str | None = None,
     extra_details: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {
+    return {
         "error": error,
-        "error_summary": _tool_error_summary(error),
-        "error_details": _tool_error_details(
+        "diagnostics": _tool_error_diagnostics(
             tool_name=tool_name,
             error=error,
             error_kind=error_kind,
-            extra=extra_details,
-        ),
+            extra_details=extra_details,
+        ).as_payload(),
     }
-    if error_kind is not None:
-        payload["error_kind"] = error_kind
-    retry_guidance = _tool_error_retry_guidance(error)
-    if retry_guidance is not None:
-        payload["retry_guidance"] = retry_guidance
-    return payload
 
 
 def _tool_diagnostic_payload(
@@ -446,19 +431,19 @@ def _tool_diagnostic_payload(
     tool_name: str,
     error: ToolDiagnosticError,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "error_kind": error.error_kind,
-        "error_summary": _tool_error_summary(str(error)),
-        "error_details": _tool_error_details(
-            tool_name=tool_name,
-            error=str(error),
-            error_kind=error.error_kind,
-            extra=error.error_details,
-        ),
+    return {
+        "diagnostics": ToolDiagnostics(
+            kind=error.error_kind,
+            summary=_tool_error_summary(str(error)),
+            details=_tool_error_details(
+                tool_name=tool_name,
+                error=str(error),
+                error_kind=error.error_kind,
+                extra=error.error_details,
+            ),
+            guidance=error.retry_guidance,
+        ).as_payload()
     }
-    if error.retry_guidance is not None:
-        payload["retry_guidance"] = error.retry_guidance
-    return payload
 
 
 def _metadata_without_provider_attempt(metadata: Mapping[str, object]) -> dict[str, object]:
@@ -1098,18 +1083,12 @@ class RuntimeRunLoopCoordinator:
                 failed_chunk, _ = self._persist_chunk(chunk_builders.failed_chunk(session=session, sequence=sequence + 1, error=str(exc)))
                 yield failed_chunk
                 raise
-            error_summary = _tool_error_summary(str(exc))
-            error_details = _tool_error_details(tool_name=tool_call.tool_name, error=str(exc))
-            retry_guidance = _tool_error_retry_guidance(str(exc))
             error_kind: str | None = None
+            error_details: dict[str, object] = {}
+            retry_guidance: str | None = _tool_error_retry_guidance(str(exc))
             if isinstance(exc, ToolDiagnosticError):
                 error_kind = exc.error_kind
-                error_details = _tool_error_details(
-                    tool_name=tool_call.tool_name,
-                    error=str(exc),
-                    error_kind=exc.error_kind,
-                    extra=exc.error_details,
-                )
+                error_details = dict(exc.error_details)
                 retry_guidance = exc.retry_guidance
 
             tool_result = ToolResult(
@@ -1121,10 +1100,12 @@ class RuntimeRunLoopCoordinator:
                     "tool_call_id": tool_call_id,
                     "arguments": dict(tool_call.arguments),
                 },
-                error_kind=error_kind,
-                error_summary=error_summary,
-                error_details=error_details,
-                retry_guidance=retry_guidance,
+                diagnostics=ToolDiagnostics(
+                    kind=error_kind,
+                    summary=_tool_error_summary(str(exc)),
+                    details={"tool_name": tool_call.tool_name, **error_details},
+                    guidance=retry_guidance,
+                ),
             )
 
         sanitized_arguments = sanitize_tool_arguments(dict(tool_call.arguments))
@@ -1172,14 +1153,8 @@ class RuntimeRunLoopCoordinator:
             "content": tool_result.content,
             "error": tool_result.error,
         }
-        if tool_result.error_kind is not None:
-            completed_payload["error_kind"] = tool_result.error_kind
-        if tool_result.error_summary is not None:
-            completed_payload["error_summary"] = tool_result.error_summary
-        if tool_result.error_details is not None:
-            completed_payload["error_details"] = tool_result.error_details
-        if tool_result.retry_guidance is not None:
-            completed_payload["retry_guidance"] = tool_result.retry_guidance
+        if tool_result.diagnostics is not None:
+            completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
         completed_payload.setdefault("tool", tool_result.tool_name)
 
         completed_display = build_tool_display(
@@ -2856,21 +2831,12 @@ class RuntimeRunLoopCoordinator:
                 failed_chunk, _ = self._persist_chunk(chunk_builders.failed_chunk(session=session, sequence=sequence + 1, error=str(exc)))
                 yield failed_chunk
                 raise
-            error_summary = _tool_error_summary(str(exc))
-            error_details = _tool_error_details(
-                tool_name=plan_tool_call.tool_name,
-                error=str(exc),
-            )
-            retry_guidance = _tool_error_retry_guidance(str(exc))
             error_kind: str | None = None
+            error_details: dict[str, object] = {}
+            retry_guidance: str | None = _tool_error_retry_guidance(str(exc))
             if isinstance(exc, ToolDiagnosticError):
                 error_kind = exc.error_kind
-                error_details = _tool_error_details(
-                    tool_name=plan_tool_call.tool_name,
-                    error=str(exc),
-                    error_kind=exc.error_kind,
-                    extra=exc.error_details,
-                )
+                error_details = dict(exc.error_details)
                 retry_guidance = exc.retry_guidance
 
             tool_result = ToolResult(
@@ -2882,10 +2848,12 @@ class RuntimeRunLoopCoordinator:
                     "tool_call_id": tool_call_id,
                     "arguments": dict(plan_tool_call.arguments),
                 },
-                error_kind=error_kind,
-                error_summary=error_summary,
-                error_details=error_details,
-                retry_guidance=retry_guidance,
+                diagnostics=ToolDiagnostics(
+                    kind=error_kind,
+                    summary=_tool_error_summary(str(exc)),
+                    details={"tool_name": plan_tool_call.tool_name, **error_details},
+                    guidance=retry_guidance,
+                ),
             )
         return "ok", tool_result, session, sequence
 
@@ -3075,14 +3043,12 @@ class RuntimeRunLoopCoordinator:
                 "tool_call_id": tool_call_id,
                 "arguments": sanitized_arguments,
             },
-            error_kind=error_kind,
-            error_summary=_tool_error_summary(error),
-            error_details=_tool_error_details(
-                tool_name=tool_name,
-                error=error,
-                error_kind=error_kind,
+            diagnostics=ToolDiagnostics(
+                kind=error_kind,
+                summary=_tool_error_summary(error),
+                details=_tool_error_details(tool_name=tool_name, error=error, error_kind=error_kind),
+                guidance="Check the tool name and arguments, then retry.",
             ),
-            retry_guidance="Check the tool name and arguments, then retry.",
         )
         completed_display = build_tool_display(
             tool_name,
@@ -3109,10 +3075,7 @@ class RuntimeRunLoopCoordinator:
                 "status": tool_result.status,
                 "content": tool_result.content,
                 "error": tool_result.error,
-                "error_kind": tool_result.error_kind,
-                "error_summary": tool_result.error_summary,
-                "error_details": tool_result.error_details,
-                "retry_guidance": tool_result.retry_guidance,
+                "diagnostics": tool_result.diagnostics.as_payload() if tool_result.diagnostics is not None else None,
                 "display": completed_display,
                 "tool_status": completed_status,
             },
@@ -3453,14 +3416,8 @@ class RuntimeRunLoopCoordinator:
             "content": tool_result.content,
             "error": tool_result.error,
         }
-        if tool_result.error_kind is not None:
-            completed_payload["error_kind"] = tool_result.error_kind
-        if tool_result.error_summary is not None:
-            completed_payload["error_summary"] = tool_result.error_summary
-        if tool_result.error_details is not None:
-            completed_payload["error_details"] = tool_result.error_details
-        if tool_result.retry_guidance is not None:
-            completed_payload["retry_guidance"] = tool_result.retry_guidance
+        if tool_result.diagnostics is not None:
+            completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
         completed_payload.setdefault("tool", tool_result.tool_name)
 
         completed_display = build_tool_display(
@@ -3596,18 +3553,20 @@ class RuntimeRunLoopCoordinator:
             content=_tool_error_content(tool_call.tool_name, error),
             error=error,
             data=sanitize_tool_result_data(result_data),
-            error_kind="permission_denied",
-            error_summary=_tool_error_summary(error),
-            error_details=_tool_error_details(
-                tool_name=tool_call.tool_name,
-                error=error,
-                error_kind="permission_denied",
-                extra={
-                    "permission_denied": True,
-                    **({"denied_by": denied_by} if denied_by is not None else {}),
-                },
+            diagnostics=ToolDiagnostics(
+                kind="permission_denied",
+                summary=_tool_error_summary(error),
+                details=_tool_error_details(
+                    tool_name=tool_call.tool_name,
+                    error=error,
+                    error_kind="permission_denied",
+                    extra={
+                        "permission_denied": True,
+                        **({"denied_by": denied_by} if denied_by is not None else {}),
+                    },
+                ),
+                guidance="Adjust the request or approval settings, then retry.",
             ),
-            retry_guidance="Adjust the request or approval settings, then retry.",
         )
         completed_display = build_tool_display(
             tool_call.tool_name,
@@ -3634,10 +3593,7 @@ class RuntimeRunLoopCoordinator:
                 "status": tool_result.status,
                 "content": tool_result.content,
                 "error": tool_result.error,
-                "error_kind": tool_result.error_kind,
-                "error_summary": tool_result.error_summary,
-                "error_details": tool_result.error_details,
-                "retry_guidance": tool_result.retry_guidance,
+                "diagnostics": tool_result.diagnostics.as_payload() if tool_result.diagnostics is not None else None,
                 "display": completed_display,
                 "tool_status": completed_status,
             },

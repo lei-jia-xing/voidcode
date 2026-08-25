@@ -258,15 +258,17 @@ def project_tool_effectiveness(
             stats.truncated_results += 1
         if payload.get("partial") is True:
             stats.partial_results += 1
-        if isinstance(payload.get("retry_guidance"), str):
+        raw_diagnostics = payload.get("diagnostics")
+        diagnostic_payload = raw_diagnostics if isinstance(raw_diagnostics, dict) else {}
+        if isinstance(diagnostic_payload.get("guidance"), str):
             stats.retry_guidance_count += 1
 
         retry_key = (item.session_id, tool)
         is_error = payload.get("status") == "error" or payload.get("error") is not None
         if is_error:
-            stats.errors += 1
-            raw_error_kind = payload.get("error_kind")
+            raw_error_kind = diagnostic_payload.get("kind")
             error_kind = raw_error_kind if isinstance(raw_error_kind, str) and raw_error_kind else "unspecified"
+            stats.errors += 1
             stats.error_kinds[error_kind] += 1
             if model_stats is not None:
                 model_stats.errors += 1

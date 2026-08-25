@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from ..tools.contracts import ToolResult
+from ..tools.contracts import ToolDiagnostics, ToolResult
 from ..tools.output import read_tool_output_artifact, sanitize_tool_result_data
 from .contracts import (
     RuntimeSessionDebugEvent,
@@ -170,7 +170,9 @@ def last_tool_summary(
         if status not in {"ok", "error"}:
             status = "error" if payload.get("error") is not None else "ok"
         if status == "error":
-            summary_source = payload.get("error_summary") or payload.get("error")
+            raw_diagnostics = payload.get("diagnostics")
+            diagnostics = raw_diagnostics if isinstance(raw_diagnostics, dict) else {}
+            summary_source = diagnostics.get("summary") or payload.get("error")
         else:
             summary_source = payload.get("content")
         summary = str(summary_source).strip() if summary_source is not None else tool_name
@@ -201,13 +203,11 @@ def prompt_from_events(events: tuple[EventEnvelope, ...]) -> str:
 def provider_visible_tool_result_data(payload: dict[str, object]) -> dict[str, object]:
     runtime_envelope_keys = {
         "content",
+        "diagnostics",
         "display",
         "error",
-        "error_details",
-        "error_summary",
         "model",
         "provider",
-        "retry_guidance",
         "status",
         "tool",
         "tool_status",
@@ -237,17 +237,10 @@ def prompt_and_tool_results_from_debug_events(
                 truncated=event.payload.get("truncated") is True,
                 partial=event.payload.get("partial") is True,
                 reference=(cast(str, event.payload.get("reference")) if isinstance(event.payload.get("reference"), str) else None),
-                error_kind=(cast(str, event.payload.get("error_kind")) if isinstance(event.payload.get("error_kind"), str) and is_error else None),
-                error_summary=(
-                    cast(str, event.payload.get("error_summary")) if isinstance(event.payload.get("error_summary"), str) and is_error else None
-                ),
-                error_details=(
-                    cast(dict[str, object], event.payload.get("error_details"))
-                    if isinstance(event.payload.get("error_details"), dict) and is_error
+                diagnostics=(
+                    ToolDiagnostics.from_payload(event.payload["diagnostics"])
+                    if isinstance(event.payload.get("diagnostics"), dict) and is_error
                     else None
-                ),
-                retry_guidance=(
-                    cast(str, event.payload.get("retry_guidance")) if isinstance(event.payload.get("retry_guidance"), str) and is_error else None
                 ),
             )
         )

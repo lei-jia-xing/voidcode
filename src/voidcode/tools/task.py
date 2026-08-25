@@ -289,12 +289,6 @@ class TaskTool:
 
         if args.run_in_background:
             task = self._runtime.start_background_task(request)
-            retry_guidance = (
-                "Continue other safe work now. Do not call background_output immediately "
-                "unless you need a real status check; prefer waiting for a completion "
-                "reminder, or use background_output(block=true) when you intentionally "
-                "want to wait in the current turn."
-            )
             waiting_reason = task.observability.waiting_reason if task.observability is not None else None
             keep_alive_guidance = (
                 " This task is keep-alive: after each turn without a final result the worker "
@@ -338,7 +332,6 @@ class TaskTool:
                     "waiting_reason": waiting_reason,
                     "keep_alive": args.keep_alive,
                 },
-                retry_guidance=retry_guidance,
             )
 
         response = self._runtime.run(request)

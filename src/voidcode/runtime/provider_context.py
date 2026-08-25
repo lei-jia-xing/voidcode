@@ -452,6 +452,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
         if isinstance(raw_arguments, dict)
         else {}
     )
+    raw_diagnostics = metadata.get("diagnostics")
     payload = {
         "tool_name": segment.tool_name,
         "arguments": sanitized_arguments,
@@ -459,6 +460,7 @@ def _tool_payload_json(segment: RuntimeContextSegment) -> str:
         "content": _redact_debug_text(segment.content or ""),
         "error": _safe_payload(metadata.get("error")),
         "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
+        "diagnostics": _safe_payload(raw_diagnostics) if isinstance(raw_diagnostics, dict) else None,
         "truncated": metadata.get("truncated"),
         "partial": metadata.get("partial"),
         "reference": metadata.get("reference"),
@@ -477,6 +479,7 @@ def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
         if isinstance(raw_arguments, dict)
         else {}
     )
+    diagnostics = result.diagnostics
     payload = {
         "tool_name": result.tool_name,
         "arguments": sanitized_arguments,
@@ -484,6 +487,7 @@ def _tool_result_payload_json(result: ToolResult | ToolResultView) -> str:
         "content": _redact_debug_text(result.content or ""),
         "error": _safe_payload(result.error),
         "data": {key: value for key, value in sanitized_data.items() if key not in {"tool_call_id", "arguments"}},
+        "diagnostics": _safe_payload(diagnostics.as_payload()) if diagnostics is not None else None,
         "truncated": result.truncated,
         "partial": result.partial,
         "reference": result.reference,

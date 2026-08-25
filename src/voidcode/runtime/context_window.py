@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
 from ..agent.prompt_sections import dynamic_boundary_marker
-from ..tools.contracts import ToolResult, ToolResultStatus
+from ..tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
 from .context_projection import project_summary
 from .context_transforms import (
     RuntimeContextTransformResult,
@@ -41,7 +41,7 @@ class DroppedToolResultDiagnostic:
     path: str | None = None
     command: str | None = None
     pattern: str | None = None
-    error_kind: str | None = None
+    diagnostics: dict[str, object] | None = None
     estimated_tokens: int | None = None
     truncated: bool = False
     partial: bool = False
@@ -70,8 +70,8 @@ class DroppedToolResultDiagnostic:
             payload["command"] = self.command
         if self.pattern is not None:
             payload["pattern"] = self.pattern
-        if self.error_kind is not None:
-            payload["error_kind"] = self.error_kind
+        if self.diagnostics is not None:
+            payload["diagnostics"] = dict(self.diagnostics)
         if self.estimated_tokens is not None:
             payload["estimated_tokens"] = self.estimated_tokens
         if self.truncated:
@@ -309,8 +309,8 @@ class ToolResultView:
         return self.result.reference
 
     @property
-    def error_kind(self) -> str | None:
-        return self.result.error_kind
+    def diagnostics(self) -> ToolDiagnostics | None:
+        return self.result.diagnostics
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.result, name)
@@ -492,8 +492,7 @@ def _dropped_tool_diagnostics_from_metadata_payload(
                 reference=_optional_entry_string(entry, "reference"),
                 path=_optional_entry_string(entry, "path"),
                 command=_optional_entry_string(entry, "command"),
-                pattern=_optional_entry_string(entry, "pattern"),
-                error_kind=_optional_entry_string(entry, "error_kind"),
+                diagnostics=(cast(dict[str, object], entry["diagnostics"]) if isinstance(entry.get("diagnostics"), dict) else None),
                 estimated_tokens=(estimated_tokens if isinstance(estimated_tokens, int) and not isinstance(estimated_tokens, bool) else None),
                 truncated=entry.get("truncated") is True,
                 partial=entry.get("partial") is True,
@@ -814,8 +813,7 @@ def _dropped_tool_diagnostics(
                 reference=result.reference,
                 path=_optional_tool_string(result, "path"),
                 command=_optional_tool_string(result, "command"),
-                pattern=_optional_tool_string(result, "pattern"),
-                error_kind=result.error_kind,
+                diagnostics=(result.diagnostics.as_payload() if result.diagnostics is not None else None),
                 estimated_tokens=_tool_result_token_estimate(
                     result,
                     tokenizer_model=tokenizer_model,

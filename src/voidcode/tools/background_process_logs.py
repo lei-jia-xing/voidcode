@@ -131,5 +131,4 @@ class BackgroundProcessLogsTool:
             truncated=truncated,
             partial=truncated,
             reference=references[0] if references else None,
-            retry_guidance=guidance,
         )

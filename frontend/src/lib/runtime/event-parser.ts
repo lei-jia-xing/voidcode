@@ -28,14 +28,12 @@ function nonEmptyFailureValue(value: unknown): string | null {
 export function failureMessageFromEvent(event: EventEnvelope): string | null {
   const payload = event.payload ?? {};
   if (event.event_type === "runtime.failed") {
-    if (isRuntimeCancellationEvent(event)) return null;
-    const providerDetails = objectPayload(payload.provider_error_details);
-    const errorDetails = objectPayload(payload.error_details);
+    const diagnostics = objectPayload(payload.diagnostics);
+    const diagnosticDetails = objectPayload(diagnostics?.details);
     return (
-      nonEmptyFailureValue(providerDetails?.exception_message) ??
-      nonEmptyFailureValue(providerDetails?.message) ??
-      nonEmptyFailureValue(errorDetails?.exception_message) ??
-      nonEmptyFailureValue(payload.error_summary) ??
+      nonEmptyFailureValue(diagnosticDetails?.exception_message) ??
+      nonEmptyFailureValue(diagnosticDetails?.message) ??
+      nonEmptyFailureValue(diagnostics?.summary) ??
       nonEmptyFailureValue(payload.error) ??
       nonEmptyFailureValue(payload.message)
     );
@@ -45,10 +43,11 @@ export function failureMessageFromEvent(event: EventEnvelope): string | null {
     event.event_type === "graph.provider_stream" &&
     (payload.channel === "error" || payload.kind === "error")
   ) {
+    const diagnostics = objectPayload(payload.diagnostics);
     return (
       nonEmptyFailureValue(payload.error) ??
       nonEmptyFailureValue(payload.text) ??
-      nonEmptyFailureValue(payload.error_summary) ??
+      nonEmptyFailureValue(diagnostics?.summary) ??
       nonEmptyFailureValue(payload.message)
     );
   }

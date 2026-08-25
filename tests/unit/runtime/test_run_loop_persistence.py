@@ -11,7 +11,7 @@ from voidcode.runtime.resume import RuntimeResumeCoordinator
 from voidcode.runtime.service import RuntimeStreamChunk, SessionState, ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools.contracts import ToolCall, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDiagnostics, ToolResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,10 +176,12 @@ def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
             tool_name="shell_exec",
             status="error",
             error="boom",
-            error_kind="tool_timeout",
-            error_summary="timed out",
-            error_details={"message": "timed out"},
-            retry_guidance="retry",
+            diagnostics=ToolDiagnostics(
+                kind="tool_timeout",
+                summary="timed out",
+                details={"message": "timed out"},
+                guidance="retry",
+            ),
             data={"tool_call_id": "call-2", "arguments": {"command": "ls"}},
         ),
     ]
@@ -192,13 +194,14 @@ def test_serialized_tool_results_roundtrip_through_checkpoint_reader() -> None:
     assert serialized[0]["error"] is None
     assert serialized[1]["status"] == "error"
     assert serialized[1]["error"] == "boom"
-    assert serialized[1]["error_kind"] == "tool_timeout"
+    assert serialized[1]["diagnostics"]["kind"] == "tool_timeout"
 
     rehydrated = RuntimeResumeCoordinator.tool_results_from_checkpoint(list(serialized))
     assert [result.tool_name for result in rehydrated] == ["read", "shell_exec"]
     assert rehydrated[1].status == "error"
     assert rehydrated[1].error == "boom"
-    assert rehydrated[1].error_kind == "tool_timeout"
+    assert rehydrated[1].diagnostics is not None
+    assert rehydrated[1].diagnostics.kind == "tool_timeout"
 
 
 def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path) -> None:

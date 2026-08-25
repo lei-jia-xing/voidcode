@@ -772,8 +772,10 @@ class VoidCodeTUI(App[int]):
         elif event.event_type == "runtime.question_answered":
             text = Text("ℹ Answer submitted", style="bold cyan")
         elif event.event_type == "runtime.failed":
-            error_msg = payload.get("error_summary", payload.get("error", "Unknown error"))
-            formatted_error = self._format_runtime_error(error_msg)
+            diagnostics = payload.get("diagnostics")
+            summary = diagnostics.get("summary") if isinstance(diagnostics, dict) else None
+            error_msg = summary if isinstance(summary, str) else payload.get("error", "Unknown error")
+            formatted_error = self._format_runtime_error(str(error_msg))
             text = Text(f"✖ Failed: {formatted_error}", style="bold red")
         else:
             text = Text(f"EVENT {event.event_type} source={event.source}", style="dim")

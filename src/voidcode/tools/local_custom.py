@@ -11,7 +11,7 @@ from pathlib import Path
 from string import Template
 from typing import cast, final
 
-from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
+from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolDiagnostics, ToolResult
 from .runtime_context import current_runtime_tool_context
 
 LOCAL_CUSTOM_TOOL_SOURCE = "local_custom_tool"
@@ -265,8 +265,7 @@ class LocalCustomTool:
                 content=stdout or None,
                 data=data,
                 error=message,
-                source=LOCAL_CUSTOM_TOOL_SOURCE,
-                error_kind="local_custom_tool_failed",
+                diagnostics=ToolDiagnostics(kind="local_custom_tool_failed", summary=message, details={"tool_name": self._manifest.name}),
             )
         return ToolResult(
             tool_name=self._manifest.name,

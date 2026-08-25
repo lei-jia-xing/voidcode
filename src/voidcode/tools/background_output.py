@@ -362,21 +362,12 @@ class BackgroundOutputTool:
             payload["guidance"] = guidance
             content = f"{content}\n\nGuidance: {guidance}"
 
-        retry_guidance = guidance
-        if retry_guidance is None and not is_background_task_terminal(result.status):
-            retry_guidance = (
-                "Report the current status and continue other work. Wait for the runtime completion "
-                "reminder; do not call background_output again immediately or loop on polling. Use "
-                "background_output(block=true) only when intentionally waiting in this turn."
-            )
-
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=content,
             data=payload,
             reference=_background_result_reference(result),
-            retry_guidance=retry_guidance,
         )
 
 

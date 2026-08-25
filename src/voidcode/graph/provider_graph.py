@@ -602,7 +602,11 @@ class ProviderGraph:
         if stream_event.error is not None:
             payload["error"] = stream_event.error
         if stream_event.error_kind is not None:
-            payload["error_kind"] = stream_event.error_kind
+            payload["diagnostics"] = {
+                "kind": stream_event.error_kind,
+                "summary": stream_event.error,
+                "details": dict(stream_event.metadata or {}),
+            }
         if stream_event.done_reason is not None:
             payload["done_reason"] = stream_event.done_reason
         if stream_event.usage is not None:

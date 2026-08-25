@@ -1501,7 +1501,8 @@ class _UnreadWriteThenReadTurnProvider:
                 )
             )
         last_result = turn_request.tool_results[-1]
-        error_details = last_result.error_details or {}
+        diagnostics = last_result.diagnostics.as_payload() if last_result.diagnostics is not None else {}
+        error_details = diagnostics.get("details") if isinstance(diagnostics.get("details"), dict) else {}
         if error_details.get("reason") == "write_without_read":
             return ProviderTurnResult(tool_call=ToolCall(tool_name="read", arguments={"path": "safe.txt"}))
         if last_result.tool_name == "read" and last_result.status == "ok":
@@ -4676,21 +4677,22 @@ def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: P
     tool_completed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
     assert tool_completed.payload["tool"] == "grep"
     assert tool_completed.payload["status"] == "error"
-    assert tool_completed.payload["error_kind"] == "tool_input_validation"
+    diagnostics = cast(dict[str, object], tool_completed.payload["diagnostics"])
+    assert diagnostics["kind"] == "tool_input_validation"
     assert "invalid regex pattern" in str(tool_completed.payload["error"])
-    assert "regex=false" in str(tool_completed.payload["retry_guidance"])
+    assert "regex=false" in str(diagnostics["guidance"])
     assert "Please correct the tool arguments and retry." in str(tool_completed.payload["content"])
-    error_details = cast(dict[str, object], tool_completed.payload["error_details"])
+    error_details = cast(dict[str, object], diagnostics["details"])
     assert error_details["tool_name"] == "grep"
-    assert error_details["error_kind"] == "tool_input_validation"
     assert error_details["reason"] == "invalid_regex"
 
     failed_tool_result = created_providers[-1].requests[-1].tool_results[-1]
     assert isinstance(failed_tool_result.error, str)
-    assert failed_tool_result.error_kind == tool_completed.payload["error_kind"]
-    assert failed_tool_result.error_summary == tool_completed.payload["error_summary"]
-    assert failed_tool_result.error_details == error_details
-    assert failed_tool_result.retry_guidance == tool_completed.payload["retry_guidance"]
+    assert failed_tool_result.diagnostics is not None
+    assert failed_tool_result.diagnostics.kind == diagnostics["kind"]
+    assert failed_tool_result.diagnostics.summary == diagnostics["summary"]
+    assert failed_tool_result.diagnostics.details == error_details
+    assert failed_tool_result.diagnostics.guidance == diagnostics["guidance"]
 
 
 def test_runtime_todo_write_duplicate_snapshot_is_marked_unchanged(tmp_path: Path) -> None:

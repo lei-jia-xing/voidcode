@@ -148,6 +148,46 @@ def test_tool_result_validates_status_consistently() -> None:
         tools.ToolResult(tool_name="bash", status="ok", error="unexpected")
 
 
+def test_tool_result_diagnostics_is_bounded_redacted_and_json_safe() -> None:
+    tools = _tools_module()
+    diagnostics = tools.ToolDiagnostics(
+        kind="tool_timeout",
+        summary="request timed out",
+        details={"message": "Authorization: Bearer secret-token", "timed_out": True},
+        guidance="Retry with a narrower request.",
+    )
+    payload = diagnostics.as_payload()
+    assert payload["kind"] == "tool_timeout"
+    assert payload["details"]["message"] == "Authorization: Bearer [REDACTED]"
+    assert tools.ToolDiagnostics.from_payload(payload) == diagnostics
+    with pytest.raises(ValueError, match="successful results"):
+        tools.ToolResult(tool_name="read", status="ok", diagnostics=diagnostics)
+
+
+def test_provider_tool_feedback_includes_typed_diagnostics() -> None:
+    from voidcode.runtime.provider_context import _tool_result_payload_json
+
+    tools = _tools_module()
+    result = tools.ToolResult(
+        tool_name="grep",
+        status="error",
+        error="invalid regex",
+        diagnostics=tools.ToolDiagnostics(
+            kind="tool_input_validation",
+            summary="invalid regex pattern",
+            details={"pattern": "["},
+            guidance="Use a valid regex or set regex=false.",
+        ),
+    )
+    payload = json.loads(_tool_result_payload_json(result))
+    assert payload["diagnostics"] == {
+        "kind": "tool_input_validation",
+        "summary": "invalid regex pattern",
+        "details": {"pattern": "["},
+        "guidance": "Use a valid regex or set regex=false.",
+    }
+
+
 def test_runtime_and_graph_protocols_are_runtime_checkable() -> None:
     runtime_module = _runtime_module()
 

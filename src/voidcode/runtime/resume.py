@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ..graph.contracts import GraphRunRequest
 from ..provider.protocol import ProviderAbortSignal
-from ..tools.contracts import ToolCall, ToolResult, ToolResultStatus
+from ..tools.contracts import ToolCall, ToolDiagnostics, ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
 from . import chunk_builders
@@ -1623,18 +1623,13 @@ class RuntimeResumeCoordinator:
             data = payload.get("data")
             content = payload.get("content")
             error = payload.get("error")
-            error_kind = payload.get("error_kind")
-            error_summary = payload.get("error_summary")
-            error_details = payload.get("error_details")
-            retry_guidance = payload.get("retry_guidance")
+            diagnostics = payload.get("diagnostics")
             if not isinstance(tool_name, str) or status is None or not isinstance(data, dict):
                 raise ValueError("persisted resume checkpoint tool_results are malformed")
             if content is not None and not isinstance(content, str):
                 raise ValueError("persisted resume checkpoint tool result content must be a string or null")
             if error is not None and not isinstance(error, str):
                 raise ValueError("persisted resume checkpoint tool result error must be a string or null")
-            if error_kind is not None and not isinstance(error_kind, str):
-                raise ValueError("persisted resume checkpoint tool result error_kind must be a string or null")
             parsed.append(
                 ToolResult(
                     tool_name=tool_name,
@@ -1642,10 +1637,7 @@ class RuntimeResumeCoordinator:
                     status=status,
                     data=sanitize_tool_result_data(cast(dict[str, object], data)),
                     error=error,
-                    error_kind=error_kind,
-                    error_summary=cast(str | None, error_summary),
-                    error_details=(cast(dict[str, object], error_details) if isinstance(error_details, dict) else None),
-                    retry_guidance=cast(str | None, retry_guidance),
+                    diagnostics=(ToolDiagnostics.from_payload(diagnostics) if diagnostics is not None else None),
                     source="checkpoint",
                 )
             )

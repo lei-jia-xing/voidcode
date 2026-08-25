@@ -330,5 +330,4 @@ class BackgroundProcessStartTool:
                 "reused": reused,
                 "guidance": guidance,
             },
-            retry_guidance=guidance,
         )

@@ -597,9 +597,8 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     assert result.data["status"] == "running"
     assert result.data["block_timed_out"] is True
     assert "meaningful state change" in str(result.data["guidance"])
-    assert result.retry_guidance is not None
-    assert result.data["guidance"] == result.retry_guidance
-    assert "do not loop indefinitely" in result.retry_guidance
+    assert isinstance(result.data["guidance"], str)
+    assert "do not loop indefinitely" in result.data["guidance"]
 
 
 def test_background_output_rejects_subsecond_timeout_to_avoid_polling(tmp_path: Path) -> None:
@@ -683,7 +682,7 @@ def test_background_output_tool_guides_failed_child_without_retrying(tmp_path: P
     assert "do not retry automatically" in result.content
     assert "After repeated failures" in result.content
     assert "do not retry automatically" in str(result.data["guidance"])
-    assert result.data["guidance"] == result.retry_guidance
+    assert isinstance(result.data["guidance"], str)
 
 
 def test_background_output_tool_handles_interrupted_terminal_state(tmp_path: Path) -> None:
@@ -757,9 +756,8 @@ def test_background_output_tool_guides_unavailable_result_without_looping(tmp_pa
     assert "Wait for the runtime completion reminder" in result.content
     assert "loop indefinitely" in result.content
     assert result.data["result_available"] is False
-    assert result.retry_guidance is not None
-    assert result.data["guidance"] == result.retry_guidance
-    assert "loop indefinitely" in result.retry_guidance
+    assert isinstance(result.data["guidance"], str)
+    assert "loop indefinitely" in result.data["guidance"]
 
 
 def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> None:

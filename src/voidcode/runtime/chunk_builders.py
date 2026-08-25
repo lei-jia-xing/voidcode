@@ -72,24 +72,24 @@ def with_runtime_failure_details(payload: dict[str, object]) -> dict[str, object
     error = normalized.get("error")
     if not isinstance(error, str) or not error:
         return normalized
-    summary = normalized.get("error_summary")
-    if not isinstance(summary, str) or not summary:
-        summary = _format_runtime_error_summary(error)
-        normalized["error_summary"] = summary
-    guidance = normalized.get("retry_guidance")
-    if not isinstance(guidance, str) or not guidance:
-        retry_guidance = _retry_guidance_for_runtime_failure(normalized)
-        if retry_guidance is not None:
-            normalized["retry_guidance"] = retry_guidance
-    if "error_details" not in normalized:
-        details: dict[str, object] = {"message": error, "summary": summary}
+    raw_diagnostics = normalized.get("diagnostics")
+    diagnostics = dict(raw_diagnostics) if isinstance(raw_diagnostics, dict) else {}
+    if not isinstance(diagnostics.get("summary"), str) or not diagnostics["summary"]:
+        diagnostics["summary"] = _format_runtime_error_summary(error)
+    if not isinstance(diagnostics.get("guidance"), str) or not diagnostics["guidance"]:
+        guidance = _retry_guidance_for_runtime_failure(normalized)
+        if guidance is not None:
+            diagnostics["guidance"] = guidance
+    if not isinstance(diagnostics.get("details"), dict):
+        details: dict[str, object] = {"message": error, "summary": diagnostics["summary"]}
         if isinstance(normalized.get("provider_error_kind"), str):
             details["provider_error_kind"] = normalized["provider_error_kind"]
         if isinstance(normalized.get("provider_error_details"), dict):
             details["provider_error_details"] = normalized["provider_error_details"]
         if normalized.get("cancelled") is True:
             details["cancelled"] = True
-        normalized["error_details"] = details
+        diagnostics["details"] = details
+    normalized["diagnostics"] = diagnostics
     return normalized
 
 
@@ -99,18 +99,15 @@ def user_interrupted_payload(*, run_id: str | None, reason: str | None) -> dict[
         "cancelled": True,
         "run_id": run_id,
         "reason": reason,
-        "retry_guidance": (
-            "User interrupted the run. Stop autonomous continuation, preserve current state, "
-            "and wait for the user's next instruction before retrying."
-        ),
-        "diagnostics": [
-            {
-                "source": "runtime",
-                "severity": "info",
-                "reason": "user_interrupted",
-                "message": "The current run was interrupted by the user.",
-            }
-        ],
+        "diagnostics": {
+            "kind": "user_interrupted",
+            "summary": "The current run was interrupted by the user.",
+            "details": {"source": "runtime", "reason": reason},
+            "guidance": (
+                "User interrupted the run. Stop autonomous continuation, preserve current state, "
+                "and wait for the user's next instruction before retrying."
+            ),
+        },
     }
 
 

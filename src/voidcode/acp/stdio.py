@@ -524,7 +524,8 @@ def _tool_call_id(payload: Mapping[str, object], runtime_session_id: str) -> str
 
 
 def _runtime_failure_summary(payload: Mapping[str, object]) -> str:
-    summary = payload.get("error_summary")
+    diagnostics = payload.get("diagnostics")
+    summary = diagnostics.get("summary") if isinstance(diagnostics, dict) else None
     if isinstance(summary, str) and summary.strip():
         return summary.strip()
     error = payload.get("error")

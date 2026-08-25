@@ -512,8 +512,8 @@ class _SessionStorageMixin(_MixinBase):
         ``tool_results_from_checkpoint`` in ``resume.py``: a tuple of dicts, each
         carrying the identity keys ``tool_name`` (str), ``status`` (``"ok"`` |
         ``"error"``), ``data`` (dict), ``content`` (str | None), ``error``
-        (str | None), plus — only when errored — the optional ``error_kind``,
-        ``error_summary``, ``error_details`` (dict) and ``retry_guidance`` (str).
+        (str | None), plus the optional ``diagnostics`` object with canonical
+        ``kind``, ``summary``, ``details`` and ``guidance`` fields.
         Callers hold the durable events at this boundary and may derive these
         via ``_tool_results_from_events``.
         """
@@ -645,15 +645,8 @@ class _SessionStorageMixin(_MixinBase):
                 "data": payload,
                 "error": str(raw_error) if raw_error is not None and is_err else None,
             }
-            if is_err:
-                if payload.get("error_kind") is not None:
-                    tool_result["error_kind"] = str(payload.get("error_kind"))
-                if payload.get("error_summary") is not None:
-                    tool_result["error_summary"] = str(payload.get("error_summary"))
-                if isinstance(payload.get("error_details"), dict):
-                    tool_result["error_details"] = cast(dict[str, object], payload.get("error_details"))
-                if payload.get("retry_guidance") is not None:
-                    tool_result["retry_guidance"] = str(payload.get("retry_guidance"))
+            if is_err and isinstance(payload.get("diagnostics"), dict):
+                tool_result["diagnostics"] = cast(dict[str, object], payload["diagnostics"])
             tool_results.append(tool_result)
         return tool_results
 
