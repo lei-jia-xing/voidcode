@@ -402,7 +402,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     1 if task.request.metadata.get("keep_alive") is True else 0,
                     output_schema_json,
                     schema_mode,
-                    None,
+                    (json.dumps(task.structured_output, sort_keys=True) if task.structured_output is not None else None),
                     None,
                 ),
             )
@@ -499,6 +499,36 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                     ORDER BY updated_at DESC, task_id ASC
                     """,
                     (str(workspace), parent_session_id),
+                ).fetchall(),
+            )
+        return tuple(self._background_task_summary_from_row(row) for row in rows)
+
+    def list_background_tasks_by_parallel_group(
+        self,
+        *,
+        workspace: Path,
+        parallel_group_id: str,
+        parent_session_id: str | None = None,
+    ) -> tuple[StoredBackgroundTaskSummary, ...]:
+        """List persisted tasks in one delegation group without loading transcripts."""
+        where_parent = " AND request_parent_session_id = ?" if parent_session_id is not None else ""
+        parameters: tuple[object, ...] = (
+            (str(workspace), parent_session_id, parallel_group_id) if parent_session_id is not None else (str(workspace), parallel_group_id)
+        )
+        with self._connect(workspace) as connection:
+            rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    f"""
+                    SELECT task_id, status, prompt, session_id, error, created_at, updated_at
+                           , created_at_unix_ms, keep_alive, steer_prompt
+                           , output_schema_json, schema_mode
+                    FROM background_tasks
+                    WHERE workspace_id = ?{where_parent}
+                      AND json_extract(request_metadata_json, '$.delegation.parallel_group_id') = ?
+                    ORDER BY created_at ASC, task_id ASC
+                    """,
+                    parameters,
                 ).fetchall(),
             )
         return tuple(self._background_task_summary_from_row(row) for row in rows)

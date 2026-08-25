@@ -1252,6 +1252,33 @@ class BackgroundTaskResult:
 
 
 @dataclass(frozen=True, slots=True)
+class BackgroundTaskGroupResult:
+    """Bounded aggregate view of runtime-owned background task results."""
+
+    parallel_group_id: str | None
+    expected_task_count: int | None
+    results: tuple[BackgroundTaskResult, ...]
+    timed_out: bool = False
+
+    @property
+    def task_ids(self) -> tuple[str, ...]:
+        return tuple(result.task_id for result in self.results)
+
+    @property
+    def terminal_task_count(self) -> int:
+        return sum(result.status in {"completed", "failed", "cancelled", "interrupted"} for result in self.results)
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.results) and self.terminal_task_count == len(self.results)
+
+    @property
+    def counts(self) -> dict[str, int]:
+        statuses = ("queued", "running", "idle", "completed", "failed", "cancelled", "interrupted")
+        return {status: sum(result.status == status for result in self.results) for status in statuses}
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeNotification:
     id: str
     session: SessionRef
@@ -1329,6 +1356,24 @@ class BackgroundTaskRuntimeEntrypoint(Protocol):
         child_session_id: str,
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult | None: ...
+    def load_background_task_group_result(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskGroupResult: ...
+
+    def wait_for_background_task_group(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        timeout_seconds: float,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskGroupResult: ...
 
     def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 

@@ -424,6 +424,16 @@ leader notification 必须满足：**对同一语义转换至多投递一次**�
 
 > 这里的 delivery state 属于 runtime 内部持久化真相，不要求出现在 `BackgroundTaskResult` 这样的 leader-facing retrieval payload 中。
 
+实现上，completion delivery 复用 parent session metadata 中的 bounded
+`pending_messages` interaction outbox；每条 completion interaction 携带稳定
+`dedupe_key`，消费时把 key 写入有界 `runtime_interaction_delivery_cursor`。
+因此 active parent 的下一 provider turn、inactive parent 的 resume，以及进程
+重启后的 reconcile/backfill 都走同一 runtime-owned 消费路径，并且同一语义最多
+被模型消费一次。outbox 只保存 task/status/summary/child-session pointer，绝不复制
+child transcript。completion lifecycle event 必须先成功写入 parent event log，随后
+才允许生成 outbox；unknown parent 安全丢弃，已封印 parent 仍可写入这项 sanctioned
+completion outbox，但普通 steering/follow-up 仍受 terminal seal 约束。
+
 ## 恢复语义
 
 恢复是必需的，因为 parent 或 runtime 可能在 child 完成后、leader 消费前重启。
@@ -478,8 +488,11 @@ MCP 当前是 runtime-managed capability，不是 workspace-scoped marketplace�
 
 Leader 读取结果时应遵守以下规则：
 
-- `background_output(task_id)` 默认返回紧凑结果视图。
-- `background_output(task_id, full_session=true)` 返回 bounded transcript payload，并带 child session id 与 transcript metadata。
+- `background_output` 的 selector 必须严格互斥：单任务旧调用使用 `task_id`；聚合调用使用 `task_ids` 或 `parallel_group_id`，三者只能提供一个。`task_ids` 有界且不得重复；`parallel_group_id` 由 runtime 按持久化 group truth 解析。
+- 聚合读取使用当前 runtime tool context 的 `session_id` 作为 parent owner；runtime 必须拒绝不属于该 parent 的 task 或 group，工具/模型不得通过客户端参数绕过 lineage ownership。
+- `block=true` 使用 runtime-owned Condition/lifecycle wait，不做 tight polling；`timeout` 单位为毫秒且阻塞等待至少 1000ms。超时返回当前各 task 状态并设置 `block_timed_out`，不得把任务误标为失败。
+- 聚合结果是 bounded model-facing projection：每个 task 只返回 `status`、有界 `summary`/`error`、`structured_output` 与关联状态字段；不得复制 child prompt、transcript 或 raw child session 内容。结果同时包含 group completeness、counts、expected task count 与 task ids。
+- `background_output(task_id, full_session=true)` 仍可返回 bounded child session metadata/transcript preview；该单任务兼容路径不改变聚合结果的 no-transcript 约束。
 - CLI `voidcode tasks status/output/list/cancel/retry/steer --json` 返回 machine-readable payload，并保留 readable 默认输出；结构化字段应包含 `task_id`、`parent_session_id`、`requested_child_session_id`、`child_session_id`、approval / question request id、`result_available`、`error_type` 与 `next_steps`。
 - CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / idle / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks steer <task_id> "<prompt>"`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。

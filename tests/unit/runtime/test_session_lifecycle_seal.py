@@ -560,6 +560,18 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
     parent_after = store.load_session(workspace=tmp_path, session_id="leader-session")
     assert parent_after.session.status == "completed"
     assert any(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in parent_after.events)
+    # Re-running terminal reconciliation/backfill must not duplicate the
+    # parent completion event (the task id is the durable dedupe identity).
+    supervisor.backfill_parent_background_task_event(task=finalized)
+    parent_after_backfill = store.load_session(workspace=tmp_path, session_id="leader-session")
+    completion_events = [
+        event
+        for event in parent_after_backfill.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED and event.payload.get("task_id") == "task-race-3"
+    ]
+    assert len(completion_events) == 1
+    assert completion_events[0].payload["parent_session_id"] == "leader-session"
+    assert completion_events[0].payload["child_session_id"] == "child-race-3"
     with pytest.raises(SessionSealedError):
         store.append_session_events(
             workspace=tmp_path,

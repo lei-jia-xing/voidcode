@@ -160,6 +160,7 @@ from .context_window_policy import (
 )
 from .contracts import (
     AgentSummary,
+    BackgroundTaskGroupResult,
     BackgroundTaskResult,
     CapabilityStatusSnapshot,
     CommandSummary,
@@ -1804,6 +1805,7 @@ class VoidCodeRuntime(RuntimeSurface):
             queued_metadata, queued_steering = drain_runtime_messages(
                 existing_session.session.metadata,
                 kind="steering",
+                remember_dedupe=True,
             )
             if queued_steering:
                 steering_text = "\n\n".join(message.content for message in queued_steering)
@@ -2806,6 +2808,15 @@ class VoidCodeRuntime(RuntimeSurface):
         task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
         return self._background_task_supervisor.task_with_observability(task)
 
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState:
+        """Wait for a terminal child transition using runtime lifecycle delivery."""
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
+        return self._background_task_supervisor.wait_for_background_task(
+            task_id,
+            timeout_seconds=timeout_seconds,
+        )
+
     def load_background_task_result(
         self,
         task_id: str,
@@ -2816,6 +2827,42 @@ class VoidCodeRuntime(RuntimeSurface):
         self._background_task_supervisor.drain_queued_background_tasks()
         return self._background_task_supervisor.load_background_task_result(
             task_id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
+
+    def load_background_task_group_result(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskGroupResult:
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
+        return self._background_task_supervisor.load_background_task_group_result(
+            task_ids=task_ids,
+            parallel_group_id=parallel_group_id,
+            parent_session_id=parent_session_id,
+            emit_result_read_hook=emit_result_read_hook,
+        )
+
+    def wait_for_background_task_group(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        timeout_seconds: float,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskGroupResult:
+        self._background_task_supervisor.reconcile_background_tasks_if_needed()
+        self._background_task_supervisor.drain_queued_background_tasks()
+        return self._background_task_supervisor.wait_for_background_task_group(
+            task_ids=task_ids,
+            parallel_group_id=parallel_group_id,
+            parent_session_id=parent_session_id,
+            timeout_seconds=timeout_seconds,
             emit_result_read_hook=emit_result_read_hook,
         )
 
@@ -4305,13 +4352,40 @@ class VoidCodeRuntime(RuntimeSurface):
         request_metadata = {key: value for key, value in metadata.items() if key in request_metadata_keys}
         return VoidCodeRuntime._fresh_request_metadata(cast(RuntimeRequestMetadataPayload, request_metadata))
 
-    def queue_steering(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
+    def queue_steering(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        dedupe_key: str | None = None,
+    ) -> tuple[dict[str, object], ...]:
         """Persist a message to deliver before the next provider turn."""
-        return self._queue_runtime_message(session_id, content=content, kind="steering")
+        return self._queue_runtime_message(
+            session_id,
+            content=content,
+            kind="steering",
+            dedupe_key=dedupe_key,
+        )
 
     def queue_follow_up(self, session_id: str, content: str) -> tuple[dict[str, object], ...]:
         """Persist a message to deliver after the current run reaches idle."""
         return self._queue_runtime_message(session_id, content=content, kind="follow_up")
+
+    def queue_completion_interaction(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        dedupe_key: str,
+    ) -> tuple[dict[str, object], ...]:
+        """Persist one bounded child-completion interaction for parent delivery."""
+        return self._queue_runtime_message(
+            session_id,
+            content=content,
+            kind="steering",
+            dedupe_key=dedupe_key,
+            allow_terminal_completion=True,
+        )
 
     def _queue_runtime_message(
         self,
@@ -4319,18 +4393,23 @@ class VoidCodeRuntime(RuntimeSurface):
         *,
         content: str,
         kind: Literal["steering", "follow_up"],
+        dedupe_key: str | None = None,
+        allow_terminal_completion: bool = False,
     ) -> tuple[dict[str, object], ...]:
         validate_session_id(session_id)
         response = self._load_stored_response(session_id=session_id)
-        # Terminal-seal guard: a steer/follow-up is a late event once the
-        # session is terminal. It is accepted while a run is active (delivered
-        # before the next provider turn) or while waiting on approval/question;
-        # it is rejected once the session is sealed so the queued message can
-        # never mutate a terminal session's truth.
+        # Steering/follow-up is rejected once the session is sealed. A
+        # completion interaction is a runtime outbox record created only after
+        # its parent lifecycle event is durable, so it is allowed for backfill.
         sealed_status = self._sealed_session_status(session_id=session_id)
-        if sealed_status is not None:
+        if sealed_status is not None and not allow_terminal_completion:
             raise SessionSealedError(f"session {session_id!r} is {sealed_status}: refusing to queue {kind} message on a terminal session")
-        metadata = enqueue_runtime_message(response.session.metadata, content=content, kind=kind)
+        metadata = enqueue_runtime_message(
+            response.session.metadata,
+            content=content,
+            kind=kind,
+            dedupe_key=dedupe_key,
+        )
         self._session_store.update_session_metadata(
             workspace=self._workspace,
             session_id=session_id,
@@ -4349,7 +4428,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> tuple[str, ...]:
         validate_session_id(session_id)
         response = self._load_stored_response(session_id=session_id)
-        metadata, messages = drain_runtime_messages(response.session.metadata, kind=kind)
+        metadata, messages = drain_runtime_messages(response.session.metadata, kind=kind, remember_dedupe=True)
         self._session_store.update_session_metadata(
             workspace=self._workspace,
             session_id=session_id,

@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from ..runtime.contracts import (
+    BackgroundTaskGroupResult,
     BackgroundTaskResult,
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from ..runtime.task import is_background_task_terminal
+from ..runtime.task import BackgroundTaskState, is_background_task_terminal
 from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .runtime_context import current_runtime_tool_context
 
 
 class BackgroundOutputRuntime(Protocol):
@@ -24,40 +27,126 @@ class BackgroundOutputRuntime(Protocol):
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult: ...
 
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState: ...
+
+    def load_background_task_group_result(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        emit_result_read_hook: bool = True,
+    ) -> object: ...
+
+    def wait_for_background_task_group(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        timeout_seconds: float,
+        emit_result_read_hook: bool = True,
+    ) -> object: ...
+
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
 
 class _BackgroundOutputArgs(BaseModel):
-    task_id: str
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    parallel_group_id: str | None = None
     block: bool = False
+    # Timeout is an integer number of milliseconds. Blocking waits shorter than
+    # one second are rejected: they are almost always accidental polling.
     timeout: int = 60000
     full_session: bool = False
     message_limit: int = 20
+
+    @model_validator(mode="after")
+    def _validate_selectors(self) -> _BackgroundOutputArgs:
+        selector_count = sum(value is not None for value in (self.task_id, self.task_ids, self.parallel_group_id))
+        if selector_count != 1:
+            raise ValueError("provide exactly one of task_id, task_ids, or parallel_group_id")
+        if self.task_ids is not None:
+            if not self.task_ids:
+                raise ValueError("task_ids must contain at least one task id")
+            if len(self.task_ids) > 100:
+                raise ValueError("task_ids may contain at most 100 ids")
+            if len(set(self.task_ids)) != len(self.task_ids):
+                raise ValueError("task_ids must not contain duplicates")
+        if self.block and self.timeout < 1000:
+            raise ValueError("timeout must be at least 1000 milliseconds when block=true; wait for the completion reminder instead of polling")
+        return self
+
+    @field_validator("task_id", "parallel_group_id", mode="after")
+    @classmethod
+    def _validate_selector_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("selector strings must be non-empty")
+        return stripped
+
+    @field_validator("task_ids", mode="after")
+    @classmethod
+    def _validate_task_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        for index, item in enumerate(value):
+            stripped = item.strip()
+            if not stripped:
+                raise ValueError(f"task_ids[{index}] must be a non-empty string")
+            normalized.append(stripped)
+        return normalized
 
     @field_validator("message_limit", mode="after")
     @classmethod
     def _validate_message_limit(cls, value: int) -> int:
         return min(max(value, 1), 100)
 
-    @field_validator("task_id", mode="after")
-    @classmethod
-    def _validate_task_id(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("task_id must be a non-empty string")
-        return stripped
-
 
 class BackgroundOutputTool:
     definition = ToolDefinition(
         name="background_output",
-        description="Read background task status and optionally child session results.",
+        description=(
+            "Read background task status and optionally child session results. "
+            "Use exactly one of task_id, task_ids, or parallel_group_id. "
+            "Blocking timeout is in milliseconds and must be at least 1000ms."
+        ),
         input_schema={
-            "task_id": {"type": "string"},
-            "block": {"type": "boolean"},
-            "timeout": {"type": "integer"},
-            "full_session": {"type": "boolean"},
-            "message_limit": {"type": "integer"},
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "task_id": {"type": "string", "minLength": 1, "description": "Legacy single-task selector."},
+                "task_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": True,
+                    "description": "Explicit task ids to aggregate; mutually exclusive with parallel_group_id.",
+                },
+                "parallel_group_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Runtime-owned parallel group selector; mutually exclusive with task_ids.",
+                },
+                "block": {"type": "boolean"},
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "description": "Blocking wait timeout in milliseconds; values below 1000 are rejected to prevent polling.",
+                },
+                "full_session": {"type": "boolean"},
+                "message_limit": {"type": "integer"},
+            },
+            "oneOf": [
+                {"required": ["task_id"], "not": {"anyOf": [{"required": ["task_ids"]}, {"required": ["parallel_group_id"]}]}},
+                {"required": ["task_ids"], "not": {"anyOf": [{"required": ["task_id"]}, {"required": ["parallel_group_id"]}]}},
+                {"required": ["parallel_group_id"], "not": {"anyOf": [{"required": ["task_id"]}, {"required": ["task_ids"]}]}},
+            ],
         },
         read_only=True,
     )
@@ -72,22 +161,94 @@ class BackgroundOutputTool:
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
-        deadline = time.monotonic() + max(args.timeout, 1) / 1000
+        # Group reads are deliberately runtime-context owned. The runtime
+        # validates every selected task against this parent before loading any
+        # result, so a model cannot inspect another session's children.
+        if args.task_id is None:
+            context = current_runtime_tool_context()
+            if context is None:
+                raise RuntimeError("background_output group reads require an active runtime tool invocation context")
+            selected_ids = tuple(args.task_ids or ())
+            group_id = args.parallel_group_id
+            load_group = getattr(self._runtime, "load_background_task_group_result", None)
+            wait_group = getattr(self._runtime, "wait_for_background_task_group", None)
+            if not callable(load_group) or not callable(wait_group):
+                raise RuntimeError("background_output group reads require runtime group result support")
+            timeout_seconds = max(args.timeout, 0) / 1000
+            group_timed_out = False
+            group = cast(
+                BackgroundTaskGroupResult,
+                load_group(
+                    task_ids=selected_ids,
+                    parallel_group_id=group_id,
+                    parent_session_id=context.session_id,
+                    emit_result_read_hook=not args.block,
+                ),
+            )
+            if args.block and not group.complete:
+                group = cast(
+                    BackgroundTaskGroupResult,
+                    wait_group(
+                        task_ids=selected_ids,
+                        parallel_group_id=group_id,
+                        parent_session_id=context.session_id,
+                        timeout_seconds=timeout_seconds,
+                        emit_result_read_hook=False,
+                    ),
+                )
+                group_timed_out = group.timed_out
+            group = cast(
+                BackgroundTaskGroupResult,
+                load_group(
+                    task_ids=selected_ids,
+                    parallel_group_id=group_id,
+                    parent_session_id=context.session_id,
+                    emit_result_read_hook=True,
+                ),
+            )
+            if group_timed_out:
+                group = BackgroundTaskGroupResult(
+                    parallel_group_id=group.parallel_group_id,
+                    expected_task_count=group.expected_task_count,
+                    results=group.results,
+                    timed_out=True,
+                )
+            return _background_group_tool_result(group)
+
+        assert args.task_id is not None
+        timeout_seconds = max(args.timeout, 0) / 1000
         result = self._runtime.load_background_task_result(
             args.task_id,
             emit_result_read_hook=not args.block,
         )
         block_timed_out = False
-        while args.block and not is_background_task_terminal(result.status):
-            if time.monotonic() >= deadline:
-                block_timed_out = True
-                break
-            time.sleep(0.05)
-            result = self._runtime.load_background_task_result(
-                args.task_id,
-                emit_result_read_hook=False,
+        context = current_runtime_tool_context()
+        if context is not None and result.parent_session_id != context.session_id:
+            raise ValueError(
+                f"background_output cannot read task {result.task_id}: only its parent "
+                f"session ({result.parent_session_id or 'unknown'}) may read it "
+                f"(current session: {context.session_id})"
             )
-        if args.block:
+        if args.block and not is_background_task_terminal(result.status):
+            wait_for_task = getattr(self._runtime, "wait_for_background_task", None)
+            if callable(wait_for_task):
+                waited = wait_for_task(args.task_id, timeout_seconds=timeout_seconds)
+                block_timed_out = not is_background_task_terminal(waited.status)
+            else:
+                # Compatibility path for lightweight runtimes that predate the
+                # lifecycle wait API. Keep the old bounded behavior, but avoid
+                # sub-100ms retry churn that trains callers to poll.
+                deadline = time.monotonic() + timeout_seconds
+                while not is_background_task_terminal(result.status):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        block_timed_out = True
+                        break
+                    time.sleep(min(remaining, 0.25))
+                    result = self._runtime.load_background_task_result(
+                        args.task_id,
+                        emit_result_read_hook=False,
+                    )
             result = self._runtime.load_background_task_result(
                 args.task_id,
                 emit_result_read_hook=True,
@@ -198,9 +359,9 @@ class BackgroundOutputTool:
         retry_guidance = guidance
         if retry_guidance is None and not is_background_task_terminal(result.status):
             retry_guidance = (
-                "Report the current status and continue other work, or use "
-                "background_output(block=true) "
-                "if you intentionally want to wait in this turn. Do not loop on immediate polling."
+                "Report the current status and continue other work. Wait for the runtime completion "
+                "reminder; do not call background_output again immediately or loop on polling. Use "
+                "background_output(block=true) only when intentionally waiting in this turn."
             )
 
         return ToolResult(
@@ -213,6 +374,84 @@ class BackgroundOutputTool:
         )
 
 
+_MAX_GROUP_CONTENT_CHARS = 4000
+_MAX_GROUP_VALUE_CHARS = 4000
+
+
+def _bounded_text(value: str | None, *, limit: int = _MAX_GROUP_VALUE_CHARS) -> str | None:
+    if value is None or len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
+
+
+def _bounded_structured_output(value: dict[str, object] | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return {"unavailable": "structured output could not be serialized"}
+    if len(encoded) <= _MAX_GROUP_VALUE_CHARS:
+        return value
+    return {"truncated": True, "preview": encoded[: _MAX_GROUP_VALUE_CHARS - 1] + "…"}
+
+
+def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResult:
+    """Render only bounded per-task result metadata; never copy transcripts."""
+    status = "completed" if group.complete else "running"
+    failures = [result for result in group.results if result.status in {"failed", "cancelled", "interrupted"}]
+    error = (
+        "; ".join(
+            f"{result.task_id}: {_bounded_text(result.error or result.cancellation_cause or result.status) or result.status}" for result in failures
+        )
+        or None
+    )
+    results: list[dict[str, object]] = []
+    lines = [
+        f"Background task group result: {group.parallel_group_id or 'explicit task ids'}",
+        f"- status: {status}",
+        f"- tasks: {len(group.results)}/{group.expected_task_count or len(group.results)}",
+    ]
+    if group.timed_out:
+        lines.append("- wait: timed out; returned current task states")
+    for result in group.results:
+        summary = _background_result_safe_summary(result)
+        item: dict[str, object] = {
+            "task_id": result.task_id,
+            "status": result.status,
+            "summary": _bounded_text(summary),
+            "error": _bounded_text(result.error or result.cancellation_cause),
+            "structured_output": _bounded_structured_output(result.structured_output),
+            "result_available": result.result_available,
+            "approval_blocked": result.approval_blocked,
+            "child_session_id": result.child_session_id,
+        }
+        results.append(item)
+        lines.append(f"- {result.task_id}: {result.status}; summary={summary or 'none'}")
+    content = "\n".join(lines)
+    content = _bounded_text(content, limit=_MAX_GROUP_CONTENT_CHARS) or "Background task group result"
+    payload: dict[str, object] = {
+        "parallel_group_id": group.parallel_group_id,
+        "task_ids": list(group.task_ids),
+        "expected_task_count": group.expected_task_count,
+        "status": status,
+        "complete": group.complete,
+        "timed_out": group.timed_out,
+        "counts": group.counts,
+        "summary": _bounded_text(content),
+        "error": error,
+        "structured_output": [item["structured_output"] for item in results if item["structured_output"] is not None],
+        "results": results,
+        "retrieval_instruction": (
+            f'background_output(parallel_group_id="{group.parallel_group_id}")'
+            if group.parallel_group_id is not None
+            else "background_output(task_ids=[...])"
+        ),
+        "block_timed_out": group.timed_out,
+    }
+    return ToolResult(tool_name="background_output", status="ok", content=content, data=payload)
+
+
 def _background_output_guidance(
     *,
     result: BackgroundTaskResult,
@@ -223,35 +462,35 @@ def _background_output_guidance(
     if block_timed_out:
         return (
             "Timed out waiting for the delegated child to finish. The returned status is current; "
-            "report it or call background_output again after a meaningful state change, "
-            "but do not loop indefinitely."
+            "wait for the runtime completion reminder and report it or continue other work. "
+            "Do not call background_output again immediately; only retry after a meaningful state "
+            "change, and do not loop indefinitely."
         )
     if result.status == "failed":
         return (
             "The delegated child failed. Inspect the returned error/session details, summarize the "
-            "failure for the parent, and do not retry automatically unless the user "
-            "explicitly asks. Re-delegate a fresh task if the user requests a retry. "
-            "After repeated failures, stop retrying and escalate the failure with the latest error."
+            "failure for the parent, and do not retry automatically unless the user explicitly asks. "
+            "Re-delegate a fresh task if the user requests a retry. After repeated failures, stop "
+            "retrying and escalate the failure with the latest error."
         )
     if result.status == "cancelled":
         return "The delegated child was cancelled; do not retry automatically."
     if result.status == "interrupted":
         return (
-            "The delegated child was interrupted before completion. Treat this as a terminal "
-            "runtime outcome, inspect the returned error/session details, and do not retry "
-            "automatically unless the user explicitly asks."
+            "The delegated child was interrupted before completion. Treat this as a terminal runtime "
+            "outcome, inspect the returned error/session details, and do not retry automatically "
+            "unless the user explicitly asks."
         )
     if not result.result_available:
         return (
-            "No child result is available yet. Report the current status or call background_output "
-            "again later with block=true only when you intentionally want to wait in this turn; "
-            "do not loop indefinitely."
+            "No child result is available yet. Wait for the runtime completion reminder, report the "
+            "current status, or use background_output(block=true) only when intentionally waiting in "
+            "this turn; do not call again immediately or loop indefinitely."
         )
     if result.status == "completed" and (empty_child_output or not content.strip()):
         return (
-            "The delegated child completed with empty output. Treat this as an empty "
-            "result, inspect full_session=true if needed, and continue without hidden "
-            "retries."
+            "The delegated child completed with empty output. Treat this as an empty result, inspect "
+            "full_session=true if needed, and continue without hidden retries."
         )
     return None
 

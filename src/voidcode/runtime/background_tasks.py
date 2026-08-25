@@ -18,6 +18,7 @@ from .active_session import ACTIVE_SESSION_REGISTRY
 from .child_terminal import child_terminal_outcome, child_transcript_proves_completed
 from .config import RuntimeConfig
 from .contracts import (
+    BackgroundTaskGroupResult,
     BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
     RuntimeRequest,
@@ -72,6 +73,36 @@ logger = logging.getLogger(__name__)
 
 _BACKGROUND_TASK_RATE_LIMIT_RETRIES = 2
 _BACKGROUND_TASK_RATE_LIMIT_BASE_BACKOFF_SECONDS = 0.05
+_BACKGROUND_TASK_GROUP_MAX_SIZE = 100
+
+
+def _parallel_group_metadata(task: BackgroundTaskState) -> tuple[str | None, int | None]:
+    metadata = task.request.metadata
+    delegation = metadata.get("delegation")
+    if isinstance(delegation, dict):
+        metadata = delegation
+    group_id = metadata.get("parallel_group_id")
+    if not isinstance(group_id, str) or not group_id.strip():
+        return None, None
+    raw_size = metadata.get("parallel_group_size")
+    if isinstance(raw_size, bool):
+        raise ValueError("parallel_group_size must be a positive integer")
+    if isinstance(raw_size, int):
+        group_size = raw_size
+    elif isinstance(raw_size, str):
+        try:
+            group_size = int(raw_size)
+        except ValueError:
+            raise ValueError("parallel_group_size must be a positive integer") from None
+    elif raw_size is None:
+        group_size = None
+    else:
+        raise ValueError("parallel_group_size must be a positive integer")
+    if group_size is not None and not 1 <= group_size <= _BACKGROUND_TASK_GROUP_MAX_SIZE:
+        raise ValueError(f"parallel_group_size must be between 1 and {_BACKGROUND_TASK_GROUP_MAX_SIZE}")
+    return group_id.strip(), group_size
+
+
 _RUNTIME_BACKGROUND_TASK_IDLE_REMINDER = "runtime.background_task_idle_reminder"
 
 # Per-task outcomes returned by ``_drain_background_task_queue``.
@@ -175,6 +206,10 @@ class RuntimeBackgroundTaskSupervisor:
         self._config = config
         self._acp_adapter = acp_adapter
         self._queue_lock = threading.RLock()
+        # Completion waiters block on runtime-owned lifecycle transitions rather than
+        # repeatedly querying SQLite. Workers notify only after terminal task truth and
+        # the parent lifecycle event have both been persisted.
+        self._task_state_changed = threading.Condition(self._queue_lock)
         self._slot_available = threading.Condition(self._queue_lock)
         self._threads: dict[str, threading.Thread] = {}
         self._shutdown_requested = False
@@ -923,12 +958,156 @@ class RuntimeBackgroundTaskSupervisor:
 
         Safe to call from any read/status surface (``load_background_task``,
         ``load_background_task_result``, ``list_background_tasks``, status
-        snapshots, ``background_output`` polling): the underlying drain skips
-        non-queued tasks and tasks that already own a worker thread, and
-        consults the live concurrency counts, so a task left queued by an
-        earlier drain is re-attempted instead of being stranded forever.
+        snapshots, and ``background_output``): queued work is re-attempted
+        without turning result reads into a polling loop.
         """
         self._drain_background_task_queue()
+
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState:
+        """Wait for terminal truth using lifecycle notifications, not polling."""
+        validate_background_task_id(task_id)
+        deadline = time.monotonic() + max(timeout_seconds, 0.0)
+        task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
+        while not is_background_task_terminal(task.status):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            with self._task_state_changed:
+                self._task_state_changed.wait(timeout=remaining)
+            task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
+        return self.task_with_observability(task)
+
+    def _resolve_background_task_group(
+        self,
+        *,
+        task_ids: tuple[str, ...],
+        parallel_group_id: str | None,
+        parent_session_id: str | None,
+    ) -> tuple[tuple[BackgroundTaskState, ...], str | None, int]:
+        if bool(task_ids) == bool(parallel_group_id):
+            raise ValueError("provide exactly one of task_ids or parallel_group_id")
+        if len(task_ids) > _BACKGROUND_TASK_GROUP_MAX_SIZE:
+            raise ValueError(f"task_ids may contain at most {_BACKGROUND_TASK_GROUP_MAX_SIZE} ids")
+        if task_ids:
+            normalized_ids = tuple(validate_background_task_id(task_id) for task_id in task_ids)
+            if len(set(normalized_ids)) != len(normalized_ids):
+                raise ValueError("task_ids must not contain duplicates")
+            tasks = tuple(self._session_store.load_background_task(workspace=self._workspace, task_id=task_id) for task_id in normalized_ids)
+        else:
+            assert parallel_group_id is not None
+            group_id = parallel_group_id.strip()
+            if not group_id:
+                raise ValueError("parallel_group_id must be a non-empty string")
+            summaries = self._session_store.list_background_tasks_by_parallel_group(
+                workspace=self._workspace,
+                parallel_group_id=group_id,
+                parent_session_id=parent_session_id,
+            )
+            if not summaries:
+                raise ValueError(f"unknown parallel group: {group_id}")
+            if len(summaries) > _BACKGROUND_TASK_GROUP_MAX_SIZE:
+                raise ValueError(f"parallel group may contain at most {_BACKGROUND_TASK_GROUP_MAX_SIZE} tasks")
+            tasks = tuple(self._session_store.load_background_task(workspace=self._workspace, task_id=summary.task.id) for summary in summaries)
+        if not tasks:
+            raise ValueError("background task group must contain at least one task")
+        if parent_session_id is not None and any(task.parent_session_id != parent_session_id for task in tasks):
+            raise ValueError("all background tasks must belong to the requested parent session")
+        group_ids: set[str] = set()
+        declared_sizes: set[int] = set()
+        for task in tasks:
+            group_id, group_size = _parallel_group_metadata(task)
+            if group_id is not None:
+                group_ids.add(group_id)
+            if group_size is not None:
+                declared_sizes.add(group_size)
+        if parallel_group_id is not None and group_ids != {parallel_group_id.strip()}:
+            raise ValueError("parallel_group_id does not match every selected task")
+        if len(declared_sizes) > 1:
+            raise ValueError("parallel group tasks must agree on parallel_group_size")
+        expected_count = next(iter(declared_sizes), len(tasks))
+        if expected_count != len(tasks):
+            raise ValueError(f"parallel group size mismatch: expected {expected_count} tasks, found {len(tasks)}")
+        return tasks, next(iter(group_ids), None), expected_count
+
+    def _background_task_group_result(
+        self,
+        *,
+        tasks: tuple[BackgroundTaskState, ...],
+        parallel_group_id: str | None,
+        expected_task_count: int,
+        timed_out: bool = False,
+        emit_result_read_hook: bool,
+    ) -> BackgroundTaskGroupResult:
+        # Group results are a bounded model-facing projection. Do not carry the
+        # delegated prompt (or child transcript) into the aggregate object.
+        results = tuple(
+            replace(
+                self.load_background_task_result(task.task.id, emit_result_read_hook=emit_result_read_hook),
+                delegated_prompt=None,
+            )
+            for task in tasks
+        )
+        return BackgroundTaskGroupResult(
+            parallel_group_id=parallel_group_id,
+            expected_task_count=expected_task_count,
+            results=results,
+            timed_out=timed_out,
+        )
+
+    def load_background_task_group_result(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskGroupResult:
+        tasks, group_id, expected_count = self._resolve_background_task_group(
+            task_ids=task_ids,
+            parallel_group_id=parallel_group_id,
+            parent_session_id=parent_session_id,
+        )
+        return self._background_task_group_result(
+            tasks=tasks,
+            parallel_group_id=group_id,
+            expected_task_count=expected_count,
+            emit_result_read_hook=emit_result_read_hook,
+        )
+
+    def wait_for_background_task_group(
+        self,
+        *,
+        task_ids: tuple[str, ...] = (),
+        parallel_group_id: str | None = None,
+        parent_session_id: str | None = None,
+        timeout_seconds: float,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskGroupResult:
+        tasks, group_id, expected_count = self._resolve_background_task_group(
+            task_ids=task_ids,
+            parallel_group_id=parallel_group_id,
+            parent_session_id=parent_session_id,
+        )
+        ids = tuple(task.task.id for task in tasks)
+        deadline = time.monotonic() + max(timeout_seconds, 0.0)
+        while True:
+            current_tasks = tuple(self._session_store.load_background_task(workspace=self._workspace, task_id=task_id) for task_id in ids)
+            if all(is_background_task_terminal(task.status) for task in current_tasks):
+                timed_out = False
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            with self._task_state_changed:
+                self._task_state_changed.wait(timeout=remaining)
+        return self._background_task_group_result(
+            tasks=current_tasks,
+            parallel_group_id=group_id,
+            expected_task_count=expected_count,
+            timed_out=timed_out,
+            emit_result_read_hook=emit_result_read_hook,
+        )
 
     def _parent_session_is_terminal(self, parent_session_id: str | None) -> bool:
         """True when the parent session is durably terminal (completed/failed).
@@ -1583,6 +1762,7 @@ class RuntimeBackgroundTaskSupervisor:
                         "notification_event_sequence": appended.sequence,
                     },
                 )
+            self._queue_active_parent_completion_interaction(task=task, result=result)
             self._emit_parallel_group_terminal_event(task=task)
             append_parent_acp_delegated_lifecycle_event(
                 self._session_store,
@@ -1605,14 +1785,47 @@ class RuntimeBackgroundTaskSupervisor:
                 parent_session_id,
             )
         except SessionSealedError:
-            # Terminal-seal guard: the parent session is sealed, so this
-            # notification is a late event and must be dropped, never applied.
-            # The child/task truth is already durable; only the parent-session
-            # notification is skipped.
             logger.debug(
                 "dropping background terminal event for sealed parent session: %s",
                 parent_session_id,
             )
+
+    def _queue_active_parent_completion_interaction(
+        self,
+        *,
+        task: BackgroundTaskState,
+        result: BackgroundTaskResult,
+    ) -> None:
+        """Queue one bounded completion interaction after parent event commit.
+
+        The metadata-backed interaction queue is the durable outbox/cursor for
+        model delivery. It is populated for active, inactive, and already
+        sealed parents; the dedicated completion surface is the sanctioned
+        exception to the normal steer/follow-up seal guard. It never copies the
+        child transcript.
+        """
+        parent_session_id = task.parent_session_id
+        if parent_session_id is None:
+            return
+        summary = (result.summary_output or result.error or "No summary was provided.").strip()
+        if len(summary) > 1000:
+            summary = summary[:997].rstrip() + "..."
+        child = f" child_session_id={result.child_session_id}" if result.child_session_id else ""
+        content = (
+            "Runtime background task completion notification: "
+            f"task_id={task.task.id} status={task.status}{child}. "
+            f"Summary: {summary} "
+            f'Use background_output(task_id="{task.task.id}") for the structured result; '
+            "wait for runtime notifications and do not poll."
+        )
+        try:
+            self._surface.queue_completion_interaction(
+                parent_session_id,
+                content,
+                dedupe_key=f"background-task-completion:{task.task.id}:{task.status}",
+            )
+        except (UnknownSessionError, SessionSealedError, ValueError):
+            logger.debug("parent completion interaction was not queued: %s", parent_session_id)
 
     def _emit_parallel_group_terminal_event(self, *, task: BackgroundTaskState) -> None:
         """Notify the parent once the explicitly sized parallel group is terminal."""
@@ -2230,6 +2443,8 @@ class RuntimeBackgroundTaskSupervisor:
             session_id=task.session_id or task.request.session_id or "runtime",
         )
         self.emit_background_task_parent_terminal_event(task=task)
+        with self._task_state_changed:
+            self._task_state_changed.notify_all()
         if task.status == "completed" and task.parent_session_id is not None:
             self.run_background_task_lifecycle_surface(
                 task=task,

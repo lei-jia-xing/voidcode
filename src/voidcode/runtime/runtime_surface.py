@@ -188,6 +188,15 @@ class RuntimeSurface(Protocol):
         *,
         allow_internal_metadata: bool = False,
     ) -> Iterator[RuntimeStreamChunk]: ...
+    def queue_steering(self, session_id: str, content: str, *, dedupe_key: str | None = None) -> tuple[dict[str, object], ...]: ...
+    def queue_completion_interaction(self, session_id: str, content: str, *, dedupe_key: str) -> tuple[dict[str, object], ...]: ...
+
+    def drain_queued_messages(
+        self,
+        session_id: str,
+        *,
+        kind: Literal["steering", "follow_up"],
+    ) -> tuple[str, ...]: ...
 
     def persist_response(
         self,

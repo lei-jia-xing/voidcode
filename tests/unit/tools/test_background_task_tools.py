@@ -586,7 +586,7 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     result = tool.invoke(
         ToolCall(
             tool_name="background_output",
-            arguments={"task_id": "task-1", "block": True, "timeout": 1},
+            arguments={"task_id": "task-1", "block": True, "timeout": 1000},
         ),
         workspace=tmp_path,
     )
@@ -600,6 +600,41 @@ def test_background_output_block_timeout_returns_current_state(tmp_path: Path) -
     assert "do not loop indefinitely" in result.retry_guidance
 
 
+def test_background_output_rejects_subsecond_timeout_to_avoid_polling(tmp_path: Path) -> None:
+    """Blocking timeout is integer milliseconds with a one-second minimum."""
+    tool = BackgroundOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
+
+    with pytest.raises(ValueError, match="at least 1000 milliseconds"):
+        tool.invoke(
+            ToolCall(
+                tool_name="background_output",
+                arguments={"task_id": "task-1", "block": True, "timeout": 999},
+            ),
+            workspace=tmp_path,
+        )
+
+    with pytest.raises(ValueError, match="at least 1000 milliseconds"):
+        tool.invoke(
+            ToolCall(
+                tool_name="background_output",
+                arguments={"task_id": "task-1", "block": True, "timeout": 1},
+            ),
+            workspace=tmp_path,
+        )
+
+
+def test_background_output_accepts_one_second_block_timeout(tmp_path: Path) -> None:
+    tool = BackgroundOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
+    result = tool.invoke(
+        ToolCall(
+            tool_name="background_output",
+            arguments={"task_id": "task-1", "block": True, "timeout": 1000},
+        ),
+        workspace=tmp_path,
+    )
+    assert result.data["block_timed_out"] is True
+
+
 def test_background_output_block_omits_timeout_guidance_when_final_read_is_terminal(
     tmp_path: Path,
 ) -> None:
@@ -608,7 +643,7 @@ def test_background_output_block_omits_timeout_guidance_when_final_read_is_termi
     result = tool.invoke(
         ToolCall(
             tool_name="background_output",
-            arguments={"task_id": "task-1", "block": True, "timeout": 1},
+            arguments={"task_id": "task-1", "block": True, "timeout": 1000},
         ),
         workspace=tmp_path,
     )
@@ -703,12 +738,12 @@ def test_background_output_tool_guides_unavailable_result_without_looping(tmp_pa
 
     assert result.status == "ok"
     assert result.content is not None
-    assert "background_output again later with block=true only when you intentionally want to wait in this turn" in result.content
-    assert "do not loop indefinitely" in result.content
+    assert "Wait for the runtime completion reminder" in result.content
+    assert "loop indefinitely" in result.content
     assert result.data["result_available"] is False
     assert result.retry_guidance is not None
     assert result.data["guidance"] == result.retry_guidance
-    assert "do not loop indefinitely" in result.retry_guidance
+    assert "loop indefinitely" in result.retry_guidance
 
 
 def test_background_output_tool_guides_empty_child_output(tmp_path: Path) -> None:

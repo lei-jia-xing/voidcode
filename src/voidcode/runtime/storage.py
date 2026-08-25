@@ -147,6 +147,13 @@ class SessionStore(Protocol):
     def list_running_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def list_background_tasks_by_parent_session(self, *, workspace: Path, parent_session_id: str) -> tuple[StoredBackgroundTaskSummary, ...]: ...
+    def list_background_tasks_by_parallel_group(
+        self,
+        *,
+        workspace: Path,
+        parallel_group_id: str,
+        parent_session_id: str | None = None,
+    ) -> tuple[StoredBackgroundTaskSummary, ...]: ...
 
     def load_background_task_by_child_session(self, *, workspace: Path, child_session_id: str) -> BackgroundTaskState | None: ...
 

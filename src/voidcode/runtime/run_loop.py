@@ -1319,7 +1319,19 @@ class RuntimeRunLoopCoordinator:
                     sequence=sequence,
                 )
                 break
-            sequence = int(sequence)
+            queue_drain = getattr(runtime, "drain_queued_messages", None)
+            if callable(queue_drain):
+                queued_messages = queue_drain(session.session.id, kind="steering")
+                if queued_messages:
+                    steering_text = "\n\n".join(queued_messages)
+                    active_graph_request = replace(
+                        active_graph_request,
+                        prompt=(
+                            f"{active_graph_request.prompt}\n\nRuntime steering messages:\n{steering_text}"
+                            if active_graph_request.prompt.strip()
+                            else steering_text
+                        ),
+                    )
             current_graph_request: Any = active_graph_request
             current_prompt: str = cast(str, current_graph_request.prompt)
             current_available_tools: tuple[ToolDefinition, ...] = cast(tuple[ToolDefinition, ...], current_graph_request.available_tools)
