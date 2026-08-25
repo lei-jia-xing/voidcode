@@ -1488,6 +1488,7 @@ def assemble_provider_context(
         workspace=workspace,
         tool_results=tool_results,
         hook_preset_context=hook_preset_context,
+        rulebook_snapshot=session_metadata.get("rulebook_snapshot"),
     )
     pending_state_segment = _pending_state_segment(session_metadata)
     todo_prompt_context = render_provider_todo_state(session_metadata)

@@ -139,6 +139,7 @@ from .config_materializer import (
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
+from .context_rules import build_rule_catalog, rulebook_snapshot_from_payload, rulebook_snapshot_payload
 from .context_transforms import (
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
@@ -2123,6 +2124,20 @@ class VoidCodeRuntime(RuntimeSurface):
             metadata={
                 **session.metadata,
                 **self._snapshot_to_session_metadata(skill_snapshot),
+            },
+        )
+        raw_rulebook_snapshot = session.metadata.get("rulebook_snapshot")
+        if raw_rulebook_snapshot is None:
+            rulebook_snapshot = build_rule_catalog(self._workspace).snapshot
+        else:
+            rulebook_snapshot = rulebook_snapshot_from_payload(raw_rulebook_snapshot)
+        session = SessionState(
+            session=session.session,
+            status=session.status,
+            turn=session.turn,
+            metadata={
+                **session.metadata,
+                "rulebook_snapshot": rulebook_snapshot_payload(rulebook_snapshot),
             },
         )
         skills_loaded_envelope = self._persist_emitted_event(

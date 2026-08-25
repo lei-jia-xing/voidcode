@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from ..tools.contracts import ToolResult
-from .context_rules import runtime_file_rule_contexts
+from .context_rules import (
+    RuleCatalog,
+    build_rule_catalog,
+    rulebook_prompt_context,
+    rulebook_snapshot_from_payload,
+    runtime_file_rule_contexts,
+)
 
 if TYPE_CHECKING:
     from .context_window import ToolResultView
@@ -72,6 +78,7 @@ class RuntimeContextTransformRequest:
     hook_preset_context: str
     mode_guidance_context: str = ""
     failure_policy: RuntimeContextTransformFailurePolicy = "warn"
+    rulebook_snapshot: object | None = None
 
 
 class RuntimeContextTransformProvider(Protocol):
@@ -166,6 +173,22 @@ class RuntimeFileRulesTransformProvider:
                     metadata=rule_context.metadata_payload(),
                 )
             )
+        rulebook_catalog = _rulebook_catalog_for_request(request)
+        if rulebook_catalog.entries:
+            rulebook_context = rulebook_prompt_context(rulebook_catalog)
+            if rulebook_context:
+                rule_segments.append(
+                    RuntimeContextTransformInjection(
+                        role="system",
+                        content=rulebook_context,
+                        metadata={
+                            "source": "runtime_rulebook",
+                            "snapshot_hash": rulebook_catalog.snapshot.snapshot_hash,
+                            "always_apply_count": len(rulebook_catalog.always_apply),
+                            "discoverable_count": len(rulebook_catalog.discoverable),
+                        },
+                    )
+                )
         if not rule_segments:
             return RuntimeContextTransformResult()
         return RuntimeContextTransformResult(
@@ -179,6 +202,24 @@ class RuntimeFileRulesTransformProvider:
                 ),
             ),
         )
+
+
+def _rulebook_catalog_for_request(request: RuntimeContextTransformRequest) -> RuleCatalog:
+    catalog = build_rule_catalog(request.workspace)
+    if request.rulebook_snapshot is None:
+        return catalog
+    try:
+        snapshot = rulebook_snapshot_from_payload(request.rulebook_snapshot)
+    except ValueError:
+        return RuleCatalog((), build_rule_catalog(None).snapshot)
+    expected = {entry.name: entry.content_hash for entry in snapshot.entries}
+    stable_entries = tuple(entry for entry in catalog.entries if expected.get(entry.metadata.name) == entry.metadata.content_hash)
+    from dataclasses import replace
+
+    return RuleCatalog(
+        entries=stable_entries,
+        snapshot=replace(snapshot, entries=tuple(entry.metadata for entry in stable_entries)),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +309,7 @@ def build_provider_context_transform_result(
     hook_preset_context: str,
     mode_guidance_context: str = "",
     failure_policy: RuntimeContextTransformFailurePolicy = "warn",
+    rulebook_snapshot: object | None = None,
     registry: RuntimeContextTransformRegistry | None = None,
 ) -> RuntimeContextTransformResult:
     active_registry = registry or default_runtime_context_transform_registry()
@@ -278,6 +320,7 @@ def build_provider_context_transform_result(
             hook_preset_context=hook_preset_context,
             mode_guidance_context=mode_guidance_context,
             failure_policy=failure_policy,
+            rulebook_snapshot=rulebook_snapshot,
         )
     )
 

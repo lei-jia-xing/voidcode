@@ -12,6 +12,7 @@ from typing import ClassVar, cast, final
 
 from pydantic import BaseModel, ValidationError, field_validator
 
+from ..runtime.context_rules import read_rule_uri
 from ..runtime.contracts import validate_session_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import format_validation_error
@@ -26,6 +27,7 @@ from .runtime_context import require_runtime_tool_context
 #: text plus its JSON input schema, read from the same guidance files and the
 #: live tool registry used for execution.
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
+RULE_URI_PREFIX = "rule://"
 
 #: Internal URL scheme for session-scoped artifact reads:
 #: read(path="voidcode://artifact/<id>") returns a bounded slice of a
@@ -398,6 +400,7 @@ class ReadTool:
                 "description": (
                     "Path relative to the workspace (or an explicitly permitted external path). "
                     "Internal URLs: voidcode://tool/<name> reads a tool's guidance and input schema; "
+                    "rule://<name> reads a bounded workspace rule catalog entry; "
                     "voidcode://artifact/<id> reads a bounded slice of the current session's spilled "
                     "tool-output artifact; voidcode://transcript/<session_id> reads a bounded, "
                     "payload-stripped transcript of the current session or of a child session it spawned."
@@ -431,6 +434,22 @@ class ReadTool:
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
+        if args.path.startswith(RULE_URI_PREFIX):
+            data = read_rule_uri(
+                args.path,
+                workspace=workspace,
+                offset=args.offset or 1,
+                limit=args.limit or DEFAULT_READ_LIMIT,
+            )
+            truncated = bool(data.get("truncated", False))
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="ok",
+                content=(f"Read rule {data['rule']} from {args.path}" + ("; output is truncated; continue with next_offset." if truncated else ".")),
+                data=data,
+                truncated=truncated,
+                partial=bool(data.get("partial", False)),
+            )
         if args.path.startswith(VOIDCODE_TOOL_DOC_PREFIX):
             outcome = _render_tool_documentation(args.path)
             return ToolResult(
