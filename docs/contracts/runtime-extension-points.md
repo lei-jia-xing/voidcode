@@ -89,13 +89,13 @@ Tool allow/deny and approval decisions remain observable through `runtime.tool_l
 
 Sessions must contain a stored v1 runtime policy snapshot on replay and debug surfaces. Missing snapshots and unsupported snapshot/schema versions fail fast.
 
-### Product non-delegation invariant
+### Product delegation invariant
 
-`product` is a top-level selectable planning preset only. It must never be a callable child target through direct `subagent_type="product"`, configured alias, local manifest reference, background helper, hook output, classifier output, imported state, replay, or bundle migration. The stable denial reason for this invariant is `delegation_denied_product_top_level_only`. `product` must not receive `task`, `background_output`, `background_cancel`, or any child-spawn helper through its manifest, config, hook policy, prompt activation, or classifier output.
+`leader` 是唯一可作为 top-level active agent 执行的 builtin preset。`product` 是 runtime-owned `task` delegation path 上的只读 plan child preset，必须通过 `subagent_type="product"` 作为 delegated child 执行，并通过 `submit_result` 将 plan 交回 parent；它不能作为 top-level active agent，也不能作为任意 child-spawn orchestrator。runtime 在 top-level 运行前以稳定错误拒绝 `product`。
 
 ### v1 non-goals
 
-Runtime Harness Policy v1 does not define a generic policy DSL, LLM-based classifier, heuristic intent classifier, arbitrary multi-agent topology, product delegation, agent-to-agent bus, MCP redesign, marketplace/dynamic plugin system, or prompt-text enforcement layer. It keeps MCP behind existing config gates unless a stable policy identifier already exists.
+Runtime Harness Policy v1 不定义通用 policy DSL、LLM/heuristic intent classifier、任意 multi-agent topology、product top-level execution、agent-to-agent bus、MCP redesign、marketplace/dynamic plugin system 或 prompt-text enforcement layer。它保留现有 config gates 下的 MCP。
 
 ## Extension Families
 

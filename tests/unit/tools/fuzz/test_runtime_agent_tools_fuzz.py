@@ -73,6 +73,14 @@ class _RecordingBackgroundOutputRuntime:
             result_available=True,
         )
 
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState:
+        assert timeout_seconds >= 0
+        return BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="completed",
+            request=BackgroundTaskRequestSnapshot(prompt="delegated"),
+        )
+
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         raise AssertionError(session_id)
 

@@ -1,13 +1,15 @@
-Read background task status and optionally child session results.
+Read a background task status or a bounded aggregate projection.
 
-Usage:
-- Use this tool after `task` with `run_in_background=true`.
-- Do not spam this tool right after starting a task. Prefer waiting for the runtime completion reminder unless you intentionally need a current status check.
-- The `task_id` argument is required.
-- Set `block=true` to wait for a terminal result up to the provided timeout in milliseconds.
-- Set `full_session=true` to include the child session summary and transcript preview when a child session exists.
-- This tool is read-only. It never modifies background task state.
-- If the task is still running, rely on the returned `status`, `approval_blocked`, and `result_available` fields instead of guessing.
-- If a child session/result is not ready yet, report the current status, continue other work, or wait intentionally with `block=true` instead of looping.
-- Do not repeatedly poll this tool in a tight loop. Prefer waiting for the runtime completion reminder unless the current turn truly requires an explicit status check.
-- Do not read a running child transcript just to peek at intermediate progress. Use this surface for intentional status/result retrieval, not speculative mid-flight inspection.
+Selectors (provide exactly one):
+- `task_id`: read one background task.
+- `task_ids`: aggregate these explicit task ids (1–100, no duplicates).
+- `parallel_group_id`: read the runtime-owned parallel group.
+
+Semantics:
+- Aggregate reads are scoped to the current runtime tool context's parent session. Do not guess or supply another owner.
+- `block=false` (the default) returns the current snapshot immediately; it does not wait. Do not repeatedly poll this tool in a tight loop.
+- Prefer the runtime completion reminder instead of checking a running task repeatedly. Use `block=true` only when intentionally waiting in the current turn.
+- Do not read a running child transcript just to peek at intermediate progress. Use this surface for an intentional status/result retrieval.
+- `full_session=true` applies only to a single `task_id`: it returns bounded child-session metadata and a transcript preview, controlled by `message_limit` (1–100). Child raw output is kept outside the active provider context.
+- Aggregate selectors always return bounded per-task status/summary/error/structured-output projections and never child transcripts; `full_session` does not change that.
+- Failed, cancelled, or interrupted tasks are outcomes to report. Do not retry automatically or loop; retry only when explicitly requested.

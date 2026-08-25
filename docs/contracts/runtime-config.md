@@ -119,7 +119,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `mcp`：当前已解析的 runtime-managed MCP 配置容器
 - `provider_fallback`：provider fallback 链的配置入口
 - `providers`：provider 级配置对象；当未提供仓库本地 `providers` block 时，runtime 也会从标准 provider 凭据环境变量构造最小 provider 配置（例如 `OPENCODE_API_KEY`）
-- `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 默认使用 builtin `leader`，也可显式选择 builtin `product` 或本地自定义 `mode: primary` markdown manifest；runtime-owned delegation path 上的 child run 可执行 builtin child preset 或本地自定义 `mode: subagent` manifest。
+- `agent`：agent preset 的 runtime 消费入口。当前顶层 active run 仅使用 builtin `leader`（默认或显式选择）；runtime-owned delegation path 上的 child run 可执行 builtin child preset（包括只读 plan subagent `product`）或本地自定义 `mode: subagent` manifest。`product` 不能作为 top-level active agent。
 - `policy`：Runtime Harness Policy v1 配置入口，只能提供 schema-bounded narrowing/default intent；runtime hard denials、persisted snapshot、agent manifest 与 request/session 边界仍按固定优先级收口。
 - `agents`：按 agent preset 配置 model / fallback defaults。这里是“已发现 preset 的配置覆盖/别名入口”，不是 manifest 定义入口；内置 preset key 与已发现本地 manifest key 可省略 `preset`，其他 alias key 必须显式声明 `preset`。
 - `reasoning_effort`：可选的 runtime-owned reasoning-effort hint（例如 `low` / `medium` / `high`），透传给当前 active provider；当前 model metadata 显式 `supports_reasoning_effort=false` 时 runtime 会 fail-fast，未知能力按 best-effort 透传。

@@ -15,17 +15,14 @@ class BackgroundCancelRuntime(Protocol):
 
 
 class _BackgroundCancelArgs(BaseModel):
-    taskId: str | None = None
-    all: bool = False
+    taskId: str
 
     @field_validator("taskId", mode="after")
     @classmethod
-    def _validate_task_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def _validate_task_id(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("taskId must be a non-empty string when provided")
+            raise ValueError("taskId must be a non-empty string")
         return stripped
 
 
@@ -34,8 +31,10 @@ class BackgroundCancelTool:
         name="background_cancel",
         description="Cancel a running background task by id.",
         input_schema={
-            "taskId": {"type": "string"},
-            "all": {"type": "boolean"},
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"taskId": {"type": "string", "minLength": 1}},
+            "required": ["taskId"],
         },
         read_only=True,
     )
@@ -49,18 +48,6 @@ class BackgroundCancelTool:
             args = _BackgroundCancelArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
-        if args.all:
-            raise ValueError(
-                "background_cancel Validation error: all: Value error, "
-                "all=true is not supported in VoidCode yet (received bool). "
-                "Please retry with corrected arguments that satisfy the tool schema."
-            )
-        if args.taskId is None:
-            raise ValueError(
-                "background_cancel Validation error: taskId: Value error, "
-                "taskId is required when all is false (received NoneType). "
-                "Please retry with corrected arguments that satisfy the tool schema."
-            )
         try:
             task = self._runtime.cancel_background_task(args.taskId)
         except ValueError as exc:

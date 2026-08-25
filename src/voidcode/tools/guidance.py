@@ -27,6 +27,7 @@ _TOOL_GUIDANCE_FILES = {
     "skill": "skill.txt",
     "task": "task.txt",
     "task_batch": "task_batch.txt",
+    "steer_task": "steer_task.txt",
     "todo_write": "todo_write.txt",
     "web_fetch": "web_fetch.txt",
     "web_search": "web_search.txt",

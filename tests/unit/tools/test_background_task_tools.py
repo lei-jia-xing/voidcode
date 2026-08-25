@@ -270,20 +270,13 @@ class _ApprovalBlockedBackgroundRuntime(_StubBackgroundRuntime):
 
 
 class _BlockingUnavailableBackgroundRuntime(_UnavailableBackgroundRuntime):
-    def __init__(self) -> None:
-        self.load_count = 0
-
-    def load_background_task_result(
-        self,
-        task_id: str,
-        *,
-        emit_result_read_hook: bool = True,
-    ) -> BackgroundTaskResult:
-        _ = emit_result_read_hook
-        self.load_count += 1
-        return super().load_background_task_result(
-            task_id,
-            emit_result_read_hook=emit_result_read_hook,
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState:
+        assert task_id == "task-1"
+        assert timeout_seconds == 1.0
+        return BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-1"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(prompt="delegated", parent_session_id="leader-session"),
         )
 
 
@@ -310,6 +303,15 @@ class _TerminalAfterTimeoutBackgroundRuntime(_StubBackgroundRuntime):
             status="completed",
             summary_output="completed after timeout deadline",
             result_available=True,
+        )
+
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState:
+        assert task_id == "task-1"
+        assert timeout_seconds == 1.0
+        return BackgroundTaskState(
+            task=BackgroundTaskRef(id="task-1"),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(prompt="delegated", parent_session_id="leader-session"),
         )
 
 
@@ -623,6 +625,20 @@ def test_background_output_rejects_subsecond_timeout_to_avoid_polling(tmp_path: 
         )
 
 
+def test_background_output_requires_runtime_wait_contract(tmp_path: Path) -> None:
+    """A blocking read fails explicitly when the shipped wait API is absent."""
+    tool = BackgroundOutputTool(runtime=_UnavailableBackgroundRuntime())
+
+    with pytest.raises(AttributeError, match="wait_for_background_task"):
+        tool.invoke(
+            ToolCall(
+                tool_name="background_output",
+                arguments={"task_id": "task-1", "block": True, "timeout": 1000},
+            ),
+            workspace=tmp_path,
+        )
+
+
 def test_background_output_accepts_one_second_block_timeout(tmp_path: Path) -> None:
     tool = BackgroundOutputTool(runtime=_BlockingUnavailableBackgroundRuntime())
     result = tool.invoke(
@@ -868,20 +884,6 @@ def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path:
     }
 
 
-def test_background_cancel_tool_rejects_all_true(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
-    all_true_error = (
-        r"background_cancel Validation error: all: Value error, "
-        r"all=true is not supported in VoidCode yet \(received bool\)"
-    )
-
-    with pytest.raises(ValueError, match=all_true_error):
-        tool.invoke(
-            ToolCall(tool_name="background_cancel", arguments={"all": True}),
-            workspace=tmp_path,
-        )
-
-
 def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
     tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
     task_id_type_error = (
@@ -898,7 +900,7 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
 
     task_id_empty_error = (
         r"background_cancel Validation error: taskId: Value error, "
-        r"taskId must be a non-empty string when provided \(received str\)"
+        r"taskId must be a non-empty string \(received str\)"
         r"\. Please retry with corrected arguments that satisfy the tool schema\."
     )
     with pytest.raises(ValueError, match=task_id_empty_error):
@@ -907,48 +909,9 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
             workspace=tmp_path,
         )
 
-    missing_task_id_error = (
-        r"background_cancel Validation error: taskId: Value error, "
-        r"taskId is required when all is false \(received NoneType\)"
-    )
+    missing_task_id_error = r"background_cancel Validation error: taskId: Field required"
     with pytest.raises(ValueError, match=missing_task_id_error):
         tool.invoke(
             ToolCall(tool_name="background_cancel", arguments={}),
-            workspace=tmp_path,
-        )
-
-
-def test_background_cancel_tool_validates_coerced_boolean_inputs(tmp_path: Path) -> None:
-    tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
-    all_true_error = (
-        r"background_cancel Validation error: all: Value error, "
-        r"all=true is not supported in VoidCode yet \(received bool\)"
-    )
-    missing_task_id_error = (
-        r"background_cancel Validation error: taskId: Value error, "
-        r"taskId is required when all is false \(received NoneType\)"
-    )
-
-    with pytest.raises(ValueError, match=all_true_error):
-        tool.invoke(
-            ToolCall(tool_name="background_cancel", arguments={"all": 1}),
-            workspace=tmp_path,
-        )
-
-    with pytest.raises(ValueError, match=all_true_error):
-        tool.invoke(
-            ToolCall(tool_name="background_cancel", arguments={"all": "true"}),
-            workspace=tmp_path,
-        )
-
-    with pytest.raises(ValueError, match=missing_task_id_error):
-        tool.invoke(
-            ToolCall(tool_name="background_cancel", arguments={"all": 0}),
-            workspace=tmp_path,
-        )
-
-    with pytest.raises(ValueError, match=missing_task_id_error):
-        tool.invoke(
-            ToolCall(tool_name="background_cancel", arguments={"all": "false"}),
             workspace=tmp_path,
         )

@@ -634,16 +634,28 @@ describes a non-essential tool; it is not an authorization decision.
 
 - 分组：delegated execution
 - 只读：是
-- 用途：读取后台任务状态，并可选择读取子 session 结果。
-- 参数：`task_id`、`block`、`timeout`、`full_session`、`message_limit`。
+- 用途：读取后台任务状态，并可选择读取子 session 的 bounded 结果投影。
+- selector 必须严格三选一：`task_id`（单任务）、`task_ids`（显式聚合，1–100 个且不得重复）或 `parallel_group_id`（runtime-owned 聚合组）。聚合读取使用当前 runtime tool context 的 parent session owner。
+- `block=false` 立即返回当前快照；`block=true` 通过 runtime lifecycle wait 等待一次。`timeout` 仅用于阻塞等待，单位为毫秒且至少 1000ms；超时返回当前状态并标记 `block_timed_out`，不得把任务误标为失败。
+- `full_session=true` 仅对单任务 selector 生效，返回 bounded child-session metadata/transcript preview；聚合 selector 始终是 no-transcript projection。`message_limit` 被限制在 1–100。
 - 详见 `docs/contracts/background-task-delegation.md`。
+
+#### `steer_task`
+
+- 分组：delegated execution
+- 只读：是
+- 用途：向 keep-alive delegated worker 派发下一轮指令。
+- 参数：`task_id`、`prompt`。
+- 仅 task 的 parent session 可调用；task 必须由 `task(keep_alive=true, run_in_background=true)` 创建，并处于 `idle`（awaiting_steer）或 `interrupted`（可恢复断点）。running task 有 turn 在飞，不能 steer；不支持 pipelining。steer turn 完成后 worker 回到 idle，除非通过 `submit_result` 完成任务。
+- 详见 `src/voidcode/tools/steer_task.txt` 与 `docs/contracts/background-task-delegation.md`。
 
 #### `background_cancel`
 
 - 分组：delegated execution
 - 只读：是
-- 用途：按 id 取消运行中的后台任务。
-- 参数：`taskId`、`all`。
+- 用途：按单个 `taskId` 取消后台任务；不提供 bulk cancel。
+- 参数：`taskId`。
+- unknown、running、completed/cancelled 等状态返回确定性的单任务 status payload。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
 ### 结构化代码搜索与代码智能工具

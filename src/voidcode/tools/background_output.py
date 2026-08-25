@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -56,8 +55,8 @@ class _BackgroundOutputArgs(BaseModel):
     task_ids: list[str] | None = None
     parallel_group_id: str | None = None
     block: bool = False
-    # Timeout is an integer number of milliseconds. Blocking waits shorter than
-    # one second are rejected: they are almost always accidental polling.
+    # Blocking waits use runtime lifecycle notifications and express timeout in milliseconds.
+    # timeout is ignored for non-blocking reads; block=true requires at least one second.
     timeout: int = 60000
     full_session: bool = False
     message_limit: int = 20
@@ -101,6 +100,13 @@ class _BackgroundOutputArgs(BaseModel):
             normalized.append(stripped)
         return normalized
 
+    @field_validator("timeout", mode="after")
+    @classmethod
+    def _validate_timeout(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("timeout must be a non-negative integer number of milliseconds")
+        return value
+
     @field_validator("message_limit", mode="after")
     @classmethod
     def _validate_message_limit(cls, value: int) -> int:
@@ -111,36 +117,53 @@ class BackgroundOutputTool:
     definition = ToolDefinition(
         name="background_output",
         description=(
-            "Read background task status and optionally child session results. "
-            "Use exactly one of task_id, task_ids, or parallel_group_id. "
-            "Blocking timeout is in milliseconds and must be at least 1000ms."
+            "Read background task status and optionally bounded child session results. "
+            "Provide exactly one selector: task_id, task_ids, or parallel_group_id. "
+            "block=true waits through the runtime lifecycle API; timeout is milliseconds and "
+            "must be at least 1000ms for a blocking wait."
         ),
         input_schema={
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "task_id": {"type": "string", "minLength": 1, "description": "Legacy single-task selector."},
+                "task_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Single background task selector; mutually exclusive with the aggregate selectors.",
+                },
                 "task_ids": {
                     "type": "array",
                     "items": {"type": "string", "minLength": 1},
                     "minItems": 1,
                     "maxItems": 100,
                     "uniqueItems": True,
-                    "description": "Explicit task ids to aggregate; mutually exclusive with parallel_group_id.",
+                    "description": "Explicit task ids to aggregate; mutually exclusive with task_id and parallel_group_id.",
                 },
                 "parallel_group_id": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Runtime-owned parallel group selector; mutually exclusive with task_ids.",
+                    "description": "Runtime-owned parallel group selector; mutually exclusive with task_id and task_ids.",
                 },
-                "block": {"type": "boolean"},
+                "block": {
+                    "type": "boolean",
+                    "description": "When true, wait once through the runtime lifecycle API; when false, return an immediate snapshot.",
+                },
                 "timeout": {
                     "type": "integer",
-                    "minimum": 1000,
-                    "description": "Blocking wait timeout in milliseconds; values below 1000 are rejected to prevent polling.",
+                    "minimum": 0,
+                    "description": "Milliseconds for block=true only; block=true requires at least 1000ms. Ignored for non-blocking reads.",
                 },
-                "full_session": {"type": "boolean"},
-                "message_limit": {"type": "integer"},
+                "full_session": {
+                    "type": "boolean",
+                    "description": (
+                        "For task_id only, include bounded child session metadata and transcript preview; "
+                        "aggregate selectors remain no-transcript projections."
+                    ),
+                },
+                "message_limit": {
+                    "type": "integer",
+                    "description": "Maximum bounded transcript events for full_session; clamped to 1-100.",
+                },
             },
             "oneOf": [
                 {"required": ["task_id"], "not": {"anyOf": [{"required": ["task_ids"]}, {"required": ["parallel_group_id"]}]}},
@@ -230,25 +253,8 @@ class BackgroundOutputTool:
                 f"(current session: {context.session_id})"
             )
         if args.block and not is_background_task_terminal(result.status):
-            wait_for_task = getattr(self._runtime, "wait_for_background_task", None)
-            if callable(wait_for_task):
-                waited = wait_for_task(args.task_id, timeout_seconds=timeout_seconds)
-                block_timed_out = not is_background_task_terminal(waited.status)
-            else:
-                # Compatibility path for lightweight runtimes that predate the
-                # lifecycle wait API. Keep the old bounded behavior, but avoid
-                # sub-100ms retry churn that trains callers to poll.
-                deadline = time.monotonic() + timeout_seconds
-                while not is_background_task_terminal(result.status):
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        block_timed_out = True
-                        break
-                    time.sleep(min(remaining, 0.25))
-                    result = self._runtime.load_background_task_result(
-                        args.task_id,
-                        emit_result_read_hook=False,
-                    )
+            waited = self._runtime.wait_for_background_task(args.task_id, timeout_seconds=timeout_seconds)
+            block_timed_out = not is_background_task_terminal(waited.status)
             result = self._runtime.load_background_task_result(
                 args.task_id,
                 emit_result_read_hook=True,
