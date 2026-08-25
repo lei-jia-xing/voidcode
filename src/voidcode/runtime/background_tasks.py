@@ -76,6 +76,58 @@ _BACKGROUND_TASK_RATE_LIMIT_BASE_BACKOFF_SECONDS = 0.05
 _BACKGROUND_TASK_GROUP_MAX_SIZE = 100
 
 
+_BACKGROUND_HOOK_TEXT_LIMIT = 1_024
+_BACKGROUND_HOOK_COLLECTION_LIMIT = 32
+
+
+def _bounded_background_hook_value(value: object, *, depth: int = 0) -> object:
+    """Keep hook event payloads small without carrying child transcript data."""
+    if isinstance(value, str):
+        if len(value) <= _BACKGROUND_HOOK_TEXT_LIMIT:
+            return value
+        return f"{value[: _BACKGROUND_HOOK_TEXT_LIMIT - 3].rstrip()}..."
+    if isinstance(value, bool | int | float) or value is None:
+        return value
+    if depth >= 3:
+        return "<bounded>"
+    if isinstance(value, dict):
+        return {
+            str(key)[:128]: _bounded_background_hook_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:_BACKGROUND_HOOK_COLLECTION_LIMIT]
+        }
+    if isinstance(value, list | tuple):
+        return [_bounded_background_hook_value(item, depth=depth + 1) for item in list(value)[:_BACKGROUND_HOOK_COLLECTION_LIMIT]]
+    return _bounded_background_hook_value(str(value), depth=depth + 1)
+
+
+def _bounded_background_hook_payload(payload: dict[str, object]) -> dict[str, object]:
+    return cast(dict[str, object], _bounded_background_hook_value(payload))
+
+
+def _background_hook_execution_identity(
+    *,
+    task: BackgroundTaskState,
+    surface: RuntimeHookSurface,
+    session_id: str,
+    extra_payload: dict[str, object] | None,
+) -> str:
+    """Return a bounded identity for one runtime lifecycle observation."""
+    marker: object = None
+    if extra_payload:
+        for key in (
+            "notification_event_sequence",
+            "progress_event_sequence",
+            "idle_event_sequence",
+            "idle_episode_id",
+        ):
+            if key in extra_payload:
+                marker = extra_payload[key]
+                break
+    if marker is None:
+        marker = task.updated_at or task.finished_at or task.started_at or task.created_at
+    return f"{surface}:{session_id}:{task.task.id}:{marker}"
+
+
 def _parallel_group_metadata(task: BackgroundTaskState) -> tuple[str | None, int | None]:
     metadata = task.request.metadata
     delegation = metadata.get("delegation")
@@ -2464,40 +2516,141 @@ class RuntimeBackgroundTaskSupervisor:
         session_id: str,
         extra_payload: dict[str, object] | None = None,
     ) -> None:
+        """Execute one background observer and append its events durably.
+
+        Background lifecycle surfaces run after the corresponding task/session
+        observation is persisted. They are therefore post-truth observers:
+        even ``hooks.failure_mode=fail`` records the failure but cannot rewrite
+        the task or session terminal state. This method deliberately catches
+        every hook/storage error so a hook cannot strand a worker in ``running``.
+        """
         hooks = self._config.hooks
         if hooks is None or hooks.enabled is not True:
             return
         if not hooks.commands_for_surface(surface):
             return
-        result = self.background_task_result(task=task)
-        selected_preset = result.delegated_execution.selected_preset
-        child_session_id = task.session_id
-        parent_session_id = task.parent_session_id
-        outcome = run_lifecycle_hooks(
-            LifecycleHookExecutionRequest(
-                hooks=self._config.hooks,
+
+        # The executor's sequence is only a local starting hint. Storage owns
+        # the authoritative sequence, so use the target's current watermark and
+        # adopt the envelopes returned by append_session_events rather than
+        # exposing the executor's sequence values.
+        try:
+            target_response = self._session_store.load_session(
                 workspace=self._workspace,
                 session_id=session_id,
-                surface=surface,
-                recursion_env_var=HOOK_RECURSION_ENV_VAR,
-                environment=os.environ,
-                sequence_start=0,
-                payload={
-                    "task_id": task.task.id,
-                    "background_task_id": task.task.id,
-                    "background_task_status": task.status,
-                    "parent_session_id": parent_session_id,
-                    "child_session_id": child_session_id,
-                    "preset": selected_preset,
-                    "lifecycle_surface": surface,
-                    **({"background_task_error": task.error} if task.error is not None else {}),
-                    **(extra_payload or {}),
-                },
-                policy=hook_execution_policy_from_metadata(task.request.metadata),
             )
-        )
+        except UnknownSessionError:
+            logger.debug(
+                "skipping background lifecycle hook for unavailable session %s (surface=%s, task=%s)",
+                session_id,
+                surface,
+                task.task.id,
+            )
+            return
+        except Exception:
+            logger.exception(
+                "background lifecycle hook could not load target session %s (surface=%s, task=%s)",
+                session_id,
+                surface,
+                task.task.id,
+            )
+            return
+
+        sequence_start = target_response.events[-1].sequence if target_response.events else 0
+        try:
+            result = self.background_task_result(task=task)
+            selected_preset = result.delegated_execution.selected_preset
+            child_session_id = task.session_id
+            parent_session_id = task.parent_session_id
+            payload: dict[str, object] = {
+                "task_id": task.task.id,
+                "background_task_id": task.task.id,
+                "background_task_status": task.status,
+                "parent_session_id": parent_session_id,
+                "child_session_id": child_session_id,
+                "preset": selected_preset,
+                "lifecycle_surface": surface,
+                **({"background_task_error": task.error} if task.error is not None else {}),
+                **(extra_payload or {}),
+            }
+        except Exception:
+            logger.exception(
+                "background lifecycle hook payload projection failed (surface=%s, task=%s)",
+                surface,
+                task.task.id,
+            )
+            return
+        try:
+            outcome = run_lifecycle_hooks(
+                LifecycleHookExecutionRequest(
+                    hooks=hooks,
+                    workspace=self._workspace,
+                    session_id=session_id,
+                    surface=surface,
+                    recursion_env_var=HOOK_RECURSION_ENV_VAR,
+                    environment=os.environ,
+                    sequence_start=sequence_start,
+                    payload=payload,
+                    policy=hook_execution_policy_from_metadata(task.request.metadata),
+                )
+            )
+        except Exception:
+            logger.exception(
+                "background lifecycle hook crashed (surface=%s, task=%s)",
+                surface,
+                task.task.id,
+            )
+            return
+
+        if outcome.events:
+            execution_identity = _background_hook_execution_identity(
+                task=task,
+                surface=surface,
+                session_id=session_id,
+                extra_payload=extra_payload,
+            )
+            event_rows = tuple(
+                (
+                    event.event_type,
+                    "runtime",
+                    _bounded_background_hook_payload(event.payload),
+                    f"runtime-hook:{execution_identity}:{index}",
+                )
+                for index, event in enumerate(outcome.events)
+            )
+            try:
+                _ = self._session_store.append_session_events(
+                    workspace=self._workspace,
+                    session_id=session_id,
+                    events=event_rows,
+                )
+            except (SessionSealedError, UnknownSessionError):
+                # A sealed/unknown target is a valid late-observer outcome. In
+                # particular, parent notification hooks must not reopen a
+                # sealed parent or turn a missing parent into a worker error.
+                logger.debug(
+                    "dropping background lifecycle hook events for unavailable or sealed session %s (surface=%s, task=%s)",
+                    session_id,
+                    surface,
+                    task.task.id,
+                )
+            except Exception:
+                logger.exception(
+                    "background lifecycle hook events could not be persisted (surface=%s, task=%s, session=%s)",
+                    surface,
+                    task.task.id,
+                    session_id,
+                )
+
         if outcome.failed_error is not None:
-            logger.warning("background task lifecycle hook failed: %s", outcome.failed_error)
+            log = logger.error if hooks.failure_mode == "fail" else logger.warning
+            log(
+                "background task lifecycle hook failed (surface=%s, task=%s, failure_mode=%s): %s",
+                surface,
+                task.task.id,
+                hooks.failure_mode,
+                outcome.failed_error,
+            )
 
     def reconcile_background_tasks_if_needed(self) -> None:
         if self._reconciled:

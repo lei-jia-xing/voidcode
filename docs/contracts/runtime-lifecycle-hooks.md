@@ -223,25 +223,19 @@ Hook 命令 stdout 可返回 JSON：
 
 ## Failure 语义
 
-### Pre-terminal lifecycle hooks
+### Runtime execution gates
 
-对于 `session_start` 等发生在执行过程中的 hooks：
+`session_start`、`session_idle` 等发生在 foreground execution path 中、且尚未形成最终 action truth 的 hooks，继续按 `hooks.failure_mode` 处理：`warn` 记录诊断并继续，`fail` 必须通过 runtime-owned failure path 对外可见并阻止/终止后续 action。
 
-- runtime 可以像 `pre_tool` 一样，把 hook failure 视为当前运行失败门槛
-- failure 必须通过 runtime-owned failure path 对外可见
+### Background lifecycle observers
 
-### Post-terminal / notification-like hooks
+所有 `background_task_*` 与 `delegated_result_available` lifecycle surfaces 都是 runtime 已观察并持久化相应 task/session 状态之后的 **post-truth observer**，包括 `background_task_registered`、`background_task_started`、`background_task_progress` 和 `background_task_notification_enqueued`。因此：
 
-对于 `session_end`、`background_task_completed`、`delegated_result_available` 这类更接近通知面的 hooks：
+- hook command 的每个 outcome event 都追加到传入的目标 session；sequence 由 SQLite append API 分配，不能使用 executor 的本地 sequence 作为持久化真相。
+- `hooks.failure_mode=warn` 与 `fail` 都持久化 `hook_status=error` 事件；`fail` 只提升诊断严重性，不回滚或改写已成立的 `queued/running/completed/failed/cancelled/interrupted` task/session truth，也不会让 worker 提前退出。
+- target session 已 sealed 或 unknown 时，runtime 丢弃无法追加的 observer event 并记录 bounded diagnostic；不得 reopen parent、重复 parent notification，或令 worker 永久停留在 `running`。
 
-- hook failure 不得回滚已经成立的 runtime truth
-- runtime 可以记录失败事件或错误信息
-- 但不能因为 post-truth hook failure 否认 session/task 已完成这一事实
-
-当前实现约束：
-
-- `session_start`、`session_idle` failure 仍可作为当前运行失败门槛
-- `session_end`、`background_task_completed`、`background_task_failed`、`background_task_cancelled`、`delegated_result_available` failure 为 post-truth / notification-like failure，只记录 hook 错误，不改写 truth
+这是一项有意的最小分类：background action 的 pre-truth gate 不在当前 worker architecture 中安全可用；需要 gate 的 foreground hook 必须使用 `pre_tool` / `session_start` 等 execution surface，而不能借用 background observer surface。
 
 ## Resume / Replay 规则
 

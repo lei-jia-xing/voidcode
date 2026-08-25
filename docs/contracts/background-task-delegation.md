@@ -465,8 +465,7 @@ Delegated child execution 必须先经过 runtime-owned routing 与 tool scope e
 - provider 可见工具 schema 会被 agent manifest allowlist 和 request tool config 收窄。
 - 即使 provider 伪造 raw tool call，runtime tool lookup 仍必须拒绝 denied built-in tools。
 - `worker` 当前不默认获得再次 delegation 的 `task` 工具；这避免形成无控制的 nested delegation。
-- manifest `skill_refs` 作为 catalog/default selection 进入 runtime skill application；`force_load_skills` 与 delegated `load_skills` 只在目标 run 或 child session 注入完整 skill body，parent full-body skill context 不应泄漏给 child。
-- hook guardrails 是 runtime lifecycle 的观察/干预层，不是 session truth 的替代品；background terminal hook failure 只记录警告，不改写已持久化的 terminal truth。
+- hook guardrails 是 runtime lifecycle 的观察/干预层，不是 session truth 的替代品；background lifecycle hook failure（无论 `hooks.failure_mode=warn` 还是 `fail`）都将 bounded `hook_status=error` event 追加到目标 session（目标已 sealed/unknown 时安全丢弃），不改写已持久化的 terminal truth。
 
 ## Runtime Harness Policy delegation gate
 
@@ -516,6 +515,8 @@ runtime 公开以下 background/delegation hook surfaces，全部由 runtime tru
 - `background_task_notification_enqueued`
 - `background_task_result_read`
 - `delegated_result_available`
+
+这些 surfaces 都在相应 runtime 状态已观察/持久化之后执行，是 post-truth observers 而不是 worker action gate。每次实际执行产生的 hook outcome events 都通过目标 session 的 `append_session_events` 进入同一 SQLite event log；sequence 由数据库分配，因而可被 session、HTTP 和 replay 读取。`failure_mode=fail` 只提升 failure diagnostic，不终止 worker、不回滚 task/session 状态。hook 目标为 sealed 或 unknown session 时，runtime 捕获并丢弃无法追加的 event，保持 parent seal、通知去重和 worker finalization 不变。
 
 ## Polling 与 Notification 的关系
 
