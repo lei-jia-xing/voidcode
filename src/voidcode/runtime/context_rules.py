@@ -14,7 +14,6 @@ MAX_RULE_FILE_CHARS = 12_000
 
 
 RULEBOOK_DIRECTORY = ".voidcode/rules"
-RULEBOOK_LEGACY_FILE = "RULES.md"
 MAX_RULEBOOK_FILES = 64
 MAX_RULEBOOK_CONTENT_CHARS = 12_000
 MAX_RULEBOOK_METADATA_CHARS = 240
@@ -23,7 +22,6 @@ MAX_RULE_URI_LINES = 2_000
 MAX_RULE_URI_BYTES = 50 * 1024
 RULEBOOK_SNAPSHOT_VERSION = 2
 RULE_URI_PREFIX = "voidcode://rule/"
-LEGACY_RULE_URI_PREFIX = "rule://"
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 RuleApplication = Literal["always_apply", "discoverable"]
@@ -343,7 +341,7 @@ def _parse_rule_document(path: Path, text: str, *, workspace_root: Path) -> Rule
     elif application_value in {"discoverable", "on_demand", "on-demand"}:
         application = "discoverable"
     else:
-        application = "always_apply" if "/always/" in f"/{relative}" or path.name == RULEBOOK_LEGACY_FILE else "discoverable"
+        application = "always_apply" if "/always/" in f"/{relative}" else "discoverable"
     scope_value = fields.get("scope", "workspace")
     if scope_value not in {"workspace", "repo"}:
         return None
@@ -367,9 +365,6 @@ def _parse_rule_document(path: Path, text: str, *, workspace_root: Path) -> Rule
 
 def _rule_files(*, workspace_root: Path, rule_roots: tuple[str, ...]) -> tuple[Path, ...]:
     candidates: set[Path] = set()
-    legacy = workspace_root / RULEBOOK_LEGACY_FILE
-    if legacy.is_file():
-        candidates.add(legacy)
     for raw_root in rule_roots:
         root = (workspace_root / raw_root).resolve(strict=False)
         try:
@@ -430,8 +425,6 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
 
 
 def rule_uri_name(path: str) -> str:
-    if path.startswith(LEGACY_RULE_URI_PREFIX):
-        raise ValueError(f"unsupported legacy rule URI: {path}; use {RULE_URI_PREFIX}<name>")
     if not path.startswith(RULE_URI_PREFIX):
         raise ValueError(f"unsupported rule URI: {path}")
     raw_name = path[len(RULE_URI_PREFIX) :]

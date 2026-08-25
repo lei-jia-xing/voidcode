@@ -54,7 +54,7 @@ def test_rulebook_transform_reuses_reactive_file_rule_provider(tmp_path: Path) -
     assert "voidcode://rule/deploy" in contents
 
 
-def test_rule_uri_success_unknown_traversal_and_bounded_read(tmp_path: Path) -> None:
+def test_rule_uri_success_unknown_malformed_and_bounded_read(tmp_path: Path) -> None:
     _write_rules(tmp_path)
     result = read_rule_uri("voidcode://rule/deploy", workspace=tmp_path, limit=1)
     assert result["raw_content"] == "Deploy only after review."
@@ -62,11 +62,13 @@ def test_rule_uri_success_unknown_traversal_and_bounded_read(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="unknown rule"):
         read_rule_uri("voidcode://rule/missing", workspace=tmp_path)
     with pytest.raises(ValueError, match="invalid rule URI"):
+        read_rule_uri("voidcode://rule/", workspace=tmp_path)
+    with pytest.raises(ValueError, match="invalid rule URI"):
         read_rule_uri("voidcode://rule/%2e%2e%2fsafety", workspace=tmp_path)
+    with pytest.raises(ValueError, match="unsupported rule URI"):
+        read_rule_uri("voidcode://rules/deploy", workspace=tmp_path)
     with pytest.raises(ValueError, match="positive"):
         read_rule_uri("voidcode://rule/deploy", workspace=tmp_path, offset=0)
-    with pytest.raises(ValueError, match="unsupported legacy rule URI"):
-        read_rule_uri("rule://deploy", workspace=tmp_path)
 
 
 def test_rulebook_snapshot_hash_and_changed_files_are_replay_stable(tmp_path: Path) -> None:
@@ -75,6 +77,15 @@ def test_rulebook_snapshot_hash_and_changed_files_are_replay_stable(tmp_path: Pa
     payload = rulebook_snapshot_payload(first)
     assert rulebook_snapshot_from_payload(payload).snapshot_hash == first.snapshot_hash
     assert payload["snapshot_version"] == 2
+    with pytest.raises(ValueError, match="version must be 2"):
+        RuntimeFileRulesTransformProvider().build_result(
+            RuntimeContextTransformRequest(
+                workspace=tmp_path,
+                tool_results=(),
+                hook_preset_context="",
+                rulebook_snapshot={**payload, "snapshot_version": 1},
+            )
+        )
     with pytest.raises(ValueError, match="version must be 2"):
         rulebook_snapshot_from_payload({**payload, "snapshot_version": 1})
     (tmp_path / ".voidcode" / "rules" / "always" / "safety.md").write_text(
@@ -93,11 +104,14 @@ def test_rulebook_snapshot_hash_and_changed_files_are_replay_stable(tmp_path: Pa
     assert changed.snapshot.snapshot_hash != first.snapshot_hash
 
 
-def test_read_tool_serves_rule_uri_and_never_falls_through_to_external_path(tmp_path: Path) -> None:
+def test_read_tool_serves_canonical_rule_uri(tmp_path: Path) -> None:
     _write_rules(tmp_path)
     result = ReadTool().invoke(ToolCall(tool_name="read", arguments={"path": "voidcode://rule/safety"}), workspace=tmp_path)
     assert result.status == "ok"
     assert result.data["type"] == "rule"
     assert "Never bypass runtime policy." in result.data["raw_content"]
-    with pytest.raises(ValueError, match="unsupported legacy rule URI"):
-        ReadTool().invoke(ToolCall(tool_name="read", arguments={"path": "rule://safety"}), workspace=tmp_path)
+
+
+def test_rulebook_catalog_uses_voidcode_rules_directory_only(tmp_path: Path) -> None:
+    (tmp_path / "RULES.md").write_text("Root rules must not be loaded.\n", encoding="utf-8")
+    assert build_rule_catalog(tmp_path).entries == ()

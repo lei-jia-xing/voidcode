@@ -208,10 +208,7 @@ def _rulebook_catalog_for_request(request: RuntimeContextTransformRequest) -> Ru
     catalog = build_rule_catalog(request.workspace)
     if request.rulebook_snapshot is None:
         return catalog
-    try:
-        snapshot = rulebook_snapshot_from_payload(request.rulebook_snapshot)
-    except ValueError:
-        return RuleCatalog((), build_rule_catalog(None).snapshot)
+    snapshot = rulebook_snapshot_from_payload(request.rulebook_snapshot)
     expected = {entry.name: entry.content_hash for entry in snapshot.entries}
     stable_entries = tuple(entry for entry in catalog.entries if expected.get(entry.metadata.name) == entry.metadata.content_hash)
     from dataclasses import replace

@@ -33,7 +33,7 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 ### 3. Rulebook / 按需规则
 
-- **voidcode**：`.voidcode/rules/**/*.md` 与根 `RULES.md` 构成 workspace-only catalog；always-apply 规则全文注入，discoverable 规则只注入 metadata，正文经 bounded `voidcode://rule/<name>` 读取。现有 `AGENTS.md` 仍保持响应式规则行为。
+- **voidcode**：`.voidcode/rules/**/*.md` 构成 workspace-only catalog；always-apply 规则全文注入，discoverable 规则只注入 metadata，正文经 bounded `voidcode://rule/<name>` 读取。现有 `AGENTS.md` 仍保持响应式规则行为。
 - **判定**：最小 rulebook disclosure 已落地；glob 条件规则、imports、user scope 与完整 TTSR 仍省略。
 
 ### 4. Memory
@@ -77,7 +77,7 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 P1 rulebook implementation notes:
 
-- Catalog roots are workspace-local `.voidcode/rules/` plus optional root `RULES.md`; frontmatter supports `name`, `description`, `application` (`always_apply` or `discoverable`), `scope` (`workspace` or `repo`), and bounded integer `precedence`.
+- Catalog roots are workspace-local `.voidcode/rules/`; frontmatter supports `name`, `description`, `application` (`always_apply` or `discoverable`), `scope` (`workspace` or `repo`), and bounded integer `precedence`.
 - Prompt assembly injects bounded always-apply bodies and discoverable metadata only. Runtime policy remains authoritative; rule text cannot grant tools, approvals, delegation, or MCP capabilities.
 - `read(path="voidcode://rule/<name>")` validates a single safe slug, resolves only the catalog, and applies line/byte bounds. Session metadata persists sorted rule metadata and a canonical snapshot hash; replay ignores entries whose current bytes no longer match the snapshot.
 - `src/voidcode/tools/task.py` — `load_skills` 强制子会话 skill 正文加载。

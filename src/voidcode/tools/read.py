@@ -12,7 +12,6 @@ from typing import ClassVar, cast, final
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from ..runtime.context_rules import LEGACY_RULE_URI_PREFIX as _LEGACY_RULE_URI_PREFIX
 from ..runtime.context_rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
 from ..runtime.context_rules import read_rule_uri
 from ..runtime.contracts import validate_session_id
@@ -31,9 +30,7 @@ from .runtime_context import require_runtime_tool_context
 VOIDCODE_TOOL_DOC_PREFIX = "voidcode://tool/"
 
 #: Internal URL scheme for bounded workspace rulebook reads.
-#: Legacy ``rule://`` paths are rejected explicitly and never treated as files.
 RULE_URI_PREFIX = _RULE_URI_PREFIX
-LEGACY_RULE_URI_PREFIX = _LEGACY_RULE_URI_PREFIX
 
 #: Internal URL scheme for session-scoped artifact reads:
 #: read(path="voidcode://artifact/<id>") returns a bounded slice of a
@@ -439,8 +436,6 @@ class ReadTool:
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
-        if args.path.startswith(LEGACY_RULE_URI_PREFIX):
-            raise ValueError(f"unsupported legacy rule URI: {args.path}; use {RULE_URI_PREFIX}<name>")
         if args.path.startswith(RULE_URI_PREFIX):
             data = read_rule_uri(
                 args.path,

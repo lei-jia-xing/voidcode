@@ -95,11 +95,11 @@ by its canonical URI before relying on its contents:
 read(path="voidcode://rule/<name>")
 ```
 
-The runtime validates a single safe slug, resolves only the workspace rule catalog,
-and enforces line/byte bounds. The legacy `rule://<name>` URI is unsupported and
-fails explicitly; reading a rule never grants tools, approvals, delegation, or
-other runtime capabilities. Rule metadata snapshots are versioned and replay only
-uses entries whose current content hash matches the persisted snapshot.
+The runtime validates a single safe slug against the workspace rule catalog and
+enforces line/byte bounds. Reading a rule never grants tools, approvals,
+delegation, or other runtime capabilities. Rule metadata snapshots are versioned
+and replay only uses entries whose current content hash matches the persisted
+snapshot.
 
 ### Tool call
 
