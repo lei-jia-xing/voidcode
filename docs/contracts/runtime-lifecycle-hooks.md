@@ -291,10 +291,10 @@ lifecycle hook 的 payload 通过环境变量注入，当前约定如下：
 
 hook payload 只通过 `VOIDCODE_HOOK_PAYLOAD_JSON` 传递，不生成逐字段环境变量镜像。
 
-## Declarative execution plan v1
+## Declarative execution plan v2
 
-Runtime may materialize a `ResolvedHookPlan` from the explicit `RuntimeHooksConfig` surface-to-argv declarations plus agent preset refs. The plan is runtime-owned and includes `schema_version`, stable `plan_id`/`revision`, canonical `plan_hash`, ordered `binding_id` entries, event/scope/phase, command argv, failure mode, timeout, and the bounded `runtime.lifecycle.v1` payload schema.
+Runtime may materialize a `ResolvedHookPlan` from the explicit `RuntimeHooksConfig` surface-to-argv declarations plus agent preset refs. The plan is runtime-owned and includes `schema_version`, stable `plan_id`/`revision`, canonical `plan_hash`, ordered `binding_id` entries, event/scope/phase, command argv, failure mode, timeout, and the bounded `runtime.lifecycle.v1` payload schema. Binding payloads and canonical hashes contain no removed declaration fields.
 
 Materialization is fail-fast for unknown surfaces or preset refs, duplicate bindings, unsupported scopes, and forbidden authority actions. Preset refs contribute validated redacted metadata only (`guidance_only`, `non-authoritative`); a guidance preset without a real command binding never becomes an executable command. Explicit command configuration remains the execution source.
 
-The frozen plan snapshot/hash may be stored in existing session metadata. Resume uses that persisted snapshot and does not reinterpret it through the current preset catalog. The snapshot contains no command stdout, payload body, or secret material. Execution still goes through `run_tool_hooks` / `run_lifecycle_hooks`; this plan is not a second executor. Dynamic handler registration, custom preset commands, middleware chains, agent messaging, memory, and new URI namespaces remain unsupported.
+The frozen v2 plan snapshot/hash may be stored in existing session metadata. Resume uses that persisted snapshot and rejects older schema versions rather than reinterpreting it through the current preset catalog. The snapshot contains no command stdout, payload body, secret material, or removed declaration fields. Execution still goes through `run_tool_hooks` / `run_lifecycle_hooks`; this plan is not a second executor. Dynamic handler registration, custom preset commands, middleware chains, agent messaging, memory, and new URI namespaces remain unsupported.

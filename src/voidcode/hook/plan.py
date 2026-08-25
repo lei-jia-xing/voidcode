@@ -9,7 +9,7 @@ from typing import Literal, cast
 from .config import RuntimeHookFailureMode, RuntimeHooksConfig, RuntimeHookSurface
 from .presets import resolve_hook_preset_refs
 
-HOOK_PLAN_SCHEMA_VERSION = 1
+HOOK_PLAN_SCHEMA_VERSION = 2
 HOOK_PLAN_REVISION = 1
 HOOK_PAYLOAD_SCHEMA = "runtime.lifecycle.v1"
 HookPlanScope = Literal["session"]
@@ -38,6 +38,7 @@ _HOOK_SURFACE_PHASES: tuple[tuple[RuntimeHookSurface, HookPlanPhase], ...] = (
 )
 _VALID_SURFACES = frozenset(surface for surface, _ in _HOOK_SURFACE_PHASES)
 _BACKGROUND_SURFACES = frozenset(surface for surface, phase in _HOOK_SURFACE_PHASES if phase == "background")
+_REMOVED_HOOK_BINDING_FIELDS = frozenset({"handler_ref", "priority"})
 
 
 class HookPlanValidationError(ValueError):
@@ -50,7 +51,6 @@ class HookPlanBinding:
     event: RuntimeHookSurface
     command: tuple[str, ...]
     order: int
-    priority: int = 0
     scope: HookPlanScope = "session"
     source: str = "runtime_config"
     agent_source: str | None = None
@@ -58,7 +58,6 @@ class HookPlanBinding:
     timeout_seconds: float | None = 30.0
     payload_schema: str = HOOK_PAYLOAD_SCHEMA
     phase: HookPlanPhase = "foreground"
-    handler_ref: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     @property
@@ -71,9 +70,7 @@ class HookPlanBinding:
             "event": self.event,
             "command": list(self.command),
             "argv": list(self.command),
-            "handler_ref": self.handler_ref,
             "order": self.order,
-            "priority": self.priority,
             "scope": self.scope,
             "source": self.source,
             "agent_source": self.agent_source,
@@ -303,6 +300,9 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
     if not isinstance(payload, Mapping):
         raise HookPlanValidationError("hook plan binding must be an object")
     raw = cast(Mapping[object, object], payload)
+    removed = sorted(field for field in _REMOVED_HOOK_BINDING_FIELDS if field in raw)
+    if removed:
+        raise HookPlanValidationError("hook plan binding contains removed field(s): " + ", ".join(removed))
     command = raw.get("command", raw.get("argv"))
     if not isinstance(command, Sequence) or isinstance(command, (str, bytes)):
         raise HookPlanValidationError("hook plan binding command must be an argv array")
@@ -317,7 +317,6 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
         event=cast(RuntimeHookSurface, event),
         command=tuple(cast(str, arg) for arg in command),
         order=cast(int, raw.get("order")),
-        priority=cast(int, raw.get("priority", 0)),
         scope=cast(HookPlanScope, raw.get("scope", "session")),
         source=cast(str, raw.get("source", "runtime_config")),
         agent_source=cast(str | None, raw.get("agent_source")),
@@ -325,7 +324,6 @@ def _binding_from_payload(payload: object) -> HookPlanBinding:
         timeout_seconds=cast(float | None, raw.get("timeout_seconds")),
         payload_schema=cast(str, raw.get("payload_schema", HOOK_PAYLOAD_SCHEMA)),
         phase=cast(HookPlanPhase, raw.get("phase", "foreground")),
-        handler_ref=cast(str | None, raw.get("handler_ref")),
         metadata=cast(Mapping[str, object], metadata),
     )
 

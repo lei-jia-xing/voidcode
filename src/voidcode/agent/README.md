@@ -74,10 +74,6 @@
 
 `voidcode.agent` 可以描述“这个角色默认希望带哪些工具/skills/hooks/MCP profile”。其中 builtin preset 的 prompt profile、工具边界、skills、model、execution engine 与 provider fallback 都会被 runtime 按当前执行边界消费；但这些声明仍不能决定系统最终如何执行、治理、审批、恢复和持久化它。
 
-当前 agent manifest 内部也区分了两类语义：
-
-- **live defaults**：`prompt_profile`、`prompt_materialization`、`top_level_selectable`、`execution_engine`、`model_preference`、`tool_allowlist`、`skill_refs`、`preset_hook_refs`。这些字段要么已经被 runtime 直接消费，要么作为 active agent 的默认值进入 runtime config truth。`top_level_selectable` 是 declaration，runtime enforcement 仍由 `_EXECUTABLE_AGENT_PRESETS` 持有；`prompt_materialization` 是 declaration，runtime/provider materialization 仍使用 agent 层导出的 prompt rendering helper；`preset_hook_refs` 是对 hook preset catalog 的声明式引用，不是 lifecycle hook command。
-- **intent metadata**：`routing_hints`。它仍属于声明层元数据，不是 runtime execution governance truth。
 
 最终的执行真相仍然由 `voidcode.runtime` 持有。
 

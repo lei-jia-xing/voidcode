@@ -470,7 +470,7 @@ def test_non_builtin_prompt_profiles_do_not_grow_builtin_prompt_cache() -> None:
     assert cache_info.currsize == 1
 
 
-def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None:
+def test_agent_manifest_exposes_live_default_fields() -> None:
     manifest = AgentManifest(
         id="leader",
         name="Leader",
@@ -483,11 +483,9 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         skill_refs=("demo",),
         preset_hook_refs=("role_reminder",),
         mcp_binding=AgentMcpBindingIntent(servers=("docs",)),
-        routing_hints={"tier": "primary"},
         top_level_selectable=True,
         prompt_materialization=AgentPromptMaterialization(profile="leader"),
     )
-
     assert manifest.live_default_fields == (
         "prompt_profile",
         "execution_engine",
@@ -498,12 +496,6 @@ def test_agent_manifest_exposes_live_default_vs_intent_field_semantics() -> None
         "top_level_selectable",
         "prompt_materialization",
     )
-    assert manifest.intent_fields == ("routing_hints",)
-    assert manifest.field_semantic("prompt_profile") == "live_default"
-    assert manifest.field_semantic("top_level_selectable") == "live_default"
-    assert manifest.field_semantic("prompt_materialization") == "live_default"
-    assert manifest.field_semantic("mcp_binding") == "live_default"
-    assert manifest.field_semantic("routing_hints") == "intent"
 
 
 def test_builtin_agent_manifests_use_explicit_preset_hook_refs_not_formatter_refs() -> None:
@@ -517,6 +509,8 @@ def test_builtin_agent_manifests_use_explicit_preset_hook_refs_not_formatter_ref
     assert "delegated_retry_guidance" in leader.preset_hook_refs
     assert "todo_continuation_guidance" in leader.preset_hook_refs
     assert worker.preset_hook_refs == ("role_reminder", "delegation_guard")
+    assert not hasattr(leader, "routing_hints")
+    assert not hasattr(worker, "routing_hints")
 
 
 def test_validate_builtin_agent_manifests_rejects_unknown_preset_hook_ref() -> None:

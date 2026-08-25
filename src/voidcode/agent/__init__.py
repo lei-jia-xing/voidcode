@@ -15,7 +15,6 @@ from .leader import render_leader_prompt
 from .models import (
     AgentExecutionEngineName,
     AgentManifest,
-    AgentManifestFieldSemantic,
     AgentManifestId,
     AgentManifestKey,
     AgentMcpBindingIntent,
@@ -44,7 +43,6 @@ from .registry import (
 __all__ = [
     "AgentExecutionEngineName",
     "AgentManifest",
-    "AgentManifestFieldSemantic",
     "AgentManifestId",
     "AgentManifestKey",
     "AgentMcpBindingIntent",

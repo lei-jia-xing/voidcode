@@ -399,7 +399,6 @@ You are a focused reviewer. Stay within the runtime-provided tools and report ri
 
 以下字段当前仍只作为声明层 metadata 保留，不代表 runtime 已经实现相应能力语义：
 
-- `AgentManifest.routing_hints`：仍属于声明层 metadata，不是执行治理 truth。
 - 把 `worker` / `advisor` / `explore` / `researcher` 作为任意顶层 active preset 的 config intent：runtime 仍不会把它们当作普通顶层会话直接执行。
 
 如果运行时在顶层 active run 中收到非 top-level-selectable preset，例如：

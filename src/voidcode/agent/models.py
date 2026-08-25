@@ -16,7 +16,6 @@ type AgentManifestId = Literal[
 type AgentManifestKey = AgentManifestId | str
 type AgentMode = Literal["primary", "subagent", "all"]
 type AgentExecutionEngineName = Literal["deterministic", "provider"]
-type AgentManifestFieldSemantic = Literal["live_default", "intent"]
 type AgentPromptSource = Literal["builtin", "custom_markdown"]
 type AgentPromptFormat = Literal["text", "markdown"]
 type AgentSourceScope = Literal["builtin", "project", "user"]
@@ -159,7 +158,6 @@ class AgentManifest:
     skill_refs: tuple[str, ...] = ()
     preset_hook_refs: tuple[str, ...] = ()
     mcp_binding: AgentMcpBindingIntent | None = None
-    routing_hints: dict[str, object] = field(default_factory=dict)
     top_level_selectable: bool = False
     prompt_materialization: AgentPromptMaterialization | None = None
 
@@ -184,17 +182,3 @@ class AgentManifest:
         if self.prompt_materialization is not None:
             fields.append("prompt_materialization")
         return tuple(fields)
-
-    @property
-    def intent_fields(self) -> tuple[str, ...]:
-        fields: list[str] = []
-        if self.routing_hints:
-            fields.append("routing_hints")
-        return tuple(fields)
-
-    def field_semantic(self, field_name: str) -> AgentManifestFieldSemantic:
-        if field_name in self.live_default_fields:
-            return "live_default"
-        if field_name in self.intent_fields:
-            return "intent"
-        raise ValueError(f"unknown or unset manifest field semantic: {field_name}")

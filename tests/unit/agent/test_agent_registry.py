@@ -56,6 +56,7 @@ def test_manifest_from_markdown_file_parses_frontmatter_and_body(tmp_path: Path)
     assert manifest.prompt_materialization is not None
     assert manifest.prompt_materialization.source == "custom_markdown"
     assert manifest.prompt_materialization.body == "Stay read-only and summarize risks."
+    assert not hasattr(manifest, "routing_hints")
 
 
 def test_manifest_from_markdown_file_parses_prompt_append_literal_block(
