@@ -2492,7 +2492,7 @@ class RuntimeBackgroundTaskSupervisor:
         self.run_background_task_lifecycle_surface(
             task=task,
             surface=surface,
-            session_id=task.session_id or task.request.session_id or "runtime",
+            session_id=task.session_id or task.parent_session_id or task.request.session_id or "runtime",
         )
         self.emit_background_task_parent_terminal_event(task=task)
         with self._task_state_changed:

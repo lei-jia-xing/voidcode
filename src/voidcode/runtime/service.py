@@ -4442,6 +4442,8 @@ class VoidCodeRuntime(RuntimeSurface):
         kind: Literal["steering", "follow_up"],
     ) -> tuple[str, ...]:
         validate_session_id(session_id)
+        if not self._session_store.has_session(workspace=self._workspace, session_id=session_id):
+            return ()
         response = self._load_stored_response(session_id=session_id)
         metadata, messages = drain_runtime_messages(response.session.metadata, kind=kind, remember_dedupe=True)
         self._session_store.update_session_metadata(

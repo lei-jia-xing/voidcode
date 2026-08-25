@@ -13239,6 +13239,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "runtime_policy",
         "agent_capability_snapshot",
         "runtime_state",
+        "rulebook_snapshot",
         "context_window",
         "max_steps",
         "selected_skill_names",
@@ -18981,13 +18982,17 @@ def test_runtime_executes_background_task_cancelled_hook_for_queued_cancel(
         ),
     )
     runtime._background_task_supervisor.reconciled = True
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="cancel-hook-session"))
     store = _private_attr(runtime, "_session_store")
     task_module = importlib.import_module("voidcode.runtime.task")
     store.create_background_task(
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(
             task=task_module.BackgroundTaskRef(id="task-cancel-hook"),
-            request=task_module.BackgroundTaskRequestSnapshot(prompt="background hello"),
+            request=task_module.BackgroundTaskRequestSnapshot(
+                prompt="background hello",
+                parent_session_id="cancel-hook-session",
+            ),
             created_at=1,
             updated_at=1,
         ),

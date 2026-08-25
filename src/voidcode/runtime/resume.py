@@ -808,6 +808,7 @@ class RuntimeResumeCoordinator:
                 source="runtime",
                 payload={
                     **binding_mismatch_payload,
+                    "approval_request_id": pending.request_id,
                     "resume": True,
                     "runtime_resume": True,
                 },

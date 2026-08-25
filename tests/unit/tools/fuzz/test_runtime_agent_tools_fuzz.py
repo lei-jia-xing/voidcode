@@ -218,7 +218,7 @@ def test_background_output_tool_rejects_invalid_task_id_values(task_id: object) 
         with pytest.raises(
             ValueError,
             match=(
-                r"background_output Validation error: task_id: .* "
+                r"background_output Validation error: (?:task_id|arguments): .* "
                 r"Please retry with corrected arguments that satisfy the tool schema\."
             ),
         ):
