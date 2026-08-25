@@ -1,0 +1,12 @@
+Dispatch bounded independent child work as one runtime-owned background group.
+
+Usage:
+- Pass `tasks` with 1–100 items. Every item must include `prompt`, `load_skills`, and `subagent_type`.
+- Optional item fields are `description`, `command`, `outputSchema`, and `schemaMode`.
+- All items are always background tasks. The runtime supplies parent ownership and a fresh parallel group id; do not provide parent/session/group ids.
+- Items must be independent. Nested delegation, dependencies, keep-alive, automatic retry, and automatic whole-group cancellation are not supported.
+- The runtime validates every item before creating any task. A result with `partial=true` lists created and failed items separately; created tasks remain active and are never hidden or automatically retried/cancelled.
+- Read the complete group with `background_output(parallel_group_id="...")` using the returned group id. Group reads enforce parent ownership and use the runtime Condition wait surface.
+
+Example:
+`task_batch(tasks=[{"prompt":"Inspect auth","load_skills":[],"subagent_type":"explore"},{"prompt":"Review storage","load_skills":[],"subagent_type":"researcher"}])`

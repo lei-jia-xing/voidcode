@@ -27,6 +27,7 @@ ESSENTIAL_TOOL_NAMES = frozenset(
         "shell_exec",
         # Delegation, clarification, and progress state.
         "task",
+        "task_batch",
         "question",
         "todo_write",
         # Skill loading is a first-class runtime mechanism.
@@ -134,6 +135,7 @@ class ToolRegistry:
         edit_schema_resolver: EditSchemaResolver | None = None,
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
+        task_batch_tool: Tool | None = None,
         question_tool: Tool | None = None,
         steer_task_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
@@ -151,6 +153,7 @@ class ToolRegistry:
                 edit_schema_resolver=edit_schema_resolver,
                 skill_tool=skill_tool,
                 task_tool=task_tool,
+                task_batch_tool=task_batch_tool,
                 question_tool=question_tool,
                 steer_task_tool=steer_task_tool,
                 background_output_tool=background_output_tool,

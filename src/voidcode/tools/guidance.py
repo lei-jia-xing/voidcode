@@ -26,6 +26,7 @@ _TOOL_GUIDANCE_FILES = {
     "shell_exec": "shell_exec.txt",
     "skill": "skill.txt",
     "task": "task.txt",
+    "task_batch": "task_batch.txt",
     "todo_write": "todo_write.txt",
     "web_fetch": "web_fetch.txt",
     "web_search": "web_search.txt",

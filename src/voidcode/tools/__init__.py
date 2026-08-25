@@ -38,6 +38,7 @@ from .shell_exec import ShellExecTool
 from .skill import SkillTool
 from .steer_task import SteerTaskTool
 from .task import TaskTool
+from .task_batch import TaskBatchTool
 from .todo_write import TodoWriteTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
@@ -68,11 +69,12 @@ __all__ = [
     "ShellExecTool",
     "SkillTool",
     "SteerTaskTool",
+    "TaskBatchTool",
     "TaskTool",
     "TodoWriteTool",
     "WebFetchTool",
-    "WebSearchTool",
     "WriteTool",
+    "WebSearchTool",
     "ToolCall",
     "ToolDefinition",
     "ToolResult",

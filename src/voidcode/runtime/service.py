@@ -72,6 +72,7 @@ from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
 from ..tools.steer_task import SteerTaskTool
 from ..tools.task import TaskTool
+from ..tools.task_batch import TaskBatchTool
 from . import chunk_builders, skills
 from .acp import (
     AcpAdapter,
@@ -849,6 +850,7 @@ class VoidCodeRuntime(RuntimeSurface):
                 list_skills=self._skill_registry.all,
                 resolve_skill=self._skill_registry.resolve,
             ),
+            task_batch_tool=TaskBatchTool(runtime=self),
             task_tool=TaskTool(runtime=self),
             question_tool=QuestionTool(),
             steer_task_tool=SteerTaskTool(runtime=self),

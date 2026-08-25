@@ -29,6 +29,7 @@ _LEADER_TOOL_ALLOWLIST = (
     "background_process_send",
     "shell_exec",
     "task",
+    "task_batch",
     "todo_write",
     "background_cancel",
     "background_output",

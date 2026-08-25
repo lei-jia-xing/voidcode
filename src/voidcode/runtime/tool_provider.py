@@ -47,6 +47,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "steer_task",
         "submit_result",
         "task",
+        "task_batch",
         "todo_write",
         "web_fetch",
         "web_search",
@@ -195,6 +196,7 @@ class BuiltinToolProvider:
     _edit_schema_resolver: EditSchemaResolver | None
     _skill_tool: Tool | None
     _task_tool: Tool | None
+    _task_batch_tool: Tool | None
     _question_tool: Tool | None
     _steer_task_tool: Tool | None
     _background_output_tool: Tool | None
@@ -213,6 +215,7 @@ class BuiltinToolProvider:
         edit_schema_resolver: EditSchemaResolver | None = None,
         skill_tool: Tool | None = None,
         task_tool: Tool | None = None,
+        task_batch_tool: Tool | None = None,
         question_tool: Tool | None = None,
         steer_task_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
@@ -227,6 +230,7 @@ class BuiltinToolProvider:
         self._hooks_config = hooks_config
         self._edit_schema_resolver = edit_schema_resolver
         self._skill_tool = skill_tool
+        self._task_batch_tool = task_batch_tool
         self._task_tool = task_tool
         self._question_tool = question_tool
         self._steer_task_tool = steer_task_tool
@@ -263,6 +267,8 @@ class BuiltinToolProvider:
 
         if self._task_tool is not None:
             tools.append(self._task_tool)
+        if self._task_batch_tool is not None:
+            tools.append(self._task_batch_tool)
 
         if self._question_tool is not None:
             tools.append(self._question_tool)

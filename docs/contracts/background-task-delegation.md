@@ -97,6 +97,30 @@ runtime 已有的基础能力：
 - MCP 只按 runtime/session scope 管理，不声明 workspace-scoped lifecycle
 - `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product`) is allowed, and the child returns its plan to the leader via `submit_result`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
 
+## Leader-native batch dispatch
+
+The leader-facing `task_batch` tool is a bounded ergonomic surface over the existing
+runtime background-task and parallel-group contracts. It accepts 1–100 independent
+child requests; every item explicitly supplies `prompt`, `load_skills`, and
+`subagent_type`, with optional `description`, `command`, `outputSchema`, and
+`schemaMode`. All children are background tasks. The runtime, not the caller, sets
+the current session as `parent_session_id`, creates one fresh `parallel_group_id`,
+and applies one deterministic `parallel_group_size` to every child request.
+
+The tool rejects empty, oversized, duplicate, malformed, unsupported-preset, and
+invalid-schema batches before creating any child. Runtime creation is intentionally
+not presented as a false transaction: if a later child start fails, the result has
+`partial: true` and separately lists `created` and `failed` item indexes. Already
+created tasks remain durable and active; the tool never retries, cancels the group,
+or copies child transcripts. A fully dispatched result returns `parallel_group_id`
+and `task_ids` directly usable with `background_output(parallel_group_id=...)`.
+
+`task_batch` does not accept client-supplied parent/session/group IDs, keep-alive,
+dependencies, nested graphs, or automatic retry controls. Child execution continues
+through the same `start_background_task` routing, SQLite state, parent ownership,
+bounded group projection, and Condition-based wait used by `task` and
+`background_output`; it is not a new scheduler or arbitrary agent topology.
+
 ## 所有权边界
 
 这层能力必须继续由 **runtime** 拥有。
