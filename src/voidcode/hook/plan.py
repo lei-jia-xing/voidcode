@@ -47,6 +47,8 @@ class HookPlanValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class HookPlanBinding:
+    """Runtime-owned resolved binding declaration snapshot; not an executor or authority."""
+
     binding_id: str
     event: RuntimeHookSurface
     command: tuple[str, ...]
@@ -84,6 +86,8 @@ class HookPlanBinding:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedHookPlan:
+    """Frozen runtime-owned declaration snapshot consumed by hook execution."""
+
     schema_version: int
     plan_id: str
     revision: int
@@ -134,6 +138,7 @@ class ResolvedHookPlan:
 
     @classmethod
     def from_payload(cls, payload: object) -> ResolvedHookPlan:
+        """Materialize a validated runtime-owned snapshot; execution remains elsewhere."""
         if not isinstance(payload, Mapping):
             raise HookPlanValidationError("persisted hook plan must be an object")
         raw = cast(Mapping[object, object], payload)
@@ -182,7 +187,7 @@ def materialize_hook_plan(
     plan_id: str = "runtime-hooks",
     revision: int = HOOK_PLAN_REVISION,
 ) -> ResolvedHookPlan:
-    """Resolve config commands and advisory preset metadata into a frozen plan."""
+    """Resolve declarations into a runtime-owned snapshot; executor/runtime controls execution."""
     if scope != "session":
         raise HookPlanValidationError("hook plan scope must be 'session'; implicit scope inheritance is not supported")
     if not isinstance(plan_id, str) or not plan_id.strip():

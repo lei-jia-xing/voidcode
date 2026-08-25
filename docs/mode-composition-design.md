@@ -6,6 +6,8 @@
 - 范围：design-only（本文件只记录设计与决策，不包含实现代码，执行删除时以 `src/` 下实际代码为准）
 - 目标仓库：`voidcode`
 - 关联文档：`docs/workflow-composition-design.md`（workflow 收口的前置文档）、`docs/oh-my-pi-comparison-priorities.md`、`docs/deliberate-omissions.md`、`docs/contracts/workflow-presets.md`、`docs/contracts/background-task-delegation.md`、`docs/contracts/runtime-lifecycle-hooks.md`
+> **历史设计 / superseded**：本文件保留的是旧的 `analyze` / `WorkflowMode` 组合设计与拟议迁移方案，不是当前实现契约。当前 `/plan` 使用 `RuntimeMode.plan`；plan mode 是 runtime 强制的只读执行姿态，不是独立的 planning engine 或 state machine。请以 `src/` 下实际代码和当前契约文档为准；以下历史内容不应被当作 shipped behavior。
+
 
 ## 背景与动机
 

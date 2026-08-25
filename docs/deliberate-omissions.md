@@ -28,7 +28,7 @@ What voidcode can do but defers to skills, hooks, or external tooling.
 | Area | Extension | Mechanism |
 |------|-----------|-----------|
 | Long-term memory | Cross-session knowledge, user preferences, project facts | Workspace-scoped keyword memory (`runtime/memory.py`: SQLite `memories` + CLI `voidcode memory *` + config `memory` section) alongside workspace `AGENTS.md` rules; broader long-term pipeline deferred |
-| Plan mode | Structured planning before execution | Write plans to files; no dedicated runtime mode |
+| Plan mode | Structured planning before execution | Runtime-enforced `RuntimeMode.plan` read-only execution stance; no dedicated planning engine or plan-state machine. Plans remain files/text produced by the agent |
 | MCP servers | External tool providers | Runtime/session-scoped, config-gated (`runtime/mcp.py`) |
 | Custom agents | New agent roles beyond the preset set | Agent manifest declarations in `agent/`; runtime executes, not defines |
 | LSP | Language intelligence | Runtime-managed lifecycle (`runtime/lsp.py`), not a builtin tool |
@@ -54,7 +54,7 @@ What voidcode will NEVER implement in the runtime core.
 |----------|-----------|
 | **Arbitrary sub-agent spawning** | Only supported child presets (advisor, explore, researcher, worker, product) can be delegated to; `leader` is the sole top-level executable preset (`_EXECUTABLE_AGENT_PRESETS`), not a delegation target, and `product` is a delegated read-only plan subagent (`_EXECUTABLE_SUBAGENT_PRESETS`), not a top-level preset. Open-ended agent creation is not a runtime primitive. See [agent-architecture.md](./agent-architecture.md). |
 | **Agent-to-agent bus** | No direct agent-to-agent communication channel. All coordination flows through runtime-owned parent/child session linkage and background task contracts. See [agent-boundary.md](./agent-boundary.md). |
-| **Plan mode as a runtime concept** | Plans are files the agent writes. No dedicated planning execution engine or plan-state machine in the runtime. |
+| **Plan mode as a runtime concept** | `RuntimeMode.plan` exists as a runtime-enforced read-only execution stance. There is no dedicated planning engine or plan-state machine; planning artifacts remain files or plan text produced by the agent. |
 | **Multi-agent topology beyond leader + child presets** | The runtime owns delegated child execution, not arbitrary orchestration graphs. LangGraph is not the multi-agent backbone. |
 
 ### Context & Compaction
