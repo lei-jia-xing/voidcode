@@ -139,6 +139,7 @@ def test_webfetch_returns_attachment_for_image() -> None:
     data_uri = attachment.get("data_uri")
     assert isinstance(data_uri, str)
     assert data_uri.startswith("data:image/png;base64,")
+    assert not hasattr(result, "attachment")
 
 
 def test_webfetch_rejects_localhost_targets() -> None:

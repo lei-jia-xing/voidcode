@@ -92,6 +92,7 @@ def test_read_tool_returns_attachment_for_images(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert result.data["type"] == "attachment"
     assert isinstance(result.data["attachment"], dict)
+    assert not hasattr(result, "attachment")
 
 
 def test_read_tool_allows_workspace_escape_path_with_absolute_display(tmp_path: Path) -> None:

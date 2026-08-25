@@ -49,7 +49,6 @@ class ToolResult:
     error: str | None = None
     truncated: bool = False
     partial: bool = False
-    attachment: dict[str, object] | None = None
     timeout_seconds: int | None = None
     source: str | None = None
     fallback_reason: str | None = None

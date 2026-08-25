@@ -203,7 +203,6 @@ class WebFetchTool:
                     },
                     truncated=False,
                     partial=False,
-                    attachment={"mime": mime, "data_uri": data_uri},
                     timeout_seconds=timeout,
                 )
             if "text/html" in mime:
@@ -229,7 +228,6 @@ class WebFetchTool:
                     },
                     truncated=False,
                     partial=False,
-                    attachment={"mime": mime, "data_uri": data_uri},
                     timeout_seconds=timeout,
                 )
             if "text/html" in mime:

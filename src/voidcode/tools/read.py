@@ -8,7 +8,7 @@ import json
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, cast, final
+from typing import ClassVar, final
 
 from pydantic import BaseModel, ValidationError, field_validator
 
@@ -520,5 +520,4 @@ class ReadTool:
             data=outcome.data,
             truncated=bool(outcome.data.get("truncated", False)),
             partial=bool(outcome.data.get("partial", False)),
-            attachment=cast(dict[str, object], outcome.data.get("attachment")) if isinstance(outcome.data.get("attachment"), dict) else None,
         )

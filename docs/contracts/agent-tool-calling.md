@@ -139,12 +139,12 @@ Agent 发起工具调用时只提交工具名与参数对象：
     "path": "README.md",
     "line_count": 12,
     "truncated": false,
-    "partial": false
+    "partial": false,
+    "attachment": null
   },
   "error": null,
   "truncated": false,
-  "partial": false,
-  "attachment": null
+  "partial": false
 }
 ```
 
@@ -152,10 +152,12 @@ Agent 发起工具调用时只提交工具名与参数对象：
 
 - `status`：`ok` 或 `error`；
 - `content`：适合 agent 直接阅读的文本内容或摘要，可为 `null`；
-- `data`：结构化 metadata，按工具不同而不同；
+- `data`：结构化 metadata，按工具不同而不同；图片、PDF 等非纯文本结果的附件数据位于 `data.attachment`；
 - `error`：失败信息；`status="error"` 时必须存在，`status="ok"` 时必须为 `null`。
-- `truncated` / `partial`：结果是否被截断或部分返回；
-- `attachment`：图片、PDF 等非纯文本结果的结构化附件数据；
+- `truncated` / `partial`：结果是否被截断或部分返回。
+
+`attachment` 不再是 `ToolResult` 顶层字段；runtime event 会展开合并工具的 `data` 字段，因此附件仍会持久化并可供 provider/frontend 消费。
+
 
 在 runtime event 流中，工具相关的稳定执行边界当前至少包括：
 
@@ -309,7 +311,7 @@ describes a non-essential tool; it is not an authorization decision.
 
 `content` 是人类可读摘要（"Read N line(s) from ..."），行内容通过 `data.lines` / `data.raw_content` 获取；超出 `limit` 或字节上限时 `truncated` / `partial` 为 `true`，`next_offset` 给出续读位置。`content_hash` 是文件内容 sha256。
 
-图片或 PDF 会把 `data.type` 设为 `attachment`，并通过 `data.attachment` / `attachment` 返回 base64 data URI。目录路径会失败；目录探索应使用 `glob`。
+图片或 PDF 会把 `data.type` 设为 `attachment`，并通过 `data.attachment` 返回 base64 data URI。目录路径会失败；目录探索应使用 `glob`。
 
 - 选择原则：已知文件路径且需要完整内容时使用；不要用它做目录发现或全仓搜索。
 
