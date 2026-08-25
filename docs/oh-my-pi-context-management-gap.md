@@ -15,7 +15,7 @@
 
 即：对 context files 而言，方向正好相反——omp 是 eager 全文注入，VoidCode 是响应式按需注入。
 
-VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最小 P1：always-apply 全文、discoverable metadata 与 `rule://<name>` 按需读取；仍缺少 OMP 的 glob 条件规则、imports 和完整 memory/compaction 管线。
+VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最小 P1：always-apply 全文、discoverable metadata 与 `voidcode://rule/<name>` 按需读取；仍缺少 OMP 的 glob 条件规则、imports 和完整 memory/compaction 管线。
 
 ## 逐维度对比
 
@@ -33,7 +33,7 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 ### 3. Rulebook / 按需规则
 
-- **voidcode**：`.voidcode/rules/**/*.md` 与根 `RULES.md` 构成 workspace-only catalog；always-apply 规则全文注入，discoverable 规则只注入 metadata，正文经 bounded `rule://<name>` 读取。现有 `AGENTS.md` 仍保持响应式规则行为。
+- **voidcode**：`.voidcode/rules/**/*.md` 与根 `RULES.md` 构成 workspace-only catalog；always-apply 规则全文注入，discoverable 规则只注入 metadata，正文经 bounded `voidcode://rule/<name>` 读取。现有 `AGENTS.md` 仍保持响应式规则行为。
 - **判定**：最小 rulebook disclosure 已落地；glob 条件规则、imports、user scope 与完整 TTSR 仍省略。
 
 ### 4. Memory
@@ -60,7 +60,7 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 - 差异不在「是否按需加载」，而在**eager/按需的边界划在哪里**。
 - voidcode 的响应式 context files 是刻意的 token 经济选择，但代价是缺少 user 级规则、@import、sticky 规则与指针能力。
-- 按需能力差距集中在 memory 整合管线与 OMP 的完整 rulebook/compaction 语义；VoidCode 已提供 bounded `rule://` 与工具文档 URI，并以 snapshot hash 保持 replay 稳定。compaction 的差距是「确定性 vs 模型驱动」的哲学差异。
+- 按需能力差距集中在 memory 整合管线与 OMP 的完整 rulebook/compaction 语义；VoidCode 已提供 bounded `voidcode://rule/<name>` 与工具文档 URI，并以 snapshot hash 保持 replay 稳定。compaction 的差距是「确定性 vs 模型驱动」的哲学差异。
 
 ## 证据索引
 
@@ -79,7 +79,7 @@ P1 rulebook implementation notes:
 
 - Catalog roots are workspace-local `.voidcode/rules/` plus optional root `RULES.md`; frontmatter supports `name`, `description`, `application` (`always_apply` or `discoverable`), `scope` (`workspace` or `repo`), and bounded integer `precedence`.
 - Prompt assembly injects bounded always-apply bodies and discoverable metadata only. Runtime policy remains authoritative; rule text cannot grant tools, approvals, delegation, or MCP capabilities.
-- `read(path="rule://<name>")` validates a single safe slug, resolves only the catalog, and applies line/byte bounds. Session metadata persists sorted rule metadata and a canonical snapshot hash; replay ignores entries whose current bytes no longer match the snapshot.
+- `read(path="voidcode://rule/<name>")` validates a single safe slug, resolves only the catalog, and applies line/byte bounds. Session metadata persists sorted rule metadata and a canonical snapshot hash; replay ignores entries whose current bytes no longer match the snapshot.
 - `src/voidcode/tools/task.py` — `load_skills` 强制子会话 skill 正文加载。
 
 ### Oh My Pi（依据仓库路径，commit 见 `docs/oh-my-pi-comparison-priorities.md`）

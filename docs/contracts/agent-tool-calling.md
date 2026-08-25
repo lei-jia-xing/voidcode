@@ -86,6 +86,21 @@ approval 和 replay policy 检查。动态 MCP/local tool 的事实以当前 reg
 `ToolResult.data` 和 runtime metadata/events 为准，不以 provider description
 或过期文档文本推断。
 
+### Rulebook resources
+
+Discoverable workspace rules are exposed as bounded runtime resources. Read a rule
+by its canonical URI before relying on its contents:
+
+```text
+read(path="voidcode://rule/<name>")
+```
+
+The runtime validates a single safe slug, resolves only the workspace rule catalog,
+and enforces line/byte bounds. The legacy `rule://<name>` URI is unsupported and
+fails explicitly; reading a rule never grants tools, approvals, delegation, or
+other runtime capabilities. Rule metadata snapshots are versioned and replay only
+uses entries whose current content hash matches the persisted snapshot.
+
 ### Tool call
 
 Agent 发起工具调用时只提交工具名与参数对象：

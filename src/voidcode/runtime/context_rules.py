@@ -21,7 +21,9 @@ MAX_RULEBOOK_METADATA_CHARS = 240
 MAX_RULEBOOK_PROMPT_CHARS = 12_000
 MAX_RULE_URI_LINES = 2_000
 MAX_RULE_URI_BYTES = 50 * 1024
-RULEBOOK_SNAPSHOT_VERSION = 1
+RULEBOOK_SNAPSHOT_VERSION = 2
+RULE_URI_PREFIX = "voidcode://rule/"
+LEGACY_RULE_URI_PREFIX = "rule://"
 _RULE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 RuleApplication = Literal["always_apply", "discoverable"]
@@ -194,7 +196,7 @@ class RuleMetadata:
             "application": self.application,
             "scope": self.scope,
             "precedence": self.precedence,
-            "uri": f"rule://{self.name}",
+            "uri": f"{RULE_URI_PREFIX}{self.name}",
             "content_hash": self.content_hash,
         }
 
@@ -267,7 +269,7 @@ def rulebook_snapshot_from_payload(payload: object) -> RulebookSnapshot:
         raise ValueError("persisted rulebook_snapshot must be an object")
     version = payload.get("snapshot_version")
     if version != RULEBOOK_SNAPSHOT_VERSION:
-        raise ValueError("persisted rulebook_snapshot version must be 1")
+        raise ValueError(f"persisted rulebook_snapshot version must be {RULEBOOK_SNAPSHOT_VERSION}")
     raw_entries = payload.get("entries")
     if not isinstance(raw_entries, list):
         raise ValueError("persisted rulebook_snapshot entries must be a list")
@@ -290,7 +292,7 @@ def rulebook_snapshot_from_payload(payload: object) -> RulebookSnapshot:
         valid_scope = scope in {"workspace", "repo"}
         if not isinstance(precedence, int) or isinstance(precedence, bool) or not valid_application or not valid_scope:
             raise ValueError("persisted rulebook_snapshot entry has invalid metadata")
-        if uri != f"rule://{name}" or not _RULE_NAME_PATTERN.fullmatch(cast(str, name)):
+        if uri != f"{RULE_URI_PREFIX}{name}" or not _RULE_NAME_PATTERN.fullmatch(cast(str, name)):
             raise ValueError("persisted rulebook_snapshot entry has invalid rule URI")
         entries.append(
             RuleMetadata(
@@ -417,20 +419,22 @@ def rulebook_prompt_context(catalog: RuleCatalog) -> str:
             metadata = entry.metadata
             parts.append(f"\nRule {metadata.name} (scope={metadata.scope}, precedence={metadata.precedence}):\n{entry.content}")
     if catalog.discoverable:
-        parts.append("\nDiscoverable runtime rules (metadata only; read rule://<name> when needed):")
+        parts.append(f"\nDiscoverable runtime rules (metadata only; read {RULE_URI_PREFIX}<name> when needed):")
         for entry in catalog.discoverable:
             metadata = entry.metadata
             parts.append(
                 f"- {metadata.name}: {metadata.description} (scope={metadata.scope}, "
-                f"precedence={metadata.precedence}, hash={metadata.content_hash}, uri=rule://{metadata.name})"
+                f"precedence={metadata.precedence}, hash={metadata.content_hash}, uri={RULE_URI_PREFIX}{metadata.name})"
             )
     return "\n".join(parts)[:MAX_RULEBOOK_PROMPT_CHARS]
 
 
 def rule_uri_name(path: str) -> str:
-    if not path.startswith("rule://"):
+    if path.startswith(LEGACY_RULE_URI_PREFIX):
+        raise ValueError(f"unsupported legacy rule URI: {path}; use {RULE_URI_PREFIX}<name>")
+    if not path.startswith(RULE_URI_PREFIX):
         raise ValueError(f"unsupported rule URI: {path}")
-    raw_name = path[len("rule://") :]
+    raw_name = path[len(RULE_URI_PREFIX) :]
     decoded = unquote(raw_name)
     if decoded != raw_name or "%" in raw_name or "/" in decoded or "\\" in decoded or ".." in decoded or "?" in decoded or "#" in decoded:
         raise ValueError("invalid rule URI: rule names must be a single safe slug")
@@ -480,6 +484,7 @@ __all__ = [
     "read_rule_uri",
     "rule_uri_name",
     "rulebook_prompt_context",
+    "RULE_URI_PREFIX",
     "rulebook_snapshot_from_payload",
     "rulebook_snapshot_payload",
     "runtime_file_rule_contexts",
