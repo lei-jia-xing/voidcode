@@ -243,6 +243,10 @@ def _arguments_sha256(arguments: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def tool_input_arguments_sha256(arguments: Mapping[str, object]) -> str:
+    return _arguments_sha256(arguments)
+
+
 def _bounded_keys(arguments: Mapping[str, object]) -> list[str]:
     keys = sorted(arguments)
     if len(keys) > _MAX_ARGUMENT_KEYS:
@@ -265,6 +269,7 @@ __all__ = [
     "ToolInputHandlerBinding",
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
+    "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
     "validate_tool_input_schema",
 ]

@@ -66,8 +66,8 @@ runtime 解析 inner target 后，typed handler 只对 inner target 执行一次
 logical call 不会被 outer 与 inner 双重 canonicalize。
 
 Inner target 的 `graph.tool_request_created` 仍记录 inner target 的原始参数；typed
-结果通过独立的 `runtime.tool_hook_pre` 事件（`phase: "typed_input"`）记录，随后
-permission/approval 与执行使用最终 inner 参数。
+结果通过专用的 `runtime.tool_input_processed` 事件记录，随后 permission/approval
+与执行使用最终 inner 参数。
 
 ### Resume
 
@@ -137,22 +137,24 @@ permission/approval。诊断不会自动注入 provider context。
 Typed rewrite 不覆盖这个事件，以便 replay/debug 能区分“模型原始请求”和“runtime
 后续 canonicalization”。
 
-当 typed handler 产生 rewrite 或 diagnostic，runtime 追加独立的现有
-`runtime.tool_hook_pre` event，payload 至少包含：
+当 typed handler 产生 rewrite 或 diagnostic，runtime 追加专用的
+`runtime.tool_input_processed` event，payload 至少包含：
 
 ```json
 {
-  "phase": "typed_input",
+  "surface": "typed_input",
+  "session_id": "session-1",
   "tool_name": "read",
-  "status": "ok",
-  "runtime_tool_input_rewritten": {
+  "hook_status": "ok",
+  "policy": {"mode": "normal", "read_only": false},
+  "action": "rewrite",
+  "handler_names": ["canonicalize"],
+  "diagnostics": [],
+  "rewrite": {
     "original_sha256": "...",
     "final_sha256": "...",
     "original_argument_keys": ["path"],
-    "final_argument_keys": ["path"],
-    "handler_names": ["canonicalize"],
-    "diagnostics": [],
-    "action": "rewrite"
+    "final_argument_keys": ["path"]
   }
 }
 ```

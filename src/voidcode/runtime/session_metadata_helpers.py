@@ -682,11 +682,8 @@ def persist_tool_execution_intent(
     session: SessionState,
     intent: dict[str, object],
 ) -> None:
-    """Persist a pending tool intent within the workspace/session scope.
+    """Persist a pending tool intent within the workspace/session scope."""
 
-    The store update is deferred when the initial session row has not been
-    committed yet.
-    """
     pending = dict(intent)
     runtime_state = _runtime_state_payload_with_updates(
         session.metadata,
@@ -700,7 +697,6 @@ def persist_tool_execution_intent(
             metadata=metadata,
         )
     except UnknownSessionError:
-        # The initial run snapshot may not have committed yet.
         logger.debug("tool intent persistence deferred for new session %s", session.session.id)
 
 
@@ -782,7 +778,6 @@ __all__ = [
     "parse_runtime_state_metadata",
     "parse_skill_snapshot_metadata",
     "persist_tool_execution_intent",
-    "plan_state_from_metadata",
     "remaining_spawn_budget_from_metadata",
     "resume_waiting_reason",
     "runtime_state_acp",

@@ -73,6 +73,7 @@ from .events import (
     RUNTIME_REASONING_PART,
     RUNTIME_SKILL_LOADED,
     RUNTIME_TODO_UPDATED,
+    RUNTIME_TOOL_INPUT_PROCESSED,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_TOOL_STARTED,
     EventEnvelope,
@@ -115,6 +116,7 @@ from .session_metadata_helpers import (
     runtime_state_context_compacted,
     runtime_state_context_transform_applied,
     runtime_state_run_id,
+    session_metadata_with_runtime_state_updates,
     session_model_identity,
     session_with_context_compacted_state,
     session_with_context_transform_applied_state,
@@ -1456,6 +1458,7 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 tool_registry=tool_registry,
                 graph_step=graph_step,
+                is_resume=current_graph_request.metadata.get("runtime_resume") is True or current_graph_request.metadata.get("resume") is True,
             )
             if input_hook_outcome.action == "block":
                 sequence = yield from self._dispatch_error_feedback_chunks(
@@ -1483,6 +1486,7 @@ class RuntimeRunLoopCoordinator:
                     tool_results=tool_results,
                     permission_policy=active_permission_policy,
                     abort_signal=active_graph_request.abort_signal,
+                    is_resume=current_graph_request.metadata.get("runtime_resume") is True or current_graph_request.metadata.get("resume") is True,
                 )
                 continue
 
@@ -1502,6 +1506,20 @@ class RuntimeRunLoopCoordinator:
             if action == "continue":
                 continue
 
+            execution_intent = ToolExecutionIntent.from_call(
+                plan_tool_call,
+                tool.definition,
+                tool_call_id=tool_call_id,
+            )
+            intent_payload = execution_intent.metadata_payload()
+            session = replace(
+                session,
+                metadata=session_metadata_with_runtime_state_updates(
+                    session.metadata,
+                    updates={"pending_tool_intent": intent_payload},
+                ),
+            )
+            persist_tool_execution_intent(self._session_store, self._workspace, session, intent_payload)
             sequence, verdict = yield from self._run_tool_hook_phase(
                 session=session,
                 sequence=sequence,
@@ -2431,8 +2449,6 @@ class RuntimeRunLoopCoordinator:
             )
         )
         yield failed_chunk
-        if isinstance(classified_error, SingleAgentContextLimitError):
-            return {"action": "exit"}
         return {"action": "reraise", "exc": exc}
 
     def _plan_tool_step(
@@ -2442,6 +2458,7 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         tool_registry: ToolRegistry,
         graph_step: Any,
+        is_resume: bool = False,
     ) -> Generator[RuntimeStreamChunk, None, tuple[Any, Any, str, int, ToolInputHookOutcome]]:
         runtime = self._surface
         plan_tool_call = getattr(graph_step, "tool_call", None)
@@ -2474,10 +2491,8 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        delegation_policy_error = runtime.delegation_tool_policy_error(
-            session=session,
-            tool_name=plan_tool_call.tool_name,
-        )
+
+        delegation_policy_error = runtime.delegation_tool_policy_error(session=session, tool_name=plan_tool_call.tool_name)
         if delegation_policy_error is not None:
             failed_chunk, _ = self._persist_chunk(
                 chunk_builders.failed_chunk(
@@ -2515,10 +2530,17 @@ class RuntimeRunLoopCoordinator:
             yield failed_chunk
             raise
 
-        is_resume = session.metadata.get("runtime_resume") is True or session.metadata.get("resume") is True
-        if plan_tool_call.tool_name == "invoke_tool" or is_resume:
-            # invoke_tool is handled at its inner target; resumed graph paths
-            # conservatively reuse persisted arguments and do not rewrite.
+        lookup_envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="runtime.tool_lookup_succeeded",
+            source="runtime",
+            payload={"tool": plan_tool_call.tool_name},
+        )
+        sequence = lookup_envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
+
+        if plan_tool_call.tool_name == "invoke_tool":
+            # The dispatcher applies typed handlers to its inner target only.
             input_hook_outcome = ToolInputHookOutcome(tool_call=plan_tool_call)
         else:
             input_hook_outcome = self._tool_input_handler_registry.apply(
@@ -2528,9 +2550,9 @@ class RuntimeRunLoopCoordinator:
                     tool=tool.definition,
                     sequence=sequence,
                     session_status=session.status,
+                    is_resume=is_resume,
                     mode=str(session.metadata.get("mode", "normal")),
                     read_only=runtime_read_only_from_metadata(session.metadata),
-                    is_resume=False,
                 )
             )
             if input_hook_outcome.action == "rewrite":
@@ -2556,46 +2578,34 @@ class RuntimeRunLoopCoordinator:
                             handler_names=input_hook_outcome.handler_names,
                             blocked_reason=f"rewritten tool lookup failed: {exc}",
                         )
-        if input_hook_outcome.action == "block":
-            return input_hook_outcome.tool_call, tool, tool_call_id, sequence, input_hook_outcome
-        if input_hook_outcome.changed or input_hook_outcome.diagnostics:
+
+        if input_hook_outcome.action != "unchanged":
+            policy = hook_execution_policy_from_metadata(session.metadata)
             trace_payload: dict[str, object] = {
-                "phase": "typed_input",
+                "surface": "typed_input",
+                "session_id": session.session.id,
                 "tool_name": original_tool_call.tool_name,
-                "status": "ok",
+                "hook_status": "blocked" if input_hook_outcome.action == "block" else "ok",
+                "policy": {"mode": policy.mode, "read_only": policy.read_only},
+                "action": input_hook_outcome.action,
+                "handler_names": list(input_hook_outcome.handler_names),
+                "diagnostics": list(input_hook_outcome.diagnostics),
             }
-            if input_hook_outcome.changed:
-                trace_payload["runtime_tool_input_rewritten"] = tool_input_rewrite_metadata(
-                    original=original_tool_call,
-                    outcome=input_hook_outcome,
-                )
-            else:
-                trace_payload["runtime_tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
+            if input_hook_outcome.action == "rewrite":
+                trace_payload["rewrite"] = tool_input_rewrite_metadata(original=original_tool_call, outcome=input_hook_outcome)
+            if input_hook_outcome.blocked_reason is not None:
+                trace_payload["reason"] = input_hook_outcome.blocked_reason
             trace_event = self._persist_event(
                 session_id=session.session.id,
-                event_type="runtime.tool_hook_pre",
+                event_type=RUNTIME_TOOL_INPUT_PROCESSED,
                 source="runtime",
                 payload=trace_payload,
             )
             sequence = trace_event.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=trace_event)
-        plan_tool_call = input_hook_outcome.tool_call
-        lookup_payload: dict[str, object] = {"tool": plan_tool_call.tool_name}
-        if input_hook_outcome.changed:
-            lookup_payload["tool_input_rewritten"] = True
-        if input_hook_outcome.diagnostics:
-            lookup_payload["tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type="runtime.tool_lookup_succeeded",
-            source="runtime",
-            payload=lookup_payload,
-        )
-        sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         if input_hook_outcome.action == "block":
             return input_hook_outcome.tool_call, tool, tool_call_id, sequence, input_hook_outcome
-        return plan_tool_call, tool, tool_call_id, sequence, input_hook_outcome
+        return input_hook_outcome.tool_call, tool, tool_call_id, sequence, input_hook_outcome
 
     def _resolve_permission_for_tool(
         self,
@@ -3181,6 +3191,7 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
         permission_policy: PermissionPolicy | None,
         abort_signal: ProviderAbortSignal | None,
+        is_resume: bool = False,
     ) -> Generator[RuntimeStreamChunk]:
         """Execute an ``invoke_tool(name, arguments)`` dispatch call.
 
@@ -3275,22 +3286,18 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        is_resume = session.metadata.get("runtime_resume") is True or session.metadata.get("resume") is True
-        if is_resume:
-            input_hook_outcome = ToolInputHookOutcome(tool_call=inner_call)
-        else:
-            input_hook_outcome = self._tool_input_handler_registry.apply(
-                event=ToolInputEvent(
-                    session_id=session.session.id,
-                    tool_call=inner_call,
-                    tool=tool.definition,
-                    sequence=sequence,
-                    session_status=session.status,
-                    mode=str(session.metadata.get("mode", "normal")),
-                    read_only=runtime_read_only_from_metadata(session.metadata),
-                    is_resume=False,
-                )
+        input_hook_outcome = self._tool_input_handler_registry.apply(
+            event=ToolInputEvent(
+                session_id=session.session.id,
+                tool_call=inner_call,
+                tool=tool.definition,
+                sequence=sequence,
+                session_status=session.status,
+                is_resume=is_resume,
+                mode=str(session.metadata.get("mode", "normal")),
+                read_only=runtime_read_only_from_metadata(session.metadata),
             )
+        )
         if input_hook_outcome.action == "rewrite":
             try:
                 validate_tool_input_schema(tool.definition, input_hook_outcome.tool_call.arguments)
@@ -3325,43 +3332,39 @@ class RuntimeRunLoopCoordinator:
                 error_kind="tool_input_handler_blocked",
             )
             return
-        inner_call = input_hook_outcome.tool_call
+        lookup_envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="runtime.tool_lookup_succeeded",
+            source="runtime",
+            payload={"tool": inner_name},
+        )
+        sequence = lookup_envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
 
-        if input_hook_outcome.changed or input_hook_outcome.diagnostics:
+        if input_hook_outcome.action != "unchanged":
+            policy = hook_execution_policy_from_metadata(session.metadata)
             trace_payload: dict[str, object] = {
-                "phase": "typed_input",
+                "surface": "typed_input",
+                "session_id": session.session.id,
                 "tool_name": inner_name,
-                "status": "ok",
+                "hook_status": "blocked" if input_hook_outcome.action == "block" else "ok",
+                "policy": {"mode": policy.mode, "read_only": policy.read_only},
+                "action": input_hook_outcome.action,
+                "handler_names": list(input_hook_outcome.handler_names),
+                "diagnostics": list(input_hook_outcome.diagnostics),
             }
-            if input_hook_outcome.changed:
-                trace_payload["runtime_tool_input_rewritten"] = tool_input_rewrite_metadata(
-                    original=original_inner_call,
-                    outcome=input_hook_outcome,
-                )
-            else:
-                trace_payload["runtime_tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
+            if input_hook_outcome.action == "rewrite":
+                trace_payload["rewrite"] = tool_input_rewrite_metadata(original=original_inner_call, outcome=input_hook_outcome)
+            if input_hook_outcome.blocked_reason is not None:
+                trace_payload["reason"] = input_hook_outcome.blocked_reason
             trace_event = self._persist_event(
                 session_id=session.session.id,
-                event_type="runtime.tool_hook_pre",
+                event_type=RUNTIME_TOOL_INPUT_PROCESSED,
                 source="runtime",
                 payload=trace_payload,
             )
             sequence = trace_event.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=trace_event)
-
-        lookup_payload: dict[str, object] = {"tool": inner_name}
-        if input_hook_outcome.changed:
-            lookup_payload["tool_input_rewritten"] = True
-        if input_hook_outcome.diagnostics:
-            lookup_payload["tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
-        lookup_envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type="runtime.tool_lookup_succeeded",
-            source="runtime",
-            payload=lookup_payload,
-        )
-        sequence = lookup_envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
 
         permission_chunks = runtime.resolve_permission(
             session=session,
@@ -3392,6 +3395,20 @@ class RuntimeRunLoopCoordinator:
             )
             return
 
+        execution_intent = ToolExecutionIntent.from_call(
+            inner_call,
+            tool.definition,
+            tool_call_id=outer_call_id or f"runtime-tool-{uuid4().hex}",
+        )
+        intent_payload = execution_intent.metadata_payload()
+        session = replace(
+            session,
+            metadata=session_metadata_with_runtime_state_updates(
+                session.metadata,
+                updates={"pending_tool_intent": intent_payload},
+            ),
+        )
+        persist_tool_execution_intent(self._session_store, self._workspace, session, intent_payload)
         pre_hook_outcome = run_tool_hooks_for_session(
             hooks=self._config.hooks,
             workspace=self._workspace,

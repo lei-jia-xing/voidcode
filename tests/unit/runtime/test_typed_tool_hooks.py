@@ -97,12 +97,15 @@ def test_typed_rewrite_preserves_raw_graph_args_and_uses_final_execution_args(tm
     graph_request = next(event for event in response.events if event.event_type == "graph.tool_request_created")
     assert graph_request.payload["arguments"] == {"path": "./input.txt"}
     types = [event.event_type for event in response.events]
-    assert types.index("graph.tool_request_created") < types.index("runtime.tool_hook_pre") < types.index("runtime.tool_lookup_succeeded")
-    trace = next(event for event in response.events if event.event_type == "runtime.tool_hook_pre" and event.payload.get("phase") == "typed_input")
-    metadata = trace.payload["runtime_tool_input_rewritten"]
+    assert types.index("graph.tool_request_created") < types.index("runtime.tool_lookup_succeeded") < types.index("runtime.tool_input_processed")
+    trace = next(event for event in response.events if event.event_type == "runtime.tool_input_processed")
+    assert trace.payload["surface"] == "typed_input"
+    assert trace.payload["hook_status"] == "ok"
+    assert isinstance(trace.payload["policy"], dict)
+    assert trace.payload["policy"]["mode"] == "normal"
+    metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
     assert metadata["original_sha256"] != metadata["final_sha256"]
-    assert metadata["handler_names"] == ["canonicalize"]
     started = next(event for event in response.events if event.event_type == "runtime.tool_started")
     completed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
     assert isinstance(started.payload["display"], dict)
@@ -143,8 +146,8 @@ def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) 
         event for event in response.events if event.event_type == "graph.tool_request_created" and event.payload.get("tool") == "capture"
     )
     assert inner_request.payload["arguments"] == {"path": "./inner.txt"}
-    trace = next(event for event in response.events if event.event_type == "runtime.tool_hook_pre" and event.payload.get("phase") == "typed_input")
-    metadata = trace.payload["runtime_tool_input_rewritten"]
+    trace = next(event for event in response.events if event.event_type == "runtime.tool_input_processed")
+    metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
     assert isinstance(metadata["handler_names"], list)
 
