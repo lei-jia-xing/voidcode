@@ -28,10 +28,12 @@ bun run preview
 - `bun run lint` - 运行 ESLint
 - `bun run format` - 使用 Prettier 格式化代码
 - `bun run typecheck` - 运行 TypeScript 类型检查
-- `bun run test` - 使用 Vitest 运行测试
+- `bun run test` - 使用 Vitest 在 jsdom 环境中运行一次测试
+- `bun run test:watch` - 使用 Vitest 进入监听模式
 - `bun run test:run` - 运行一次测试（不进入监听模式）
 - `bun run test:coverage` - 运行测试并生成覆盖率报告
 - `bun run test:e2e` - 使用 Playwright 运行 Web launcher 端到端测试
+  > 不要使用裸 `bun test` 运行 Vitest 测试；它会调用 Bun 原生 runner，绕过 Vite/Vitest 的 jsdom 配置。
 
 ### 技术栈
 

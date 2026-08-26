@@ -30,7 +30,12 @@ export function failureMessageFromEvent(event: EventEnvelope): string | null {
   if (event.event_type === "runtime.failed") {
     const diagnostics = objectPayload(payload.diagnostics);
     const diagnosticDetails = objectPayload(diagnostics?.details);
+    const providerDetails =
+      objectPayload(payload.provider_error_details) ??
+      objectPayload(diagnosticDetails?.provider_error_details);
     return (
+      nonEmptyFailureValue(providerDetails?.exception_message) ??
+      nonEmptyFailureValue(providerDetails?.message) ??
       nonEmptyFailureValue(diagnosticDetails?.exception_message) ??
       nonEmptyFailureValue(diagnosticDetails?.message) ??
       nonEmptyFailureValue(diagnostics?.summary) ??
