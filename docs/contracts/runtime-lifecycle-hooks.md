@@ -291,6 +291,14 @@ lifecycle hook 的 payload 通过环境变量注入，当前约定如下：
 
 hook payload 只通过 `VOIDCODE_HOOK_PAYLOAD_JSON` 传递，不生成逐字段环境变量镜像。
 
+## Typed tool input hook
+
+`pre_tool` argv command 与首期 typed `ToolInputHandler` 不是同一执行面：argv hook 仍按
+现有 command/stdout contract 运行；typed input handler 的 rewrite、schema gate、
+permission/approval 重算与 resume 限制见 [`runtime-typed-tool-hooks.md`](./runtime-typed-tool-hooks.md)。
+该 typed contract 不扩展本契约的 lifecycle phases，也不允许 handler 成为 session、
+approval 或 task truth 的 authority。
+
 ## Declarative execution plan v2
 
 Runtime may materialize a `ResolvedHookPlan` from the explicit `RuntimeHooksConfig` surface-to-argv declarations plus agent preset refs. The plan is runtime-owned and includes `schema_version`, stable `plan_id`/`revision`, canonical `plan_hash`, ordered `binding_id` entries, event/scope/phase, command argv, failure mode, timeout, and the bounded `runtime.lifecycle.v1` payload schema. Binding payloads and canonical hashes contain no removed declaration fields.

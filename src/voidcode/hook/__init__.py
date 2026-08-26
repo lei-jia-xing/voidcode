@@ -29,6 +29,17 @@ from .presets import (
     list_builtin_hook_presets,
     validate_hook_preset_refs,
 )
+from .typed import (
+    ToolInputAction,
+    ToolInputDecision,
+    ToolInputEvent,
+    ToolInputHandler,
+    ToolInputHandlerBinding,
+    ToolInputHandlerRegistry,
+    ToolInputHookOutcome,
+    tool_input_rewrite_metadata,
+    validate_tool_input_schema,
+)
 
 __all__ = [
     "HOOK_PAYLOAD_SCHEMA",
@@ -47,6 +58,15 @@ __all__ = [
     "RuntimeFormatterPresetConfig",
     "RuntimeHookSurface",
     "RuntimeHooksConfig",
+    "ToolInputAction",
+    "ToolInputDecision",
+    "ToolInputEvent",
+    "ToolInputHandler",
+    "ToolInputHandlerBinding",
+    "ToolInputHandlerRegistry",
+    "ToolInputHookOutcome",
+    "tool_input_rewrite_metadata",
+    "validate_tool_input_schema",
     "get_builtin_hook_preset",
     "hook_plan_from_session_metadata",
     "is_builtin_hook_preset_ref",

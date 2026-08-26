@@ -36,6 +36,7 @@
 - [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
 - [`runtime-extension-points.md`](./runtime-extension-points.md) — typed runtime extension points 与 observability events 的所有权边界
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
+- [`runtime-typed-tool-hooks.md`](./runtime-typed-tool-hooks.md) — typed tool input handler 的执行顺序、rewrite 与 authority 边界
 - [`background-task-delegation.md`](./background-task-delegation.md) — delegated/background task parent/child linkage、结果读取、retry/cancel 与 fake-provider/fake-MCP 验证立场
 - [`stream-transport.md`](./stream-transport.md) — 运行时流的交付与重放预期
 

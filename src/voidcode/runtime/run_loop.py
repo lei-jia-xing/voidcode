@@ -13,6 +13,13 @@ from pydantic import ValidationError
 
 from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
+from ..hook.typed import (
+    ToolInputEvent,
+    ToolInputHandlerRegistry,
+    ToolInputHookOutcome,
+    tool_input_rewrite_metadata,
+    validate_tool_input_schema,
+)
 from ..provider.errors import (
     ProviderExecutionError,
     SingleAgentContextLimitError,
@@ -48,7 +55,7 @@ from .context_window import (
     RuntimeContextWindow,
     continuity_summary_metadata,
 )
-from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk
+from .contracts import RuntimeProviderContextPolicyDecision, RuntimeStreamChunk, runtime_read_only_from_metadata
 from .event_envelopes import (
     ReasoningCaptureState,
     envelopes_for_acp_events,
@@ -614,6 +621,7 @@ class RuntimeRunLoopCoordinator:
         mcp_manager: McpManager,
         lsp_manager: LspManager,
         provider_catalog_query: RuntimeProviderCatalogQuery,
+        tool_input_handler_registry: ToolInputHandlerRegistry,
         tool_executor: RuntimeToolExecutor,
     ) -> None:
         self._surface = surface
@@ -625,6 +633,7 @@ class RuntimeRunLoopCoordinator:
         self._mcp_manager = mcp_manager
         self._lsp_manager = lsp_manager
         self._provider_catalog_query = provider_catalog_query
+        self._tool_input_handler_registry = tool_input_handler_registry
         self._tool_executor = tool_executor
 
     def _persist_events(
@@ -1442,13 +1451,23 @@ class RuntimeRunLoopCoordinator:
                 )
                 break
 
-            plan_tool_call, tool, tool_call_id, sequence = yield from self._plan_tool_step(
+            plan_tool_call, tool, tool_call_id, sequence, input_hook_outcome = yield from self._plan_tool_step(
                 session=session,
                 sequence=sequence,
                 tool_registry=tool_registry,
                 graph_step=graph_step,
             )
-
+            if input_hook_outcome.action == "block":
+                sequence = yield from self._dispatch_error_feedback_chunks(
+                    session=session,
+                    tool_name=plan_tool_call.tool_name,
+                    tool_call_id=tool_call_id,
+                    arguments=dict(plan_tool_call.arguments),
+                    tool_results=tool_results,
+                    error=input_hook_outcome.blocked_reason or "tool input handler blocked the call",
+                    error_kind="tool_input_handler_blocked",
+                )
+                continue
             if plan_tool_call.tool_name == "invoke_tool":
                 # On-demand dispatch: resolve the inner tool and run it through
                 # the SAME execution boundary as a provider-native tool call
@@ -2423,7 +2442,7 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         tool_registry: ToolRegistry,
         graph_step: Any,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[Any, Any, str, int]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[Any, Any, str, int, ToolInputHookOutcome]]:
         runtime = self._surface
         plan_tool_call = getattr(graph_step, "tool_call", None)
         if plan_tool_call is None:
@@ -2437,24 +2456,24 @@ class RuntimeRunLoopCoordinator:
             yield failed_chunk
             raise ValueError("graph step did not produce a tool call or output")
 
+        original_tool_call = plan_tool_call
         explicit_tool_call_id = plan_tool_call.tool_call_id
         tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
-        tool_request_payload: dict[str, object] = {
-            "tool": plan_tool_call.tool_name,
-            "arguments": dict(plan_tool_call.arguments),
-            **({"path": path} if isinstance((path := plan_tool_call.arguments.get("path")), str) else {}),
+        graph_payload: dict[str, object] = {
+            "tool": original_tool_call.tool_name,
+            "arguments": dict(original_tool_call.arguments),
+            **({"path": path} if isinstance((path := original_tool_call.arguments.get("path")), str) else {}),
         }
         if explicit_tool_call_id is not None or runtime.effective_runtime_config_from_metadata(session.metadata).execution_engine == "provider":
-            tool_request_payload["tool_call_id"] = tool_call_id
+            graph_payload["tool_call_id"] = tool_call_id
         envelope = self._persist_event(
             session_id=session.session.id,
             event_type="graph.tool_request_created",
             source="graph",
-            payload=tool_request_payload,
+            payload=graph_payload,
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-
         delegation_policy_error = runtime.delegation_tool_policy_error(
             session=session,
             tool_name=plan_tool_call.tool_name,
@@ -2465,19 +2484,13 @@ class RuntimeRunLoopCoordinator:
                     session=session,
                     sequence=sequence + 1,
                     error=delegation_policy_error,
-                    payload={
-                        "kind": "delegation_tool_policy_denied",
-                        "tool": plan_tool_call.tool_name,
-                    },
+                    payload={"kind": "delegation_tool_policy_denied", "tool": plan_tool_call.tool_name},
                 )
             )
             yield failed_chunk
             raise ValueError(delegation_policy_error)
 
-        tool_policy_denial = runtime.tool_policy_denial(
-            session=session,
-            tool_name=plan_tool_call.tool_name,
-        )
+        tool_policy_denial = runtime.tool_policy_denial(session=session, tool_name=plan_tool_call.tool_name)
         if tool_policy_denial is not None:
             policy_error_message = tool_policy_error(tool_policy_denial)
             failed_chunk, _ = self._persist_chunk(
@@ -2502,15 +2515,87 @@ class RuntimeRunLoopCoordinator:
             yield failed_chunk
             raise
 
+        is_resume = session.metadata.get("runtime_resume") is True or session.metadata.get("resume") is True
+        if plan_tool_call.tool_name == "invoke_tool" or is_resume:
+            # invoke_tool is handled at its inner target; resumed graph paths
+            # conservatively reuse persisted arguments and do not rewrite.
+            input_hook_outcome = ToolInputHookOutcome(tool_call=plan_tool_call)
+        else:
+            input_hook_outcome = self._tool_input_handler_registry.apply(
+                event=ToolInputEvent(
+                    session_id=session.session.id,
+                    tool_call=plan_tool_call,
+                    tool=tool.definition,
+                    sequence=sequence,
+                    session_status=session.status,
+                    mode=str(session.metadata.get("mode", "normal")),
+                    read_only=runtime_read_only_from_metadata(session.metadata),
+                    is_resume=False,
+                )
+            )
+            if input_hook_outcome.action == "rewrite":
+                try:
+                    validate_tool_input_schema(tool.definition, input_hook_outcome.tool_call.arguments)
+                except ValueError as exc:
+                    input_hook_outcome = ToolInputHookOutcome(
+                        tool_call=input_hook_outcome.tool_call,
+                        action="block",
+                        diagnostics=input_hook_outcome.diagnostics,
+                        handler_names=input_hook_outcome.handler_names,
+                        blocked_reason=str(exc),
+                    )
+                else:
+                    plan_tool_call = input_hook_outcome.tool_call
+                    try:
+                        tool = tool_registry.resolve(plan_tool_call.tool_name)
+                    except Exception as exc:
+                        input_hook_outcome = ToolInputHookOutcome(
+                            tool_call=plan_tool_call,
+                            action="block",
+                            diagnostics=input_hook_outcome.diagnostics,
+                            handler_names=input_hook_outcome.handler_names,
+                            blocked_reason=f"rewritten tool lookup failed: {exc}",
+                        )
+        if input_hook_outcome.action == "block":
+            return input_hook_outcome.tool_call, tool, tool_call_id, sequence, input_hook_outcome
+        if input_hook_outcome.changed or input_hook_outcome.diagnostics:
+            trace_payload: dict[str, object] = {
+                "phase": "typed_input",
+                "tool_name": original_tool_call.tool_name,
+                "status": "ok",
+            }
+            if input_hook_outcome.changed:
+                trace_payload["runtime_tool_input_rewritten"] = tool_input_rewrite_metadata(
+                    original=original_tool_call,
+                    outcome=input_hook_outcome,
+                )
+            else:
+                trace_payload["runtime_tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
+            trace_event = self._persist_event(
+                session_id=session.session.id,
+                event_type="runtime.tool_hook_pre",
+                source="runtime",
+                payload=trace_payload,
+            )
+            sequence = trace_event.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=trace_event)
+        plan_tool_call = input_hook_outcome.tool_call
+        lookup_payload: dict[str, object] = {"tool": plan_tool_call.tool_name}
+        if input_hook_outcome.changed:
+            lookup_payload["tool_input_rewritten"] = True
+        if input_hook_outcome.diagnostics:
+            lookup_payload["tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
         envelope = self._persist_event(
             session_id=session.session.id,
             event_type="runtime.tool_lookup_succeeded",
             source="runtime",
-            payload={"tool": plan_tool_call.tool_name},
+            payload=lookup_payload,
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        return plan_tool_call, tool, tool_call_id, sequence
+        if input_hook_outcome.action == "block":
+            return input_hook_outcome.tool_call, tool, tool_call_id, sequence, input_hook_outcome
+        return plan_tool_call, tool, tool_call_id, sequence, input_hook_outcome
 
     def _resolve_permission_for_tool(
         self,
@@ -3170,19 +3255,15 @@ class RuntimeRunLoopCoordinator:
             )
             return
 
-        inner_call = ToolCall(
+        original_inner_call = ToolCall(
             tool_name=inner_name,
-            arguments=inner_arguments,
+            arguments=dict(inner_arguments),
             tool_call_id=outer_call_id,
         )
-
-        # Record the inner request before permission resolution: the approval
-        # resume path recovers the provider-visible tool_call_id from this
-        # event so the resumed tool result pairs with the pending invoke_tool
-        # call in the provider history.
+        inner_call = original_inner_call
         tool_request_payload: dict[str, object] = {
-            "tool": inner_name,
-            "arguments": dict(inner_arguments),
+            "tool": original_inner_call.tool_name,
+            "arguments": dict(original_inner_call.arguments),
         }
         if outer_call_id is not None:
             tool_request_payload["tool_call_id"] = outer_call_id
@@ -3194,12 +3275,90 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        is_resume = session.metadata.get("runtime_resume") is True or session.metadata.get("resume") is True
+        if is_resume:
+            input_hook_outcome = ToolInputHookOutcome(tool_call=inner_call)
+        else:
+            input_hook_outcome = self._tool_input_handler_registry.apply(
+                event=ToolInputEvent(
+                    session_id=session.session.id,
+                    tool_call=inner_call,
+                    tool=tool.definition,
+                    sequence=sequence,
+                    session_status=session.status,
+                    mode=str(session.metadata.get("mode", "normal")),
+                    read_only=runtime_read_only_from_metadata(session.metadata),
+                    is_resume=False,
+                )
+            )
+        if input_hook_outcome.action == "rewrite":
+            try:
+                validate_tool_input_schema(tool.definition, input_hook_outcome.tool_call.arguments)
+            except ValueError as exc:
+                input_hook_outcome = ToolInputHookOutcome(
+                    tool_call=input_hook_outcome.tool_call,
+                    action="block",
+                    diagnostics=input_hook_outcome.diagnostics,
+                    handler_names=input_hook_outcome.handler_names,
+                    blocked_reason=str(exc),
+                )
+            else:
+                inner_call = input_hook_outcome.tool_call
+                try:
+                    tool = tool_registry.resolve(inner_call.tool_name)
+                except Exception as exc:
+                    input_hook_outcome = ToolInputHookOutcome(
+                        tool_call=inner_call,
+                        action="block",
+                        diagnostics=input_hook_outcome.diagnostics,
+                        handler_names=input_hook_outcome.handler_names,
+                        blocked_reason=f"rewritten tool lookup failed: {exc}",
+                    )
+        if input_hook_outcome.action == "block":
+            yield from self._dispatch_error_feedback_chunks(
+                session=session,
+                tool_name=inner_name,
+                tool_call_id=outer_call_id,
+                arguments=dict(input_hook_outcome.tool_call.arguments),
+                tool_results=tool_results,
+                error=input_hook_outcome.blocked_reason or "tool input handler blocked the call",
+                error_kind="tool_input_handler_blocked",
+            )
+            return
+        inner_call = input_hook_outcome.tool_call
 
+        if input_hook_outcome.changed or input_hook_outcome.diagnostics:
+            trace_payload: dict[str, object] = {
+                "phase": "typed_input",
+                "tool_name": inner_name,
+                "status": "ok",
+            }
+            if input_hook_outcome.changed:
+                trace_payload["runtime_tool_input_rewritten"] = tool_input_rewrite_metadata(
+                    original=original_inner_call,
+                    outcome=input_hook_outcome,
+                )
+            else:
+                trace_payload["runtime_tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
+            trace_event = self._persist_event(
+                session_id=session.session.id,
+                event_type="runtime.tool_hook_pre",
+                source="runtime",
+                payload=trace_payload,
+            )
+            sequence = trace_event.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=trace_event)
+
+        lookup_payload: dict[str, object] = {"tool": inner_name}
+        if input_hook_outcome.changed:
+            lookup_payload["tool_input_rewritten"] = True
+        if input_hook_outcome.diagnostics:
+            lookup_payload["tool_input_diagnostics"] = list(input_hook_outcome.diagnostics)
         lookup_envelope = self._persist_event(
             session_id=session.session.id,
             event_type="runtime.tool_lookup_succeeded",
             source="runtime",
-            payload={"tool": inner_name},
+            payload=lookup_payload,
         )
         sequence = lookup_envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
@@ -3252,7 +3411,7 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 tool_name=inner_name,
                 tool_call_id=outer_call_id,
-                arguments=inner_arguments,
+                arguments=dict(inner_call.arguments),
                 tool_results=tool_results,
                 error=pre_hook_outcome.failed_error,
                 error_kind="hook_failed",
@@ -3263,7 +3422,7 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 tool_name=inner_name,
                 tool_call_id=outer_call_id,
-                arguments=inner_arguments,
+                arguments=dict(inner_call.arguments),
                 tool_results=tool_results,
                 error="run cancelled by pre-tool hook",
                 error_kind="hook_cancelled",
@@ -3271,7 +3430,7 @@ class RuntimeRunLoopCoordinator:
             return
 
         tool_timeout = runtime.effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
-        start_args = dict(inner_arguments)
+        start_args = dict(inner_call.arguments)
         started_display = build_tool_display(inner_name, start_args)
         started_status = build_tool_status(
             inner_name,
@@ -3348,7 +3507,7 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 tool_name=inner_name,
                 tool_call_id=outer_call_id,
-                arguments=inner_arguments,
+                arguments=dict(inner_call.arguments),
                 tool_results=tool_results,
                 error=f"tool '{inner_name}' exceeded runtime timeout of {tool_timeout}s",
                 error_kind="tool_timeout",
@@ -3359,7 +3518,7 @@ class RuntimeRunLoopCoordinator:
                 session=session,
                 tool_name=inner_name,
                 tool_call_id=outer_call_id,
-                arguments=inner_arguments,
+                arguments=dict(inner_call.arguments),
                 tool_results=tool_results,
                 error=str(exc),
                 error_kind="tool_error",

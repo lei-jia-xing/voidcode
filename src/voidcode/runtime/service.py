@@ -27,6 +27,7 @@ from ..hook.presets import (
     hook_preset_snapshot_from_payload,
     resolve_hook_preset_refs,
 )
+from ..hook.typed import ToolInputHandlerRegistry
 from ..mcp.redaction import redact_mcp_command
 from ..provider.auth import (
     ProviderAuthResolver,
@@ -612,6 +613,7 @@ class VoidCodeRuntime(RuntimeSurface):
         acp_adapter: AcpAdapter | None = None,
         context_window_policy: ContextWindowPolicy | None = None,
         context_transform_registry: RuntimeContextTransformRegistry | None = None,
+        tool_input_handler_registry: ToolInputHandlerRegistry | None = None,
     ) -> None:
         self._workspace = workspace.resolve()
         self._permission_context_resolver = RuntimePermissionContextResolver(workspace=self._workspace)
@@ -702,6 +704,7 @@ class VoidCodeRuntime(RuntimeSurface):
         self._session_store = session_store or SqliteSessionStore()
         self._acp_adapter = acp_adapter or build_acp_adapter(self._config.acp)
         self._context_transform_registry = context_transform_registry or default_runtime_context_transform_registry()
+        self._tool_input_handler_registry = tool_input_handler_registry or ToolInputHandlerRegistry.empty()
         self._default_context_window_policy = self._context_window_policy_from_config(
             initial_context_window,
             resolved_provider=None,
@@ -723,6 +726,7 @@ class VoidCodeRuntime(RuntimeSurface):
             mcp_manager=self._mcp_manager,
             lsp_manager=self._lsp_manager,
             provider_catalog_query=self._provider_catalog_query,
+            tool_input_handler_registry=self._tool_input_handler_registry,
             tool_executor=RuntimeToolExecutor(
                 workspace=self._workspace,
                 lsp=self,
