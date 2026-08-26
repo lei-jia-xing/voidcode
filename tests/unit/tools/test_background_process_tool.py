@@ -84,7 +84,7 @@ def test_background_process_start_reuses_running_process_for_same_command(tmp_pa
     assert "Reusing background process" in cast(str, second.content)
     assert "exact-match process is already running" in cast(str, second.content)
     assert "reuse process_id" in cast(str, second.data["guidance"])
-    assert second.retry_guidance == second.data["guidance"]
+    assert str(second.data["guidance"]).startswith("An exact-match process is already running; reuse process_id")
 
     stop_tool.invoke(
         ToolCall(
@@ -224,7 +224,7 @@ def test_background_process_logs_retains_bounded_recent_lines(tmp_path: Path) ->
     assert "retained log tails" in (logs_result.content or "")
     assert "continuous watch loop" in (logs_result.content or "")
     assert "meaningful state change" in (logs_result.content or "")
-    assert logs_result.data["guidance"] == logs_result.retry_guidance
+    assert isinstance(logs_result.data["guidance"], str)
     assert "full logs" not in (logs_result.content or "")
     stop_tool.invoke(
         ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),

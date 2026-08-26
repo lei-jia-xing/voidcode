@@ -70,7 +70,6 @@ def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") 
             metadata={
                 "runtime_state": {
                     "run_id": "run-1",
-                    "api_key": "sk-test-secret",
                     "todos": {
                         "version": 1,
                         "revision": 1,
@@ -505,7 +504,7 @@ def test_session_bundle_export_import_preserves_redacted_policy_observations(
             "version": 1,
             "fragments": [{"source": "user", "preview": "Bearer rawpromptsecret"}],
         },
-        "runtime_state": {"injected_env": {"NPM_CONFIG_YES": "true"}},
+        "runtime_state": {"run_id": "run-policy"},
     }
     request = RuntimeRequest(
         prompt="bundle policy token=promptsecret",

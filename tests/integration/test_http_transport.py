@@ -3419,10 +3419,12 @@ def test_transport_persists_failed_stream_for_replay(tmp_path: Path) -> None:
         "source": "runtime",
         "payload": {
             "error": "boom from transport stream",
-            "error_summary": "boom from transport stream",
-            "error_details": {
-                "message": "boom from transport stream",
+            "diagnostics": {
                 "summary": "boom from transport stream",
+                "details": {
+                    "message": "boom from transport stream",
+                    "summary": "boom from transport stream",
+                },
             },
         },
     }

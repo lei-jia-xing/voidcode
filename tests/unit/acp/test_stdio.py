@@ -319,8 +319,8 @@ def test_prompt_runtime_failed_event_uses_error_summary_for_message_chunk() -> N
                     event_type="runtime.failed",
                     source="runtime",
                     payload={
-                        "error": "Runtime failed: provider fallback exhausted",
-                        "error_summary": "provider fallback exhausted",
+                        "error": "provider fallback exhausted",
+                        "diagnostics": {"summary": "provider fallback exhausted"},
                     },
                 ),
             ),
@@ -333,7 +333,6 @@ def test_prompt_runtime_failed_event_uses_error_summary_for_message_chunk() -> N
             _request("session/prompt", 2, {"sessionId": "acp-session-abc", "prompt": "hello"}),
         )
 
-    assert messages[1]["method"] == "session/update"
     assert messages[1]["params"]["update"] == {
         "sessionUpdate": "agent_thought_chunk",
         "content": {

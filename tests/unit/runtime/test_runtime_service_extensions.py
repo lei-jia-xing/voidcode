@@ -2322,7 +2322,7 @@ def test_runtime_background_child_idle_emits_one_parent_reminder_per_episode(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2367,7 +2367,7 @@ def test_runtime_background_child_idle_reminder_reopens_for_later_episode_after_
             ),
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2429,7 +2429,7 @@ def test_runtime_background_idle_reminder_dedupe_survives_reconciliation(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2450,7 +2450,7 @@ def test_runtime_background_idle_reminder_dedupe_survives_reconciliation(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2474,7 +2474,7 @@ def test_runtime_reconcile_backfills_idle_reminder_for_persisted_waiting_child(
             ),
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2497,7 +2497,7 @@ def test_runtime_reconcile_backfills_idle_reminder_for_persisted_waiting_child(
             ),
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2525,7 +2525,7 @@ def test_runtime_background_result_read_stops_idle_reminder_reeligibility(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -2563,7 +2563,7 @@ def test_runtime_child_session_result_read_stops_idle_reminder_reeligibility(
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -3591,7 +3591,7 @@ def test_runtime_insufficient_balance_failure_carries_raw_provider_message(
     assert not any(event.event_type == "runtime.provider_fallback" for event in response.events)
     failed_event = next(event for event in response.events if event.event_type == "runtime.failed")
     assert failed_event.payload["error"] == raw_provider_message
-    assert failed_event.payload["error_summary"] == raw_provider_message
+    assert failed_event.payload["diagnostics"]["summary"] == raw_provider_message
     assert failed_event.payload["provider_error_kind"] == "invalid_model"
     assert failed_event.payload["provider"] == "primary"
     assert failed_event.payload["model"] == "model-a"
@@ -4938,8 +4938,9 @@ def test_runtime_provider_recovers_after_read_before_write_feedback(tmp_path: Pa
         for event in response.events
         if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "write" and event.payload.get("status") == "error"
     )
-    assert feedback.payload["error_kind"] == "tool_input_mismatch"
-    error_details = cast(dict[str, object], feedback.payload["error_details"])
+    diagnostics = cast(dict[str, object], feedback.payload["diagnostics"])
+    assert diagnostics["kind"] == "tool_input_mismatch"
+    error_details = cast(dict[str, object], diagnostics["details"])
     assert error_details["reason"] == "write_without_read"
     read_feedback = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "read")
     assert read_feedback.payload["status"] == "ok"
@@ -5588,9 +5589,9 @@ def test_runtime_cancel_after_tool_started_emits_terminal_tool_completed(
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["run_id"] == run_id
     assert failed_events[-1].payload["reason"] == "stop before invoke"
-    assert "wait for the user's next instruction" in str(failed_events[-1].payload["retry_guidance"])
-    diagnostics = cast(list[dict[str, object]], failed_events[-1].payload["diagnostics"])
-    assert diagnostics[-1]["reason"] == "user_interrupted"
+    assert "wait for the user's next instruction" in str(failed_events[-1].payload["diagnostics"]["guidance"])
+    diagnostics = cast(dict[str, object], failed_events[-1].payload["diagnostics"])
+    assert cast(dict[str, object], diagnostics["details"])["reason"] == "stop before invoke"
 
 
 def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_finishes(
@@ -5616,7 +5617,7 @@ def test_runtime_cancel_session_preserves_older_overlapping_run_after_newer_run_
     assert first_failed_events
     assert first_failed_events[-1].payload["kind"] == "interrupted"
     assert first_failed_events[-1].payload["reason"] == "cancel older run"
-    assert "wait for the user's next instruction" in str(first_failed_events[-1].payload["retry_guidance"])
+    assert "wait for the user's next instruction" in str(first_failed_events[-1].payload["diagnostics"]["guidance"])
 
 
 def test_runtime_cancel_session_rejects_stale_run_id(tmp_path: Path) -> None:
@@ -5686,7 +5687,7 @@ def test_runtime_cancel_session_interrupts_active_approval_resume_run(tmp_path: 
     assert failed_events[-1].payload["cancelled"] is True
     assert failed_events[-1].payload["run_id"] == run_id
     assert failed_events[-1].payload["reason"] == "resume cancellation"
-    assert "wait for the user's next instruction" in str(failed_events[-1].payload["retry_guidance"])
+    assert "wait for the user's next instruction" in str(failed_events[-1].payload["diagnostics"]["guidance"])
     assert any(state.get("run_id") == run_id for state in resumed_runtime_states)
 
 
@@ -10678,8 +10679,8 @@ def test_runtime_run_fails_when_acp_handshake_fails(tmp_path: Path) -> None:
     assert event_types[-1] == "runtime.failed"
     assert response.events[-1].payload["error"] == "ACP handshake rejected by memory transport"
     assert response.events[-1].payload["kind"] == "acp_startup_failed"
-    assert response.events[-1].payload["error_summary"] == ("ACP handshake rejected by memory transport")
-    assert response.events[-1].payload["error_details"] == {
+    assert response.events[-1].payload["diagnostics"]["summary"] == ("ACP handshake rejected by memory transport")
+    assert response.events[-1].payload["diagnostics"]["details"] == {
         "message": "ACP handshake rejected by memory transport",
         "summary": "ACP handshake rejected by memory transport",
     }
@@ -10845,8 +10846,8 @@ def test_runtime_resume_fails_when_acp_handshake_fails_after_restart(
     assert resumed_suffix.count("runtime.acp_failed") >= 1
     assert resumed.events[-1].payload["error"] == "ACP handshake rejected by memory transport"
     assert resumed.events[-1].payload["kind"] == "acp_startup_failed"
-    assert resumed.events[-1].payload["error_summary"] == ("ACP handshake rejected by memory transport")
-    assert resumed.events[-1].payload["error_details"] == {
+    assert resumed.events[-1].payload["diagnostics"]["summary"] == ("ACP handshake rejected by memory transport")
+    assert resumed.events[-1].payload["diagnostics"]["details"] == {
         "message": "ACP handshake rejected by memory transport",
         "summary": "ACP handshake rejected by memory transport",
     }
@@ -10889,8 +10890,8 @@ def test_runtime_resume_stream_emits_terminal_failure_when_acp_handshake_fails(
     assert chunks[-1].event is not None
     assert chunks[-1].event.payload["error"] == "ACP handshake rejected by memory transport"
     assert chunks[-1].event.payload["kind"] == "acp_startup_failed"
-    assert chunks[-1].event.payload["error_summary"] == "ACP handshake rejected by memory transport"
-    assert chunks[-1].event.payload["error_details"] == {
+    assert chunks[-1].event.payload["diagnostics"]["summary"] == "ACP handshake rejected by memory transport"
+    assert chunks[-1].event.payload["diagnostics"]["details"] == {
         "message": "ACP handshake rejected by memory transport",
         "summary": "ACP handshake rejected by memory transport",
     }
@@ -12922,8 +12923,10 @@ def test_runtime_graph_selection_avoids_reusing_initial_provider_graph(
         {
             "runtime_config": {
                 "approval_mode": "ask",
+                "permission": _DEFAULT_PERMISSION_METADATA,
                 "execution_engine": "deterministic",
                 "max_steps": None,
+                "tool_timeout_seconds": None,
                 "fallback_models": [],
                 "resolved_provider": None,
             }
@@ -13322,9 +13325,9 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "rulebook_snapshot",
         "context_window",
         "max_steps",
+        "resolved_hook_plan",
         "selected_skill_names",
         "applied_skills",
-        "skill_snapshot",
     }
     assert response.session.metadata["runtime_config"] == {
         "approval_mode": "ask",
@@ -13469,8 +13472,8 @@ def test_runtime_classifies_provider_context_limit_failures(tmp_path: Path) -> N
     assert response.events[-1].event_type == "runtime.failed"
     assert response.events[-1].payload["error"] == "provider context window exceeded"
     assert response.events[-1].payload["kind"] == "provider_context_limit"
-    assert response.events[-1].payload["error_summary"] == "provider context window exceeded"
-    assert response.events[-1].payload["error_details"] == {
+    assert response.events[-1].payload["diagnostics"]["summary"] == "provider context window exceeded"
+    assert response.events[-1].payload["diagnostics"]["details"] == {
         "message": "provider context window exceeded",
         "summary": "provider context window exceeded",
     }
@@ -14227,7 +14230,7 @@ def test_runtime_turn_progress_hook_fires_with_payload(tmp_path: Path) -> None:
             execution_engine="deterministic",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_turn_progress=((sys.executable, "-c", ""),),
+                on_turn_progress=((sys.executable, "-c", "pass"),),
             ),
         ),
     )
@@ -14267,7 +14270,7 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
             model="opencode/gpt-5.4",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_stuck_detected=((sys.executable, "-c", ""),),
+                on_stuck_detected=((sys.executable, "-c", "pass"),),
             ),
         ),
         model_provider_registry=registry,
@@ -16262,8 +16265,8 @@ def test_answer_question_resume_does_not_retrigger_session_start_hook(tmp_path: 
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_start=((sys.executable, "-c", ""),),
-                on_session_end=((sys.executable, "-c", ""),),
+                on_session_start=((sys.executable, "-c", "pass"),),
+                on_session_end=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -16291,7 +16294,7 @@ def test_answer_question_resume_waiting_emits_session_idle_hook(tmp_path: Path) 
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -17614,7 +17617,7 @@ def test_runtime_provider_retry_uses_persisted_session_provider_config(
     retry_metadata = {
         "runtime_config": {
             "approval_mode": "ask",
-            "permission": {},
+            "permission": _DEFAULT_PERMISSION_METADATA,
             "execution_engine": "provider",
             "max_steps": None,
             "tool_timeout_seconds": None,
@@ -18381,14 +18384,14 @@ def test_runtime_provider_stream_cancelled_maps_to_interrupted_without_fallback(
     assert response.events[-1].payload["provider"] == "opencode"
     assert response.events[-1].payload["model"] == "gpt-5.4"
     assert response.events[-1].payload["cancelled"] is True
-    assert response.events[-1].payload["error_summary"] == "cancelled by runtime"
-    assert response.events[-1].payload["error_details"] == {
+    assert response.events[-1].payload["diagnostics"]["summary"] == "cancelled by runtime"
+    assert response.events[-1].payload["diagnostics"]["details"] == {
         "message": "cancelled by runtime",
         "summary": "cancelled by runtime",
         "provider_error_kind": "cancelled",
         "cancelled": True,
     }
-    assert response.events[-1].payload["retry_guidance"] == ("The request was cancelled; rerun when ready.")
+    assert response.events[-1].payload["diagnostics"]["guidance"] == ("The request was cancelled; rerun when ready.")
 
 
 def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> None:
@@ -18428,13 +18431,15 @@ def test_runtime_fails_without_downgrade_on_context_limit(tmp_path: Path) -> Non
     assert response.events[-1].payload["provider_error_kind"] == "context_limit"
     assert response.events[-1].payload["provider"] == "opencode"
     assert response.events[-1].payload["model"] == "gpt-5.4"
-    assert response.events[-1].payload["error_summary"] == "context exceeded"
-    assert response.events[-1].payload["error_details"] == {
+    assert response.events[-1].payload["diagnostics"]["summary"] == "context exceeded"
+    assert response.events[-1].payload["diagnostics"]["details"] == {
         "message": "context exceeded",
         "summary": "context exceeded",
         "provider_error_kind": "context_limit",
     }
-    assert response.events[-1].payload["retry_guidance"] == ("Reduce prompt/tool-result context or switch to a model with a larger context window.")
+    assert response.events[-1].payload["diagnostics"]["guidance"] == (
+        "Reduce prompt/tool-result context or switch to a model with a larger context window."
+    )
 
 
 def test_runtime_refresh_provider_models_returns_catalog_with_model_map_fallback(
@@ -18774,13 +18779,13 @@ def test_runtime_provider_fallback_exhaustion_after_three_targets_reports_termin
     assert response.events[-1].payload["provider"] == "anthropic"
     assert response.events[-1].payload["model"] == "claude-3-7-sonnet"
     assert response.events[-1].payload["fallback_exhausted"] is True
-    assert response.events[-1].payload["error_summary"] == "third target not available"
-    assert response.events[-1].payload["error_details"] == {
+    assert response.events[-1].payload["diagnostics"]["summary"] == "third target not available"
+    assert response.events[-1].payload["diagnostics"]["details"] == {
         "message": "third target not available",
         "summary": "third target not available",
         "provider_error_kind": "invalid_model",
     }
-    assert response.events[-1].payload["retry_guidance"] == ("Check the configured provider/model name and model access permissions.")
+    assert response.events[-1].payload["diagnostics"]["guidance"] == ("Check the configured provider/model name and model access permissions.")
 
 
 def test_runtime_executes_session_start_and_end_hooks(tmp_path: Path) -> None:
@@ -18790,8 +18795,8 @@ def test_runtime_executes_session_start_and_end_hooks(tmp_path: Path) -> None:
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_start=((sys.executable, "-c", ""),),
-                on_session_end=((sys.executable, "-c", ""),),
+                on_session_start=((sys.executable, "-c", "pass"),),
+                on_session_end=((sys.executable, "-c", "pass"),),
             )
         ),
     )
@@ -18873,7 +18878,7 @@ def test_runtime_executes_session_idle_hook_without_losing_pending_approval(
         config=RuntimeConfig(
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_idle=((sys.executable, "-c", ""),),
+                on_session_idle=((sys.executable, "-c", "pass"),),
             )
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -18900,8 +18905,8 @@ def test_runtime_resume_does_not_retrigger_session_start_hook(tmp_path: Path) ->
             approval_mode="ask",
             hooks=RuntimeHooksConfig(
                 enabled=True,
-                on_session_start=((sys.executable, "-c", ""),),
-                on_session_end=((sys.executable, "-c", ""),),
+                on_session_start=((sys.executable, "-c", "pass"),),
+                on_session_end=((sys.executable, "-c", "pass"),),
             ),
         ),
         permission_policy=PermissionPolicy(mode="ask"),
@@ -19265,7 +19270,7 @@ def test_runtime_context_window_malformed_resume_continuity_falls_back_safely(
         },
     }
 
-    with pytest.raises(ValueError, match="legacy runtime continuity metadata"):
+    with pytest.raises(ValueError, match="persisted runtime_state field 'continuity' is not supported"):
         runtime.assemble_provider_context(
             prompt="resume despite malformed metadata",
             tool_results=(ToolResult(tool_name="read", status="ok", content="raw retained"),),

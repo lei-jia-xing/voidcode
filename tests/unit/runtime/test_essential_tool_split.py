@@ -404,7 +404,7 @@ def test_dispatch_of_unknown_tool_returns_tool_level_error(tmp_path: Path) -> No
     completed = [event for event in events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "no/such/tool"]
     assert completed
     assert completed[-1].payload["status"] == "error"
-    assert completed[-1].payload["error_kind"] == "unknown_tool"
+    assert completed[-1].payload["diagnostics"]["kind"] == "unknown_tool"
     assert "unknown tool" in completed[-1].payload["error"]
     assert not any(event.event_type == "runtime.failed" for event in events)
     assert outputs == ["done"]
@@ -460,7 +460,7 @@ def test_dispatch_is_denied_under_read_only_with_tool_level_feedback(tmp_path: P
     completed = [event for event in events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "apply_patch"]
     assert completed, "expected tool-level feedback for the denied dispatch"
     assert completed[-1].payload["status"] == "error"
-    assert completed[-1].payload["error_kind"] == "runtime_tool_policy_denied"
+    assert completed[-1].payload["diagnostics"]["kind"] == "runtime_tool_policy_denied"
     assert "read-only runtime policy denies mutating tools" in completed[-1].payload["error"]
     # Permission denial is tool-level feedback, not a terminal session failure.
     assert not any(event.event_type == "runtime.failed" for event in events)

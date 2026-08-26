@@ -115,8 +115,7 @@ def test_task_tool_starts_background_task_with_parent_context(tmp_path: Path) ->
     assert result.content is not None
     assert "do not call background_output immediately" in result.content
     assert "background_output(block=true)" in result.content
-    assert result.retry_guidance is not None
-    assert "Continue other safe work now" in result.retry_guidance
+    assert "continue other work now" in result.content
     assert result.data["delegation"] == {"mode": "background", "subagent_type": "worker"}
     assert runtime.requests[0].parent_session_id == "leader-session"
     assert runtime.requests[0].metadata == {

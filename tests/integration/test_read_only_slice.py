@@ -582,10 +582,12 @@ def test_provider_runtime_surfaces_provider_context_limit_failure_kind(tmp_path:
     assert failed.events[-1].payload == {
         "error": "provider context window exceeded",
         "kind": "provider_context_limit",
-        "error_summary": "provider context window exceeded",
-        "error_details": {
-            "message": "provider context window exceeded",
+        "diagnostics": {
             "summary": "provider context window exceeded",
+            "details": {
+                "message": "provider context window exceeded",
+                "summary": "provider context window exceeded",
+            },
         },
     }
 
@@ -2404,10 +2406,12 @@ def test_runtime_rejects_denied_raw_provider_tool_calls_for_delegated_agents(
         "error": expected_error,
         "kind": "delegation_tool_policy_denied",
         "tool": tool_name,
-        "error_summary": expected_error,
-        "error_details": {
-            "message": expected_error,
+        "diagnostics": {
             "summary": expected_error,
+            "details": {
+                "message": expected_error,
+                "summary": expected_error,
+            },
         },
     }
     assert target.exists() is False
@@ -3293,10 +3297,12 @@ def test_runtime_persists_initial_allow_finalize_failure_for_resume(tmp_path: Pa
     assert resumed.events[-1].event_type == "runtime.failed"
     assert resumed.events[-1].payload == {
         "error": "finalize boom",
-        "error_summary": "finalize boom",
-        "error_details": {
-            "message": "finalize boom",
+        "diagnostics": {
             "summary": "finalize boom",
+            "details": {
+                "message": "finalize boom",
+                "summary": "finalize boom",
+            },
         },
     }
 
@@ -3344,10 +3350,12 @@ def test_runtime_persists_initial_plan_failure_for_resume(tmp_path: Path) -> Non
     assert resumed.events[-1].event_type == "runtime.failed"
     assert resumed.events[-1].payload == {
         "error": "plan boom",
-        "error_summary": "plan boom",
-        "error_details": {
-            "message": "plan boom",
+        "diagnostics": {
             "summary": "plan boom",
+            "details": {
+                "message": "plan boom",
+                "summary": "plan boom",
+            },
         },
     }
 
@@ -4103,6 +4111,7 @@ def test_provider_runtime_executes_read_path_and_persists_config(tmp_path: Path)
         "selected_skill_names",
         "applied_skills",
         "skill_snapshot",
+        "resolved_hook_plan",
     }
     runtime_config_payload = cast(dict[str, object], result.session.metadata["runtime_config"])
     agent_payload = runtime_config_payload.pop("agent")
@@ -4551,10 +4560,12 @@ def test_runtime_approved_resume_persists_failure_when_pending_tool_is_missing(
     assert [event.sequence for event in resumed.events] == list(range(1, len(resumed.events) + 1))
     assert resumed.events[-1].payload == {
         "error": "unknown tool: write",
-        "error_summary": "unknown tool: write",
-        "error_details": {
-            "message": "unknown tool: write",
+        "diagnostics": {
             "summary": "unknown tool: write",
+            "details": {
+                "message": "unknown tool: write",
+                "summary": "unknown tool: write",
+            },
         },
     }
     assert replay.session.status == "failed"
@@ -5097,6 +5108,7 @@ def test_runtime_resume_uses_persisted_runtime_config_over_fresh_resume_override
         "selected_skill_names",
         "applied_skills",
         "skill_snapshot",
+        "resolved_hook_plan",
     }
     assert replay.session.metadata["runtime_config"] == {
         "approval_mode": "allow",
