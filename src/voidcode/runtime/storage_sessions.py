@@ -73,6 +73,12 @@ class _SessionStorageMixin(_MixinBase):
             response.session.metadata,
             events=events,
         )
+        persisted_metadata = self._merge_runtime_owned_metadata(
+            connection=connection,
+            workspace=workspace,
+            session_id=session_id,
+            metadata=persisted_metadata,
+        )
         created_at = self._read_created_at(
             connection=connection,
             workspace=workspace,
@@ -141,6 +147,48 @@ class _SessionStorageMixin(_MixinBase):
             metadata=persisted_metadata,
         )
         return updated_at
+
+    @staticmethod
+    def _merge_runtime_owned_metadata(
+        *,
+        connection: sqlite3.Connection,
+        workspace: Path,
+        session_id: str,
+        metadata: dict[str, object],
+    ) -> dict[str, object]:
+        """Carry only durable interaction-queue state into a row snapshot.
+
+        ``save_run`` receives an in-memory response that may have been built
+        before another active run queued a steering/follow-up message. The
+        sessions row is authoritative when it contains that runtime-owned
+        outbox field, but all other metadata remains owned by the response
+        snapshot: merging the whole row could regress a newer runtime policy,
+        turn, or context projection. If the row has no queue field, preserve a
+        response-owned queue (for example, one recovered from a resume
+        checkpoint) rather than dropping it. The workspace/session predicate
+        keeps this read on the same tenant and session as the snapshot write.
+        Writers serialize through the surrounding transaction, so a queue
+        commit before this read is retained; a queue writer that starts after
+        this transaction commits its update afterward and is not overwritten.
+        """
+        row = connection.execute(
+            "SELECT metadata_json FROM sessions WHERE workspace_id = ? AND session_id = ?",
+            (str(workspace), session_id),
+        ).fetchone()
+        if row is None:
+            return metadata
+        stored_metadata = json.loads(cast(str, row["metadata_json"]))
+        if not isinstance(stored_metadata, dict):
+            return metadata
+
+        merged = dict(metadata)
+        if "pending_messages" in stored_metadata:
+            pending_messages = stored_metadata["pending_messages"]
+            if isinstance(pending_messages, list):
+                merged["pending_messages"] = pending_messages
+            else:
+                merged.pop("pending_messages", None)
+        return merged
 
     @staticmethod
     def _checkpoint_skill_snapshot(
@@ -517,16 +565,9 @@ class _SessionStorageMixin(_MixinBase):
         Callers hold the durable events at this boundary and may derive these
         via ``_tool_results_from_events``.
         """
-        checkpoint = self._interrupted_resume_checkpoint(
-            prompt=prompt,
-            session_metadata=session_metadata,
-            tool_results=tool_results,
-            last_event_sequence=last_event_sequence,
-            output=output,
-        )
         persisted_metadata = session_metadata_for_persistence(session_metadata)
-        checkpoint_json = json.dumps(checkpoint, sort_keys=True)
-        metadata_json = json.dumps(persisted_metadata, sort_keys=True)
+        checkpoint_json: str
+        metadata_json: str
         with self._write_connect(workspace) as connection:
             existing = cast(
                 sqlite3.Row | None,
@@ -535,6 +576,21 @@ class _SessionStorageMixin(_MixinBase):
                     (str(workspace), session_id),
                 ).fetchone(),
             )
+            persisted_metadata = self._merge_runtime_owned_metadata(
+                connection=connection,
+                workspace=workspace,
+                session_id=session_id,
+                metadata=persisted_metadata,
+            )
+            checkpoint = self._interrupted_resume_checkpoint(
+                prompt=prompt,
+                session_metadata=persisted_metadata,
+                tool_results=tool_results,
+                last_event_sequence=last_event_sequence,
+                output=output,
+            )
+            checkpoint_json = json.dumps(checkpoint, sort_keys=True)
+            metadata_json = json.dumps(persisted_metadata, sort_keys=True)
             if existing is None:
                 if not create_if_missing:
                     raise UnknownSessionError(f"unknown session: {session_id}")

@@ -1811,12 +1811,22 @@ class VoidCodeRuntime(RuntimeSurface):
                 kind="steering",
                 remember_dedupe=True,
             )
+            queued_metadata, queued_followups = drain_runtime_messages(
+                queued_metadata,
+                kind="follow_up",
+            )
+            if queued_followups:
+                request = replace(
+                    request,
+                    prompt="\n\n".join(message.content for message in queued_followups),
+                )
             if queued_steering:
                 steering_text = "\n\n".join(message.content for message in queued_steering)
                 request = replace(
                     request,
                     prompt=(f"{request.prompt}\n\nRuntime steering messages:\n{steering_text}" if request.prompt.strip() else steering_text),
                 )
+            if queued_steering or queued_followups:
                 self._session_store.update_session_metadata(
                     workspace=self._workspace,
                     session_id=resolved_session_id,
@@ -2444,7 +2454,32 @@ class VoidCodeRuntime(RuntimeSurface):
             )
             yield RuntimeStreamChunk(kind="event", session=finalized_session, event=envelope)
 
+    @staticmethod
+    def _request_for_persisted_response(
+        request: RuntimeRequest,
+        response: RuntimeResponse,
+    ) -> RuntimeRequest:
+        """Use the startup-drained follow-up prompt for checkpoint identity.
+
+        The public request still carries the caller's prompt, while startup
+        replaces it with the queued follow-up before emitting the request
+        event. A single request event is an unambiguous current-turn marker;
+        steering keeps the original request prefix and therefore remains on
+        the existing checkpoint path.
+        """
+        request_events = tuple(event for event in response.events if event.event_type == "runtime.request_received")
+        if len(request_events) != 1:
+            return request
+        event_prompt = request_events[0].payload.get("prompt")
+        if not isinstance(event_prompt, str) or event_prompt == request.prompt:
+            return request
+        steering_prefix = f"{request.prompt}\n\nRuntime steering messages:"
+        if event_prompt.startswith(steering_prefix):
+            return request
+        return replace(request, prompt=event_prompt)
+
     def persist_response(self, *, request: RuntimeRequest, response: RuntimeResponse) -> None:
+        request = self._request_for_persisted_response(request, response)
         if response.session.status in {"completed", "failed"}:
             cleaned_session = session_without_tool_intent(response.session)
             if cleaned_session is not response.session:
