@@ -49,7 +49,7 @@ def _report_with_edit_outcomes(
                 status="error",
                 model=model,
                 error="ambiguous",
-                error_kind="ambiguous_match",
+                diagnostics={"kind": "ambiguous_match"},
             )
         )
         sequence += 1
@@ -62,7 +62,7 @@ def _report_with_edit_outcomes(
                 status="error",
                 model=model,
                 error="stale",
-                error_kind="stale_edit",
+                diagnostics={"kind": "stale_edit"},
             )
         )
         sequence += 1

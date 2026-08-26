@@ -1080,7 +1080,7 @@ def test_session_storage_projects_tool_effectiveness_from_persisted_events(tmp_p
                     "status": "error",
                     "arguments": {"path": "sample.py"},
                     "error": "stale",
-                    "error_kind": "stale_edit",
+                    "diagnostics": {"kind": "stale_edit"},
                 },
             ),
             EventEnvelope(

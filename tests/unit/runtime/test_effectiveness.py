@@ -52,8 +52,7 @@ def test_project_tool_effectiveness_aggregates_errors_retries_and_pressure() -> 
                 arguments={"path": "secret.py", "oldString": "secret"},
                 content="failed",
                 error="stale",
-                error_kind="stale_edit",
-                retry_guidance="read again",
+                diagnostics={"kind": "stale_edit", "guidance": "read again"},
             ),
             _completed(
                 session_id="s1",
@@ -175,7 +174,7 @@ def test_project_tool_effectiveness_reports_per_model_edit_breakdown() -> None:
                 arguments={"path": "a.txt"},
                 content="ambiguous",
                 error="multiple matches",
-                error_kind="ambiguous_match",
+                diagnostics={"kind": "ambiguous_match"},
             ),
             _completed(
                 session_id="s1",
@@ -186,7 +185,7 @@ def test_project_tool_effectiveness_reports_per_model_edit_breakdown() -> None:
                 arguments={"path": "a.txt"},
                 content="ambiguous",
                 error="multiple matches",
-                error_kind="ambiguous_match",
+                diagnostics={"kind": "ambiguous_match"},
             ),
             _completed(
                 session_id="s1",
