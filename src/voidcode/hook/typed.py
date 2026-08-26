@@ -193,6 +193,21 @@ class ToolInputHandlerRegistry:
         )
 
 
+def builtin_tool_input_handler_registry() -> ToolInputHandlerRegistry:
+    """Return intentionally empty production builtin registry."""
+
+    return ToolInputHandlerRegistry.empty()
+
+
+def compose_tool_input_handler_registry(
+    builtin_bindings: Iterable[ToolInputHandlerBinding] = (),
+    configured_bindings: Iterable[ToolInputHandlerBinding] = (),
+) -> ToolInputHandlerRegistry:
+    """Compose builtin and explicit bindings through one stable registry."""
+
+    return ToolInputHandlerRegistry((*builtin_bindings, *configured_bindings))
+
+
 def validate_tool_input_schema(tool: ToolDefinition, arguments: Mapping[str, object]) -> None:
     """Apply the advertised schema gate without replacing tool self-validation."""
 
@@ -266,9 +281,10 @@ __all__ = [
     "ToolInputDecision",
     "ToolInputEvent",
     "ToolInputHandler",
-    "ToolInputHandlerBinding",
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
+    "builtin_tool_input_handler_registry",
+    "compose_tool_input_handler_registry",
     "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
     "validate_tool_input_schema",

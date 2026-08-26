@@ -9,6 +9,8 @@ from voidcode.hook.typed import (
     ToolInputEvent,
     ToolInputHandlerBinding,
     ToolInputHandlerRegistry,
+    builtin_tool_input_handler_registry,
+    compose_tool_input_handler_registry,
     tool_input_rewrite_metadata,
     validate_tool_input_schema,
 )
@@ -49,7 +51,6 @@ def test_tool_input_handlers_use_stable_priority_and_registration_order() -> Non
             ToolInputHandlerBinding("same", handler("same", ToolInputDecision(action="diagnostic", diagnostic="checked")), priority=10),
         )
     )
-
     outcome = registry.apply(event=_event({"path": "sample.txt"}))
 
     assert calls == ["first:sample.txt", "late:./sample.txt", "same:./sample.txt"]
@@ -78,7 +79,6 @@ def test_tool_input_block_short_circuits_and_does_not_authorize() -> None:
             ToolInputHandlerBinding("unreachable", unreachable),
         )
     )
-
     outcome = registry.apply(event=_event({"path": "sample.txt"}))
 
     assert outcome.action == "block"
@@ -92,7 +92,6 @@ def test_tool_input_schema_gate_only_checks_published_shape() -> None:
         description="read",
         input_schema={"path": {"type": "string"}, "required": ["path"]},
     )
-
     validate_tool_input_schema(tool, {"path": "sample.txt"})
     with pytest.raises(ValueError, match="input schema validation failed"):
         validate_tool_input_schema(tool, {"path": 123})
@@ -104,24 +103,37 @@ def test_handler_exception_fails_closed() -> None:
         raise RuntimeError("broken")
 
     outcome = ToolInputHandlerRegistry((ToolInputHandlerBinding("broken", broken),)).apply(event=_event({"path": "sample.txt"}))
-
     assert outcome.action == "block"
     assert outcome.blocked_reason is not None
     assert "broken" in outcome.blocked_reason
 
 
 def test_rewrite_metadata_hashes_args_and_bounds_handler_outputs() -> None:
-    def diagnostic(_event: ToolInputEvent) -> ToolInputDecision:
+    def diagnostic(event: ToolInputEvent) -> ToolInputDecision:
+        _ = event
         return ToolInputDecision(action="diagnostic", diagnostic="seen")
 
     registry = ToolInputHandlerRegistry(ToolInputHandlerBinding(f"handler-{index}", diagnostic) for index in range(64))
     outcome = registry.apply(event=_event({"path": "before.txt"}))
-    metadata = tool_input_rewrite_metadata(
-        original=_event({"path": "before.txt"}).tool_call,
-        outcome=outcome,
-    )
+    metadata = tool_input_rewrite_metadata(original=_event({"path": "before.txt"}).tool_call, outcome=outcome)
 
     assert len(outcome.handler_names) <= 33
     assert len(cast(list[object], metadata["handler_names"])) <= 32
     assert len(cast(list[object], metadata["diagnostics"])) <= 32
     assert metadata["original_sha256"] == metadata["final_sha256"]
+
+
+def test_builtin_registry_is_explicitly_empty_until_a_contract_is_proven() -> None:
+    assert builtin_tool_input_handler_registry().bindings == ()
+
+
+def test_composition_seam_keeps_builtin_before_configured_stable_order() -> None:
+    def unchanged(event: ToolInputEvent) -> ToolInputDecision:
+        _ = event
+        return ToolInputDecision(action="unchanged")
+
+    registry = compose_tool_input_handler_registry(
+        (ToolInputHandlerBinding("builtin", unchanged, priority=0),),
+        (ToolInputHandlerBinding("configured", unchanged, priority=10),),
+    )
+    assert tuple(binding.name for binding in registry.bindings) == ("builtin", "configured")

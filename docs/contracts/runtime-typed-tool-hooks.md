@@ -2,15 +2,18 @@
 
 ## 状态
 
-这是 VoidCode 首期 typed tool-input hook 的实现契约。当前能力已经接入 runtime
-tool loop，但仍是 **constructor-injected registry**；没有默认 production handler，也不
-通过 `.voidcode.json` 或 `ResolvedHookPlan` 声明 handler。现有 argv hooks 保持不变。
+这是 VoidCode 首期 typed tool-input hook 的实现契约。当前 runtime 使用
+`builtin_tool_input_handler_registry()` 作为默认空 builtin registry；显式注入的
+`ToolInputHandlerRegistry` 可以通过同一 stable composition seam 提供 handlers。当前
+没有安全、通用且经过工具语义验证的 production canonicalizer，因此默认 registry
+不伪造 path/arguments rewrite，也不通过 `.voidcode.json` 或 `ResolvedHookPlan`
+声明 handler。现有 argv hooks 保持不变。
 
 实现锚点：
 
 - `src/voidcode/hook/typed.py`：`ToolInputEvent`、`ToolInputDecision`、
-  `ToolInputHandlerBinding`、`ToolInputHandlerRegistry`
-- `src/voidcode/runtime/service.py`：`tool_input_handler_registry` runtime 注入
+  `ToolInputHandlerBinding`、`ToolInputHandlerRegistry`、builtin composition helpers
+- `src/voidcode/runtime/service.py`：默认 builtin registry 与显式 runtime 注入
 - `src/voidcode/runtime/run_loop.py`：native tool 与 `invoke_tool` inner target 接入
 - `tests/unit/hook/test_typed.py`
 - `tests/unit/runtime/test_typed_tool_hooks.py`
@@ -74,10 +77,12 @@ Inner target 的 `graph.tool_request_created` 仍记录 inner target 的原始�
 Approved approval resume 直接使用已持久化 `PendingApproval.arguments`，不再次运行
 typed handler。这样审批所看到、持久化和实际执行的参数保持一致。
 
-普通 graph resume 当前采用保守策略：当 session metadata 带有 `runtime_resume` 或
-`resume` 标记时跳过 typed rewrite，避免在无法可靠证明同一 logical call identity
-时重复变换参数。该限制不是“普通 resume 已支持重新 canonicalize”；将来若改变
-此语义，必须先定义 persisted handler identity/decision 与 replay contract。
+普通 graph resume 是原 prompt + 已完成 tool results 的重新执行；新的 graph tool call
+仍运行 typed registry，并把 `ToolInputEvent.is_resume` 设为 `true`。handler 必须是
+纯的、可重复执行的 canonicalization/校验逻辑。runtime 不按整个 resumed run 跳过
+handler，也不把新调用误当成旧调用。中断前已写入的 pending tool intent 按既有
+runtime-owned execution intent contract 保存最终参数摘要；approved direct resume
+仍以 PendingApproval 为唯一执行输入。
 
 ## Decision contract
 
@@ -157,12 +162,11 @@ Typed rewrite 不覆盖这个事件，以便 replay/debug 能区分“模型原�
     "final_argument_keys": ["path"]
   }
 }
-```
-
 Rewrite metadata只保存 hash、bounded key list、bounded handler names/diagnostics 与
 action，不保存完整原始/最终 arguments；因此它是 observability trace，不是新的
-authority。现有 `runtime.tool_lookup_succeeded` 也会带 bounded rewrite/diagnostic
-标记，便于客户端识别最终 lookup 是在 typed processing 后完成的。
+authority。`runtime.tool_input_processed` 是 typed 专用事件，不复用 argv
+`runtime.tool_hook_pre`。现有 `runtime.tool_lookup_succeeded` 只表达 initial lookup
+成功；typed trace 位于它之后、permission/approval 之前。
 
 限制：
 
