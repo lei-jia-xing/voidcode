@@ -495,6 +495,72 @@ def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
     assert stored.session.status == "completed"
 
 
+def test_follow_up_queued_during_active_run_survives_outer_snapshot_and_is_consumed(
+    tmp_path: Path,
+) -> None:
+    class _BlockingGraph:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.prompts: list[str] = []
+            self._calls = 0
+
+        def step(
+            self,
+            request: GraphRunRequest,
+            tool_results: tuple[object, ...],
+            *,
+            session: SessionState,
+        ) -> _StubStep:
+            _ = tool_results, session
+            self.prompts.append(request.prompt)
+            self._calls += 1
+            if self._calls == 1:
+                self.started.set()
+                assert self.release.wait(timeout=5.0)
+            return _StubStep(output=request.prompt, is_finished=True)
+
+    graph = _BlockingGraph()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+    )
+    stream = runtime.run_stream(RuntimeRequest(prompt="outer", session_id="follow-up-active"))
+    assert next(stream).session.status == "running"
+    errors: list[BaseException] = []
+
+    def consume_outer_run() -> None:
+        try:
+            list(stream)
+        except BaseException as exc:  # pragma: no cover - asserted via errors
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume_outer_run)
+    worker.start()
+    assert graph.started.wait(timeout=5.0)
+
+    queued = runtime.queue_follow_up("follow-up-active", "queued follow-up")
+    assert any(item.get("kind") == "follow_up" and item.get("content") == "queued follow-up" for item in queued)
+    graph.release.set()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive()
+    assert errors == []
+
+    # The active run's response is a stale metadata snapshot.  The queued
+    # follow-up is source session metadata and must survive that terminal seal.
+    stored = runtime._session_store.load_session(workspace=tmp_path, session_id="follow-up-active")
+    pending = stored.session.metadata.get("pending_messages")
+    assert isinstance(pending, list)
+    assert any(item.get("kind") == "follow_up" and item.get("content") == "queued follow-up" for item in pending if isinstance(item, dict))
+
+    followup = runtime.run(RuntimeRequest(prompt="next run", session_id="follow-up-active"))
+    assert followup.session.status == "completed"
+    assert graph.prompts[-1] == "queued follow-up"
+    reloaded = runtime._session_store.load_session(workspace=tmp_path, session_id="follow-up-active")
+    assert "pending_messages" not in reloaded.session.metadata
+
+
 def test_steer_rejected_on_interrupted_session_without_active_run(tmp_path: Path) -> None:
     store = SqliteSessionStore()
     store.save_interrupted_checkpoint(
