@@ -21,7 +21,6 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
-from .memory import MemoryKind, MemoryRecord, MemorySearchResult, MemoryStatus
 from .paths import DB_PATH_ENV, sessions_db_path
 from .permission import PendingApproval
 from .question import PendingQuestion
@@ -32,7 +31,6 @@ from .session import (
 from .storage_background_tasks import _BackgroundTaskStorageMixin
 from .storage_diagnostics import _DiagnosticsStorageMixin
 from .storage_effectiveness import _EffectivenessStorageMixin
-from .storage_memory import _MemoryStorageMixin
 from .storage_notifications import _NotificationStorageMixin
 from .storage_resume import _ResumeStorageMixin
 from .storage_revert import _RevertStorageMixin
@@ -255,24 +253,6 @@ class SessionStore(Protocol):
 
     def reset_runtime_storage(self, *, workspace: Path) -> dict[str, object]: ...
 
-    def add_memory(
-        self,
-        *,
-        workspace: Path,
-        content: str,
-        kind: MemoryKind = "project",
-        tags: tuple[str, ...] = (),
-        source_session_id: str | None = None,
-    ) -> MemoryRecord: ...
-
-    def list_memories(self, *, workspace: Path, include_deleted: bool = False) -> tuple[MemoryRecord, ...]: ...
-
-    def search_memories(self, *, workspace: Path, query: str) -> tuple[MemorySearchResult, ...]: ...
-
-    def get_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord | None: ...
-
-    def delete_memory(self, *, workspace: Path, memory_id: str) -> MemoryRecord: ...
-
     def truncate_session_events_after(self, *, workspace: Path, session_id: str, sequence: int) -> None: ...
 
     def load_session_status(self, *, workspace: Path, session_id: str) -> SessionStatus: ...
@@ -304,7 +284,6 @@ class _SQLitePolicy:
 class SqliteSessionStore(
     _BackgroundTaskStorageMixin,
     _SessionStorageMixin,
-    _MemoryStorageMixin,
     _ResumeStorageMixin,
     _RevertStorageMixin,
     _TodoStorageMixin,
@@ -313,8 +292,7 @@ class SqliteSessionStore(
     _DiagnosticsStorageMixin,
 ):
     _database_path: Path | None
-    _SCHEMA_VERSION = 12
-    _MEMORY_KINDS: frozenset[MemoryKind] = frozenset(("project", "preference", "feedback", "reference", "decision"))
+    _SCHEMA_VERSION = 13
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _sqlite_policy = _SQLitePolicy()
 
@@ -391,40 +369,6 @@ class SqliteSessionStore(
             ("structured_output_json", "TEXT", 0, None, 0),
             ("schema_validation_json", "TEXT", 0, None, 0),
         ),
-        "memories": (
-            ("memory_id", "TEXT", 1, None, 2),
-            ("workspace_id", "TEXT", 1, None, 1),
-            ("kind", "TEXT", 1, None, 0),
-            ("content", "TEXT", 1, None, 0),
-            ("tags_json", "TEXT", 1, None, 0),
-            ("scope", "TEXT", 1, "'workspace'", 0),
-            ("status", "TEXT", 1, "'active'", 0),
-            ("source_session_id", "TEXT", 0, None, 0),
-            ("created_at", "INTEGER", 1, None, 0),
-            ("updated_at", "INTEGER", 1, None, 0),
-            ("deleted_at", "INTEGER", 0, None, 0),
-        ),
-        "memory_tags": (
-            ("workspace_id", "TEXT", 1, None, 1),
-            ("memory_id", "TEXT", 1, None, 2),
-            ("tag", "TEXT", 1, None, 3),
-            ("created_at", "INTEGER", 1, None, 0),
-        ),
-        "memory_recall_log": (
-            ("workspace_id", "TEXT", 1, None, 1),
-            ("recall_id", "TEXT", 1, None, 2),
-            ("session_id", "TEXT", 0, None, 0),
-            ("query", "TEXT", 0, None, 0),
-            ("result_count", "INTEGER", 1, "0", 0),
-            ("created_at", "INTEGER", 1, None, 0),
-        ),
-        "memory_index_status": (
-            ("workspace_id", "TEXT", 1, None, 1),
-            ("index_name", "TEXT", 1, None, 2),
-            ("status", "TEXT", 1, None, 0),
-            ("detail_json", "TEXT", 1, "'{}'", 0),
-            ("updated_at", "INTEGER", 1, None, 0),
-        ),
         "session_notifications": (
             ("notification_id", "TEXT", 0, None, 1),
             ("workspace_id", "TEXT", 1, None, 0),
@@ -454,10 +398,6 @@ class SqliteSessionStore(
         "session_events": frozenset(),
         "session_todos": frozenset(),
         "background_tasks": frozenset(),
-        "memories": frozenset(),
-        "memory_tags": frozenset(),
-        "memory_recall_log": frozenset(),
-        "memory_index_status": frozenset(),
         "session_notifications": frozenset({("workspace_id", "dedupe_key")}),
         "session_event_deliveries": frozenset(),
         "storage_sequences": frozenset(),
@@ -478,11 +418,7 @@ class SqliteSessionStore(
         database_path.parent.mkdir(parents=True, exist_ok=True)
         connection: sqlite3.Connection | None = None
         for attempt in range(2):
-            connection = sqlite3.connect(
-                database_path,
-                timeout=self._sqlite_policy.busy_timeout_ms / 1_000,
-                isolation_level=None,
-            )
+            connection = sqlite3.connect(database_path, timeout=self._sqlite_policy.busy_timeout_ms / 1_000, isolation_level=None)
             try:
                 connection.row_factory = sqlite3.Row
                 self._configure_connection(connection=connection)
@@ -493,18 +429,15 @@ class SqliteSessionStore(
                     attempt == 0 and self._database_path is None and not os.environ.get(DB_PATH_ENV) and self._is_schema_mismatch_runtime_error(exc)
                 )
                 if should_reset:
-                    if connection is not None:
-                        self._reset_storage_in_place(connection=connection)
-                        connection.close()
-                        connection = None
-                    continue
-                if connection is not None:
+                    self._reset_storage_in_place(connection=connection)
                     connection.close()
                     connection = None
+                    continue
+                connection.close()
+                connection = None
                 raise
         if connection is None:
-            msg = "failed to establish sqlite runtime storage connection"
-            raise RuntimeError(msg)
+            raise RuntimeError("failed to establish sqlite runtime storage connection")
         try:
             yield connection
         finally:
@@ -645,60 +578,6 @@ class SqliteSessionStore(
         )
         _ = connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS memories (
-                memory_id TEXT NOT NULL,
-                workspace_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                content TEXT NOT NULL,
-                tags_json TEXT NOT NULL,
-                scope TEXT NOT NULL DEFAULT 'workspace',
-                status TEXT NOT NULL DEFAULT 'active',
-                source_session_id TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                deleted_at INTEGER,
-                PRIMARY KEY (workspace_id, memory_id)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_tags (
-                workspace_id TEXT NOT NULL,
-                memory_id TEXT NOT NULL,
-                tag TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                PRIMARY KEY (workspace_id, memory_id, tag)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_recall_log (
-                workspace_id TEXT NOT NULL,
-                recall_id TEXT NOT NULL,
-                session_id TEXT,
-                query TEXT,
-                result_count INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL,
-                PRIMARY KEY (workspace_id, recall_id)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_index_status (
-                workspace_id TEXT NOT NULL,
-                index_name TEXT NOT NULL,
-                status TEXT NOT NULL,
-                detail_json TEXT NOT NULL DEFAULT '{}',
-                updated_at INTEGER NOT NULL,
-                PRIMARY KEY (workspace_id, index_name)
-            )
-            """
-        )
-        _ = connection.execute(
-            """
             CREATE TABLE IF NOT EXISTS session_notifications (
                 notification_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -782,22 +661,14 @@ class SqliteSessionStore(
 
     @staticmethod
     def _ensure_workspace_indexes(*, connection: sqlite3.Connection) -> None:
-        # Non-unique indexes that accelerate per-workspace filtering once the
-        # SQLite database becomes user-global and serves multiple workspaces.
-        # Additive: the strict canonical schema check ignores non-unique indexes,
-        # so adding new indexes here is safe.
         _ = connection.execute("CREATE INDEX IF NOT EXISTS sessions_workspace_idx ON sessions(workspace_id, status, updated_at DESC)")
         _ = connection.execute("CREATE INDEX IF NOT EXISTS background_tasks_workspace_idx ON background_tasks(workspace_id, status, updated_at DESC)")
-        _ = connection.execute("CREATE INDEX IF NOT EXISTS memories_workspace_idx ON memories(workspace_id, status, updated_at)")
-        _ = connection.execute("CREATE INDEX IF NOT EXISTS memory_tags_tag_idx ON memory_tags(workspace_id, tag)")
-        _ = connection.execute("CREATE INDEX IF NOT EXISTS memory_recall_log_workspace_idx ON memory_recall_log(workspace_id, created_at DESC)")
         _ = connection.execute("CREATE INDEX IF NOT EXISTS session_notifications_workspace_idx ON session_notifications(workspace_id, session_id)")
 
     @staticmethod
     def _ensure_storage_sequences(*, connection: sqlite3.Connection) -> None:
         _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('sessions', 0)")
         _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('background_tasks', 0)")
-        _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('memories', 0)")
         _ = connection.execute("INSERT OR IGNORE INTO storage_sequences (scope, value) VALUES ('auxiliary', 0)")
         SqliteSessionStore._bump_sequence_floor(
             connection=connection,
@@ -821,15 +692,6 @@ class SqliteSessionStore(
                     "finished_at",
                     "cancel_requested_at",
                 ),
-            ),
-        )
-        SqliteSessionStore._bump_sequence_floor(
-            connection=connection,
-            scope="memories",
-            floor=SqliteSessionStore._max_existing_timestamp(
-                connection=connection,
-                table="memories",
-                columns=("created_at", "updated_at", "deleted_at"),
             ),
         )
         SqliteSessionStore._bump_sequence_floor(
@@ -868,59 +730,26 @@ class SqliteSessionStore(
 
     @classmethod
     def _assert_existing_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        """Validate persisted ``user_version`` before any schema mutation.
-
-        Fresh databases are not stamped here. Version stamping is deferred until
-        ``_ensure_schema`` finishes all ``CREATE TABLE`` statements and the
-        canonical-schema check succeeds, so partial bootstrap failures cannot
-        leave a database marked as the canonical version with missing tables.
-        """
+        """Validate persisted ``user_version`` before schema setup."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version == cls._SCHEMA_VERSION:
-            return
-        if version == 0:
-            # A fresh database can briefly expose a partially-created canonical
-            # table set to concurrent connections while the bootstrapper is still
-            # validating and stamping ``user_version``. Let version-0 databases
-            # continue through the idempotent CREATE TABLE path; the canonical
-            # The schema assertion below rejects unsupported or corrupt tables before
-            # the database is stamped as current.
-            return
-        if version == 6:
-            # Allow migration from v6 (adds created_at_unix_ms column).
-            return
-        if version == 10:
-            # Allow migration from v10 (adds keep_alive/steer_prompt columns).
-            return
-        if version == 11:
-            # Allow migration from v11 (adds output-schema columns).
+        if version in {0, 6, 10, 11, 12, cls._SCHEMA_VERSION}:
             return
         cls._raise_schema_mismatch(
             database_path=database_path,
-            detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),
+            detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
         )
 
     @classmethod
     def _assert_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
-        """Stamp ``PRAGMA user_version`` only after the schema is fully validated."""
+        """Stamp ``PRAGMA user_version`` after schema validation."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version == 0:
-            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
-            return
-        if version == 10:
-            # The v10 → v11 migration (keep_alive/steer_prompt columns) ran in
-            # ``_ensure_schema``; stamp the migrated database as current.
-            _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
-            return
-        if version == 11:
-            # The v11 → v12 migration (output-schema columns) ran in
-            # ``_ensure_schema``; stamp the migrated database as current.
+        if version in {0, 6, 10, 11, 12}:
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
             return
         if version != cls._SCHEMA_VERSION:
             cls._raise_schema_mismatch(
                 database_path=database_path,
-                detail=(f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}"),
+                detail=f"schema version mismatch: expected {cls._SCHEMA_VERSION} got {version}",
             )
 
     @classmethod
@@ -1087,20 +916,6 @@ class SqliteSessionStore(
         if value == "interrupted":
             return "interrupted"
         raise ValueError(f"invalid background task status: {value}")
-
-    @classmethod
-    def _parse_memory_kind(cls, value: str) -> MemoryKind:
-        if value in cls._MEMORY_KINDS:
-            return value
-        raise ValueError(f"invalid memory kind: {value}")
-
-    @staticmethod
-    def _parse_memory_status(value: str) -> MemoryStatus:
-        if value == "active":
-            return "active"
-        if value == "deleted":
-            return "deleted"
-        raise ValueError(f"invalid memory status: {value}")
 
     @staticmethod
     def _session_last_event_sequence(events: tuple[EventEnvelope, ...]) -> int:

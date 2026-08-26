@@ -32,13 +32,12 @@ def _registry() -> ToolRegistry:
             _Tool("read", read_only=True),
             _Tool("write", read_only=False),
             _Tool("shell_exec", read_only=False),
-            _Tool("memory_add", read_only=False),
         )
     )
 
 
 def test_tool_scope_resolver_applies_agent_scope_before_runtime_policy() -> None:
-    resolver = RuntimeToolScopeResolver(memory_enabled=True)
+    resolver = RuntimeToolScopeResolver()
     agent = RuntimeAgentConfig(
         preset="leader",
         tools=RuntimeToolsConfig(allowlist=("read", "write")),
@@ -50,7 +49,7 @@ def test_tool_scope_resolver_applies_agent_scope_before_runtime_policy() -> None
 
 
 def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> None:
-    resolver = RuntimeToolScopeResolver(memory_enabled=True)
+    resolver = RuntimeToolScopeResolver()
     registry = _registry()
     metadata = {"mode": "plan"}
 
@@ -75,7 +74,7 @@ def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> Non
 
 
 def test_tool_scope_resolver_preserves_shell_for_command_level_classification() -> None:
-    scoped = RuntimeToolScopeResolver(memory_enabled=True).scope(
+    scoped = RuntimeToolScopeResolver().scope(
         _registry(),
         agent=None,
         metadata={"read_only": True},

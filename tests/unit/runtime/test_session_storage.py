@@ -632,8 +632,29 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 12
+    assert schema_version == 13
+    with closing(sqlite3.connect(database_path)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "memories" not in tables
+    assert "memory_tags" not in tables
+    assert "memory_recall_log" not in tables
+    assert "memory_index_status" not in tables
     assert any(row[2] == 1 and row[3] == "u" for row in notification_indexes)
+
+
+def test_session_storage_preserves_legacy_memory_tables_without_access(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy-memory.sqlite3"
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("CREATE TABLE memories (memory_id TEXT PRIMARY KEY, content TEXT)")
+        connection.execute("INSERT INTO memories VALUES ('legacy', 'must remain untouched')")
+        connection.execute("PRAGMA user_version = 12")
+        connection.commit()
+
+    store = SqliteSessionStore(database_path=database_path)
+    store.list_sessions(workspace=tmp_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        assert connection.execute("SELECT content FROM memories WHERE memory_id = 'legacy'").fetchone() == ("must remain untouched",)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
 
 
 def test_session_storage_fresh_database_background_tasks_carry_v12_schema_columns(tmp_path: Path) -> None:
@@ -651,7 +672,7 @@ def test_session_storage_fresh_database_background_tasks_carry_v12_schema_column
         task_columns = [row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()]
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-    assert schema_version == 12
+    assert schema_version == 13
     for column in ("output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"):
         assert column in task_columns
 
@@ -798,7 +819,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match="schema version mismatch: expected 12 got 999.*future-runtime\\.sqlite3",
+        match="schema version mismatch: expected 13 got 999.*future-runtime\\.sqlite3",
     ):
         store.list_notifications(workspace=tmp_path)
 

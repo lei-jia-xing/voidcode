@@ -27,7 +27,6 @@ from voidcode.runtime.config_schema import (
     generate_starter_runtime_config,
     runtime_config_json_schema,
 )
-from voidcode.runtime.memory import MemoryConfig
 
 
 def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prompt.") -> None:
@@ -219,12 +218,6 @@ def test_generate_starter_runtime_config_excludes_secrets() -> None:
         "formatter": {"enabled": True},
         "lsp": {"enabled": True},
         "mcp": {"enabled": True},
-        "memory": {
-            "enabled": True,
-            "recall": {"enabled": False},
-            "semantic_search": "auto",
-            "sqlite_vec": {"enabled": "auto"},
-        },
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }
@@ -511,13 +504,6 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
             set(),
             set(),
         ),
-        (
-            "$defs.memoryConfig",
-            MemoryConfig,
-            {},
-            set(),
-            set(),
-        ),
         # RuntimeHooksConfig.format_on_write is a derived alias populated from
         # formatter.format_on_write/enabled, so it is not a hooks-level config key.
         (
@@ -539,7 +525,6 @@ def test_runtime_config_schema_file_matches_generated_schema() -> None:
         "formatter",
         "background_task",
         "tui",
-        "memory",
         "hooks",
     ],
 )

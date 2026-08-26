@@ -22,7 +22,6 @@
 - `provider_catalog_cache.py`：已承载 provider model catalog cache 的 JSON hydrate/persist、坏条目容错与“不覆盖活跃 catalog”规则；它只依赖 provider registry 和 cache path。
 - `provider_catalog_query.py`：已承载 provider model catalog 的只读 models/catalog projection、catalog override 与 inferred metadata 合并，以及 `ProviderModelsResult` 构造；refresh、auth presence 与 readiness 判断仍由 runtime service 组合。Runtime config reload 替换 provider registry 时必须重绑定 cache/query collaborator，避免持有旧 registry。
 - `provider_inspection.py`：统一承载 provider summary projection、resolved readiness facts 的 status/ok/guidance 决策表、validation result projection、configured-provider 判断、API-key auth presence 与 Google/Copilot OAuth presence 特例；runtime service 仍拥有 effective config/catalog/reasoning facts、remote validation/refresh 与 inspect 调用顺序。Runtime config reload 替换 resolver/config 时必须同步重绑定 inspector。
-- `tool_scope.py`：已承载 agent scoping 后的 runtime/workflow/memory tool policy materialization、delegated child manifest allowlist denial，并让 provider-visible registry 与 raw-call denial 查询共享同一 policy decision 来源；runtime service 仍拥有 builtin/local/MCP/LSP tool construction、effective config、session routing truth 与 execution ordering。Runtime config reload 改变 memory capability 时必须同步重绑定 resolver。
 - `tool_materializer.py`：已承载已构造 base/MCP/local tool 的 registry 合并，并显式保留现有 collision 语义：MCP 同名项覆盖 base，local 同名项通过 `ToolRegistry.from_tools()` fail fast。内部 `RuntimeToolMaterialization` 同时保存来源类别、来源 identity、capability fingerprint 和稳定 generation；local fingerprint 额外包含 manifest command，能识别定义相同但执行入口变化的 drift。它不发现或构造工具、不拥有 MCP/LSP lifecycle、不做 agent/workflow scoping，也不执行 permission/approval；`service.py` 仍决定 refresh 时机和 session owner。
 - `agent_capability.py`：已承载 agent/prompt/tool/delegation/MCP capability 的纯 payload projection；tool projection 接收本次 run 已经 scope 完成的 registry，避免 snapshot 与实际执行 registry 分别计算。父 session 查询、snapshot 写入和 refresh 时机仍由 `service.py` 持有。
 
@@ -130,7 +129,6 @@ No broad move is needed; the safe first slice is documentation plus tests for re
 
 Tool scoping affects what schemas the provider sees and what raw tool calls runtime allows. It should be extracted after background/resume/fallback seams are stable because all those paths rebuild tool registries.
 
-当前状态：`RuntimeToolScopeResolver` 已承载 agent scoping、workflow/runtime read-only policy、memory tool policy，以及 provider-visible registry 与 raw-call 共用的 denial decision。`RuntimeToolMaterializer` 已收束 base/MCP/local registry 合并，保留 MCP override 与 local collision fail-fast 的既有差异。`agent_capability.py` 的 tool projection 与执行前的最终 scoped registry 同源；fresh run 当前在同一 run 内复用该 registry，resume 继续使用持久化 capability truth。来源 discovery/construction、refresh sequencing、session owner 和 capability lifecycle 仍由 runtime service 持有。
 
 Generation 没有使用进程内自增计数：该计数跨 restart 不稳定，也无法区分同名工具的来源或实现漂移。materialization 区分 base、MCP 和 local 来源，并从规范化来源 identity、capability definition 与 local manifest command 派生稳定 generation。fresh run 将最终 scoped materialization generation 写入 version 2 capability snapshot；persisted snapshot 缺失版本、版本非 2 或缺失 generation 时直接失败，不迁移、不合成，也不按当前 workspace 来源重新生成。
 

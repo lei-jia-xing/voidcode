@@ -2,7 +2,6 @@
 
 What voidcode intentionally does not build. For each feature decision, classify as core primitive, extension point, or deliberate omission.
 
-See also: [runtime/AGENTS.md](../src/voidcode/runtime/AGENTS.md), [coding-standards.md](./coding-standards.md), [agent-architecture.md](./agent-architecture.md), [memory-strategy.md](./memory-strategy.md).
 
 ---
 
@@ -27,7 +26,6 @@ What voidcode can do but defers to skills, hooks, or external tooling.
 
 | Area | Extension | Mechanism |
 |------|-----------|-----------|
-| Long-term memory | Cross-session knowledge, user preferences, project facts | Workspace-scoped keyword memory (`runtime/memory.py`: SQLite `memories` + CLI `voidcode memory *` + config `memory` section) alongside workspace `AGENTS.md` rules; broader long-term pipeline deferred |
 | Plan mode | Structured planning before execution | Runtime-enforced `RuntimeMode.plan` read-only execution stance; no dedicated planning engine or plan-state machine. Plans remain files/text produced by the agent |
 | MCP servers | External tool providers | Runtime/session-scoped, config-gated (`runtime/mcp.py`) |
 | Custom agents | New agent roles beyond the preset set | Agent manifest declarations in `agent/`; runtime executes, not defines |
@@ -43,7 +41,6 @@ What voidcode will NEVER implement in the runtime core.
 
 | Omission | Rationale |
 |----------|-----------|
-| **Long-term memory pipeline** (hindsight / mnemopi 类跨 session 记忆管线) | Workspace memory (save/recall/search) is now a runtime capability: SQLite `memories` table + `voidcode memory add/list/search/show/delete/status` + config `memory` section + `runtime.memory_*` events. The broader long-term memory pipeline stays outside runtime primitives. See [memory-strategy.md](./memory-strategy.md). |
 | **Per-file permission dialogs** | Trust model or containerization. Interactive per-file approval at the tool-call level does not scale; the current read-only/write policy split is sufficient. |
 | **Interactive shell / REPL tool** | `bash` is the escape hatch. An `interactive_shell` (tmux control) implementation exists in `tools/interactive_shell.py` but is not registered in `BuiltinToolProvider` by default; a full REPL-class interactive tool remains omitted. |
 | **`todo_list` as a model-facing tool** | `todo_write` exists for structured task tracking. A separate `todo_list` model-facing tool is redundant surface area. |
@@ -71,7 +68,6 @@ What voidcode will NEVER implement in the runtime core.
 |----------|-----------|
 | **Compaction during persist** | Events are append-only truth. Storage writes raw events; compaction is a read-time projection concern, not a write-time mutation. |
 | **Session storage = context projection** | Session store holds complete history. Context window is a separate projection with its own truncation rules. Conflating the two breaks replay and resume. |
-| **sqlite-vec** | Optional semantic-retrieval backend, not enabled by default: `detect_sqlite_vec_capability()` + config `sqlite_vec: auto/off/required` (`runtime/memory.py`). Vector search remains outside the core storage engine. |
 
 ### Configuration
 

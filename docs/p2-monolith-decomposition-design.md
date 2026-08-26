@@ -11,8 +11,6 @@
 
 ### 1.1 storage.py 拆解策略
 
-**`SqliteSessionStore` 保持"主类门面 + 私有实现 mixin 切片"**：主类继续持有全部 schema/连接治理与跨域共享 helper（约 30 个方法，含 `__init__`），9 个领域簇拆成 9 个私有 mixin 模块（`storage_background_tasks.py`、`storage_sessions.py`、`storage_memory.py`、`storage_resume.py`、`storage_revert.py`、`storage_todos.py`、`storage_notifications.py`、`storage_effectiveness.py`、`storage_diagnostics.py`），`SqliteSessionStore` 多重继承它们。
-
 选择 mixin 而非组合委托/`__getattr__` 委托的理由（详见 §3）：
 
 - **157 个方法内部约 150 处 `self._xxx()` 交叉调用**（实测调用图，§2.3）在 mixin 下**零改动**；组合委托需要把私有调用改写为经子对象路由（改动面大）或生成 ~50 个 public 转发方法（proxy 反模式，违反 refactor plan 规则 7 的精神）。
@@ -43,9 +41,7 @@
 | session 行/快照/事件 | **18** | 844 | `storage_sessions.py` | `_SessionStorageMixin` | →notifications 7、→resume 3、→background 3、→revert 3、→todo 3、→diagnostics 1（`_auto_prune_sessions`） |
 | resume（approval/question/checkpoint） | **20** | 605 | `storage_resume.py` | `_ResumeStorageMixin` | →notifications 4、→background 2、→sessions 2 |
 | diagnostics/prune/reset | **17** | 540 | `storage_diagnostics.py` | `_DiagnosticsStorageMixin` | →background 1（`_background_task_status_counts`） |
-| memory | **13** | 209 | `storage_memory.py` | `_MemoryStorageMixin` | 无 |
 | notifications | **12** | 384 | `storage_notifications.py` | `_NotificationStorageMixin` | →sessions 3（`_result_summary`×3）、→foundation |
-| revert/undo | **8** | 197 | `storage_revert.py` | `_RevertStorageMixin` | →todo 1（`_todo_state_from_events`） |
 | todo 投影 | **5** | 106 | `storage_todos.py` | `_TodoStorageMixin` | 无 |
 | tool effectiveness | **1** | 58 | `storage_effectiveness.py` | `_EffectivenessStorageMixin` | 无 |
 | **合计** | **157** | 4691 | | | |
@@ -64,7 +60,6 @@
 
 **storage_diagnostics.py（17）**：`storage_diagnostics` 4335、`prune_runtime_storage` 4374、`reset_runtime_storage` 4455、`_unlink_with_retries` 4474、`_pragma_scalar` 4485、`_wal_checkpoint` 4490、`_database_file_sizes` 4501、`_storage_table_counts` 4510、`_pending_state_counts` 4574、`_count_for_ids` 4593、`_delete_for_ids` 4614、`_prunable_session_ids` 4634、`_retained_background_task_session_ids` 4676、`_prunable_background_task_ids` 4701、`_auto_prune_sessions` 4739、`_dangling_parent_terminal_session_ids` 4829、`_orphaned_terminal_background_task_ids` 4881。
 
-**storage_memory.py（13）**：`_validate_memory_content` 1727、`_validate_memory_kind` 1733、`_validate_memory_tags` 1739、`_memory_record_from_row` 1748、`add_memory` 1773、`list_memories` 1812、`_memory_search_terms` 1831、`_score_memory` 1842、`search_memories` 1848、`get_memory` 1865、`delete_memory` 1881、`_memory_row` 1912、`_next_memory_timestamp` 4260（簇内专用，随簇走）。
 
 **storage_notifications.py（12）**：`list_notifications` 3405、`acknowledge_notification` 4288、`_sync_notifications` 4947（125 行；sessions/resume 亦调用）、`_notification_candidate` 5073、`_approval_notification_candidate` 5104、`_question_notification_candidate` 5131、`_terminal_notification_candidate` 5163、`_notification_from_row` 5198、`_read_created_at` 5214、`_read_created_at_unix_ms` 5226、`_read_last_event_sequence` 5239、`_max_persisted_event_sequence` 5252。
 
@@ -77,7 +72,6 @@
 ### 2.3 交叉依赖证据（实测自调用图，决定"哪些先拆、哪些留主类"）
 
 - **foundation 是全簇公共依赖**：`_write_connect` 被 29 处调、`_connect` 21 处、`_parse_background_task_status` 9 处、`_next_timestamp`/`_current_unix_ms`/`_next_*_timestamp` 各 8-13 处 → 必须留主类。
-- **background / memory / effectiveness / todo 对其它领域簇零出边**（todo 甚至不调用任何 self 方法——纯投影，`_replace_session_todos`/`_todo_state_from_rows` 收 `connection` 参数）→ 最独立，最先拆。
 - **sessions 是交叉枢纽**：出边至 notifications(7)/resume(3)/background(3)/revert(3)/todo(3)/diagnostics(1) → 最后拆（其被调方已全部就位后，模块边界才有意义；mixin 下顺序不影响正确性，只影响评审面）。
 - **跨簇被调方**（定义在 A 簇、B 簇也调）：`_sync_background_task_durable_state`（sessions 1675/1961/2109 调）、`_enriched_background_task_event_payload`（append_session_event(s) 调）、`_write_session_snapshot`（resume 调）、`_sync_notifications`（sessions/resume 调）、`_result_summary`（sessions + notifications 调）、`_next_auxiliary_timestamp`（sessions 2 处、notifications 3 处调用）→ 这些方法**归其所在簇模块**，跨簇调用点经 `self` 不变。
 
@@ -143,7 +137,6 @@ class _BackgroundTaskStorageMixin:
     # 等经主类 MRO 解析，无需 import
 ```
 
-**import 方向（无环）**：`storage.py` → 9 个 mixin 模块；mixin 模块只 import 非 storage 兄弟模块（`.contracts`/`.events`/`.memory`/`.session`/`.task`/`.todos`/`.permission`/`.question`/`.paths`/`.session_metadata_helpers`/`.effectiveness`）。mixin 内对主类成员的访问全部经 `self`/`cls`，不需要 import 回 storage.py。
 
 **类型化（可选收尾）**：仓库只用 ruff（pyproject `[tool.ruff]`，无 mypy），mixin 内 `self._connect` 不会被静态检查报错。若未来引入类型检查器，可在新建的 `storage_foundation.py` 放一个内部 `_SqliteStorageShared` Protocol（约 10 个 stub：`_connect`/`_write_connect`/`_parse_*`/`_next_*`/`_resolve_database_path`）作为各 mixin 的基类锚点。本设计不强制，标注为可选。
 
@@ -424,7 +417,6 @@ def execute_graph_loop(self, *, graph, tool_registry, session, sequence,
 | 阶段 | 改什么 | 风险点 | 验收（§5.3 通用项 + 专项） |
 |---|---|---|---|
 | **S1** | `storage_background_tasks.py`（33 方法，1114 行）：整簇搬运 + mixin 基类声明 + storage.py 多重继承 + import；`_next_background_task_timestamp` 随簇走 | 最大搬运量（但零跨域出边；P1 keep-alive 测试已独立：test_background_task_storage.py / test_background_task_keep_alive_storage.py） | 专项：background task 全套单测绿；`mark_background_task_*` 状态机（storage.py:3610-4040）行为不变 |
-| **S2** | `storage_memory.py`（13）+ `storage_effectiveness.py`（1）+ `storage_notifications.py`（12）：三个小叶子簇 | 低（只依赖 foundation；notifications 调 `_result_summary` 经 self 可达主类） | 专项：memory/effectiveness/notifications 相关测试绿 |
 | **S3** | `storage_resume.py`（20）+ `storage_revert.py`（8）+ `storage_todos.py`（5） | 中（resume 交叉调 notifications/background/sessions；todo 为纯投影，最简单可先搬） | 专项：resume/approval/question/revert/undo/todo 测试绿 |
 | **S4** | `storage_sessions.py`（18）：交叉枢纽最后搬 | 高（8 簇就位后，本簇出边全部指向已模块化方法；`_write_session_snapshot`/`_result_summary`/`_sync_notifications` 等被调方已就位） | 专项：session 行/快照/事件/replay/bundle 测试绿 |
 | **S5** | `storage_diagnostics.py`（17）：prune/reset/diagnostics | 低（依赖已全部就位；`_next_auxiliary_timestamp` 已在 foundation） | 专项：prune/reset/diagnostics 测试绿；全仓 import 环检查 |
@@ -445,20 +437,16 @@ def execute_graph_loop(self, *, graph, tool_registry, session, sequence,
 
 ### 5.3 通用验收（每阶段必过）
 
-1. **行为字节级不变**：同一输入序列下，yield 的 chunk 序列（kind/session/event.sequence/event_type/payload）、持久化行（sessions/session_events/background_tasks/memories/notifications…）与序列号分配完全一致。落地方式：
    - 现有测试已断言精确序列号与事件序列（如 test_run_loop_persistence.py 的 contiguous/deduped/sequence 断言、storage round-trip 测试）→ **测试绿即主证据**；
-   - 另加一次性（不提交）等价性 smoke：固定操作序列（save_run → append events → mark task running/terminal → add_memory → list_notifications → revert → prune）跑于新代码与父提交 worktree，`sqlite3 .dump` 哈希一致；run_loop 侧：同一 graph/fake provider 场景下捕获 chunk 流 diff 为空。
 2. **API 表面不变**：`set(dir(SqliteSessionStore))` 前后差集为空；`SessionStore`/`SessionEventAppender` Protocol 零 diff；`__init__` 签名零 diff。
 3. **搬运即原样**：`git diff -M`（rename 检测）确认方法体是纯搬移——每阶段 diff 只含：新增模块（整方法搬入）、storage.py 的 import 行 + 类基类列表 + 被搬方法删除行；不允许任何方法体改动（除非阶段说明注明）。可用脚本断言：搬移方法的 AST 体（去缩进）在阶段前后逐字节相同。
 4. **全测试绿**：`pytest` 全量（单元 + 集成；storage/run_loop 相关文件至少：tests/unit/runtime/test_{session_storage,background_task_storage,background_task_keep_alive_storage,run_loop_persistence,run_loop_cancel_polling,tool_execution_timeout}.py + tests/integration/ 全量）。
 5. **ruff 干净**：`ruff check` + `ruff format --check`（新模块继承现有格式）。
 6. **无 import 环**：`import voidcode.runtime.storage` / `import voidcode.runtime.run_loop` 成功；mixin 模块不 import storage.py（§3.3 方向检查）。
-
 ### 5.4 阶段依赖图
 
 ```mermaid
 flowchart LR
-    S1[storage S1<br/>background_tasks] --> S2[storage S2<br/>memory/effectiveness/notifications]
     S2 --> S3[storage S3<br/>resume/revert/todo]
     S3 --> S4[storage S4<br/>sessions]
     S4 --> S5[storage S5<br/>diagnostics]

@@ -65,8 +65,6 @@ VoidCode 当前的 "workflow" 概念散落在多个互不知晓的子系统里�
 
 `src/voidcode/runtime/prompt_assembly.py` 的 `build_prompt_assembly_plan` 是 guidance 注入的唯一出口，但它的拼装规则是写死的：
 
-- 函数签名暴露 **6 个字符串型命名槽位**：`agent_prompt_context`、`workflow_mode_prompt_context`、`skill_prompt_context`、`todo_prompt_context`、`workspace_memory_context`、`continuity_summary`，每个槽位对应函数体内一条固定 source 的 `append_system`（如 `workflow_mode_prompt` + `layer="mode_policy"`、`skill_prompt` + `layer="skills"`、`runtime_todo_state` + `layer="task_state"`）。
-- 函数体内另有 **约 20 处携带固定 source 标签的 `append_system` / `append_block` 调用点**（含分支与循环）：`runtime_base_safety`、`agent_identity_header`、`agent_capability_block`、`runtime_instruction_precedence`、`runtime_memory_usage_guidance`、`runtime_tool_policy_summary`、`runtime_dynamic_boundary`、`runtime_environment_stable` / `runtime_environment_dynamic`、prompt activation、preserved system segments、pending state、artifact references、context-transform injections 等。
 - 其中只有 `context_transform_result.injections` 这一处是遍历 registry 结果；其余都是"这个槽位填什么、什么顺序、什么 source"在函数里写死的。
 
 结果是：新增一种 guidance（比如某个新的 mode 注入）就要在调用方和本函数里各加一个参数，而不是注册一个 provider。
@@ -108,7 +106,6 @@ VoidCode 不需要复制 OMP 的机制数量；它需要的是把"同一套组�
 
 删除 `/start-work` 与 continuation loop 之后，剩下的 workflow 相关代码按下述方向收口：
 
-1. **policy / guidance 类槽位全部收进 `RuntimeContextTransformRegistry`**：`workflow_mode_prompt_context`、`skill_prompt_context`、memory-usage 指导（`_STRICT_MEMORY_USAGE_GUIDANCE`）、workspace memory recall（`workspace_memory_context`）都改为 registry 里的 provider；AGENTS file-rules、hook preset guidance 保持现状（它们已经在 registry 里）。每个 provider 自带 priority / ordering / injection metadata，通过现有 `RuntimeContextTransformInjection` ...
 2. **`WorkflowMode` 降级为命名 transform 组合**：`mode = refs: [...] + description`，经 registry 解析成 injection，不再有独立 `workflow_mode_prompt_context` 槽位。mode 只声明"引用哪些 provider、附带什么描述"，不再携带注入位置与顺序知识。
 3. **`build_prompt_assembly_plan` 对 policy tier 只做遍历 `context_transform_result.injections`**：删除 6 个命名槽位参数和对应的固定 `append_system` 调用，policy tier 的内容与顺序完全由 registry 决定；`prompt_assembly.py` 不再需要知道"有哪些 policy"。
 4. **结构性槽位保留，不进 registry**：`base_safety`（`_BASE_SAFETY_GUIDANCE`）、`env_card`（stable / dynamic）、`identity header`（`agent_identity_header`）、capability block、tool policy summary、dynamic boundary、todo / task 状态、continuity summary 等属于运行时结构性内容，不是 policy 注入，继续由 `build_prompt_assembly_plan` 直接拼装。

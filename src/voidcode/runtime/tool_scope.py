@@ -11,9 +11,6 @@ from .tool_registry import ToolPolicyDecision, ToolRegistry
 class RuntimeToolScopeResolver:
     """Materialize agent-visible tools and matching raw-call policy decisions."""
 
-    def __init__(self, *, memory_enabled: bool) -> None:
-        self._memory_enabled = memory_enabled
-
     def scope(
         self,
         registry: ToolRegistry,

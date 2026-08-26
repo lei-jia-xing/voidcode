@@ -27,7 +27,6 @@ VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的本地优先（
 - LangGraph **不**直接与 UI 客户端通信
 - UI 客户端 **不**直接调用工具
 
-所有流程都经过运行时，以确保治理、持久性和可观测性保持一致。CLI、Web/frontend 与 graph path 都是 runtime request / event / tool contract 的适配层，不应各自实现 mutating-tool、memory-tool、shell 或 hook/delegation policy 的平行副本。
 
 ## LangGraph 与自定义运行时边界
 
@@ -50,7 +49,6 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 - 面向 CLI 或未来客户端的流式传输
 - 上下文管理与压缩
 - delegated child routing、background result retrieval、cancel/retry guidance 与 lifecycle hook guardrails
-- stable runtime `mode` / `read_only` interpretation、prompt-stack metadata redaction、memory-tool visibility policy、shell command classification 与 hook execution policy
 
 ### `ProviderSingleAgentGraph` 负责（当前已实现的 provider-backed execution engine 路径）
 
@@ -122,7 +120,6 @@ provider-backed foreground loop 支持同一模型 turn 返回多个 tool calls�
 - runtime 根据 agent manifest 和 request tool config 收窄 provider 可见工具，并在实际 tool lookup 时再次执行 allowlist guardrail。
 - `skill_refs` 是 manifest/catalog 默认选择；`force_load_skills` 与 delegated `load_skills` 只在目标 run 或 child session 注入完整 skill body，不从 parent 泄漏到 child。
 - MCP server lifecycle 由 runtime 以 runtime scope 或 session scope 管理，并通过 fake MCP 覆盖测试；当前不宣称 workspace-scoped MCP、MCP 生态市场式语义或动态 agent marketplace。
-- prompt guidance（包括 base safety、tool policy summary、memory usage guidance、hook preset guidance 与 custom manifest prompt append）是 additive context，不是 enforcement source；runtime policy 决定 tool visibility、shell allowance、memory availability、hook execution 与 delegated routing。
 - Runtime Harness Policy v1 会为 fresh run 持久化 `RuntimePolicySnapshot`，并通过 `runtime.request_received.payload.runtime_policy` 暴露有界、脱敏的 observability；prompt activation 是持久化/replay-aware guidance，不是授权来源。
 - prompt-stack observability 只暴露 redacted, bounded metadata，便于 replay/debug 解释 context assembly；它不把 raw prompt/skill body、secret-like values 或注入 env values 持久化为普通 client payload。
 - 背景结果通过 `background_output` / `load_background_task_result` 读取，可选择有界 full-session transcript；失败输出只给出显式 user-request retry guidance，不做无限自动重试。

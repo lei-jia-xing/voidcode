@@ -88,16 +88,6 @@ EventEnvelope(
 
 它们在 `src/voidcode/runtime/events.py` 中归类为 `RuntimeEventType`（终态 / 通知类事件同时属于 `DelegatedBackgroundTaskEventType`）。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件；`runtime.acp_delegated_lifecycle`（CoreEventType）用于 ACP 侧的 delegated observability，payload 与 background-task 事件一致。
 
-## memory / context 事件
-
-以下事件表达 memory / context 观测：
-
-- `runtime.context_compacted`
-- `runtime.memory_added`
-- `runtime.memory_deleted`
-- `runtime.memory_searched`
-- `runtime.memory_status_checked`
-
 ## 未来补充 / additive 词汇表
 
 当前不再有仍保持 additive/prototype 语义的具名共享事件：`runtime.context_transform_applied` 已转为正式事件（见上文），memory 观测统一由上文 memory / context 事件表达。

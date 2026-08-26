@@ -176,7 +176,6 @@ from .contracts import (
     ReviewFileDiff,
     RuntimeBackgroundTaskStatusSnapshot,
     RuntimeHookPresetSnapshot,
-    RuntimeMemoryStatusSnapshot,
     RuntimeNotification,
     RuntimeProviderContextPolicyDecision,
     RuntimeProviderContextSnapshot,
@@ -219,10 +218,6 @@ from .event_envelopes import (
 )
 from .events import (
     RUNTIME_HOOK_PRESETS_LOADED,
-    RUNTIME_MEMORY_ADDED,
-    RUNTIME_MEMORY_DELETED,
-    RUNTIME_MEMORY_SEARCHED,
-    RUNTIME_MEMORY_STATUS_CHECKED,
     RUNTIME_QUESTION_ANSWERED,
     RUNTIME_REASONING_DIAGNOSTIC,
     RUNTIME_SKILLS_APPLIED,
@@ -251,7 +246,6 @@ from .hook_runtime import (
 from .interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from .lsp import LspManager, LspManagerState, LspRequest, LspRequestResult, build_lsp_manager
 from .mcp import McpManager, build_mcp_manager, release_mcp_session_events
-from .memory import MemoryConfig, MemoryKind, MemoryRecord, MemorySearchResult, build_memory_manager
 from .mode import MODE_DEFINITIONS, resolve_mode
 from .paths import provider_catalog_cache_path
 from .permission import (
@@ -435,29 +429,6 @@ def _coerce_bool_like(value: object | None, default: bool) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() not in {"false", "0", "no", "off", ""}
-
-
-def _render_workspace_memory_context(
-    memories: tuple[MemoryRecord, ...],
-    *,
-    max_chars: int,
-) -> str:
-    if not memories:
-        return ""
-    header = "Workspace Memory:\nMemories may be stale; prefer current repository files when conflicts exist."
-    if len(header) > max_chars:
-        return header[:max_chars]
-    lines = [header]
-    rendered = header
-    for memory in memories:
-        tags = f" tags={','.join(memory.tags)}" if memory.tags else ""
-        candidate_line = f"- {memory.id} [{memory.kind}]{tags} {memory.content.strip()}"
-        candidate = "\n".join((*lines, candidate_line)).strip()
-        if len(candidate) > max_chars:
-            continue
-        lines.append(candidate_line)
-        rendered = candidate
-    return rendered
 
 
 @final
@@ -754,7 +725,6 @@ class VoidCodeRuntime(RuntimeSurface):
             provider_catalog_query=self._provider_catalog_query,
             tool_executor=RuntimeToolExecutor(
                 workspace=self._workspace,
-                memory=self,
                 lsp=self,
                 lsp_diagnostics_on_write=bool(self._config.lsp is not None and self._config.lsp.diagnostics_on_write),
                 tool_catalog=_RuntimeToolCatalogFacade(self),
@@ -792,9 +762,7 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     def _bind_tool_scope_resolver(self) -> None:
-        self._tool_scope_resolver = RuntimeToolScopeResolver(
-            memory_enabled=self._config.memory.enabled,
-        )
+        self._tool_scope_resolver = RuntimeToolScopeResolver()
 
     def __enter__(self) -> VoidCodeRuntime:
         return self
@@ -2735,130 +2703,6 @@ class VoidCodeRuntime(RuntimeSurface):
     def tool_effectiveness_report(self) -> ToolEffectivenessReport:
         return self._session_store.tool_effectiveness_report(workspace=self._workspace)
 
-    def _require_memory_enabled(self) -> None:
-        if not self._config.memory.enabled:
-            raise RuntimeError("workspace memory is disabled by runtime config")
-
-    def add_memory(
-        self,
-        *,
-        content: str,
-        kind: MemoryKind = "project",
-        tags: tuple[str, ...] = (),
-        source_session_id: str | None = None,
-    ) -> MemoryRecord:
-        self._require_memory_enabled()
-        record = self._session_store.add_memory(
-            workspace=self._workspace,
-            content=content,
-            kind=kind,
-            tags=tags,
-            source_session_id=source_session_id,
-        )
-        return record
-
-    def list_memories(self, *, include_deleted: bool = False) -> tuple[MemoryRecord, ...]:
-        self._require_memory_enabled()
-        return self._session_store.list_memories(
-            workspace=self._workspace,
-            include_deleted=include_deleted,
-        )
-
-    def search_memories(self, *, query: str) -> tuple[MemorySearchResult, ...]:
-        self._require_memory_enabled()
-        manager_state = build_memory_manager(
-            self._config.memory,
-            workspace=self._workspace,
-        ).current_state()
-        if not (manager_state.semantic_search_available or manager_state.keyword_search_available):
-            raise RuntimeError("workspace memory search requires semantic search, but semantic search is unavailable")
-        return self._session_store.search_memories(workspace=self._workspace, query=query)
-
-    def workspace_memory_prompt_context(self, memory_config: MemoryConfig | None = None) -> str:
-        config = memory_config or self._config.memory
-        if not config.enabled or not config.recall.enabled:
-            return ""
-        memories = self._session_store.list_memories(workspace=self._workspace)
-        return _render_workspace_memory_context(
-            memories[: config.recall.limit],
-            max_chars=config.recall.max_chars,
-        )
-
-    def get_memory(self, memory_id: str) -> MemoryRecord | None:
-        self._require_memory_enabled()
-        return self._session_store.get_memory(workspace=self._workspace, memory_id=memory_id)
-
-    def delete_memory(self, memory_id: str) -> MemoryRecord:
-        self._require_memory_enabled()
-        return self._session_store.delete_memory(workspace=self._workspace, memory_id=memory_id)
-
-    def memory_status(self) -> RuntimeMemoryStatusSnapshot:
-        diagnostics = self._session_store.storage_diagnostics(workspace=self._workspace)
-        memories = self._session_store.list_memories(
-            workspace=self._workspace,
-            include_deleted=True,
-        )
-        deleted_count = sum(1 for memory in memories if memory.status == "deleted")
-        manager_state = build_memory_manager(
-            self._config.memory,
-            workspace=self._workspace,
-        ).current_state()
-        return RuntimeMemoryStatusSnapshot(
-            workspace_id=str(self._workspace),
-            database_path=str(diagnostics["database_path"]),
-            enabled=self._config.memory.enabled,
-            scope=self._config.memory.scope,
-            active_count=len(memories) - deleted_count,
-            deleted_count=deleted_count,
-            total_count=len(memories),
-            recall_enabled=self._config.memory.recall.enabled,
-            semantic_search=self._config.memory.semantic_search,
-            sqlite_vec=self._config.memory.sqlite_vec.enabled,
-            keyword_search_available=manager_state.keyword_search_available,
-            semantic_search_available=manager_state.semantic_search_available,
-            sqlite_vec_status=manager_state.sqlite_vec.status,
-            sqlite_vec_detail=manager_state.sqlite_vec.detail,
-        )
-
-    def memory_event_payload(
-        self,
-        *,
-        action: Literal["added", "deleted", "searched", "status_checked"],
-        memory: MemoryRecord | None = None,
-        query: str | None = None,
-        result_count: int | None = None,
-    ) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "action": action,
-            "workspace_id": str(self._workspace),
-        }
-        if memory is not None:
-            payload.update(
-                {
-                    "memory_id": memory.id,
-                    "kind": memory.kind,
-                    "status": memory.status,
-                    "tag_count": len(memory.tags),
-                }
-            )
-        if query is not None:
-            payload["query"] = query
-        if result_count is not None:
-            payload["result_count"] = result_count
-        return payload
-
-    def memory_event_type(
-        self,
-        action: Literal["added", "deleted", "searched", "status_checked"],
-    ) -> str:
-        if action == "added":
-            return RUNTIME_MEMORY_ADDED
-        if action == "deleted":
-            return RUNTIME_MEMORY_DELETED
-        if action == "searched":
-            return RUNTIME_MEMORY_SEARCHED
-        return RUNTIME_MEMORY_STATUS_CHECKED
-
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)
         return self._background_task_supervisor.start_background_task(validated_request)
@@ -3951,7 +3795,6 @@ class VoidCodeRuntime(RuntimeSurface):
                 model_concurrency=dict(self._config.background_task.model_concurrency),
                 status_counts=background_status_counts,
             ),
-            memory=self.memory_status(),
         )
 
     @staticmethod
@@ -5592,7 +5435,6 @@ class VoidCodeRuntime(RuntimeSurface):
         model_family = effective_config.resolved_provider.active_target.selection.provider
         tool_feedback_mode = self._tool_feedback_mode_for_effective_config(effective_config)
         agent_prompt_context = render_agent_prompt(agent_preset, model_family=model_family) or ""
-        workspace_memory_context = self.workspace_memory_prompt_context(self._config.memory)
         hook_preset_context = self._hook_preset_context_from_metadata(
             session_metadata,
             agent=effective_config.agent,
@@ -5622,7 +5464,6 @@ class VoidCodeRuntime(RuntimeSurface):
             skill_prompt_context=skill_prompt_context,
             loaded_skills=loaded_skills,
             preserved_continuity_state=continuity_state_from_session_metadata(session_metadata),
-            workspace_memory_context=workspace_memory_context,
             workspace=self._workspace,
             replay_retained_tool_messages=tool_feedback_mode != "synthetic_user_message",
             replayed_conversation_segments=replayed_conversation_segments,

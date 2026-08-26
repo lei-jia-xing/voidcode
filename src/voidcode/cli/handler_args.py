@@ -63,22 +63,6 @@ class SessionsArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryArgs:
-    """Arguments for the ``memory`` command group."""
-
-    memory_command: str | None = None
-    command: str = "memory"
-    workspace: Path = field(default_factory=Path.cwd)
-    content: str | None = None
-    kind: str | None = None
-    tag: tuple[str, ...] = ()
-    json: bool = False
-    limit: int | None = None
-    query: str | None = None
-    memory_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class TasksArgs:
     """Arguments for the ``tasks`` command group."""
 
@@ -222,7 +206,6 @@ class McpArgs:
 __all__ = [
     "RunArgs",
     "SessionsArgs",
-    "MemoryArgs",
     "TasksArgs",
     "StorageArgs",
     "ConfigArgs",

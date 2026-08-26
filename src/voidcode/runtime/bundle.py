@@ -114,13 +114,6 @@ _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS: Final[frozenset[str]] = frozenset(
     {
         "embedding_cache",
         "embeddings",
-        "memory_index_cache",
-        "memory_records",
-        "memory_vector_cache",
-        "memory_vectors",
-        "memories",
-        "sqlite_vec",
-        "sqlite-vec",
         "vector_cache",
         "vector_index",
         "vector_index_path",
@@ -129,16 +122,8 @@ _DEFERRED_BUNDLE_DIAGNOSTIC_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 
-
 _DEFERRED_BUNDLE_DIAGNOSTIC_VALUES: Final[frozenset[str]] = frozenset(
     {
-        "memory_index_status",
-        "memory_recall_log",
-        "memory_tags",
-        "memory_vectors",
-        "memories",
-        "sqlite_vec",
-        "sqlite-vec",
         "vector_cache",
         "vector_index",
         "vector_indexes",

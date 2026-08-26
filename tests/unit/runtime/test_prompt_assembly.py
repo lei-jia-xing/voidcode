@@ -69,7 +69,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "runtime_memory_usage_guidance",
         "skill_prompt",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
@@ -82,7 +81,6 @@ def test_build_prompt_assembly_plan_orders_core_sections() -> None:
     assert plan.sections[-1].role == "user"
     assert plan.sections[-1].content == "fix the failing test"
     assert [section.tier for section in plan.sections] == [
-        "instruction",
         "instruction",
         "instruction",
         "instruction",
@@ -124,7 +122,6 @@ def test_build_prompt_assembly_plan_deduplicates_system_text() -> None:
     assert [section.source for section in plan.sections] == [
         "runtime_base_safety",
         "runtime_instruction_precedence",
-        "runtime_memory_usage_guidance",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
         "current_user_prompt",
@@ -154,15 +151,13 @@ def test_build_prompt_assembly_plan_keeps_non_system_transform_roles() -> None:
     assert [section.source for section in plan.sections] == [
         "runtime_base_safety",
         "runtime_instruction_precedence",
-        "runtime_memory_usage_guidance",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
         "transform_assistant",
         "transform_system",
         "current_user_prompt",
     ]
-    assistant_section = plan.sections[5]
-    assert assistant_section.role == "assistant"
+    assistant_section = plan.sections[4]
     assert assistant_section.content == "assistant injected note"
     assert assistant_section.tier == "workspace"
 
@@ -181,7 +176,7 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
         pending_state_section=pending,
     )
 
-    pending_section = plan.sections[5]
+    pending_section = plan.sections[4]
     assert pending_section.source == "runtime_pending_state"
     assert pending_section.metadata == {
         "status": "waiting_question",
@@ -214,7 +209,6 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         "agent_prompt",
         "runtime_environment_stable",
         "runtime_instruction_precedence",
-        "runtime_memory_usage_guidance",
         "runtime_tool_policy_summary",
     ]
     assert sources[boundary_index + 1 :] == [
@@ -299,7 +293,6 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
                 ),
             )
         ),
-        workspace_memory_context="Workspace Memory:\n- remember password=hunter2",
     )
 
     fragment_payload = plan.fragment_metadata_payload()
@@ -314,9 +307,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "runtime_memory_usage_guidance",
         "skill_prompt",
-        "runtime_workspace_memory",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
         "hook_context",
@@ -326,9 +317,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
         "base_safety",
         "base_safety",
         "persona_profile",
-        "memory_usage_guidance",
         "skills",
-        "project_context",
         "tool_policy_summary",
         "project_context",
         "hook_injected_context",
@@ -389,7 +378,6 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "runtime_base_safety",
         "runtime_instruction_precedence",
         "agent_prompt",
-        "runtime_memory_usage_guidance",
         "skill_prompt",
         "runtime_tool_policy_summary",
         "runtime_dynamic_boundary",
@@ -398,7 +386,6 @@ def test_build_prompt_assembly_plan_skill_todo_transform_content_appears() -> No
         "current_user_prompt",
     ]
     assert [section.tier for section in plan.sections] == [
-        "instruction",
         "instruction",
         "instruction",
         "instruction",

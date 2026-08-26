@@ -18,7 +18,6 @@ from ..tools.contracts import (
 from ..tools.runtime_context import (
     RuntimeArtifactReadFacade,
     RuntimeLspToolFacade,
-    RuntimeMemoryToolFacade,
     RuntimeToolCatalogFacade,
     RuntimeToolInvocationContext,
     RuntimeTranscriptFacade,
@@ -50,7 +49,6 @@ type _ToolQueueItem = ToolExecutionProgress | _ToolResultItem | _ToolExceptionIt
 @dataclass(frozen=True, slots=True)
 class RuntimeToolExecutor:
     workspace: Path
-    memory: RuntimeMemoryToolFacade
     lsp: RuntimeLspToolFacade
     lsp_diagnostics_on_write: bool = False
     tool_catalog: RuntimeToolCatalogFacade | None = None
@@ -133,7 +131,6 @@ class RuntimeToolExecutor:
                 model=model,
                 abort_signal=abort_signal,
                 emit_tool_progress=emit_tool_progress,
-                memory=self.memory,
                 lsp=self.lsp,
                 lsp_diagnostics_on_write=self.lsp_diagnostics_on_write,
                 tool_catalog=self.tool_catalog,

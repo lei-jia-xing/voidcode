@@ -48,10 +48,6 @@ type CoreEventType = Literal[
 ]
 type RuntimeEventType = Literal[
     "runtime.context_compacted",
-    "runtime.memory_added",
-    "runtime.memory_deleted",
-    "runtime.memory_searched",
-    "runtime.memory_status_checked",
     "runtime.context_transform_applied",
     "runtime.session_started",
     "runtime.session_ended",
@@ -171,10 +167,6 @@ RUNTIME_QUESTION_ANSWERED: Final[CoreEventType] = "runtime.question_answered"
 RUNTIME_FAILED: Final[CoreEventType] = "runtime.failed"
 
 RUNTIME_CONTEXT_COMPACTED: Final[RuntimeEventType] = "runtime.context_compacted"
-RUNTIME_MEMORY_ADDED: Final[RuntimeEventType] = "runtime.memory_added"
-RUNTIME_MEMORY_DELETED: Final[RuntimeEventType] = "runtime.memory_deleted"
-RUNTIME_MEMORY_SEARCHED: Final[RuntimeEventType] = "runtime.memory_searched"
-RUNTIME_MEMORY_STATUS_CHECKED: Final[RuntimeEventType] = "runtime.memory_status_checked"
 RUNTIME_CONTEXT_TRANSFORM_APPLIED: Final[RuntimeEventType] = "runtime.context_transform_applied"
 RUNTIME_SESSION_STARTED: Final[RuntimeEventType] = "runtime.session_started"
 RUNTIME_SESSION_ENDED: Final[RuntimeEventType] = "runtime.session_ended"
@@ -253,10 +245,6 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
 )
 RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_CONTEXT_COMPACTED,
-    RUNTIME_MEMORY_ADDED,
-    RUNTIME_MEMORY_DELETED,
-    RUNTIME_MEMORY_SEARCHED,
-    RUNTIME_MEMORY_STATUS_CHECKED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
     RUNTIME_SESSION_STARTED,
     RUNTIME_SESSION_ENDED,

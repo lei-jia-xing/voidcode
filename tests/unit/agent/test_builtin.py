@@ -202,17 +202,6 @@ def test_builtin_callable_child_presets_align_with_runtime_delegation_routes() -
         _ = resolve_subagent_route(SubagentRoutingIdentity(mode="sync", subagent_type="leader"))
 
 
-def test_builtin_manifests_omit_removed_memory_tools() -> None:
-    leader = get_builtin_agent_manifest("leader")
-    product = get_builtin_agent_manifest("product")
-    memory_tools = {"memory_add", "memory_delete", "memory_list", "memory_search"}
-
-    assert leader is not None
-    assert memory_tools.isdisjoint(leader.tool_allowlist)
-    assert product is not None
-    assert memory_tools.isdisjoint(product.tool_allowlist)
-
-
 def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     write_tools = {"write", "edit", "multi_edit", "apply_patch"}
 

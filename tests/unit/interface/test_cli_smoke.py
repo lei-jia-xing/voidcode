@@ -3233,12 +3233,6 @@ def test_config_init_prints_starter_config_without_writing() -> None:
         "formatter": {"enabled": True},
         "lsp": {"enabled": True},
         "mcp": {"enabled": True},
-        "memory": {
-            "enabled": True,
-            "recall": {"enabled": False},
-            "semantic_search": "auto",
-            "sqlite_vec": {"enabled": "auto"},
-        },
         "tools": {"builtin": {"enabled": True}},
         "skills": {"enabled": True},
     }

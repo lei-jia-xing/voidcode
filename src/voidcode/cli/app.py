@@ -30,7 +30,6 @@ from ..cli_support import (
     serialize_command_definition,
     serialize_command_summary,
     serialize_event,
-    serialize_memory_record,
     serialize_session_state,
     serialize_stored_session_summary,
 )
@@ -73,7 +72,6 @@ from ..runtime.contracts import (
     ProviderInspectResult,
     ProviderModelMetadata,
     ProviderReadinessResult,
-    RuntimeMemoryStatusSnapshot,
     RuntimeRequest,
     RuntimeStreamChunk,
     validate_runtime_request_metadata,
@@ -82,7 +80,6 @@ from ..runtime.events import (
     EventEnvelope,
     redact_reasoning_payload,
 )
-from ..runtime.memory import MemoryKind, MemoryRecord
 from ..runtime.permission import PermissionDecision, PermissionResolution
 from ..runtime.question import QuestionResponse
 from ..runtime.serialization import serialize_revert_marker, serialize_session_debug_snapshot
@@ -102,7 +99,6 @@ from .handler_args import (
     ConfigArgs,
     DoctorArgs,
     McpArgs,
-    MemoryArgs,
     ProviderArgs,
     RunArgs,
     ServerArgs,
@@ -980,204 +976,6 @@ def _handle_sessions_list_command(args: SessionsArgs) -> int:
 
 def _format_session_summary(session: StoredSessionSummary) -> str:
     return f"SESSION id={session.session.id} status={session.status} turn={session.turn} updated_at={session.updated_at} prompt={session.prompt!r}"
-
-
-_MEMORY_KINDS: tuple[MemoryKind, ...] = (
-    "project",
-    "preference",
-    "feedback",
-    "reference",
-    "decision",
-)
-
-
-def _parse_memory_kind(value: str) -> MemoryKind:
-    if value in _MEMORY_KINDS:
-        return value
-    raise CliError(
-        code=EXIT_USAGE_ERROR,
-        message=f"invalid memory kind: {value}. Expected one of: {', '.join(_MEMORY_KINDS)}",
-    )
-
-
-def _memory_payload(memory: MemoryRecord) -> dict[str, object]:
-    return serialize_memory_record(memory)
-
-
-def _memory_list_payload(memories: Sequence[MemoryRecord]) -> dict[str, object]:
-    return {
-        "memories": [_memory_payload(memory) for memory in memories],
-        "count": len(memories),
-    }
-
-
-def _memory_status_payload(status: RuntimeMemoryStatusSnapshot) -> dict[str, object]:
-    return {
-        "workspace_id": status.workspace_id,
-        "database_path": status.database_path,
-        "requires_active_session": False,
-        "enabled": status.enabled,
-        "scope": status.scope,
-        "total_memories": status.total_count,
-        "active_memories": status.active_count,
-        "deleted_memories": status.deleted_count,
-        "recall_enabled": status.recall_enabled,
-        "semantic_search": status.semantic_search,
-        "sqlite_vec": status.sqlite_vec,
-        "keyword_search_available": status.keyword_search_available,
-        "semantic_search_available": status.semantic_search_available,
-        "sqlite_vec_status": status.sqlite_vec_status,
-        "sqlite_vec_detail": status.sqlite_vec_detail,
-    }
-
-
-def _format_memory(memory: MemoryRecord) -> str:
-    tags = ",".join(memory.tags) if memory.tags else "-"
-    return _format_named_record(
-        "MEMORY",
-        [
-            ("id", memory.id),
-            ("kind", memory.kind),
-            ("tags", tags),
-            ("created_at", memory.created_at),
-            ("content", repr(memory.content)),
-        ],
-    )
-
-
-def _handle_memory_add_command(args: MemoryArgs) -> int:
-    workspace = args.workspace
-    content = args.content
-    assert content is not None
-    assert args.kind is not None
-    if not content.strip():
-        raise CliError(code=EXIT_USAGE_ERROR, message="memory content cannot be empty")
-    kind = _parse_memory_kind(args.kind)
-    tags = tuple(args.tag)
-    with _runtime_session(workspace) as runtime:
-        try:
-            memory = runtime.add_memory(content=content, kind=kind, tags=tags)
-        except ValueError as exc:
-            raise CliError(code=EXIT_USAGE_ERROR, message=str(exc)) from None
-    return _emit_output(
-        args,
-        {"memory": _memory_payload(memory)},
-        lambda: print(f"Added memory {memory.id} kind={memory.kind} tags={','.join(memory.tags) or '-'}"),
-    )
-
-
-def _memory_filter_records(
-    memories: Sequence[MemoryRecord],
-    *,
-    kind: str | None,
-    tags: tuple[str, ...],
-    limit: int | None,
-) -> tuple[MemoryRecord, ...]:
-    parsed_kind = _parse_memory_kind(kind) if kind is not None else None
-    filtered = [memory for memory in memories if (parsed_kind is None or memory.kind == parsed_kind) and all(tag in memory.tags for tag in tags)]
-    if limit is not None:
-        if limit < 0:
-            raise CliError(code=EXIT_USAGE_ERROR, message="limit must be non-negative")
-        filtered = filtered[:limit]
-    return tuple(filtered)
-
-
-def _handle_memory_list_command(args: MemoryArgs) -> int:
-    workspace = args.workspace
-    with _runtime_session(workspace) as runtime:
-        memories = runtime.list_memories()
-    filtered = _memory_filter_records(
-        memories,
-        kind=args.kind,
-        tags=tuple(args.tag),
-        limit=args.limit,
-    )
-
-    def _print_memories() -> None:
-        if not filtered:
-            print("No memories found")
-            return
-        for memory in filtered:
-            print(_format_memory(memory))
-
-    return _emit_output(args, _memory_list_payload(filtered), _print_memories)
-
-
-def _handle_memory_search_command(args: MemoryArgs) -> int:
-    workspace = args.workspace
-    query = args.query
-    assert query is not None
-    with _runtime_session(workspace) as runtime:
-        results = runtime.search_memories(query=query)
-    filtered = _memory_filter_records(
-        tuple(result.record for result in results),
-        kind=args.kind,
-        tags=tuple(args.tag),
-        limit=args.limit,
-    )
-
-    def _print_memory_results() -> None:
-        if not filtered:
-            print("No memories found")
-            return
-        for memory in filtered:
-            print(_format_memory(memory))
-
-    return _emit_output(
-        args,
-        {"query": query, **_memory_list_payload(filtered)},
-        _print_memory_results,
-    )
-
-
-def _handle_memory_show_command(args: MemoryArgs) -> int:
-    workspace = args.workspace
-    memory_id = args.memory_id
-    assert memory_id is not None
-    with _runtime_session(workspace) as runtime:
-        memory = runtime.get_memory(memory_id)
-    if memory is None:
-        raise CliError(code=EXIT_INVALID_RESOURCE, message=f"memory not found: {memory_id}")
-    return _emit_output(
-        args,
-        {"memory": _memory_payload(memory)},
-        lambda: print(_format_memory(memory)),
-    )
-
-
-def _handle_memory_delete_command(args: MemoryArgs) -> int:
-    workspace = args.workspace
-    memory_id = args.memory_id
-    assert memory_id is not None
-    with _runtime_session(workspace) as runtime:
-        try:
-            memory = runtime.delete_memory(memory_id)
-        except ValueError as exc:
-            raise CliError(code=EXIT_INVALID_RESOURCE, message=str(exc)) from None
-    return _emit_output(
-        args,
-        {"deleted": True, "id": memory.id},
-        lambda: print(f"Deleted memory {memory.id}"),
-    )
-
-
-def _handle_memory_status_command(args: MemoryArgs) -> int:
-    workspace = args.workspace
-    with _runtime_session(workspace) as runtime:
-        status = runtime.memory_status()
-    payload = _memory_status_payload(status)
-    return _emit_output(
-        args,
-        payload,
-        lambda: print(
-            "Memory store status "
-            f"workspace={payload['workspace_id']} database={payload['database_path']} "
-            f"total={payload['total_memories']} deleted={payload['deleted_memories']} "
-            f"keyword_search={str(payload['keyword_search_available']).lower()} "
-            f"semantic_search={str(payload['semantic_search_available']).lower()} "
-            f"sqlite_vec_status={payload['sqlite_vec_status']} active session: no"
-        ),
-    )
 
 
 def _format_named_record(prefix: str, fields: Sequence[tuple[str, object]]) -> str:
@@ -3048,126 +2846,6 @@ def unrevert(session_id: str, workspace: Path) -> int:
         SessionsArgs(
             session_id=session_id,
             workspace=workspace,
-        )
-    )
-
-
-@root_cli.group(name="memory", help="Manage explicit workspace memory records in the MVP.")
-def memory() -> None:
-    pass
-
-
-@memory.command(name="add", help="Add an explicit workspace memory record.")
-@click.argument("content")
-@_workspace_option("Workspace whose memory store should receive the record.")
-@click.option("--kind", default="project", help="Memory kind.")
-@click.option("--tag", multiple=True, help="Tag to attach to the memory. Repeatable.")
-@_json_option("Output the created memory as JSON.")
-def memory_add(
-    content: str,
-    workspace: Path,
-    kind: str,
-    tag: tuple[str, ...],
-    json_output: bool,
-) -> int:
-    return _handle_memory_add_command(
-        MemoryArgs(
-            content=content,
-            workspace=workspace,
-            kind=kind,
-            tag=tag,
-            json=json_output,
-        )
-    )
-
-
-@memory.command(name="list", help="List explicit workspace memory records.")
-@_workspace_option("Workspace whose memory store should be listed.")
-@click.option("--kind", help="Only include one memory kind.")
-@click.option("--tag", multiple=True, help="Only include memories with this tag. Repeatable.")
-@click.option("--limit", type=int, help="Maximum number of memories to return.")
-@_json_option("Output memories as JSON.")
-def memory_list(
-    workspace: Path,
-    kind: str | None,
-    tag: tuple[str, ...],
-    limit: int | None,
-    json_output: bool,
-) -> int:
-    return _handle_memory_list_command(
-        MemoryArgs(
-            workspace=workspace,
-            kind=kind,
-            tag=tag,
-            limit=limit,
-            json=json_output,
-        )
-    )
-
-
-@memory.command(name="search", help="Search explicit workspace memory records.")
-@click.argument("query")
-@_workspace_option("Workspace whose memory store should be searched.")
-@click.option("--kind", help="Only include one memory kind.")
-@click.option("--tag", multiple=True, help="Only include memories with this tag. Repeatable.")
-@click.option("--limit", type=int, help="Maximum number of memories to return.")
-@_json_option("Output search results as JSON.")
-def memory_search(
-    query: str,
-    workspace: Path,
-    kind: str | None,
-    tag: tuple[str, ...],
-    limit: int | None,
-    json_output: bool,
-) -> int:
-    return _handle_memory_search_command(
-        MemoryArgs(
-            query=query,
-            workspace=workspace,
-            kind=kind,
-            tag=tag,
-            limit=limit,
-            json=json_output,
-        )
-    )
-
-
-@memory.command(name="show", help="Show one explicit workspace memory record.")
-@click.argument("memory_id")
-@_workspace_option("Workspace whose memory store should be queried.")
-@_json_option("Output the memory as JSON.")
-def memory_show(memory_id: str, workspace: Path, json_output: bool) -> int:
-    return _handle_memory_show_command(
-        MemoryArgs(
-            memory_id=memory_id,
-            workspace=workspace,
-            json=json_output,
-        )
-    )
-
-
-@memory.command(name="delete", help="Tombstone one explicit workspace memory record.")
-@click.argument("memory_id")
-@_workspace_option("Workspace whose memory store should be updated.")
-@_json_option("Output delete status as JSON.")
-def memory_delete(memory_id: str, workspace: Path, json_output: bool) -> int:
-    return _handle_memory_delete_command(
-        MemoryArgs(
-            memory_id=memory_id,
-            workspace=workspace,
-            json=json_output,
-        )
-    )
-
-
-@memory.command(name="status", help="Show workspace memory storage status.")
-@_workspace_option("Workspace whose memory storage scope should be reported.")
-@_json_option("Output memory status as JSON.")
-def memory_status(workspace: Path, json_output: bool) -> int:
-    return _handle_memory_status_command(
-        MemoryArgs(
-            workspace=workspace,
-            json=json_output,
         )
     )
 

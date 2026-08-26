@@ -1475,7 +1475,6 @@ def assemble_provider_context(
     context_transform_result: RuntimeContextTransformResult | None = None,
     loaded_skills: tuple[dict[str, object], ...] = (),
     preserved_continuity_state: ContextProjection | None = None,
-    workspace_memory_context: str = "",
     workspace: Path | None = None,
     replay_retained_tool_messages: bool = True,
     replayed_conversation_segments: tuple[RuntimeContextSegment, ...] = (),
@@ -1567,7 +1566,6 @@ def assemble_provider_context(
             else None
         ),
         todo_prompt_context=todo_prompt_context or "",
-        workspace_memory_context=workspace_memory_context,
         continuity_summary=continuity_summary,
         artifact_reference_sections=artifact_reference_sections,
         prompt_profile_name=prompt_profile_name,

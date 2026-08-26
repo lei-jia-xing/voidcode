@@ -36,11 +36,7 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 - **voidcode**：`.voidcode/rules/**/*.md` 构成 workspace-only catalog；always-apply 规则全文注入，discoverable 规则只注入 metadata，正文经 bounded `voidcode://rule/<name>` 读取。现有 `AGENTS.md` 仍保持响应式规则行为。
 - **判定**：最小 rulebook disclosure 已落地；glob 条件规则、imports、user scope 与完整 TTSR 仍省略。
 
-### 4. Memory
 
-- **omp**：`memory://root` 摘要启动注入（`summaryInjectionTokenLimit` 5000 上限）+ `MEMORY.md`、`learned.md` 按需；后端 local 整合管线 / hindsight / mnemopi；工具 learn/recall/retain/reflect/memory_edit。
-- **voidcode**：`_KeywordMemoryManager` 关键词检索；`MemoryRecallConfig`（默认 `enabled=False`、`limit=5`、`max_chars=2000`）；可选 sqlite-vec；workspace 级；注入为 `workspace_memory_context`。
-- **判定**：voidcode 较原始。
 
 ### 5. Compaction / 上下文窗口
 
@@ -50,7 +46,6 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 ### 6. 内部 URL 命名空间 / 按需工具文档
 
-- **omp**：`skill://` `rule://` `memory://` `artifact://` `xd://` `omp://` `agent://` `history://` `local://` `mcp://`；工具文档按需 `xd://<tool>`。
 - **voidcode**：提供 runtime-owned `voidcode://tool/<name>` 工具文档 URI。essential 工具（以及 allowlist 明确选中的工具）进入 provider 顶层；discoverable 工具仍在 live registry 中，通过 `read(path="voidcode://tool/<name>")` 按需返回完整 guidance、当前 `input_schema` 与治理 metadata，再经 `invoke_tool` 调用。provider-visible `ToolDefinition` 只携带 Python definition 的短 description 与 canonical schema；MCP/local 动态事实以 registry、`ToolResult.data` 和 runtime metadata/events 为准。
 - **判定**：OMP 提供更广的通用内部 URL 命名空间；VoidCode 当前只为工具文档提供 runtime-owned URI，并以 essential/discoverable 分层控制 provider 暴露范围。
 
@@ -68,11 +63,8 @@ VoidCode 的 rulebook 已以 workspace-only 的 bounded catalog 形式补齐最�
 
 - `src/voidcode/runtime/context_rules.py` — `RULE_FILE_NAME="AGENTS.md"`、`MAX_RULE_FILES=8`、`MAX_RULE_FILE_CHARS=12_000`；`runtime_file_rule_contexts()` 以 `tool_results` 触碰路径为输入（响应式）。
 - `src/voidcode/runtime/skills.py` — `build_skill_prompt_context`、`SkillRuntimeContext`、`SkillExecutionSnapshot`。
-- `src/voidcode/runtime/service.py` — `_applied_skill_contexts`、`force_load_skills` 注入、`workspace_memory_prompt_context`。
-- `src/voidcode/runtime/memory.py` — `_KeywordMemoryManager`、`MemoryRecallConfig(enabled=False, limit=5, max_chars=2000)`、workspace scope。
 - `src/voidcode/runtime/context_projection.py` — `project_summary(strategy="deterministic"|"model_assisted"|fallback)`。
 - `src/voidcode/runtime/context_window.py` — `prepare_provider_context` 按 token budget 丢弃/截断；`ContextProjection` continuity summary。
-- `src/voidcode/runtime/prompt_assembly.py` — `workspace_memory_context` 注入段（source `runtime_workspace_memory`）。
 - `src/voidcode/tools/skill.py` — `<available_skills>` 目录置于 `definition.description`。
 
 P1 rulebook implementation notes:

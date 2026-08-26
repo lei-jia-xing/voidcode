@@ -20,7 +20,6 @@ import {
   ChevronRight,
   Code2,
   Copy,
-  Database,
   Diff,
   FileSearch,
   FileText,
@@ -668,9 +667,6 @@ function toolIcon(tool: ChatTool) {
   if (tool.name === "todo_write") {
     return <ListTodo className={className} />;
   }
-  if (isMemoryTool(tool)) {
-    return <Database className={className} />;
-  }
   if (tool.name === "skill") {
     return <Sparkles className={className} />;
   }
@@ -722,91 +718,6 @@ function isReadonlyTool(tool: ChatTool) {
     tool.name === "grep" ||
     tool.name === "ast_grep_search" ||
     tool.name === "ast_grep_preview"
-  );
-}
-
-function isMemoryTool(tool: ChatTool) {
-  return (
-    tool.name === "memory_add" ||
-    tool.name === "memory_delete" ||
-    tool.name === "memory_list" ||
-    tool.name === "memory_search"
-  );
-}
-
-function memoryRecords(tool: ChatTool): Record<string, unknown>[] {
-  const data = resultData(tool);
-  const source = Array.isArray(data?.results)
-    ? data.results
-    : Array.isArray(data?.memories)
-      ? data.memories
-      : data && typeof data === "object" && toolValue(data.id)
-        ? [data]
-        : [];
-  return source.filter(
-    (item): item is Record<string, unknown> =>
-      Boolean(item) && typeof item === "object" && !Array.isArray(item),
-  );
-}
-
-function memoryRecordLabel(record: Record<string, unknown>) {
-  const id = toolValue(record.id);
-  const kind = toolValue(record.kind);
-  return [id, kind ? `[${kind}]` : null].filter(Boolean).join(" ");
-}
-
-function memoryRecordPreview(record: Record<string, unknown>) {
-  const content = record.content;
-  if (typeof content === "string") return content;
-  if (content === undefined || content === null) return null;
-  try {
-    return JSON.stringify(content);
-  } catch {
-    return String(content);
-  }
-}
-
-function MemoryRecordsBlock({
-  records,
-  emptyLabel,
-}: {
-  records: Record<string, unknown>[];
-  emptyLabel: string;
-}) {
-  if (records.length === 0) {
-    return <div className="mt-2 text-[var(--vc-text-muted)]">{emptyLabel}</div>;
-  }
-
-  return (
-    <div className="mt-2 space-y-2">
-      {records.map((record, index) => {
-        const label = memoryRecordLabel(record) || `#${index + 1}`;
-        const preview = memoryRecordPreview(record);
-        const key = toolValue(record.id) ?? `${label}-${preview ?? "record"}`;
-        const tags = Array.isArray(record.tags)
-          ? record.tags
-              .map((tag) => String(tag))
-              .filter(Boolean)
-              .join(", ")
-          : null;
-        return (
-          <div
-            key={key}
-            className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-3 py-2"
-          >
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--vc-text-subtle)]">
-              <code className="text-[var(--vc-text-primary)]">{label}</code>
-              {tags && <span>tags: {tags}</span>}
-            </div>
-            {preview && (
-              <div className="mt-1 text-xs text-[var(--vc-text-muted)]">
-                {preview}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
   );
 }
 
@@ -1405,61 +1316,6 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
   );
 }
 
-function MemoryToolActivity({ tool }: { tool: ChatTool }) {
-  const { t } = useTranslation();
-  const data = resultData(tool);
-  const records = memoryRecords(tool);
-  const query = toolValue(tool.arguments?.query);
-  const id = toolValue(tool.arguments?.id) ?? toolValue(data?.id);
-  const kind = toolValue(tool.arguments?.kind) ?? toolValue(data?.kind);
-  const count =
-    toolValue(data?.count) ??
-    (tool.name === "memory_add" || tool.name === "memory_delete"
-      ? null
-      : String(records.length));
-  const subtitleParts = [
-    query,
-    id,
-    kind,
-    count ? t("tool.memory.count", { count }) : null,
-  ].filter(Boolean) as string[];
-
-  return (
-    <ToolDisclosureRow
-      tool={tool}
-      title={toolDisplayName(tool)}
-      subtitle={
-        subtitleParts.join(" · ") || toolOutputSummary(tool) || undefined
-      }
-      args={curatedArgs(tool, { omit: ["content", "query", "id", "kind"] })}
-      icon={toolIcon(tool)}
-      defaultExpanded={
-        tool.name === "memory_add" || tool.name === "memory_delete"
-      }
-    >
-      {tool.error ? (
-        <ToolDetailBlock
-          label="Error"
-          value={tool.error}
-          copyValue={tool.error}
-          tone="error"
-        />
-      ) : tool.name === "memory_delete" ? (
-        <ToolDetailBlock
-          label={t("tool.memory.result")}
-          value={toolOutputSummary(tool)}
-          copyValue={toolOutputSummary(tool)}
-        />
-      ) : (
-        <MemoryRecordsBlock
-          records={records}
-          emptyLabel={t("tool.memory.empty")}
-        />
-      )}
-    </ToolDisclosureRow>
-  );
-}
-
 function WebFetchToolActivity({ tool }: { tool: ChatTool }) {
   const { t } = useTranslation();
   const data = resultData(tool);
@@ -2008,7 +1864,6 @@ function ToolActivity({
       />
     );
   if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
-  if (isMemoryTool(tool)) return <MemoryToolActivity tool={tool} />;
   if (tool.name === "web_fetch") return <WebFetchToolActivity tool={tool} />;
   if (tool.name === "web_search") return <WebSearchToolActivity tool={tool} />;
   if (tool.name === "lsp") return <LspToolActivity tool={tool} />;

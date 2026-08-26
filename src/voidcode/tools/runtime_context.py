@@ -8,25 +8,7 @@ from types import MappingProxyType
 from typing import Protocol
 
 from ..provider.protocol import ProviderAbortSignal
-from ..runtime.memory import MemoryKind, MemoryRecord, MemorySearchResult
 from .contracts import ToolDefinition
-
-
-class RuntimeMemoryToolFacade(Protocol):
-    def add_memory(
-        self,
-        *,
-        content: str,
-        kind: MemoryKind = "project",
-        tags: tuple[str, ...] = (),
-        source_session_id: str | None = None,
-    ) -> MemoryRecord: ...
-
-    def list_memories(self, *, include_deleted: bool = False) -> tuple[MemoryRecord, ...]: ...
-
-    def search_memories(self, *, query: str) -> tuple[MemorySearchResult, ...]: ...
-
-    def delete_memory(self, memory_id: str) -> MemoryRecord: ...
 
 
 class RuntimeLspToolFacade(Protocol):
@@ -96,7 +78,6 @@ class RuntimeToolInvocationContext:
     model: str | None = None
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None
-    memory: RuntimeMemoryToolFacade | None = None
     lsp: RuntimeLspToolFacade | None = None
     #: Read-only registry view for on-demand tool documentation (``voidcode://tool/<name>``).
     tool_catalog: RuntimeToolCatalogFacade | None = None

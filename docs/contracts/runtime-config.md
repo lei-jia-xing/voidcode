@@ -504,7 +504,6 @@ workspace 本地覆盖路径保持为：
 
 持久化 runtime config 使用单一当前 shape。`approval_mode`、`permission`、`execution_engine`、`max_steps`、`tool_timeout_seconds` 和 `fallback_models` 均为必填字段；缺失字段、无效类型或未知字段直接失败。resume/replay 不从当前进程默认值补齐缺失字段，也不从其他 snapshot 反推缺失配置。
 
-Memory policy 也要按 runtime-owned policy 解释。`memory` 默认保持保守、workspace-scoped、可预测的行为，memory tools 只有在 runtime 明确允许的 context 中才可见或可调用；prompt guidance 只是补充，不是隐藏或允许 memory tools 的唯一依据。prompt-stack metadata 可以显示 memory guidance fragment 的有界 redacted preview，但不代表 memory tool 权限本身。
 
 ## 计划的会话覆盖形状
 

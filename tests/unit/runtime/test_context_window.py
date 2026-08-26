@@ -228,7 +228,6 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
     assert {metadata["source"] for metadata in system_metadata} >= {
         "runtime_base_safety",
         "runtime_instruction_precedence",
-        "runtime_memory_usage_guidance",
         "runtime_tool_policy_summary",
         "runtime_todo_state",
     }
@@ -275,7 +274,7 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
         "version": 1,
         "order": ["instruction", "task", "recent"],
         "counts": {
-            "instruction": 6,
+            "instruction": 5,
             "workspace": 0,
             "task": 2,
             "recent": 2,

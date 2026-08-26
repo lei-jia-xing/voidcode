@@ -34,7 +34,6 @@ _SECRET_TEXT_PATTERNS = (
 
 _BASE_SAFETY_GUIDANCE = "Follow runtime safety policies. Runtime enforcement is authoritative over prompt text."
 
-_STRICT_MEMORY_USAGE_GUIDANCE = "Memory: prefer current files over recalled facts. Never store or repeat secrets."
 
 _TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and policy control execution."
 _PROMPT_ACTIVATION_PREVIEW_CHARS = 160
@@ -399,7 +398,6 @@ def build_prompt_assembly_plan(
     context_transform_result: RuntimeContextTransformResult | None = None,
     pending_state_section: PromptAssemblySection | None = None,
     todo_prompt_context: str = "",
-    workspace_memory_context: str = "",
     continuity_summary: str = "",
     artifact_reference_sections: Iterable[PromptAssemblySection] = (),
     prompt_profile_name: str | None = None,
@@ -534,25 +532,12 @@ def build_prompt_assembly_plan(
             metadata=prompt_activation_section.metadata,
         )
     append_system(
-        _STRICT_MEMORY_USAGE_GUIDANCE,
-        source="runtime_memory_usage_guidance",
-        tier="instruction",
-        layer="memory_usage_guidance",
-    )
-    append_system(
         skill_prompt_context,
         source="skill_prompt",
         tier="instruction",
         layer="skills",
     )
 
-    append_system(
-        workspace_memory_context,
-        source="runtime_workspace_memory",
-        tier="workspace",
-        layer="project_context",
-        metadata={"section": "Workspace Memory"},
-    )
     append_system(
         _TOOL_POLICY_SUMMARY,
         source="runtime_tool_policy_summary",
@@ -742,8 +727,6 @@ def _default_layer_for_source(source: str) -> str:
         return "base_safety"
     if source == "runtime_prompt_activation":
         return "prompt_activation"
-    if source == "runtime_memory_usage_guidance":
-        return "memory_usage_guidance"
     if source.startswith("agent_"):
         return "persona_profile"
     if source == "skill_prompt":

@@ -7,7 +7,6 @@ from voidcode.runtime.tool_execution import RuntimeToolExecutor, ToolExecutionPr
 from voidcode.tools.contracts import ToolCall, ToolResult
 from voidcode.tools.runtime_context import (
     RuntimeLspToolFacade,
-    RuntimeMemoryToolFacade,
     current_runtime_tool_context,
 )
 
@@ -21,7 +20,6 @@ def _executor(tmp_path: Path) -> RuntimeToolExecutor:
     facade = _ToolFacade()
     return RuntimeToolExecutor(
         workspace=tmp_path,
-        memory=cast(RuntimeMemoryToolFacade, facade),
         lsp=cast(RuntimeLspToolFacade, facade),
     )
 
@@ -37,7 +35,6 @@ class _ContextProbeTool:
         assert context.read_paths == frozenset({"README.md"})
         assert context.read_lines == {"README.md": frozenset({1, 2, 3})}
         assert context.model == "model-1"
-        assert context.memory is not None
         assert context.lsp is not None
         return ToolResult(tool_name=call.tool_name, status="ok", content=str(workspace))
 

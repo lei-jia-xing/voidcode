@@ -41,9 +41,6 @@ extension point 只能通过类型化 input/output contract 转换或校验 runt
 
 CLI flags never bypass runtime request policy, they only populate request fields.
 
-Memory tools are conservative by default. 它们只有在显式允许的 runtime-owned policy context 中才可见或可用（当前是 runtime 明确标记的 memory command/internal context）。更严格的 prompt guidance 只是附加说明，不是 enforcement 来源；CLI、frontend、graph prompt 或 agent manifest 不得仅靠 wording 暴露 memory tools。
-
-`mode` 的当前稳定语义是：缺省 `normal` 保持 action-capable；`analyze` 与 `plan` 隐式 effective read-only；显式 `read_only=true` 会把 `normal` run 收窄为 read-only。CLI 只把 `--mode` / `--read-only` 映射进 runtime request metadata，不能在客户端侧复制 mutating-tool、memory-tool 或 shell policy enforcement。
 
 ## Runtime Harness Policy v1
 
@@ -160,8 +157,6 @@ Prompt-stack observability 也遵循同一模型：`prompt_stack` metadata 描�
 - 任意 post-tool output mutation
 - client-owned execution policy
 - hook script owned session、task 或 provider truth
-- prompt wording 作为唯一的 memory tool enforcement 来源
-- 默认把 memory tools 暴露给所有 runtime context
 - 把 repo understanding 收敛成一个不可审计的 black-box overview dependency；未来 repo-understanding 能力应优先增强 agent 的自探索工具面、证据链与可回放 context，而不是替代 read/search/git/tool-driven exploration
 
 ## 新增 Extension Point 的验收规则

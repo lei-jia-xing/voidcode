@@ -43,7 +43,6 @@
 | background task 门面 | `start_background_task` 3146 … `steer_background_task` 3218 | 已委托 supervisor（合理门面） |
 | session 查询/撤销 | `replay_session` 3242、`revert/undo/unrevert_session` 3261-3305、`session_result` 3227 | 薄门面（合理） |
 | resume/question | `resume` 4828、`resume_stream` 4868、`answer_question*` 5032-5262、`_resume_*` 5318-5452 | 已有 `RuntimeResumeCoordinator`，但 service 保留约 25 个 resume 相关私有方法 |
-| memory | `add_memory` 3026 … `memory_event_payload` 3107（约 10 方法） | 薄门面 + 事件 payload 投影（可分离） |
 | provider inspection | `provider_models*` 3737-3750、`provider_readiness` 3793、`inspect_provider` 3895、`validate_provider_credentials` 3920、`list_provider_summaries` 3775 | 已有 `provider_inspection.py`/`provider_catalog_query.py`，组合仍在 service |
 | 状态/能力快照 | `current_status` 4094（122 行）、`web_settings` 4337、`review_snapshot` 4257 | 混合 git 子进程（4266）与 7 类 capability 投影 |
 | debug/observability | `session_debug_snapshot` 3404（148 行）、`_debug_*` 4444-4602（约 12 方法） | 已有 `runtime_debug.py`，快照组合在 service |
@@ -76,7 +75,6 @@
 - **revert/undo 家族**：3351-3398
 - **pending approval/question + resume checkpoint**（约 15 方法）：1931-2266、2756-2922
 - **background task 持久化**（约 25 方法）：`create_background_task` 3422、`mark_background_task_*` 3605-4040、`fail_incomplete_background_tasks` 4043、idle reminder 3886-4040、`_background_task_*` 行解析/序列化 1451-1600
-- **memory**（约 12 方法）：1771-1928
 - **notifications**（约 6 方法）：3400-3420、4283-4327、`_sync_notifications` 4942（125 行）
 - **tool effectiveness**：`tool_effectiveness_report` 2956
 - **diagnostics/prune/reset**（约 15 方法）：4330-4732

@@ -56,8 +56,6 @@ considered complete until implementation and focused tests provide evidence.
 
 - `src/voidcode/runtime/tool_registry.py` returns live provider definitions without sidecar decoration; focused registry/provider tests prove descriptions and canonical schemas remain unchanged.
 - `src/voidcode/tools/guidance.py` remains the sidecar loader used by `read` tool-documentation URIs; focused read tests prove guidance and live schema are returned together.
-- `src/voidcode/runtime/prompt_assembly.py` places skills, workspace memory,
-  and tool policy before the dynamic boundary; reactive rules, runtime state,
   tool results, and the current user request follow it.
 - `src/voidcode/provider/litellm_backend.py` owns the final wire descriptor;
   prompt-assembly hashes remain assembly diagnostics and are never represented

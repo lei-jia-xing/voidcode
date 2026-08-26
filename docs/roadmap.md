@@ -122,12 +122,11 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 ### 1. 先处理当前仍然打开的 runtime / client parity / tooling gap
 
-最近已经完成了 agent preset 的最小 runtime 接入、runtime-managed skill execution 的最小模型、Session Continuity Memory 第一切片，以及 delegated child execution 的 E2E 基线。因此“当前最直接的剩余主线”已经不再是 `#152` / `#153` 这类最小接入问题，而是这些能力的深化与产品化收口：
+最近已经完成了 agent preset 的最小 runtime 接入、runtime-managed skill execution 的最小模型，以及 delegated child execution 的 E2E 基线。因此“当前最直接的剩余主线”围绕这些能力的深化与产品化收口：
 
 - 更完整的 agent preset/runtime consumption 与验证闭环；
 - 更真实的 skill context / capability binding / execution semantics；
 - delegated child execution 的产品化打磨，但不扩大成任意拓扑 multi-agent 平台；
-- continuity memory 在 provider-backed execution 中的后续 shape、reinjection 与验证；
 - CLI + Web 主路径上的 first-task success rate 与默认可用性问题。
 
 也就是说，当前 backlog 应围绕“把已落地的最小切片变成稳定可用的主路径能力”来重建，而不是继续把已完成 issue 作为当前下一步。

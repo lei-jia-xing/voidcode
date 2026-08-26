@@ -14287,7 +14287,7 @@ def test_runtime_stuck_detected_hook_fires_once_for_repeated_tool_loop(
     assert stuck_events[0].payload["hook_status"] == "ok"
 
 
-def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_event(
+def test_runtime_context_compacted_replay_keeps_running_status_until_terminal_event(
     tmp_path: Path,
 ) -> None:
     sample_file = tmp_path / "sample.txt"
@@ -14314,17 +14314,17 @@ def test_runtime_memory_refreshed_replay_keeps_running_status_until_terminal_eve
         context_window_policy=ContextWindowPolicy(auto_compaction=True, model_context_window_tokens=30),
     )
 
-    response = runtime.run(RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="memory-refresh-replay"))
-    replay_chunks = list(runtime.resume_stream("memory-refresh-replay"))
-    replay_memory_sessions = [
+    response = runtime.run(RuntimeRequest(prompt="read sample.txt\nread sample.txt", session_id="context-refresh-replay"))
+    replay_chunks = list(runtime.resume_stream("context-refresh-replay"))
+    replay_context_sessions = [
         chunk.session.status
         for chunk in replay_chunks
         if chunk.kind == "event" and chunk.event is not None and chunk.event.event_type == RUNTIME_CONTEXT_COMPACTED
     ]
 
     assert response.session.status == "completed"
-    assert replay_memory_sessions
-    assert all(status == "running" for status in replay_memory_sessions)
+    assert replay_context_sessions
+    assert all(status == "running" for status in replay_context_sessions)
 
 
 def test_runtime_provider_turn_usage_is_persisted_in_session_metadata(tmp_path: Path) -> None:
