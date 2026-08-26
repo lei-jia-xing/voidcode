@@ -81,7 +81,7 @@ from voidcode.runtime.context_window import (
     ContextWindowPolicy,
     RuntimeContextWindow,
 )
-from voidcode.runtime.contracts import RuntimeRequestError, runtime_read_only_from_metadata, validate_runtime_request_metadata
+from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequestError, runtime_read_only_from_metadata, validate_runtime_request_metadata
 from voidcode.runtime.events import (
     REASONING_PERSISTED_LIMIT_CHARS,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
@@ -6900,6 +6900,85 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
         "prompt_materialization": _prompt_materialization_payload("worker"),
         "model": "opencode/gpt-5.4",
     }
+
+
+def test_runtime_product_child_projects_only_submit_result_handoff_to_parent(tmp_path: Path) -> None:
+    output_schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"steps": {"type": "array", "items": {"type": "string"}}},
+        "required": ["steps"],
+    }
+
+    def run_product_child(
+        root: Path, outcome: ProviderTurnResult
+    ) -> tuple[VoidCodeRuntime, BackgroundTaskState, RuntimeResponse, BackgroundTaskResult]:
+        root.mkdir()
+        registry = ModelProviderRegistry(
+            providers={
+                "opencode": _ScriptedModelProvider(name="opencode", outcomes=(outcome,)),
+            }
+        )
+        setup_runtime = VoidCodeRuntime(workspace=root, graph=_BackgroundTaskSuccessGraph())
+        _ = setup_runtime.run(RuntimeRequest(prompt="leader", session_id="product-parent"))
+        runtime = VoidCodeRuntime(
+            workspace=root,
+            config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+            model_provider_registry=registry,
+        )
+        started = runtime.start_background_task(
+            RuntimeRequest(
+                prompt="produce a product plan",
+                parent_session_id="product-parent",
+                allocate_session_id=True,
+                metadata={
+                    "delegation": {
+                        "mode": "background",
+                        "subagent_type": "product",
+                        "output_schema": output_schema,
+                        "schema_mode": "strict",
+                    }
+                },
+            )
+        )
+        terminal = _wait_for_background_task(runtime, started.task.id)
+        event_type = RUNTIME_BACKGROUND_TASK_COMPLETED if terminal.status == "completed" else RUNTIME_BACKGROUND_TASK_FAILED
+        parent = _wait_for_session_event(runtime, "product-parent", event_type)
+        return runtime, terminal, parent, runtime.load_background_task_result(started.task.id)
+
+    data = {"steps": ["inspect", "plan"]}
+    submitted_runtime, submitted_task, submitted_parent, submitted_result = run_product_child(
+        tmp_path / "submitted",
+        ProviderTurnResult(
+            tool_call=ToolCall(
+                tool_name="submit_result",
+                arguments={"summary": "plan ready", "data": data},
+            )
+        ),
+    )
+    assert submitted_task.status == "completed"
+    assert submitted_result.structured_output == data
+    assert submitted_result.summary_output == 'plan ready\nStructured output: {"steps": ["inspect", "plan"]}'
+    submitted_event = next(event for event in submitted_parent.events if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED)
+    assert submitted_event.payload["summary_output"] == submitted_result.summary_output
+    assert submitted_event.payload["result_available"] is True
+    assert submitted_event.payload["summary_output"] != "produce a product plan"
+    assert submitted_runtime.session_result(session_id=submitted_task.session_id or "").output == "plan ready"
+
+    unsubmitted_runtime, unsubmitted_task, unsubmitted_parent, unsubmitted_result = run_product_child(
+        tmp_path / "unsubmitted",
+        ProviderTurnResult(output="provider plan that was not submitted"),
+    )
+    assert unsubmitted_task.status == "failed"
+    assert unsubmitted_result.structured_output is None
+    assert unsubmitted_result.schema_validation is None
+    assert unsubmitted_result.error is not None
+    assert "submit_result" in unsubmitted_result.error
+    unsubmitted_event = next(event for event in unsubmitted_parent.events if event.event_type == RUNTIME_BACKGROUND_TASK_FAILED)
+    assert unsubmitted_event.payload["status"] == "failed"
+    assert unsubmitted_event.payload["result_available"] is True
+    assert unsubmitted_event.payload["error"] == unsubmitted_result.error
+    assert "provider plan that was not submitted" not in str(unsubmitted_event.payload)
+    assert "structured_output" not in unsubmitted_event.payload
 
 
 def test_runtime_rejects_mismatched_delegated_execution_engine_override(tmp_path: Path) -> None:

@@ -3,10 +3,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from voidcode.hook.config import RuntimeHooksConfig
+from voidcode.hook.plan import (
+    HookPlanValidationError,
+    hook_plan_from_session_metadata,
+    materialize_hook_plan,
+)
 from voidcode.runtime.background_tasks import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
@@ -107,6 +113,89 @@ def test_background_lifecycle_hook_is_durable_on_child_and_replay_does_not_rerun
     _ = store.load_session_result(workspace=tmp_path, session_id="child")
     _ = store.load_session(workspace=tmp_path, session_id="child")
     assert marker.read_text() == "1"
+
+
+def test_resolved_hook_plan_survives_session_reload_without_forged_execution(tmp_path: Path) -> None:
+    database_path = tmp_path / "hooks.sqlite3"
+    marker = tmp_path / "valid-hook-marker"
+    command = (
+        sys.executable,
+        "-c",
+        f"from pathlib import Path as P; P({str(marker)!r}).write_text('ran')",
+    )
+    plan = materialize_hook_plan(
+        RuntimeHooksConfig(enabled=True, on_background_task_completed=(command,)),
+        agent_hook_refs=("role_reminder",),
+    )
+    store = SqliteSessionStore(database_path=database_path)
+    store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="child", session_id="child"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="child"),
+                status="completed",
+                turn=1,
+                metadata={"resolved_hook_plan": plan.to_payload()},
+            ),
+            events=(),
+            output="done",
+        ),
+    )
+
+    restarted_store = SqliteSessionStore(database_path=database_path)
+    reloaded_metadata = restarted_store.load_session(workspace=tmp_path, session_id="child").session.metadata
+    restored = hook_plan_from_session_metadata(reloaded_metadata)
+    assert restored is not None
+    assert restored.plan_hash == plan.plan_hash
+    assert restored.to_payload() == plan.to_payload()
+
+    supervisor = _supervisor(tmp_path, restarted_store, RuntimeHooksConfig(enabled=False))
+    supervisor.run_background_task_lifecycle_surface(
+        task=_task(),
+        surface="background_task_completed",
+        session_id="child",
+    )
+    assert marker.read_text() == "ran"
+
+    forged_marker = tmp_path / "forged-hook-marker"
+    forged_command = (
+        sys.executable,
+        "-c",
+        f"from pathlib import Path as P; P({str(forged_marker)!r}).write_text('forged')",
+    )
+    plan_payload = plan.to_payload()
+    bindings = cast(list[object], plan_payload["bindings"])
+    binding = cast(dict[str, object], bindings[0])
+    forged_payload = {
+        **plan_payload,
+        "bindings": [{**binding, "command": list(forged_command), "argv": list(forged_command)}],
+    }
+    restarted_store.save_run(
+        workspace=tmp_path,
+        request=RuntimeRequest(prompt="forged child", session_id="forged-child"),
+        response=RuntimeResponse(
+            session=SessionState(
+                session=SessionRef(id="forged-child"),
+                status="completed",
+                turn=1,
+                metadata={"resolved_hook_plan": forged_payload},
+            ),
+            events=(),
+            output="done",
+        ),
+    )
+    forged_metadata = restarted_store.load_session(workspace=tmp_path, session_id="forged-child").session.metadata
+    with pytest.raises(HookPlanValidationError, match="hash"):
+        _ = hook_plan_from_session_metadata(forged_metadata)
+    assert not forged_marker.exists()
+    with pytest.raises(HookPlanValidationError, match="hash"):
+        supervisor.run_background_task_lifecycle_surface(
+            task=_task(child="forged-child"),
+            surface="background_task_completed",
+            session_id="forged-child",
+        )
+    assert not forged_marker.exists()
 
 
 @pytest.mark.parametrize("failure_mode", ["warn", "fail"])

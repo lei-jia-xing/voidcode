@@ -467,6 +467,53 @@ def test_dispatch_is_denied_under_read_only_with_tool_level_feedback(tmp_path: P
     assert outputs == ["done"]
 
 
+def test_agent_declaration_cannot_expand_plan_mode_tool_scope(tmp_path: Path) -> None:
+    """A broad request agent declaration remains below the persisted plan ceiling."""
+    graph = _ScriptedGraph(
+        _ScriptedStep(
+            tool_call=ToolCall(
+                tool_name="invoke_tool",
+                arguments={"name": "apply_patch", "arguments": {"patch": "+ new.txt\n+ hello\n"}},
+            )
+        ),
+        _ScriptedStep(output="done", is_finished=True),
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=graph,
+        config=RuntimeConfig(execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    declared_agent = {
+        "preset": "leader",
+        "tools": {"allowlist": ["read", "grep", "invoke_tool", "apply_patch"]},
+    }
+    events, outputs, _ = _run_events(
+        runtime,
+        graph,
+        session_id="agent-declaration-plan-boundary",
+        metadata={"agent": declared_agent, "mode": "plan", "read_only": False},
+    )
+
+    completed = [event for event in events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "apply_patch"]
+    assert completed
+    assert completed[-1].payload["status"] == "error"
+    assert "read-only runtime policy denies mutating tools" in completed[-1].payload["error"]
+    assert outputs == ["done"]
+
+    persisted = runtime._session_store.load_session(
+        workspace=tmp_path,
+        session_id="agent-declaration-plan-boundary",
+    ).session.metadata
+    policy = cast(dict[str, object], persisted["runtime_policy"])
+    assert policy["mode"] == "plan"
+    assert policy["read_only"] is True
+    capability = cast(dict[str, object], persisted["agent_capability_snapshot"])
+    tools = cast(dict[str, object], capability["tools"])
+    assert tools["request_allowlist"] == ["read", "grep", "invoke_tool", "apply_patch"]
+    assert "apply_patch" not in cast(list[str], tools["effective_names"])
+
+
 # ---------------------------------------------------------------------------
 # (d) skill catalog in system-prompt metadata, not in the skill description
 # ---------------------------------------------------------------------------
