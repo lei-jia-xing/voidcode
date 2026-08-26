@@ -394,8 +394,6 @@ def serialize_external_permission_config(
 
 def parse_persisted_external_permission_config(
     raw_permission: object,
-    *,
-    allow_missing_scopes: bool = False,
 ) -> ExternalDirectoryPermissionConfig:
     if not isinstance(raw_permission, dict):
         raise ValueError("persisted runtime_config permission must be an object")
@@ -405,19 +403,18 @@ def parse_persisted_external_permission_config(
     if unknown_keys:
         raise ValueError(f"persisted runtime_config permission field '{unknown_keys[0]}' is not supported")
     missing_keys = sorted({"external_directory_read", "external_directory_write"} - payload.keys())
-    if missing_keys and not allow_missing_scopes:
+    if missing_keys:
         raise ValueError("persisted runtime_config permission is missing required field(s): " + ", ".join(missing_keys))
-    defaults = ExternalDirectoryPermissionConfig()
     return ExternalDirectoryPermissionConfig(
         read=ExternalDirectoryPolicy(
             rules=parse_persisted_external_permission_rules(
-                payload.get("external_directory_read", dict(defaults.read.rules)),
+                payload["external_directory_read"],
                 field_path="permission.external_directory_read",
             )
         ),
         write=ExternalDirectoryPolicy(
             rules=parse_persisted_external_permission_rules(
-                payload.get("external_directory_write", dict(defaults.write.rules)),
+                payload["external_directory_write"],
                 field_path="permission.external_directory_write",
             )
         ),

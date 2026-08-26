@@ -55,7 +55,8 @@ logger = logging.getLogger(__name__)
 
 _DELEGATION_GOVERNANCE = DelegationGovernance()
 
-# 写路径与持久化读路径均要求当前 plan_state.status 枚举；缺失字段拒绝。
+# Allowed values for the current-schema ``plan_state.status`` field. A
+# ``plan_state`` payload must include ``status``; the other fields are optional.
 _PLAN_STATE_STATUSES = frozenset(
     {
         "waiting",
@@ -131,7 +132,11 @@ def _validate_delegation_metadata_types(payload: dict[str, object]) -> None:
 
 
 def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
-    """Parse current persisted ``session.metadata[\"runtime_state\"]`` strictly."""
+    """Parse the present ``session.metadata["runtime_state"]`` payload.
+
+    Unknown keys and invalid field types are rejected. Nested sections are
+    optional, and the returned mapping is a shallow copy of the input.
+    """
     if not isinstance(raw, dict):
         raise ValueError("persisted runtime_state must be an object")
     payload = dict(raw)
@@ -145,7 +150,12 @@ def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
 
 
 def parse_plan_state_metadata(raw: object) -> PlanStateMetadata:
-    """Parse current persisted ``session.metadata[\"plan_state\"]`` strictly."""
+    """Parse the present ``session.metadata["plan_state"]`` payload.
+
+    The current schema requires ``status`` and rejects unknown keys, invalid
+    field types, and status values outside the declared set. Other fields are
+    optional, and the returned mapping is a shallow copy of the input.
+    """
     if not isinstance(raw, dict):
         raise ValueError("persisted plan_state must be an object")
     payload = dict(raw)
@@ -159,7 +169,12 @@ def parse_plan_state_metadata(raw: object) -> PlanStateMetadata:
 
 
 def parse_delegation_metadata(raw: object) -> PersistedDelegationMetadata:
-    """Parse current persisted ``session.metadata[\"delegation\"]`` strictly."""
+    """Parse the present ``session.metadata["delegation"]`` payload.
+
+    The current schema requires ``mode`` and rejects unknown keys, invalid
+    field types, and invalid enum or non-negative-integer values. Other fields
+    are optional, and the returned mapping is a shallow copy of the input.
+    """
     if not isinstance(raw, dict):
         raise ValueError("persisted delegation must be an object")
     payload = dict(raw)
@@ -173,13 +188,11 @@ def parse_delegation_metadata(raw: object) -> PersistedDelegationMetadata:
 
 
 def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
-    """Parse persisted ``session.metadata["skill_snapshot"]``（恒严格）。
+    """Parse the versioned, hashed ``session.metadata["skill_snapshot"]`` payload.
 
-    snapshot 已显式版本化（``snapshot_version: 1``）+ hash 校验（skills.py
-    ``snapshot_from_payload``）；本函数在其之前补顶层未知 key 拒绝——现状
-    缺口是 hash 只覆盖 6 个已知字段，payload 多塞未知 key 不会破坏 hash、
-    会静默通过。skills.py 的 parser 本身不改（hash 语义与字节格式是另一
-    契约），只在 helpers 包装层加拒绝。
+    Unknown top-level keys are rejected before ``snapshot_from_payload``
+    validates the required fields, ``snapshot_version``, field types, and
+    ``snapshot_hash``.
     """
     if not isinstance(raw, dict):
         raise ValueError("persisted skill_snapshot must be an object")
@@ -194,6 +207,7 @@ def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
 
 
 def _runtime_state_payload(metadata: Mapping[str, object]) -> RuntimeStateMetadata:
+    """Return the strictly parsed runtime state, or an empty mapping when absent."""
     if "runtime_state" not in metadata:
         return {}
     return parse_runtime_state_metadata(metadata["runtime_state"])
@@ -240,15 +254,12 @@ def runtime_state_context_projection_summary(metadata: Mapping[str, object]) -> 
 
 
 def runtime_state_value(metadata: Mapping[str, object], key: str) -> object | None:
-    """Generic ``runtime_state`` field read（``_prompt_activation_this_run``
-    等同层读取，不进 key-set）。"""
+    """Read a named field from the strictly parsed ``runtime_state`` payload."""
     return _runtime_state_payload(metadata).get(key)
 
 
 def _acp_state_payload(acp_state: AcpAdapterState) -> dict[str, object]:
-    """Serialize ``AcpAdapterState`` to the persisted ``runtime_state.acp``
-    payload（service ``_runtime_state_metadata`` / ``_runtime_state_metadata_with_acp_state``
-    共用，两处构造一致）。"""
+    """Serialize ``AcpAdapterState`` to the current ``runtime_state.acp`` payload."""
     return {
         "mode": acp_state.mode,
         "configured_enabled": acp_state.configuration.configured_enabled,
@@ -268,7 +279,12 @@ def _runtime_state_payload_with_updates(
     updates: Mapping[str, object] | None = None,
     removed: frozenset[str] = frozenset(),
 ) -> RuntimeStateMetadata:
-    """Merge updates into current persisted runtime state through strict validation."""
+    """Merge updates and removals into a normalized, strictly validated copy.
+
+    An absent ``runtime_state`` section is normalized to an empty mapping. A
+    present section must be an object, and the merged result must satisfy the
+    current runtime-state schema.
+    """
     raw_runtime_state = metadata.get("runtime_state")
     if raw_runtime_state is None:
         runtime_state: dict[str, object] = {}
@@ -288,7 +304,11 @@ def runtime_state_metadata_payload(
     run_id: str | None = None,
     acp_state: AcpAdapterState,
 ) -> RuntimeStateMetadata:
-    """Fresh ``runtime_state`` payload for a new run."""
+    """Build a strictly validated ``runtime_state`` payload for a new run.
+
+    ``run_id`` is included only when non-``None``; the ACP state is always
+    included.
+    """
     payload = {
         **({"run_id": run_id} if run_id is not None else {}),
         "acp": _acp_state_payload(acp_state),
@@ -301,9 +321,11 @@ def session_with_run_id(
     *,
     run_id: str | None,
 ) -> SessionState:
-    """Return ``session`` with persisted ``runtime_state.run_id`` set（resume
-    ``_metadata_with_resume_run_id`` 迁入；先经持久化净化层再 strict 写闸）。
-    ``run_id`` 为 ``None`` 时仅应用净化层、不写 run_id，与迁移前一致。"""
+    """Return ``session`` with a normalized ``runtime_state.run_id``.
+
+    When ``run_id`` is ``None``, normalize persisted metadata without adding a
+    ``run_id`` field; otherwise merge the identifier through strict validation.
+    """
     persisted = session_metadata_for_persistence(session.metadata)
     if run_id is None:
         return _session_with_metadata(session, persisted)
@@ -318,8 +340,7 @@ def session_with_context_compacted_state(
     original_tool_result_count: int,
     retained_tool_result_count: int,
 ) -> SessionState:
-    """Persist ``runtime_state.context_compacted``（run_loop
-    ``_session_with_context_compacted_state`` 迁入；strict 写闸内置）。"""
+    """Persist the context-compaction marker through strict runtime-state validation."""
     runtime_state = _runtime_state_payload_with_updates(
         session.metadata,
         updates={
@@ -339,8 +360,7 @@ def session_with_context_transform_applied_state(
     *,
     fingerprints: tuple[str, ...],
 ) -> SessionState:
-    """Persist ``runtime_state.context_transform_applied``（run_loop
-    ``_session_with_context_transform_applied_state`` 迁入；strict 写闸内置）。"""
+    """Persist context-transform fingerprints through strict runtime-state validation."""
     current_run_id = runtime_state_run_id(session.metadata)
     transform_state = runtime_state_context_transform_applied(session.metadata) or {}
     last_run_id = transform_state.get("last_emitted_run_id")
@@ -364,9 +384,11 @@ def session_with_context_transform_applied_state(
 
 
 def session_without_tool_intent(session: SessionState) -> SessionState:
-    """Return ``session`` with ``runtime_state.pending_tool_intent`` removed
-    （service ``persist_response`` 清理迁入；无该 key 时原样返回同一对象，
-    调用方可按身份判断是否有写）。"""
+    """Return ``session`` without ``runtime_state.pending_tool_intent``.
+
+    If the field is absent, return the same object to preserve no-op identity;
+    otherwise remove it through strict runtime-state validation.
+    """
     if "pending_tool_intent" not in _runtime_state_payload(session.metadata):
         return session
     runtime_state = _runtime_state_payload_with_updates(
@@ -382,9 +404,11 @@ def session_metadata_with_runtime_state_updates(
     updates: Mapping[str, object] | None = None,
     removed: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
-    """Return ``metadata`` with ``runtime_state`` mutated through the typed
-    write path（strict 闸内置）。storage 的 todo 写 / active-revert 写共用，
-    消除 storage 侧第二份 ``runtime_state`` 构造。"""
+    """Return metadata with runtime-state updates/removals strictly validated.
+
+    The merge is copied through one normalization path so callers do not
+    construct a second runtime-state representation.
+    """
     runtime_state = _runtime_state_payload_with_updates(metadata, updates=updates, removed=removed)
     return {**metadata, "runtime_state": runtime_state}
 
@@ -658,6 +682,11 @@ def persist_tool_execution_intent(
     session: SessionState,
     intent: dict[str, object],
 ) -> None:
+    """Persist a pending tool intent within the workspace/session scope.
+
+    The store update is deferred when the initial session row has not been
+    committed yet.
+    """
     pending = dict(intent)
     runtime_state = _runtime_state_payload_with_updates(
         session.metadata,
@@ -680,6 +709,11 @@ def clear_tool_execution_intent(
     workspace: Path,
     session: SessionState,
 ) -> None:
+    """Clear a pending tool intent after validating workspace ownership.
+
+    The operation is scoped by workspace and session ID and is a no-op when
+    no pending intent is present.
+    """
     try:
         persisted_session = store.load_session(
             workspace=workspace,
