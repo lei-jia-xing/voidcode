@@ -1727,7 +1727,7 @@ def test_continuity_state_from_metadata_payload_rejects_malformed_version_safely
 
 
 def test_assemble_provider_context_rejects_legacy_continuity_metadata() -> None:
-    with pytest.raises(ValueError, match="legacy runtime continuity metadata"):
+    with pytest.raises(ValueError, match="persisted runtime_state field 'continuity' is not supported"):
         assemble_provider_context(
             prompt="continue",
             tool_results=(_tool_result(1),),
