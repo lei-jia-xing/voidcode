@@ -130,8 +130,6 @@ def serialize_runtime_config_core(config: EffectiveRuntimeConfig) -> dict[str, o
 
 def parse_persisted_runtime_config(
     runtime_config: Mapping[str, object],
-    *,
-    allow_legacy_permission_scopes: bool = False,
 ) -> PersistedRuntimeConfigMaterialization:
     unknown_runtime_config_keys = sorted(key for key in runtime_config if key not in PERSISTED_RUNTIME_CONFIG_KEYS)
     if unknown_runtime_config_keys:
@@ -152,10 +150,7 @@ def parse_persisted_runtime_config(
     if approval_mode is None:
         raise ValueError("persisted runtime_config approval_mode is invalid")
 
-    permission = parse_persisted_external_permission_config(
-        runtime_config["permission"],
-        allow_missing_scopes=allow_legacy_permission_scopes,
-    )
+    permission = parse_persisted_external_permission_config(runtime_config["permission"])
 
     policy = None
     if "policy" in runtime_config:

@@ -149,8 +149,6 @@ RUNTIME_STATE_METADATA_KEYS = frozenset(
         "pending_tool_intent",
         "context_compacted",
         "context_transform_applied",
-        # legacy read-only: "continuity", "continuity_summary"
-        # （context_window.py:541 读取即硬失败，不进入写入 key-set）
     }
 )
 

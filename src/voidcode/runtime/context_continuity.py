@@ -55,8 +55,6 @@ def _without_recoverable_context(metadata: dict[str, object]) -> dict[str, objec
     stripped = {key: value for key, value in metadata.items() if key not in _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS}
     runtime_state = stripped.get("runtime_state")
     if isinstance(runtime_state, dict):
-        # lenient parse 保留全部原始键值（含未知 key，round-trip 安全），
-        # 与迁移前的裸 dict 过滤逐点等价。
         runtime_payload = {
             key: value for key, value in parse_runtime_state_metadata(runtime_state).items() if key not in _RECOVERABLE_RUNTIME_CONTEXT_KEYS
         }

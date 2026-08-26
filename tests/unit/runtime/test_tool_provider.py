@@ -592,6 +592,17 @@ def test_read_only_mode_skips_tool_hook_before_mutating_hook_execution(
     }
 
 
+def test_runtime_rejects_partial_persisted_runtime_config(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_LocalToolGraph(),
+        config=RuntimeConfig(execution_engine="deterministic"),
+        permission_policy=PermissionPolicy(mode="allow"),
+    )
+    with pytest.raises(ValueError, match="missing required field"):
+        runtime.effective_runtime_config_from_metadata({"runtime_config": {"execution_engine": "deterministic"}})
+
+
 def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
     tmp_path: Path,
 ) -> None:
@@ -605,6 +616,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_disabled(
     effective_config = runtime.effective_runtime_config_from_metadata(
         {
             "runtime_config": {
+                **runtime._runtime_config_metadata(),
                 "execution_engine": "deterministic",
                 "tools": {"local": {"enabled": True, "path": ".voidcode/tools"}},
             }
@@ -633,6 +645,7 @@ def test_runtime_uses_session_local_tools_config_when_registry_was_enabled(
     effective_config = runtime.effective_runtime_config_from_metadata(
         {
             "runtime_config": {
+                **runtime._runtime_config_metadata(),
                 "execution_engine": "deterministic",
                 "tools": {"local": {"enabled": False, "path": ".voidcode/tools"}},
             }

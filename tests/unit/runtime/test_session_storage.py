@@ -213,10 +213,9 @@ def test_session_storage_roundtrips_redacted_policy_observations(tmp_path: Path)
                 {"source": "secret", "preview": "api_key=raw-secret-value"},
             ],
         },
-        "runtime_state": {
-            "injected_env": {"CI": "1", "NPM_CONFIG_YES": "true"},
-            "api_key": "sk-runtime-secret",
-        },
+        "runtime_state": {"run_id": "policy-run"},
+        "injected_env": {"CI": "1", "NPM_CONFIG_YES": "true"},
+        "api_key": "sk-runtime-secret",
     }
     request = RuntimeRequest(prompt="persist policy", session_id="policy-session")
     response = RuntimeResponse(

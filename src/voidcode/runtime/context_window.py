@@ -584,7 +584,10 @@ def _previous_continuity_state(
         runtime_state_context_projection_summary,
     )
 
-    runtime_state = parse_runtime_state_metadata(session_metadata.get("runtime_state"))
+    raw_runtime_state = session_metadata.get("runtime_state")
+    if raw_runtime_state is None:
+        return None
+    runtime_state = parse_runtime_state_metadata(raw_runtime_state)
     if "continuity" in runtime_state or "continuity_summary" in runtime_state:
         raise ValueError("legacy runtime continuity metadata is no longer supported; start a new session")
     continuity = runtime_state_context_projection(session_metadata)
@@ -1211,7 +1214,10 @@ def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeCon
     # 模块级反向导入会构成环。解析统一走 helpers parse（唯一入口）。
     from .session_metadata_helpers import parse_plan_state_metadata
 
-    plan_state = parse_plan_state_metadata(session_metadata.get("plan_state"))
+    raw_plan_state = session_metadata.get("plan_state")
+    if raw_plan_state is None:
+        return None
+    plan_state = parse_plan_state_metadata(raw_plan_state)
     status = plan_state.get("status")
     if status not in {"waiting_approval", "waiting_question", "waiting"}:
         return None

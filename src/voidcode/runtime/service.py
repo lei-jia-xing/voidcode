@@ -130,7 +130,6 @@ from .config import (
     load_runtime_config,
     parse_runtime_agent_payload,
     parse_runtime_agents_payload,
-    parse_runtime_tools_payload,
     save_global_web_settings,
     serialize_runtime_agent_config,
     serialize_runtime_agents_config,
@@ -5290,7 +5289,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
         delegation["depth"] = request_depth
         delegation["remaining_spawn_budget"] = remaining_spawn_budget
-        normalized["delegation"] = parse_delegation_metadata(delegation, strict=True)
+        normalized["delegation"] = parse_delegation_metadata(delegation)
         validated = validate_runtime_request_metadata(
             normalized,
             allow_internal_fields=(
@@ -5630,9 +5629,9 @@ class VoidCodeRuntime(RuntimeSurface):
             tool_catalog_context=tool_catalog_context,
         )
         raw_delegation = session_metadata.get("delegation")
-        delegation = parse_delegation_metadata(raw_delegation)
-        if not isinstance(raw_delegation, dict):
+        if raw_delegation is None:
             return assembled_context
+        delegation = parse_delegation_metadata(raw_delegation)
         return RuntimeAssembledContext(
             prompt=assembled_context.prompt,
             tool_results=assembled_context.tool_results,
@@ -6400,47 +6399,7 @@ class VoidCodeRuntime(RuntimeSurface):
             raise ValueError("persisted session metadata must include runtime_config")
 
         runtime_config = cast(dict[str, object], persisted_runtime_config)
-        # Older persisted metadata can contain only the fields that were
-        # explicitly overridden for that session. Materialize those partial
-        # records against the runtime defaults before applying the strict
-        # persisted-config parser used for fully formed snapshots.
-        required_keys = {
-            "approval_mode",
-            "permission",
-            "execution_engine",
-            "max_steps",
-            "tool_timeout_seconds",
-            "fallback_models",
-        }
-        if not required_keys.issubset(runtime_config) and "permission" not in runtime_config:
-            partial_tools = self._config.tools
-            if "tools" in runtime_config:
-                partial_tools = parse_runtime_tools_payload(
-                    runtime_config["tools"],
-                    source="persisted runtime_config.tools",
-                )
-            partial_engine = runtime_config.get("execution_engine", self._config.execution_engine)
-            if not isinstance(partial_engine, str):
-                raise ValueError("persisted runtime_config execution_engine is invalid")
-            return EffectiveRuntimeConfig(
-                approval_mode=self._config.approval_mode,
-                permission=self._config.permission,
-                model=self._config.model,
-                execution_engine=cast(ExecutionEngineName, partial_engine),
-                max_steps=self._config.max_steps,
-                tool_timeout_seconds=self._config.tool_timeout_seconds,
-                reasoning_effort=self._config.reasoning_effort,
-                provider_fallback=self._config.provider_fallback,
-                providers=self._config.providers,
-                agent=self._config.agent,
-                context_window=self._config.context_window,
-                tools=partial_tools,
-                policy=self._config.policy,
-            )
-        materialized = parse_persisted_runtime_config(
-            runtime_config,
-            allow_legacy_permission_scopes=True,
-        )
+        materialized = parse_persisted_runtime_config(runtime_config)
         approval_mode = materialized.approval_mode
         permission = materialized.permission
         policy = materialized.policy

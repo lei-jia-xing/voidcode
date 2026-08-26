@@ -124,7 +124,8 @@ def agent_capability_delegation_snapshot(
     metadata: dict[str, object],
     parent_capability_snapshot: dict[str, object] | None,
 ) -> dict[str, object]:
-    delegation = parse_delegation_metadata(metadata.get("delegation"))
+    raw_delegation = metadata.get("delegation")
+    delegation = parse_delegation_metadata(raw_delegation) if raw_delegation is not None else {}
     selected_preset = delegation.get("selected_preset")
     parent_delegation = (
         cast(dict[str, object], parent_capability_snapshot.get("delegation"))

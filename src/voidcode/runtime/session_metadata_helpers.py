@@ -55,8 +55,7 @@ logger = logging.getLogger(__name__)
 
 _DELEGATION_GOVERNANCE = DelegationGovernance()
 
-# 写路径允许的 plan_state.status 取值（§3.2 枚举；读路径 lenient 不限制，
-# 旧数据状态由消费点现有 guard 容忍）。
+# 写路径与持久化读路径均要求当前 plan_state.status 枚举；缺失字段拒绝。
 _PLAN_STATE_STATUSES = frozenset(
     {
         "waiting",
@@ -68,17 +67,6 @@ _PLAN_STATE_STATUSES = frozenset(
         "failed",
     }
 )
-
-
-def _coerce_int_like(value: object | None, default: int) -> int:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
-        return default
 
 
 def _reject_unknown_metadata_keys(
@@ -93,8 +81,10 @@ def _reject_unknown_metadata_keys(
 
 
 def _validate_runtime_state_metadata_types(payload: dict[str, object]) -> None:
-    if "run_id" in payload and not isinstance(payload["run_id"], str):
-        raise ValueError("persisted runtime_state field 'run_id' must be a string")
+    if "run_id" in payload:
+        run_id = payload["run_id"]
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("persisted runtime_state field 'run_id' must be a non-empty string")
     for field in (
         "acp",
         "context_projection",
@@ -109,19 +99,25 @@ def _validate_runtime_state_metadata_types(payload: dict[str, object]) -> None:
 
 
 def _validate_plan_state_metadata_types(payload: dict[str, object]) -> None:
+    if "status" not in payload:
+        raise ValueError("persisted plan_state is missing required field 'status'")
     for field in ("status", "approval_request_id", "blocked_tool", "last_error"):
         if field in payload and not isinstance(payload[field], str):
             raise ValueError(f"persisted plan_state field '{field}' must be a string")
-    if "status" in payload and payload["status"] not in _PLAN_STATE_STATUSES:
+    if payload["status"] not in _PLAN_STATE_STATUSES:
         joined = ", ".join(sorted(_PLAN_STATE_STATUSES))
         raise ValueError(f"persisted plan_state field 'status' must be one of: {joined}")
 
 
 def _validate_delegation_metadata_types(payload: dict[str, object]) -> None:
+    required_fields = {"mode"}
+    missing_fields = sorted(required_fields - payload.keys())
+    if missing_fields:
+        raise ValueError("persisted delegation is missing required field(s): " + ", ".join(missing_fields))
     for field in ("subagent_type", "description", "command", "selected_preset", "selected_execution_engine", "parallel_group_id"):
         if field in payload and not isinstance(payload[field], str):
             raise ValueError(f"persisted delegation field '{field}' must be a string")
-    if "mode" in payload and payload["mode"] not in {"sync", "background"}:
+    if payload["mode"] not in {"sync", "background"}:
         raise ValueError("persisted delegation field 'mode' must be one of: sync, background")
     for field in ("depth", "remaining_spawn_budget", "parallel_group_size"):
         if field in payload:
@@ -134,74 +130,45 @@ def _validate_delegation_metadata_types(payload: dict[str, object]) -> None:
         raise ValueError("persisted delegation field 'schema_mode' must be one of: permissive, strict")
 
 
-def parse_runtime_state_metadata(raw: object, *, strict: bool = False) -> RuntimeStateMetadata:
-    """Parse persisted ``session.metadata["runtime_state"]``.
-
-    ``strict=True``（写路径 / 新构造）：``raw`` 必须是 dict；未知 key 与
-    已知字段类型不符抛 ``ValueError``（仿 config_materializer 的
-    ``_reject_unknown_keys`` 文案）。
-
-    ``strict=False``（读路径，默认）：非 dict 返回 ``{}``（等价现有
-    ``cast(...) if isinstance(...) else {}`` 容错）；未知 key 原样保留
-    （round-trip 安全，绝不 drop）；已知字段类型不符不抛——容忍语义由
-    各消费点既有 guard 承担，与本函数迁移前逐点等价。返回的 dict 是输入
-    的浅拷贝，不突变输入。
-    """
+def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata:
+    """Parse current persisted ``session.metadata[\"runtime_state\"]`` strictly."""
     if not isinstance(raw, dict):
-        if strict:
-            raise ValueError("persisted runtime_state must be an object")
-        return {}
+        raise ValueError("persisted runtime_state must be an object")
     payload = dict(raw)
-    if strict:
-        _reject_unknown_metadata_keys(
-            payload,
-            allowed_keys=RUNTIME_STATE_METADATA_KEYS,
-            structure_name="runtime_state",
-        )
-        _validate_runtime_state_metadata_types(payload)
+    _reject_unknown_metadata_keys(
+        payload,
+        allowed_keys=RUNTIME_STATE_METADATA_KEYS,
+        structure_name="runtime_state",
+    )
+    _validate_runtime_state_metadata_types(payload)
     return cast(RuntimeStateMetadata, payload)
 
 
-def parse_plan_state_metadata(raw: object, *, strict: bool = False) -> PlanStateMetadata:
-    """Parse persisted ``session.metadata["plan_state"]``（语义同
-    ``parse_runtime_state_metadata`` 的双模约定）。"""
+def parse_plan_state_metadata(raw: object) -> PlanStateMetadata:
+    """Parse current persisted ``session.metadata[\"plan_state\"]`` strictly."""
     if not isinstance(raw, dict):
-        if strict:
-            raise ValueError("persisted plan_state must be an object")
-        return {}
+        raise ValueError("persisted plan_state must be an object")
     payload = dict(raw)
-    if strict:
-        _reject_unknown_metadata_keys(
-            payload,
-            allowed_keys=PLAN_STATE_METADATA_KEYS,
-            structure_name="plan_state",
-        )
-        _validate_plan_state_metadata_types(payload)
+    _reject_unknown_metadata_keys(
+        payload,
+        allowed_keys=PLAN_STATE_METADATA_KEYS,
+        structure_name="plan_state",
+    )
+    _validate_plan_state_metadata_types(payload)
     return cast(PlanStateMetadata, payload)
 
 
-def parse_delegation_metadata(raw: object, *, strict: bool = False) -> PersistedDelegationMetadata:
-    """Parse persisted ``session.metadata["delegation"]``（语义同
-    ``parse_runtime_state_metadata`` 的双模约定）。
-
-    与请求侧 ``validate_runtime_subagent_routing_metadata``（抛
-    ``RuntimeRequestError``）分离：persisted 读侧独立、宽容、不抛
-    ``RuntimeRequestError``（resume 旧 session 缺 ``mode`` 不应整体拒绝）。
-    ``depth``/``remaining_spawn_budget`` 读侧沿用 ``_coerce_int_like``
-    宽容语义；strict 写路径要求真 int 且 >= 0。
-    """
+def parse_delegation_metadata(raw: object) -> PersistedDelegationMetadata:
+    """Parse current persisted ``session.metadata[\"delegation\"]`` strictly."""
     if not isinstance(raw, dict):
-        if strict:
-            raise ValueError("persisted delegation must be an object")
-        return {}
+        raise ValueError("persisted delegation must be an object")
     payload = dict(raw)
-    if strict:
-        _reject_unknown_metadata_keys(
-            payload,
-            allowed_keys=DELEGATION_METADATA_KEYS,
-            structure_name="delegation",
-        )
-        _validate_delegation_metadata_types(payload)
+    _reject_unknown_metadata_keys(
+        payload,
+        allowed_keys=DELEGATION_METADATA_KEYS,
+        structure_name="delegation",
+    )
+    _validate_delegation_metadata_types(payload)
     return cast(PersistedDelegationMetadata, payload)
 
 
@@ -222,20 +189,17 @@ def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata:
         allowed_keys=SKILL_SNAPSHOT_METADATA_KEYS,
         structure_name="skill_snapshot",
     )
-    _ = snapshot_from_payload(payload)  # version / hash / 类型全量校验（现状语义）
+    _ = snapshot_from_payload(payload)
     return cast(SkillSnapshotMetadata, payload)
 
 
 def _runtime_state_payload(metadata: Mapping[str, object]) -> RuntimeStateMetadata:
-    return parse_runtime_state_metadata(metadata.get("runtime_state"))
+    if "runtime_state" not in metadata:
+        return {}
+    return parse_runtime_state_metadata(metadata["runtime_state"])
 
 
 def runtime_state_run_id(metadata: Mapping[str, object]) -> str | None:
-    """Persisted ``runtime_state.run_id``（str 原样返回，含空串；非 str 为 None）。
-
-    需要非空语义的调用点（如 ``_current_run_id``）自行过滤空串，与迁移前
-    逐点等价。
-    """
     run_id = _runtime_state_payload(metadata).get("run_id")
     return run_id if isinstance(run_id, str) else None
 
@@ -304,20 +268,19 @@ def _runtime_state_payload_with_updates(
     updates: Mapping[str, object] | None = None,
     removed: frozenset[str] = frozenset(),
 ) -> RuntimeStateMetadata:
-    """Merge ``updates`` / ``removed`` into the persisted ``runtime_state`` and
-    gate the result through ``parse_runtime_state_metadata(..., strict=True)``.
-
-    写路径唯一合并入口：所有 session 级写构造器与 storage 的 metadata 级写
-    都经此合并 + strict 闸（未知 key / 类型不符拒绝）。非 dict 的存量
-    ``runtime_state`` 按读路径容错语义视为 ``{}``（与迁移前各构造点一致）。
-    """
+    """Merge updates into current persisted runtime state through strict validation."""
     raw_runtime_state = metadata.get("runtime_state")
-    runtime_state = dict(cast(dict[str, object], raw_runtime_state)) if isinstance(raw_runtime_state, dict) else {}
+    if raw_runtime_state is None:
+        runtime_state: dict[str, object] = {}
+    elif isinstance(raw_runtime_state, dict):
+        runtime_state = dict(raw_runtime_state)
+    else:
+        raise ValueError("persisted runtime_state must be an object")
     if updates:
         runtime_state.update(updates)
     for key in removed:
         runtime_state.pop(key, None)
-    return parse_runtime_state_metadata(runtime_state, strict=True)
+    return parse_runtime_state_metadata(runtime_state)
 
 
 def runtime_state_metadata_payload(
@@ -325,13 +288,12 @@ def runtime_state_metadata_payload(
     run_id: str | None = None,
     acp_state: AcpAdapterState,
 ) -> RuntimeStateMetadata:
-    """Fresh ``runtime_state`` payload for a new run（service
-    ``_runtime_state_metadata`` 迁入；strict 写闸内置）。"""
+    """Fresh ``runtime_state`` payload for a new run."""
     payload = {
         **({"run_id": run_id} if run_id is not None else {}),
         "acp": _acp_state_payload(acp_state),
     }
-    return parse_runtime_state_metadata(payload, strict=True)
+    return parse_runtime_state_metadata(payload)
 
 
 def session_with_run_id(
@@ -492,7 +454,7 @@ def plan_state_from_metadata(
 
     return cast(
         dict[str, object],
-        parse_plan_state_metadata(plan_state, strict=True),
+        parse_plan_state_metadata(plan_state),
     )
 
 
@@ -621,7 +583,7 @@ def session_with_plan_state(
                 plan_state["last_error"] = error
             plan_state = cast(
                 dict[str, object],
-                parse_plan_state_metadata(plan_state, strict=True),
+                parse_plan_state_metadata(plan_state),
             )
         else:
             return session
@@ -642,21 +604,19 @@ def session_with_context_window_metadata(
 
 
 def delegation_depth_from_metadata(metadata: dict[str, object] | None) -> int:
-    if metadata is None:
+    if metadata is None or "delegation" not in metadata:
         return 0
-    delegation = parse_delegation_metadata(metadata.get("delegation"))
-    return max(0, _coerce_int_like(delegation.get("depth"), 0))
+    delegation = parse_delegation_metadata(metadata["delegation"])
+    depth = delegation.get("depth")
+    return depth if isinstance(depth, int) else 0
 
 
 def remaining_spawn_budget_from_metadata(metadata: dict[str, object] | None) -> int:
-    if metadata is None:
+    if metadata is None or "delegation" not in metadata:
         return _DELEGATION_GOVERNANCE.spawn_budget
-    delegation = parse_delegation_metadata(metadata.get("delegation"))
-    remaining = _coerce_int_like(
-        delegation.get("remaining_spawn_budget"),
-        _DELEGATION_GOVERNANCE.spawn_budget,
-    )
-    return max(0, remaining)
+    delegation = parse_delegation_metadata(metadata["delegation"])
+    remaining = delegation.get("remaining_spawn_budget")
+    return remaining if isinstance(remaining, int) else _DELEGATION_GOVERNANCE.spawn_budget
 
 
 def continuity_state_from_session_metadata(
@@ -747,7 +707,10 @@ def clear_tool_execution_intent(
 
 
 def waiting_reason_from_session(session: SessionState) -> str:
-    plan_state = parse_plan_state_metadata(session.metadata.get("plan_state"))
+    raw_plan_state = session.metadata.get("plan_state")
+    if raw_plan_state is None:
+        return "waiting"
+    plan_state = parse_plan_state_metadata(raw_plan_state)
     status = plan_state.get("status")
     if status == "waiting_approval":
         return "waiting_for_approval"

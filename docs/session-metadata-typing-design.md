@@ -13,19 +13,16 @@
 
 | TypedDict | 对应 persisted 结构 | 现状 | 本设计 |
 |---|---|---|---|
-| `RuntimeStateMetadata` | `session.metadata["runtime_state"]`（5 文件共享） | 无类型 dict，8 个已知字段 + 2 个 legacy 字段 | 版本化 TypedDict + key-set 常量 + 双模 parse |
-| `PlanStateMetadata` | `session.metadata["plan_state"]`（2 文件） | 无类型 dict，4 个字段 | 同上 |
-| `PersistedDelegationMetadata` | `session.metadata["delegation"]`（8 文件共享语义） | 已有 `RuntimeSubagentRoutingMetadata`（contracts.py:78），**persisted 副本无 parse** | 特化子类 + 独立 parse（**delegation 就是 `RuntimeSubagentRoutingMetadata` 的持久化形态**，`depth`/`remaining_spawn_budget` 已是其字段，见 §3.4） |
-| `SkillSnapshotMetadata` | `session.metadata["skill_snapshot"]`（4 文件） | 已有 `snapshot_from_payload`（skills.py:187），**已版本化 + 已 hash 校验，但顶层未知 key 不拒绝** | TypedDict 化 + 补顶层未知 key 拒绝（复用现有 parser） |
+| `RuntimeStateMetadata` | `session.metadata["runtime_state"]`（5 文件共享） | 当前严格 key-set payload | 版本化 TypedDict + key-set + strict parse |
+| `PlanStateMetadata` | `session.metadata["plan_state"]`（2 文件） | 当前严格 key-set payload | 同上 |
+| `PersistedDelegationMetadata` | `session.metadata["delegation"]`（8 文件共享语义） | 当前严格 key-set payload | 特化子类 + strict parse |
+| `SkillSnapshotMetadata` | `session.metadata["skill_snapshot"]`（4 文件） | 已版本化 + 已 hash 校验 | TypedDict + 顶层未知 key 拒绝 |
 
-### 1.2 严格 parse 与旧数据兼容决策（核心决策）
+### 1.2 严格 parse 与当前格式决策
 
-**写路径严格 + 读路径宽容，严格读作为显式能力从 P1 起被测试覆盖，未来经 session 格式标记翻转为默认。**
+当前持久化 metadata 只接受当前字段集合与类型。写入和读取共用严格 parser；未知字段、缺失必需字段、非对象 payload、类型错误均 fail fast，不静默迁移、不回退到 workspace defaults，也不保留旧字段。显式版本化结构（skill_snapshot、agent_capability_snapshot、runtime_policy、resolved_hook_presets）继续执行各自的 version/hash 校验。
 
-- **写路径（fail fast，防漂移主战场）**：所有*新构造*的 `runtime_state`/`plan_state`/`delegation` payload 必须通过 `parse_*(..., strict=True)`——未知 key 拒绝、类型不符拒绝。新增 metadata key 的准入门槛 = 先有类型（审计 §5.2 边界）。
-- **读路径（宽容 + 类型化投影）**：`parse_*(raw)` 默认 `strict=False`——已知字段按消费点现有语义校验（现状已是 isinstance-guard，行为不变），**未知 key 保留并随 round-trip 原样写回，绝不 drop**（refactor-plan 规则 4「Runtime never reconstructs persisted truth from mutable workspace defaults」——drop 即重建/丢失持久化事实）。
-- **为什么读路径不能默认严格**：`runtime_state`/`plan_state`/`delegation` 是**无显式版本字段、被多个代码版本增量写入**的结构（`context_projection` 替换 legacy `continuity`、`context_transform_applied`/`pending_tool_intent`/`acp` 均为后加字段）。旧 session 里可能存在当前版本不再写入的 key（如 `runtime_state.continuity`，context_window.py:541 现在只在使用时硬报错）。若读路径未知 key 直接拒绝，**所有旧 session 的 resume/replay 立即失败**，直接违反 P1 硬约束「不破坏现有行为」。显式版本化的结构（skill_snapshot/agent_capability_snapshot/runtime_policy/resolved_hook_presets）**读路径已经严格**，那是现状，保持不变。
-- **版本化机制**：两种并存。显式版本字段（已有，不动）：`skill_snapshot.snapshot_version: 1` + `snapshot_hash`（skills.py:181-260）、`agent_capability_snapshot.snapshot_version: 3`（agent_capability.py:11）、`runtime_policy.schema_version/policy_version`（policy.py:421-478）、`runtime_state.todos.version: 1`（todos.py:121-132）。**隐式版本 = key-set 常量**（新引入，仿 `PERSISTED_RUNTIME_CONFIG_KEYS`，config_materializer.py:19-38）：`runtime_state`/`plan_state`/`delegation` 各定义 `*_METADATA_KEYS` frozenset + required-keys 检查，**不新增 version 字段**——旧 session 无 version key，加了必填 version 字段等于把所有存量数据判死。key 增删 = 修改 key-set 常量 + parser（与 config_materializer 完全同构）。
+runtime_state、plan_state、delegation 使用 key-set 作为当前契约边界；可选结构整体缺失仍表示该能力未启用，结构一旦存在则必须是完整的当前 payload。
 
 ### 1.3 唯一入口
 
@@ -77,7 +74,7 @@ P1 只做 persisted facts 的 4 个 TypedDict。turn-local（`provider_attempt` 
 | `run_id` | 3-6 | `runtime_state.run_id` 子 key（resume.py:97、run_loop.py:280、service.py:1749） | 并入 `RuntimeStateMetadata` |
 | `prompt_activation` | 4-7 | `runtime_policy.prompt_activation` 子结构（policy.py 快照字段 + helpers:136-142 写） | 已被 runtime_policy 版本化覆盖，不在 P1 |
 | `pending_tool_intent` / `context_projection` / `context_projection_summary` / `todos` / `acp` / `context_compacted` / `context_transform_applied` | 2-3 | `runtime_state` 子 key（§3.1 逐项） | 并入 `RuntimeStateMetadata` 嵌套 TypedDict |
-| legacy `continuity` / `continuity_summary` | 1（context_window.py:541） | 读取即硬报错「legacy runtime continuity metadata is no longer supported」 | 保留现状（读路径硬失败点不动），记入 key-set 注释 |
+| 已删除的 `continuity` / `continuity_summary` | 1（context_window.py:541） | 读取即硬报错 | 不属于当前 key-set |
 | `prompt` / `raw_prompt_stored` | 3 | prompt 持久化与 session 行共存（storage.py 列 + events.py） | 非 session metadata 语义，不在 P1 |
 
 **C. turn-local state（回合内状态）—— 归属 coordinator，P1 只列不类型化**
@@ -126,7 +123,7 @@ P1 只做 persisted facts 的 4 个 TypedDict。turn-local（`provider_attempt` 
 | `pending_tool_intent` | `dict`（`ToolExecutionIntent.metadata_payload()`） | helpers:340-341 `persist_tool_execution_intent` | service.py:4204-4213；helpers:368-377 |
 | `context_compacted` | `dict`（`{last_summary_anchor, last_original_tool_result_count, last_retained_tool_result_count, last_emitted_run_id}`） | run_loop.py:3275-3280 | run_loop.py:3252-3271 |
 | `context_transform_applied` | `dict`（`{last_emitted_fingerprints, last_emitted_run_id}`） | run_loop.py:302-318 | run_loop.py:277-287（`_unseen_context_transform_payloads`） |
-| legacy `continuity` / `continuity_summary` | —— | 已不写 | context_window.py:541 读取即硬报错（保留） |
+| 已删除的 `continuity` / `continuity_summary` | —— | 已不写，读取即硬报错 | 不属于当前 key-set |
 
 **TypedDict 草案**（放 contracts.py）：
 
@@ -187,7 +184,6 @@ RUNTIME_STATE_METADATA_KEYS = frozenset(
         "pending_tool_intent",
         "context_compacted",
         "context_transform_applied",
-        # legacy read-only: "continuity", "continuity_summary"（context_window.py:541 硬失败，不在写入 key-set）
     }
 )
 
@@ -203,7 +199,7 @@ class RuntimeStateMetadata(TypedDict, total=False):
     context_transform_applied: ContextTransformAppliedStateMetadata
 ```
 
-要点：全部 `total=False`（旧 session 缺字段可容忍）；`run_id` 可选（`_runtime_state_metadata(run_id=None)` 时无该 key，service.py:5921-5942）。嵌套 payload 的深度校验委托各自 owner（`todos.py` / `context_window.py` / `tool_replay.py`），P1 只在 depth-1 拒绝未知 key。
+要点：全部 `total=False` 表示字段可选；但一旦叶子结构存在，parser 严格校验其类型、未知 key 与当前必需字段。`run_id` 可选（新 run 的 runtime_state 可不写该 key）。嵌套 payload 的深度校验委托各自 owner。
 
 ### 3.2 `PlanStateMetadata`（persisted `plan_state`）
 
@@ -270,8 +266,8 @@ P1 增量：`parse_skill_snapshot_metadata` 在调 `snapshot_from_payload`（ski
 | `mode` | `Literal["sync","background"]` | service.py:5855（`_metadata_with_resolved_subagent_route`） | 请求侧校验已严格（contracts.py:249-263） |
 | `subagent_type` | `str` | 同上 | task.py:141-147 读 |
 | `description` / `command` | `str`（可选） | 同上 | task.py:148-153 读 |
-| `depth` | `int` | service.py:5004 `_metadata_with_delegation_governance`（parent_depth+1） | helpers:255-266 读（`_coerce_int_like` 宽容） |
-| `remaining_spawn_budget` | `int` | service.py:5009 | helpers:268-280 读 |
+| `depth` | `int` | service.py governance writer | strict parser 校验非负整数 |
+| `remaining_spawn_budget` | `int` | service.py governance writer | strict parser 校验非负整数 |
 | `selected_preset` | `str` | service.py:5849 | resume 一致性抽查（contracts.py:367-378） |
 | `selected_execution_engine` | `str`（恒 `"provider"`） | service.py:5850 | contracts.py:372-378 校验 |
 | `parallel_group_id` / `parallel_group_size` | `str` / `int`（可选） | 请求侧透传 | contracts.py:295-305 |
@@ -285,43 +281,22 @@ class PersistedDelegationMetadata(RuntimeSubagentRoutingMetadata, total=False):
     selected_execution_engine 由路由解析填充（service.py:5849-5850）。"""
 ```
 
-独立 parse 的理由：请求侧 `validate_runtime_subagent_routing_metadata`（contracts.py:249-299）抛 `RuntimeRequestError` 且属 request 校验面；persisted 读侧需要独立、宽容、不抛 RuntimeRequestError 的 `parse_delegation_metadata`（resume 时读旧 session 的 delegation 不应因缺 `mode` 而整体拒绝——现状 resume 只做 selected_preset/execution_engine 一致性抽查，行为保持）。`depth`/`remaining_spawn_budget` 读侧沿用 `_coerce_int_like`（宽容），**strict 写路径要求真 int 且 ≥0**（新写恒由 service.py:5004-5009 产出 int）。
+独立 parse 的理由仅是区分请求侧 `RuntimeRequestError` 与持久化侧 `ValueError`；两者都严格拒绝未知字段、类型错误和缺失的当前必需字段，不为旧 session 提供宽容路径。
 
 ---
 
 ## 4. 严格 parse + 版本化方案
 
-### 4.1 parse 函数签名（统一双模）
+### 4.1 parse 函数签名（统一严格）
 
 ```python
-# session_metadata_helpers.py
-def parse_runtime_state_metadata(raw: object, *, strict: bool = False) -> RuntimeStateMetadata: ...
-def parse_plan_state_metadata(raw: object, *, strict: bool = False) -> PlanStateMetadata: ...
-def parse_delegation_metadata(raw: object, *, strict: bool = False) -> PersistedDelegationMetadata: ...
-def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata: ...  # 恒严格（snapshot 已版本化+hash）
+def parse_runtime_state_metadata(raw: object) -> RuntimeStateMetadata: ...
+def parse_plan_state_metadata(raw: object) -> PlanStateMetadata: ...
+def parse_delegation_metadata(raw: object) -> PersistedDelegationMetadata: ...
+def parse_skill_snapshot_metadata(raw: object) -> SkillSnapshotMetadata: ...
 ```
 
-语义（对三个 leaf 结构）：
-- **`strict=True`（写路径 / 新构造）**：`raw` 必须是 dict；`key not in KEYS` → `ValueError`（仿 config_materializer.py:140-146 与 policy.py:254-260 `_reject_unknown_keys` 的错误文案）；已知字段类型不符 → `ValueError`。新写入的 payload 一律经此闸。
-- **`strict=False`（读路径，默认）**：非 dict → 返回 `{}`（等价现有 `runtime_state = cast(...) if isinstance(...) else {}` 的容错）；已知字段按消费点既有语义校验（沿用现有 isinstance-guard，如 run_id str 检查 run_loop.py:280-281、plan_state.status 检查 helpers:385-391）；**未知 key 原样保留**，返回的 dict 保持全部原始键值（round-trip 安全）。类型不符的已知字段：**不抛**，置该字段为容忍默认（与现有每个消费点自己的 guard 行为一致——例如 `delegation_depth_from_metadata` 的 `_coerce_int_like` 默认值语义）。
-- **合法性边界**：strict 模式**不突变**输入（parse 是纯函数）；lenient 模式返回包含未知 key 的副本。
-
-### 4.2 版本化落地
-
-| 结构 | 版本机制 | 变更规则 |
-|---|---|---|
-| `runtime_state` / `plan_state` / `delegation` | **隐式 = key-set 常量**（`RUNTIME_STATE_METADATA_KEYS` 等，§3） | 加字段 = 扩常量 + 扩 TypedDict + 扩 strict parser（四步同 PR，Change Gate「repository searches show no alternate parser」）；删字段 = 常量移除 + parser 拒绝新写，读侧由 lenient 兜底旧数据 |
-| `skill_snapshot` | **显式** `snapshot_version: 1` + `snapshot_hash`（现状） | 不动；P1 只在 helpers 层补顶层未知 key 拒绝 |
-| 嵌套（`todos`/`context_projection`/`runtime_policy`/`agent_capability_snapshot`） | 显式 version 字段（现状） | 不动 |
-
-与 config_materializer 的模式差异及理由：`runtime_config` 是**一次写入、整体重写**的配置快照（serialize→persist→parse 闭环，key-set 自始至终稳定），故可读路径严格；`runtime_state`/`plan_state`/`delegation` 是**多代码版本增量写入**的叶子结构（字段随功能迭代追加），无版本字段的存量 session 无法区分"当前格式"与"旧格式"，读路径严格会误伤存量。**这是本设计在规则 3（fail fast）与「不破坏现有行为」之间取的平衡点**：fail fast 落在写路径（漂移源头），存量兼容落在读路径（容忍但保留）。
-
-### 4.3 旧 session 兼容的明确处置（对应任务的关键约束）
-
-1. **未知 key（旧字段）**：读路径容忍 + round-trip 保留（§4.1）；**绝不在加载时拒绝或删除**。现状已有实例：legacy `continuity`/`continuity_summary` 只在 *使用* 时硬报错（context_window.py:541），加载本身不炸——P1 保持该语义，`continuity` 不进写入 key-set 但进 parser 的"已知 legacy"注释。
-2. **类型不符**：读路径按现有消费点 guard 语义容忍（与现状逐点等价，§5 迁移保证行为不变）；写路径（任何触发重写的回合）会把该字段以新格式归一——与现状 `{**runtime_state, field: ...}` 行为一致。
-3. **缺字段**：`total=False` + 读侧默认值（`run_id` None、plan `status` "waiting"、delegation depth 0 / budget 默认，全部与现有 helper 默认一致）。
-4. **版本迁移终态（Phase 3，可选）**：新增 session 格式标记（如 `runtime_state` 首次经 helpers 严格重写后记 `"version": 1`，或独立的 session 行 capability 列），标记存在则读路径可翻 `strict=True`；标记不存在（存量）继续 lenient。P1 不做标记，只保证 strict 路径从 P1 起被测试覆盖、未来翻转零成本。
+四个 parser 对存在的结构执行严格对象、key-set、类型与版本/hash校验。结构整体缺失由调用点按“未启用”处理；非对象值不会被转换成空字典。
 
 ---
 
@@ -338,7 +313,7 @@ contracts.py                      # TypedDict 定义（与现有 metadata TypedD
 
 session_metadata_helpers.py       # 唯一读/写入口
   ├─ re-export 4 个 TypedDict + key-set 常量（保持单 import 面）
-  ├─ parse_*_metadata（strict/lenient 双模，§4.1）
+  ├─ parse_*_metadata（严格当前格式校验；可选结构缺失由调用点处理）
   ├─ 类型化 accessor（§5.2 只读点）
   └─ 类型化构造器 session_with_*（§5.3 写点；已有 6 个，新增 4 个）
 ```
@@ -353,7 +328,7 @@ session_metadata_helpers.py       # 唯一读/写入口
 | run_loop.py:3197-3201 / 3248-3251 / 3252-3271 | run_id / context_compacted 手工读 | `runtime_state_run_id(metadata)` / `runtime_state_context_compacted(metadata)` |
 | resume.py:94-98（`_metadata_with_resume_run_id`） | 手工 `runtime_state["run_id"] = run_id` | 构造器 `session_with_run_id(session, run_id=...)`（写路径） |
 | provider_execution_metadata.py:27-33（`run_id_from_session_metadata`） | 手工 | 委托 helpers accessor（函数保留为薄转发，消去第二份解析） |
-| context_window.py:538-556（`_previous_continuity_state`） | 手工取 `runtime_state` + legacy 拒绝 | 读 `parse_runtime_state_metadata`（lenient）+ 保留 legacy 硬失败分支 |
+| context_window.py:538-556（`_previous_continuity_state`） | 手工取 `runtime_state` + continuity 拒绝 | 读 `parse_runtime_state_metadata`；保留 continuity 硬失败分支 |
 | todos.py:157-161（`todo_state_from_session_metadata`） | 手工 | `runtime_state_todos(metadata)` accessor |
 | helpers:194-205（`todo_state_matches_payload`） | 手工 | 内部改用 parse + accessor（本身在 helpers，统一实现） |
 | service.py:4208-4213（`pending_tool_intent`） | 手工 | `runtime_state_pending_tool_intent(metadata)` accessor |
@@ -394,11 +369,12 @@ accessor 命名统一 `runtime_state_<field>(metadata) -> <typed> | None`（`run
 
 - **内容**：
   1. contracts.py：4 个 TypedDict + 嵌套 TypedDict + 3 个 key-set 常量（§3）；补 `RuntimeRequestMetadata.context_transform_refs: list[str]` 字段标注（§2.1 缺口）。
-  2. helpers：`parse_*_metadata`（双模，§4.1）+ 全部只读 accessor（§5.2 左栏迁移）。
-  3. 迁移 §5.2 的**只读**调用点（run_loop/context_window/todos/service/prompt_assembly/context_continuity/storage 读侧/provider_execution_metadata 薄转发）。
+  2. helpers：`parse_*_metadata`（严格当前格式）+ 全部只读 accessor（§5.2 左栏迁移）。
+  3. 迁移 §5.2 的只读调用点；当前恢复安全路径（checkpoint/context projection/pending_messages）保持不变。
 - **验收**：
-  - 全量测试套件绿（含 resume/replay/approval/keep-alive 专项，这些路径覆盖 runtime_state/plan_state/delegation 读取）。
-  - 新增单测：① `parse_*(..., strict=True)` 对未知 key/类型不符抛 ValueError；② lenient 对未知 key 返回含原键副本（round-trip 断言）；③ 构造 legacy fixture（含 `continuity` 键、缺 `status`、`depth` 为字符串 "3"）lenient 解析不抛且与现有 helper 输出一致。
+  - targeted metadata/resume/replay/approval 测试通过。
+  - parser 对未知 key、类型不符、非对象、旧字段与旧 coercion 输入抛 ValueError。
+  - fresh current metadata round-trip 字节稳定。
   - `git diff` 无持久化字节变化（Phase 1 纯读，golden：同一输入 session 的 `update_session_metadata` 载荷前后一致——由测试套件中既有 fixture 隐式覆盖）。
   - Change Gate 第 5 条：全仓搜索确认 `runtime_state`/`plan_state`/`delegation` 的**读**不再有 helpers 之外的第二解析（`grep` 验收）。
 
@@ -410,15 +386,13 @@ accessor 命名统一 `runtime_state_<field>(metadata) -> <typed> | None`（`run
   3. 所有写路径构造器内置 `parse(..., strict=True)` 闸。
 - **验收**：
   - 同一输入下 persisted 字节与 Phase 1 前**完全一致**（golden：fresh run 快照、todo 更新、approval 等待、context 压缩、tool intent 持久化的 session 行 metadata JSON 前后 diff 为空）。
-  - resume 旧 session（含 legacy/未知 key fixture）流程不炸、行为与迁移前一致（集成测试：老 fixture 数据库 → resume → 成功）。
-  - 新增单测：写路径 strict 拒绝——手工往构造器输入未知 key（如 `runtime_state["typo_field"]`）抛 ValueError；`delegation` depth 负数/非 int 抛。
+  - 新增单测：严格拒绝旧 fixture；写路径严格拒绝未知 key 和非法 delegation depth。
   - Change Gate 第 4、5 条：写点全部经 helpers；全仓 grep 无裸 `"runtime_state": {` 构造（除 session.py 净化层外）。
 
 ### Phase 3 —— 严格读取开关 + 收尾（可选合并入 2）
 
 - **内容**：
-  1. 设计并落地 session 格式标记（§4.3 第 4 点）或显式能力位，使已标记 session 的读路径翻 `strict=True`；未标记存量继续 lenient。
-  2. 删除 Phase 2 遗留的临时容忍分支（如有）；`_RECOVERABLE_RUNTIME_CONTEXT_KEYS`（context_continuity.py:50-58）与 key-set 常量建立断言式一致性测试（现有 test_builtin.py 模式，审计 §5.3 认可）。
+  2. 删除所有遗留宽容分支；恢复安全的可恢复 context 与队列合并逻辑保留。
   3. 文档：key-set 常量 docstring 记录每个 key 的 owner（§2 表作为 docstring 蓝本）。
 - **验收**：
   - 新 session 全流程 strict 读绿（fresh→resume→replay→debug→bundle 一致，Change Gate 第 3 条）。
@@ -427,7 +401,7 @@ accessor 命名统一 `runtime_state_<field>(metadata) -> <typed> | None`（`run
 
 ### 风险排序依据
 
-Phase 1 只读（改解析不改字节）→ Phase 2 写收敛（改构造点但字节等价）→ Phase 3 翻严格（唯一的行为变化点，放到最后且有标记门控）。每个 Phase 独立可合入、可回滚；Phase 2 若发现字节 diff，说明迁移改变了语义，立即停并对照 §5.2/5.3 逐点恢复——这是本设计最重要的安全阀。
+当前实现统一使用严格 parser；不提供未标记存量的 lenient 读取路径。
 
 ---
 
