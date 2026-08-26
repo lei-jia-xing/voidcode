@@ -13328,6 +13328,7 @@ def test_runtime_effective_runtime_config_uses_request_metadata_max_steps_for_ne
         "resolved_hook_plan",
         "selected_skill_names",
         "applied_skills",
+        "skill_snapshot",
     }
     assert response.session.metadata["runtime_config"] == {
         "approval_mode": "ask",
