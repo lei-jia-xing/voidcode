@@ -85,6 +85,7 @@ def enforce_read_before_write(
     display_path: str,
     is_external: bool,
 ) -> None:
+    _ = workspace
     if is_external or not candidate.exists() or not candidate.is_file():
         return
     context = current_runtime_tool_context()
@@ -117,6 +118,7 @@ def enforce_seen_lines(
 
     Fails closed: a file with no recorded line data rejects every change.
     """
+    _ = workspace
     if is_external or not candidate.exists() or not candidate.is_file():
         return
     context = current_runtime_tool_context()

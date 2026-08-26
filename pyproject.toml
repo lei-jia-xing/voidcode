@@ -99,7 +99,8 @@ line-length = 150
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["B", "E", "ERA", "F", "I", "UP"]
+select = ["ARG", "B", "E", "ERA", "F", "I", "UP"]
+per-file-ignores = { "tests/**" = ["ARG001", "ARG002", "ARG005"] }
 
 [tool.ruff.format]
 quote-style = "double"

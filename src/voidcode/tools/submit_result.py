@@ -45,7 +45,7 @@ class SubmitResultTool:
         read_only=True,
     )
 
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:  # noqa: ARG002 — protocol-required workspace parameter; tool context owns workspace resolution.
         context = require_runtime_tool_context(self.definition.name)
         if context.parent_session_id is None:
             raise ValueError("submit_result is only available to delegated child sessions")

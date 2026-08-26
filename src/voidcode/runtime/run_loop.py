@@ -383,8 +383,6 @@ def _tool_error_retry_guidance(error: str) -> str | None:
 def _tool_error_details(
     *,
     tool_name: str,
-    error: str,
-    error_kind: str | None = None,
     extra: dict[str, object] | None = None,
 ) -> ToolDiagnosticsDetails:
     details: ToolDiagnosticsDetails = {"tool_name": tool_name}
@@ -403,7 +401,7 @@ def _tool_error_diagnostics(
     return ToolDiagnostics(
         kind=error_kind,
         summary=_tool_error_summary(error),
-        details=_tool_error_details(tool_name=tool_name, error=error, error_kind=error_kind, extra=extra_details),
+        details=_tool_error_details(tool_name=tool_name, extra=extra_details),
         guidance=_tool_error_retry_guidance(error),
     )
 
@@ -437,8 +435,6 @@ def _tool_diagnostic_payload(
             summary=_tool_error_summary(str(error)),
             details=_tool_error_details(
                 tool_name=tool_name,
-                error=str(error),
-                error_kind=error.error_kind,
                 extra=error.error_details,
             ),
             guidance=error.retry_guidance,
@@ -1449,7 +1445,6 @@ class RuntimeRunLoopCoordinator:
             plan_tool_call, tool, tool_call_id, sequence = yield from self._plan_tool_step(
                 session=session,
                 sequence=sequence,
-                active_graph_request=active_graph_request,
                 tool_registry=tool_registry,
                 graph_step=graph_step,
             )
@@ -1527,7 +1522,6 @@ class RuntimeRunLoopCoordinator:
             if (
                 yield from self._handle_question_outcome(
                     session=session,
-                    sequence=sequence,
                     plan_tool_call=plan_tool_call,
                     tool_result=tool_result,
                 )
@@ -1611,7 +1605,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         tool_results: list[ToolResult],
-        sequence: int,
+        sequence: int,  # noqa: ARG002 — retained for terminalization call-shape symmetry; persisted envelope owns sequence.
     ) -> Generator[RuntimeStreamChunk, None, int]:
         terminal_result = tool_results[-1]
         terminal_output = (terminal_result.content or "").strip()
@@ -2427,7 +2421,6 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        active_graph_request: GraphRunRequest,
         tool_registry: ToolRegistry,
         graph_step: Any,
     ) -> Generator[RuntimeStreamChunk, None, tuple[Any, Any, str, int]]:
@@ -2901,7 +2894,6 @@ class RuntimeRunLoopCoordinator:
         self,
         *,
         session: SessionState,
-        sequence: int,
         plan_tool_call: Any,
         tool_result: ToolResult,
     ) -> Generator[RuntimeStreamChunk, None, bool]:
@@ -3046,7 +3038,7 @@ class RuntimeRunLoopCoordinator:
             diagnostics=ToolDiagnostics(
                 kind=error_kind,
                 summary=_tool_error_summary(error),
-                details=_tool_error_details(tool_name=tool_name, error=error, error_kind=error_kind),
+                details=_tool_error_details(tool_name=tool_name),
                 guidance="Check the tool name and arguments, then retry.",
             ),
         )
@@ -3558,8 +3550,6 @@ class RuntimeRunLoopCoordinator:
                 summary=_tool_error_summary(error),
                 details=_tool_error_details(
                     tool_name=tool_call.tool_name,
-                    error=error,
-                    error_kind="permission_denied",
                     extra={
                         "permission_denied": True,
                         **({"denied_by": denied_by} if denied_by is not None else {}),

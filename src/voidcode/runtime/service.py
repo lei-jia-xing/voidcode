@@ -5331,7 +5331,7 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_results: tuple[ToolResult | ToolResultView, ...],
         session_metadata: dict[str, object],
         policy: ContextWindowPolicy | None = None,
-        abort_signal: ProviderAbortSignal | None = None,
+        abort_signal: ProviderAbortSignal | None = None,  # noqa: ARG002 — retained by RuntimeSurface protocol for abort-aware callers.
     ) -> RuntimeContextWindow:
         effective_config = self.effective_runtime_config_from_metadata(session_metadata)
         provider_attempt = provider_attempt_from_metadata(session_metadata)
@@ -6150,7 +6150,7 @@ class VoidCodeRuntime(RuntimeSurface):
         metadata: RuntimeRequestMetadataPayload,
         *,
         allow_internal_fields: bool,
-        parent_session_id: str | None = None,
+        parent_session_id: str | None = None,  # noqa: ARG002 — retained for delegation route contract compatibility.
     ) -> RuntimeRequestMetadataPayload:
         resolved_route = runtime_subagent_route_from_metadata(
             metadata,

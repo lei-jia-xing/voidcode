@@ -742,7 +742,8 @@ def _estimated_token_count(value: str, *, tokenizer_model: str | None = None) ->
     return _TokenEstimate(counted.tokens, counted.source)
 
 
-def _tool_result_token_estimate(result: ToolResult | ToolResultView, *, tokenizer_model: str | None = None) -> _TokenEstimate:
+def _tool_result_token_estimate(result: ToolResult | ToolResultView, *, tokenizer_model: str | None = None) -> _TokenEstimate:  # noqa: ARG001 — reserved for tokenizer-backed estimates; current fallback is deterministic.
+    _ = tokenizer_model
     payload = {
         "tool_name": result.tool_name,
         "status": result.status,
@@ -961,7 +962,7 @@ def _truncated_view_for_result(
     )
 
 
-def _token_estimate_source(policy: ContextWindowPolicy, sample: str = "sample") -> str:
+def _token_estimate_source(_policy: ContextWindowPolicy, _sample: str = "sample") -> str:
     return _APPROX_CHARS_PER_4_SOURCE
 
 

@@ -284,7 +284,6 @@ class _EnvironmentRuntimeSettings(BaseSettings):
             return None
         return _parse_reasoning_effort(
             value,
-            source=f"environment variable {REASONING_EFFORT_ENV_VAR}",
             allow_none=True,
         )
 
@@ -747,7 +746,6 @@ def _load_repo_local_config(
 
     parsed_reasoning_effort = _parse_reasoning_effort(
         payload.get("reasoning_effort"),
-        source=f"runtime config field 'reasoning_effort' in {config_path}",
         allow_none=True,
     )
 
@@ -3521,7 +3519,6 @@ def _resolve_reasoning_effort(
     if explicit is not None:
         return _parse_reasoning_effort(
             explicit,
-            source="explicit runtime config override 'reasoning_effort'",
             allow_none=True,
         )
     if repo_local is not None:
@@ -3534,7 +3531,6 @@ def _resolve_reasoning_effort(
 def _parse_reasoning_effort(
     raw_value: object,
     *,
-    source: str,
     allow_none: bool,
 ) -> str | None:
     if raw_value is None and allow_none:
