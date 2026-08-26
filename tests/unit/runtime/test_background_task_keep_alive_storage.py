@@ -299,7 +299,7 @@ def test_background_task_storage_migrates_v10_database_with_keep_alive_columns(t
         task=_task(task_id="task-keep-alive", keep_alive=True),
     )
 
-    # Rewind the freshly-bootstrapped (v12) database to the previous released
+    # Rewind the freshly-bootstrapped (v13) database to the previous released
     # schema (v10): drop every post-v10 column and stamp user_version = 10.
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN keep_alive")
@@ -321,7 +321,7 @@ def test_background_task_storage_migrates_v10_database_with_keep_alive_columns(t
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
         rows = connection.execute("SELECT task_id, keep_alive, steer_prompt FROM background_tasks ORDER BY task_id ASC").fetchall()
 
-    assert schema_version == 12
+    assert schema_version == 13
     assert "keep_alive" in columns
     assert "steer_prompt" in columns
     assert "output_schema_json" in columns
