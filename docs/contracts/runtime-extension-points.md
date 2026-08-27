@@ -118,11 +118,13 @@ Context transform 在 runtime-owned context assembly 阶段贡献有界 provider
 每个 `RuntimeContextTransformProvider` 都必须提供稳定的 `provider_id`、`provider_version`、`scope`、`priority` 与 `failure_policy`。当前唯一允许的 scope 是 `provider_context`：provider 只能返回有界 injection 或 diagnostic，不能修改原始 request prompt、工具参数、SQLite/session truth、approval/denial、owner boundary 或 tool allowlist。registry 负责按 `(priority, provider_id)` 排序、校验唯一 id，并将 provider metadata 与有界 trace 纳入现有 `context_transform` metadata；这不是新的 event bus 或 executor。
 ### Tool output normalization
 
-Tool output normalization 可以塑形 model-visible tool result，但必须保留 runtime explainability。
+`ToolResultHandlerRegistry` is a constructor-injected, priority-ordered typed extension point. Its default production registry is empty. During a live turn, after the authoritative `ToolResult` has completed the existing cap and data-sanitization pipeline, the coordinator builds a transient `ToolResultView` and applies the registry for provider use. The authoritative result pool remains the only pool used for checkpoints, SQLite events, runtime status, tool identity, call ids, and approved arguments; transformed views are never persisted or appended to that pool.
 
-未来 normalizer 必须保留足够 metadata 来解释 raw output 与 model-visible output 的差异，包括数量、截断/脱敏原因，以及适用时的 artifact references。
+On every provider-context rebuild, the coordinator derives one transient provider view sequence from the authoritative pool and sends that same sequence to both the bounded context window and assembled provider context. Replayed/resumed historical results pass through unchanged, so handlers are not re-executed for replay. A handler may rewrite only provider-visible content, error, or diagnostics; it cannot alter tool name, status, data, identity, permissions, approvals, or arguments. A handler exception or invalid decision falls back to the source view and records only bounded, text-free provenance (handler names, action, failure marker, and field hashes) in runtime context metadata.
 
-normalizer 不得在 approval 之后修改已批准 tool arguments。
+Handlers receive only the capped and sanitized `ToolResultView`; raw tool output is never exposed. Native tool calls and `invoke_tool` inner calls use the same projection path. The transformed view is transient and provider-facing; runtime `tool_completed` payloads and SQLite/session truth always use the authoritative source result.
+
+The persisted/runtime contract must retain enough metadata to explain raw output versus model-visible output, including action, handler names, failure state, field hashes, quantity, clipping/redaction causes, and applicable artifact references. A normalizer must not modify approved tool arguments.
 
 ### Provider message validation
 
