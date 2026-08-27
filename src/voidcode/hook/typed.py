@@ -350,6 +350,26 @@ class ToolResultHandlerRegistry:
         return ToolResultHandlerOutcome(view=current, action="rewrite" if current != source else "unchanged", handler_names=tuple(names))
 
 
+def tool_result_handler_metadata(*, original: ToolResultView, outcome: ToolResultHandlerOutcome) -> dict[str, object]:
+    """Return bounded, text-free provenance for a provider-view transform."""
+    return {
+        "surface": "typed_result",
+        "action": outcome.action,
+        "handler_names": list(outcome.handler_names[:_MAX_HANDLER_NAMES]),
+        "failure": outcome.failure_reason,
+        "original_content_sha256": _result_field_sha256(original.content),
+        "final_content_sha256": _result_field_sha256(outcome.view.content),
+        "original_error_sha256": _result_field_sha256(original.error),
+        "final_error_sha256": _result_field_sha256(outcome.view.error),
+        "diagnostic_changed": original.diagnostics != outcome.view.diagnostics,
+    }
+
+
+def _result_field_sha256(value: object) -> str:
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=repr).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _arguments_sha256(arguments: Mapping[str, object]) -> str:
     try:
         encoded = json.dumps(dict(arguments), ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=repr).encode()
@@ -383,9 +403,16 @@ __all__ = [
     "ToolInputHandler",
     "ToolInputHandlerRegistry",
     "ToolInputHookOutcome",
+    "ToolResultHandler",
+    "ToolResultHandlerAction",
+    "ToolResultHandlerBinding",
+    "ToolResultHandlerDecision",
+    "ToolResultHandlerOutcome",
+    "ToolResultHandlerRegistry",
     "builtin_tool_input_handler_registry",
     "compose_tool_input_handler_registry",
     "tool_input_arguments_sha256",
     "tool_input_rewrite_metadata",
+    "tool_result_handler_metadata",
     "validate_tool_input_schema",
 ]
