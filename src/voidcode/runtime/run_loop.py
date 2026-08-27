@@ -2451,6 +2451,69 @@ class RuntimeRunLoopCoordinator:
         yield failed_chunk
         return {"action": "reraise", "exc": exc}
 
+    def _prepare_typed_tool_call(
+        self,
+        *,
+        session: SessionState,
+        sequence: int,
+        tool_registry: ToolRegistry,
+        tool_call: ToolCall,
+        tool: Any,
+        is_resume: bool,
+    ) -> tuple[ToolCall, Any, ToolInputHookOutcome]:
+        """Apply the shared typed-input gate before permission/approval.
+
+        This is deliberately only the pre-execution candidate phase. The
+        caller still owns event ordering and permission/approval; each tool
+        retains its private Pydantic/schema and guard validation.
+        """
+        if tool_call.tool_name == "invoke_tool":
+            return tool_call, tool, ToolInputHookOutcome(tool_call=tool_call)
+        outcome = self._tool_input_handler_registry.apply(
+            event=ToolInputEvent(
+                session_id=session.session.id,
+                tool_call=tool_call,
+                tool=tool.definition,
+                sequence=sequence,
+                session_status=session.status,
+                is_resume=is_resume,
+                mode=str(session.metadata.get("mode", "normal")),
+                read_only=runtime_read_only_from_metadata(session.metadata),
+            )
+        )
+        if outcome.action != "rewrite":
+            return outcome.tool_call, tool, outcome
+        try:
+            validate_tool_input_schema(tool.definition, outcome.tool_call.arguments)
+        except ValueError as exc:
+            return (
+                outcome.tool_call,
+                tool,
+                ToolInputHookOutcome(
+                    tool_call=outcome.tool_call,
+                    action="block",
+                    diagnostics=outcome.diagnostics,
+                    handler_names=outcome.handler_names,
+                    blocked_reason=str(exc),
+                ),
+            )
+        final_call = outcome.tool_call
+        try:
+            final_tool = tool_registry.resolve(final_call.tool_name)
+        except Exception as exc:
+            return (
+                final_call,
+                tool,
+                ToolInputHookOutcome(
+                    tool_call=final_call,
+                    action="block",
+                    diagnostics=outcome.diagnostics,
+                    handler_names=outcome.handler_names,
+                    blocked_reason=f"rewritten tool lookup failed: {exc}",
+                ),
+            )
+        return final_call, final_tool, outcome
+
     def _plan_tool_step(
         self,
         *,
@@ -2539,45 +2602,14 @@ class RuntimeRunLoopCoordinator:
         sequence = lookup_envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
 
-        if plan_tool_call.tool_name == "invoke_tool":
-            # The dispatcher applies typed handlers to its inner target only.
-            input_hook_outcome = ToolInputHookOutcome(tool_call=plan_tool_call)
-        else:
-            input_hook_outcome = self._tool_input_handler_registry.apply(
-                event=ToolInputEvent(
-                    session_id=session.session.id,
-                    tool_call=plan_tool_call,
-                    tool=tool.definition,
-                    sequence=sequence,
-                    session_status=session.status,
-                    is_resume=is_resume,
-                    mode=str(session.metadata.get("mode", "normal")),
-                    read_only=runtime_read_only_from_metadata(session.metadata),
-                )
-            )
-            if input_hook_outcome.action == "rewrite":
-                try:
-                    validate_tool_input_schema(tool.definition, input_hook_outcome.tool_call.arguments)
-                except ValueError as exc:
-                    input_hook_outcome = ToolInputHookOutcome(
-                        tool_call=input_hook_outcome.tool_call,
-                        action="block",
-                        diagnostics=input_hook_outcome.diagnostics,
-                        handler_names=input_hook_outcome.handler_names,
-                        blocked_reason=str(exc),
-                    )
-                else:
-                    plan_tool_call = input_hook_outcome.tool_call
-                    try:
-                        tool = tool_registry.resolve(plan_tool_call.tool_name)
-                    except Exception as exc:
-                        input_hook_outcome = ToolInputHookOutcome(
-                            tool_call=plan_tool_call,
-                            action="block",
-                            diagnostics=input_hook_outcome.diagnostics,
-                            handler_names=input_hook_outcome.handler_names,
-                            blocked_reason=f"rewritten tool lookup failed: {exc}",
-                        )
+        plan_tool_call, tool, input_hook_outcome = self._prepare_typed_tool_call(
+            session=session,
+            sequence=sequence,
+            tool_registry=tool_registry,
+            tool_call=plan_tool_call,
+            tool=tool,
+            is_resume=is_resume,
+        )
 
         if input_hook_outcome.action != "unchanged":
             policy = hook_execution_policy_from_metadata(session.metadata)
@@ -2619,6 +2651,7 @@ class RuntimeRunLoopCoordinator:
         active_permission_policy: PermissionPolicy,
         effective_runtime_config: EffectiveRuntimeConfig,
         tool_results: list[ToolResult],
+        continue_after_denial: bool = True,
     ) -> Generator[RuntimeStreamChunk, None, tuple[str, SessionState, int]]:
         runtime = self._surface
         if approval_resolution is not None:
@@ -2692,7 +2725,7 @@ class RuntimeRunLoopCoordinator:
                 tool_results=tool_results,
                 tool_call_id=tool_call_id,
             )
-            if denied_replayed_tool_changed or effective_runtime_config.execution_engine != "provider":
+            if denied_replayed_tool_changed or effective_runtime_config.execution_engine != "provider" or not continue_after_denial:
                 return "return", session, sequence
             return "continue", session, sequence
         return "ok", session, sequence
@@ -3220,6 +3253,27 @@ class RuntimeRunLoopCoordinator:
         inner_name = parsed.name
         inner_arguments = dict(parsed.arguments or {})
 
+        original_inner_call = ToolCall(
+            tool_name=inner_name,
+            arguments=dict(inner_arguments),
+            tool_call_id=outer_call_id,
+        )
+        inner_call = original_inner_call
+        tool_request_payload: dict[str, object] = {
+            "tool": original_inner_call.tool_name,
+            "arguments": dict(original_inner_call.arguments),
+        }
+        if outer_call_id is not None:
+            tool_request_payload["tool_call_id"] = outer_call_id
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type="graph.tool_request_created",
+            source="graph",
+            payload=tool_request_payload,
+        )
+        sequence = envelope.sequence
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+
         delegation_policy_error = runtime.delegation_tool_policy_error(
             session=session,
             tool_name=inner_name,
@@ -3266,72 +3320,6 @@ class RuntimeRunLoopCoordinator:
             )
             return
 
-        original_inner_call = ToolCall(
-            tool_name=inner_name,
-            arguments=dict(inner_arguments),
-            tool_call_id=outer_call_id,
-        )
-        inner_call = original_inner_call
-        tool_request_payload: dict[str, object] = {
-            "tool": original_inner_call.tool_name,
-            "arguments": dict(original_inner_call.arguments),
-        }
-        if outer_call_id is not None:
-            tool_request_payload["tool_call_id"] = outer_call_id
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type="graph.tool_request_created",
-            source="graph",
-            payload=tool_request_payload,
-        )
-        sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        input_hook_outcome = self._tool_input_handler_registry.apply(
-            event=ToolInputEvent(
-                session_id=session.session.id,
-                tool_call=inner_call,
-                tool=tool.definition,
-                sequence=sequence,
-                session_status=session.status,
-                is_resume=is_resume,
-                mode=str(session.metadata.get("mode", "normal")),
-                read_only=runtime_read_only_from_metadata(session.metadata),
-            )
-        )
-        if input_hook_outcome.action == "rewrite":
-            try:
-                validate_tool_input_schema(tool.definition, input_hook_outcome.tool_call.arguments)
-            except ValueError as exc:
-                input_hook_outcome = ToolInputHookOutcome(
-                    tool_call=input_hook_outcome.tool_call,
-                    action="block",
-                    diagnostics=input_hook_outcome.diagnostics,
-                    handler_names=input_hook_outcome.handler_names,
-                    blocked_reason=str(exc),
-                )
-            else:
-                inner_call = input_hook_outcome.tool_call
-                try:
-                    tool = tool_registry.resolve(inner_call.tool_name)
-                except Exception as exc:
-                    input_hook_outcome = ToolInputHookOutcome(
-                        tool_call=inner_call,
-                        action="block",
-                        diagnostics=input_hook_outcome.diagnostics,
-                        handler_names=input_hook_outcome.handler_names,
-                        blocked_reason=f"rewritten tool lookup failed: {exc}",
-                    )
-        if input_hook_outcome.action == "block":
-            yield from self._dispatch_error_feedback_chunks(
-                session=session,
-                tool_name=inner_name,
-                tool_call_id=outer_call_id,
-                arguments=dict(input_hook_outcome.tool_call.arguments),
-                tool_results=tool_results,
-                error=input_hook_outcome.blocked_reason or "tool input handler blocked the call",
-                error_kind="tool_input_handler_blocked",
-            )
-            return
         lookup_envelope = self._persist_event(
             session_id=session.session.id,
             event_type="runtime.tool_lookup_succeeded",
@@ -3340,6 +3328,15 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = lookup_envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=lookup_envelope)
+
+        inner_call, tool, input_hook_outcome = self._prepare_typed_tool_call(
+            session=session,
+            sequence=sequence,
+            tool_registry=tool_registry,
+            tool_call=inner_call,
+            tool=tool,
+            is_resume=is_resume,
+        )
 
         if input_hook_outcome.action != "unchanged":
             policy = hook_execution_policy_from_metadata(session.metadata)
@@ -3366,33 +3363,31 @@ class RuntimeRunLoopCoordinator:
             sequence = trace_event.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=trace_event)
 
-        permission_chunks = runtime.resolve_permission(
-            session=session,
-            tool=tool.definition,
-            tool_instance=tool,
-            tool_call=inner_call,
-            sequence=sequence + 1,
-            permission_policy=permission_policy or self._permission_policy,
-        )
-        if permission_chunks.chunks:
-            session = permission_chunks.chunks[-1].session
-        sequence = yield from self._persist_chunks(
-            permission_chunks.chunks,
-            fallback_sequence=permission_chunks.last_sequence,
-        )
-        if permission_chunks.pending_approval is not None:
-            # Pause for approval. The approval resume path executes the inner
-            # tool directly through execute_approved_tool_call (same governed
-            # boundary), pairing its result with the recorded tool_call_id.
-            return
-        if permission_chunks.denied:
-            yield from self._permission_denied_tool_feedback_chunks(
+        if input_hook_outcome.action == "block":
+            yield from self._dispatch_error_feedback_chunks(
                 session=session,
-                tool_call=inner_call,
-                pending=permission_chunks.denied_approval,
-                tool_results=tool_results,
+                tool_name=inner_name,
                 tool_call_id=outer_call_id,
+                arguments=dict(input_hook_outcome.tool_call.arguments),
+                tool_results=tool_results,
+                error=input_hook_outcome.blocked_reason or "tool input handler blocked the call",
+                error_kind="tool_input_handler_blocked",
             )
+            return
+
+        permission_action, session, sequence = yield from self._resolve_permission_for_tool(
+            session=session,
+            sequence=sequence,
+            tool=tool,
+            plan_tool_call=inner_call,
+            tool_call_id=outer_call_id,
+            approval_resolution=None,
+            active_permission_policy=permission_policy or self._permission_policy,
+            effective_runtime_config=runtime.effective_runtime_config_from_metadata(session.metadata),
+            tool_results=tool_results,
+            continue_after_denial=False,
+        )
+        if permission_action != "ok":
             return
 
         execution_intent = ToolExecutionIntent.from_call(

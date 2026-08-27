@@ -88,6 +88,15 @@ def _canonicalizer(path: str, calls: list[str] | None = None):
     return canonicalize
 
 
+def _blocker(reason: str, calls: list[str] | None = None):
+    def block(event: ToolInputEvent) -> ToolInputDecision:
+        if calls is not None:
+            calls.append(event.tool_call.tool_name)
+        return ToolInputDecision(action="block", reason=reason)
+
+    return block
+
+
 def test_typed_rewrite_preserves_raw_graph_args_and_uses_final_execution_args(tmp_path: Path) -> None:
     tool = _CaptureTool()
     registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("canonical.txt")),))
@@ -146,10 +155,50 @@ def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) 
         event for event in response.events if event.event_type == "graph.tool_request_created" and event.payload.get("tool") == "capture"
     )
     assert inner_request.payload["arguments"] == {"path": "./inner.txt"}
+    lookup = next(
+        event for event in response.events if event.event_type == "runtime.tool_lookup_succeeded" and event.payload.get("tool") == "capture"
+    )
     trace = next(event for event in response.events if event.event_type == "runtime.tool_input_processed")
+    permission = next(event for event in response.events if event.event_type in {"runtime.permission_resolved", "runtime.approval_resolved"})
+    assert inner_request.sequence < lookup.sequence < trace.sequence < permission.sequence
     metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
     assert isinstance(metadata["handler_names"], list)
+
+
+def test_invoke_inner_block_emits_lookup_then_typed_trace_before_feedback(tmp_path: Path) -> None:
+    tool = _CaptureTool()
+    handler_calls: list[str] = []
+    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("block", _blocker("blocked by typed policy", handler_calls)),))
+    runtime = _runtime(
+        tmp_path,
+        tool,
+        registry,
+        initial_call=ToolCall(
+            tool_name="invoke_tool",
+            arguments={"name": "capture", "arguments": {"path": "./inner.txt"}},
+        ),
+        include_invoke_tool=True,
+    )
+    response = runtime.run(RuntimeRequest(prompt="dispatch blocked"))
+
+    assert response.session.status == "completed"
+    assert handler_calls == ["capture"]
+    assert tool.calls == []
+    inner_request = next(
+        event for event in response.events if event.event_type == "graph.tool_request_created" and event.payload.get("tool") == "capture"
+    )
+    lookup = next(
+        event for event in response.events if event.event_type == "runtime.tool_lookup_succeeded" and event.payload.get("tool") == "capture"
+    )
+    trace = next(
+        event for event in response.events if event.event_type == "runtime.tool_input_processed" and event.payload.get("tool_name") == "capture"
+    )
+    feedback = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "capture")
+    assert inner_request.sequence < lookup.sequence < trace.sequence < feedback.sequence
+    assert trace.payload["hook_status"] == "blocked"
+    assert feedback.payload["status"] == "error"
+    assert feedback.payload["error"] == "blocked by typed policy"
 
 
 def test_invoke_inner_error_feedback_uses_final_rewritten_args(tmp_path: Path) -> None:
