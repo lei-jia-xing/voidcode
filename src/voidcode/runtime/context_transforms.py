@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from ..tools.contracts import ToolResult
 from .context_rules import (
@@ -18,7 +18,17 @@ if TYPE_CHECKING:
     from .context_window import ToolResultView
 
 type RuntimeContextTransformProviderId = str
-type RuntimeContextTransformFailurePolicy = str
+type RuntimeContextTransformFailurePolicy = Literal["ignore", "warn", "block"]
+type RuntimeContextTransformScope = Literal["provider_context"]
+type RuntimeContextTransformVersion = str
+
+_MAX_TRACE_TEXT_CHARS = 256
+_MAX_TRACE_ITEMS = 32
+
+
+def _bounded_trace_text(value: str) -> str:
+    text = value.strip()
+    return text if len(text) <= _MAX_TRACE_TEXT_CHARS else f"{text[:_MAX_TRACE_TEXT_CHARS]}…"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +41,8 @@ class RuntimeContextTransformInjection:
 @dataclass(frozen=True, slots=True)
 class RuntimeContextTransformTrace:
     provider_id: str
+    provider_version: RuntimeContextTransformVersion = "1"
+    scope: RuntimeContextTransformScope = "provider_context"
     status: str = "ok"
     priority: int = 100
     execution_index: int = 0
@@ -38,6 +50,7 @@ class RuntimeContextTransformTrace:
     provider_order: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn"
     error: str | None = None
 
     def metadata_payload(self) -> dict[str, object]:
@@ -47,8 +60,8 @@ class RuntimeContextTransformTrace:
             "priority": self.priority,
             "execution_index": self.execution_index,
             "injection_count": self.injection_count,
-            "provider_order": list(self.provider_order),
-            "sources": list(self.sources),
+            "provider_order": list(self.provider_order[:_MAX_TRACE_ITEMS]),
+            "sources": list(self.sources[:_MAX_TRACE_ITEMS]),
         }
         if self.diagnostics:
             payload["diagnostics"] = list(self.diagnostics)
@@ -83,7 +96,10 @@ class RuntimeContextTransformRequest:
 
 class RuntimeContextTransformProvider(Protocol):
     provider_id: str
+    provider_version: RuntimeContextTransformVersion
+    scope: RuntimeContextTransformScope
     priority: int
+    failure_policy: RuntimeContextTransformFailurePolicy
 
     def build_result(
         self,
@@ -93,7 +109,10 @@ class RuntimeContextTransformProvider(Protocol):
 
 class HookPresetGuidanceTransformProvider:
     provider_id = "hook_preset_guidance"
+    provider_version = "1"
+    scope: RuntimeContextTransformScope = "provider_context"
     priority = 100
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn"
 
     def build_result(
         self,
@@ -123,7 +142,10 @@ class HookPresetGuidanceTransformProvider:
 
 class ModeGuidanceTransformProvider:
     provider_id = "mode_guidance"
+    provider_version = "1"
+    scope: RuntimeContextTransformScope = "provider_context"
     priority = 150
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn"
 
     def build_result(
         self,
@@ -153,7 +175,10 @@ class ModeGuidanceTransformProvider:
 
 class RuntimeFileRulesTransformProvider:
     provider_id = "runtime_file_rules"
+    provider_version = "1"
+    scope: RuntimeContextTransformScope = "provider_context"
     priority = 200
+    failure_policy: RuntimeContextTransformFailurePolicy = "warn"
 
     def build_result(
         self,
@@ -223,6 +248,21 @@ def _rulebook_catalog_for_request(request: RuntimeContextTransformRequest) -> Ru
 class RuntimeContextTransformRegistry:
     providers: tuple[RuntimeContextTransformProvider, ...] = ()
 
+    def __post_init__(self) -> None:
+        provider_ids = [provider.provider_id for provider in self.providers]
+        if len(set(provider_ids)) != len(provider_ids):
+            raise ValueError("context transform provider ids must be unique")
+        for provider in self.providers:
+            version = getattr(provider, "provider_version", "1")
+            scope = getattr(provider, "scope", "provider_context")
+            policy = getattr(provider, "failure_policy", "warn")
+            if not isinstance(version, str) or not version.strip():
+                raise ValueError(f"context transform provider '{provider.provider_id}' version must be non-empty")
+            if scope != "provider_context":
+                raise ValueError(f"context transform provider '{provider.provider_id}' has unsupported scope: {scope}")
+            if policy not in {"ignore", "warn", "block"}:
+                raise ValueError(f"context transform provider '{provider.provider_id}' has unsupported failure policy: {policy}")
+
     def ordered_providers(self) -> tuple[RuntimeContextTransformProvider, ...]:
         return tuple(
             sorted(
@@ -271,13 +311,16 @@ class RuntimeContextTransformRegistry:
             traces.extend(
                 RuntimeContextTransformTrace(
                     provider_id=trace.provider_id,
+                    provider_version=getattr(provider, "provider_version", "1"),
+                    scope=getattr(provider, "scope", "provider_context"),
                     status=trace.status,
-                    priority=trace.priority,
+                    priority=provider.priority,
                     execution_index=execution_index,
                     injection_count=trace.injection_count,
                     provider_order=ordered_provider_ids,
                     sources=trace.sources,
                     diagnostics=trace.diagnostics,
+                    failure_policy=getattr(provider, "failure_policy", request.failure_policy),
                     error=trace.error,
                 )
                 for trace in result.traces

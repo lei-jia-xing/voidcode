@@ -113,6 +113,9 @@ Context transform 在 runtime-owned context assembly 阶段贡献有界 provider
 - failure policy 由 runtime 处理
 - observability event payload 不携带完整 prompt / rule / skill 注入正文
 
+### Context transform provider descriptor
+
+每个 `RuntimeContextTransformProvider` 都必须提供稳定的 `provider_id`、`provider_version`、`scope`、`priority` 与 `failure_policy`。当前唯一允许的 scope 是 `provider_context`：provider 只能返回有界 injection 或 diagnostic，不能修改原始 request prompt、工具参数、SQLite/session truth、approval/denial、owner boundary 或 tool allowlist。registry 负责按 `(priority, provider_id)` 排序、校验唯一 id，并将 provider metadata 与有界 trace 纳入现有 `context_transform` metadata；这不是新的 event bus 或 executor。
 ### Tool output normalization
 
 Tool output normalization 可以塑形 model-visible tool result，但必须保留 runtime explainability。
