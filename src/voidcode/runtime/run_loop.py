@@ -1187,7 +1187,7 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        clear_tool_execution_intent(self._session_store, self._workspace, session)
+        session = clear_tool_execution_intent(self._session_store, self._workspace, session)
 
         if _is_abort_signal_requested(abort_signal):
             failed_chunk, _ = self._persist_chunk(
@@ -3097,6 +3097,7 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        session = clear_tool_execution_intent(self._session_store, self._workspace, session)
 
         if plan_tool_call.tool_name == "skill" and tool_result.status == "ok":
             skill_payload = completed_payload.get("skill")
@@ -3606,7 +3607,7 @@ class RuntimeRunLoopCoordinator:
         )
         sequence = envelope.sequence
         yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
-        clear_tool_execution_intent(self._session_store, self._workspace, session)
+        session = clear_tool_execution_intent(self._session_store, self._workspace, session)
 
         if _is_abort_signal_requested(abort_signal):
             failed_chunk, _ = self._persist_chunk(

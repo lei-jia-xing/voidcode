@@ -704,12 +704,14 @@ def clear_tool_execution_intent(
     store: SessionStore,
     workspace: Path,
     session: SessionState,
-) -> None:
-    """Clear a pending tool intent after validating workspace ownership.
+) -> SessionState:
+    """Clear a pending tool intent in storage and the in-memory session.
 
     The operation is scoped by workspace and session ID and is a no-op when
-    no pending intent is present.
+    no pending intent is present. Returning the cleared session keeps the
+    final runtime response aligned with the SQLite session truth.
     """
+    cleared_session = session_without_tool_intent(session)
     try:
         persisted_session = store.load_session(
             workspace=workspace,
@@ -717,11 +719,11 @@ def clear_tool_execution_intent(
         ).session
     except UnknownSessionError:
         logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
-        return
+        return cleared_session
     validate_session_workspace(persisted_session, session_id=session.session.id, workspace=workspace)
     runtime_state = persisted_session.metadata.get("runtime_state")
     if not isinstance(runtime_state, dict) or "pending_tool_intent" not in runtime_state:
-        return
+        return cleared_session
     state = _runtime_state_payload_with_updates(
         persisted_session.metadata,
         removed=frozenset({"pending_tool_intent"}),
@@ -734,6 +736,7 @@ def clear_tool_execution_intent(
         )
     except UnknownSessionError:
         logger.debug("tool intent cleanup deferred for new session %s", session.session.id)
+    return cleared_session
 
 
 def waiting_reason_from_session(session: SessionState) -> str:

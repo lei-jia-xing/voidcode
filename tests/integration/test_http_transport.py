@@ -1029,6 +1029,8 @@ def test_transport_replays_session_as_json_runtime_response(tmp_path: Path) -> N
 
     runtime = runtime_class(workspace=tmp_path)
     stored = runtime.run(runtime_request(prompt="read sample.txt", session_id="transport-session"))
+    stored_runtime_state = cast(dict[str, object], cast(dict[str, object], stored.session.metadata["runtime_state"]))
+    assert "pending_tool_intent" not in stored_runtime_state
 
     app = create_runtime_app(workspace=tmp_path)
     response = _run_app(app, method="GET", path="/api/sessions/transport-session")
@@ -2167,6 +2169,9 @@ def test_transport_resumes_multi_step_loop_and_persists_replay_over_http(tmp_pat
         cast(dict[str, object], approve_payload["session"])["metadata"],
         workspace=tmp_path,
     )
+    approve_session_metadata = cast(dict[str, object], cast(dict[str, object], approve_payload["session"])["metadata"])
+    approve_runtime_state = cast(dict[str, object], approve_session_metadata["runtime_state"])
+    assert "pending_tool_intent" not in approve_runtime_state
     assert approve_payload["output"] == ("Found 1 match(es) for 'copied' in copied.txt\ncopied.txt:1: copied marker")
     approve_events = cast(list[dict[str, object]], approve_payload["events"])
     _assert_ordered_event_types(
