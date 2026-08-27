@@ -29,6 +29,12 @@ from .presets import (
     list_builtin_hook_presets,
     validate_hook_preset_refs,
 )
+from .surfaces import (
+    HOOK_SURFACE_DESCRIPTORS,
+    HookSurfaceDescriptor,
+    HookSurfacePhase,
+    hook_surface_descriptor,
+)
 from .typed import (
     ToolInputAction,
     ToolInputDecision,
@@ -59,6 +65,10 @@ __all__ = [
     "ResolvedHookPlan",
     "RuntimeFormatterPresetConfig",
     "RuntimeHookSurface",
+    "HOOK_SURFACE_DESCRIPTORS",
+    "HookSurfaceDescriptor",
+    "HookSurfacePhase",
+    "hook_surface_descriptor",
     "RuntimeHooksConfig",
     "ToolInputAction",
     "ToolInputDecision",

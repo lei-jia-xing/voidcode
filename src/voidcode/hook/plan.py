@@ -6,8 +6,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from .config import RuntimeHookFailureMode, RuntimeHooksConfig, RuntimeHookSurface
+from .config import RuntimeHookFailureMode, RuntimeHooksConfig
 from .presets import resolve_hook_preset_refs
+from .surfaces import HOOK_SURFACE_DESCRIPTORS, RuntimeHookSurface
 
 HOOK_PLAN_SCHEMA_VERSION = 2
 HOOK_PLAN_REVISION = 1
@@ -17,27 +18,8 @@ HookPlanPhase = Literal["foreground", "background"]
 
 # This is the one descriptor used by materialization.  RuntimeHooksConfig remains
 # the source of command declarations; no command is inferred from a preset.
-_HOOK_SURFACE_PHASES: tuple[tuple[RuntimeHookSurface, HookPlanPhase], ...] = (
-    ("pre_tool", "foreground"),
-    ("post_tool", "foreground"),
-    ("session_start", "foreground"),
-    ("session_end", "foreground"),
-    ("session_idle", "foreground"),
-    ("background_task_registered", "background"),
-    ("background_task_started", "background"),
-    ("background_task_progress", "background"),
-    ("background_task_completed", "background"),
-    ("background_task_failed", "background"),
-    ("background_task_cancelled", "background"),
-    ("background_task_interrupted", "background"),
-    ("background_task_notification_enqueued", "background"),
-    ("background_task_result_read", "background"),
-    ("delegated_result_available", "background"),
-    ("turn_progress", "foreground"),
-    ("stuck_detected", "foreground"),
-)
-_VALID_SURFACES = frozenset(surface for surface, _ in _HOOK_SURFACE_PHASES)
-_BACKGROUND_SURFACES = frozenset(surface for surface, phase in _HOOK_SURFACE_PHASES if phase == "background")
+_VALID_SURFACES = frozenset(descriptor.surface for descriptor in HOOK_SURFACE_DESCRIPTORS)
+_BACKGROUND_SURFACES = frozenset(descriptor.surface for descriptor in HOOK_SURFACE_DESCRIPTORS if descriptor.phase == "background")
 _REMOVED_HOOK_BINDING_FIELDS = frozenset({"handler_ref", "priority"})
 
 
@@ -202,7 +184,9 @@ def materialize_hook_plan(
     bindings: list[HookPlanBinding] = []
     seen: set[tuple[str, tuple[str, ...]]] = set()
     order = 0
-    for surface, phase in _HOOK_SURFACE_PHASES:
+    for descriptor in HOOK_SURFACE_DESCRIPTORS:
+        surface = descriptor.surface
+        phase = descriptor.phase
         try:
             commands = hooks.commands_for_surface(surface)
         except (KeyError, ValueError) as exc:

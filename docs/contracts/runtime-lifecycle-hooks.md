@@ -63,6 +63,10 @@
 - `src/voidcode/runtime/storage.py`
 - `src/voidcode/runtime/task.py`
 
+17 个 surface 的内部配置字段、phase 与事件映射以
+`src/voidcode/hook/surfaces.py::HOOK_SURFACE_DESCRIPTORS` 为单一描述源；这只减少
+runtime 内部重复映射，不改变既有外部配置字段、argv 执行协议、失败策略或事件顺序。
+
 ## 核心原则
 
 ### Principle 1：Trigger 来自 runtime truth

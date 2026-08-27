@@ -56,6 +56,10 @@ EventEnvelope(
 - 权限 / 审批 / 提问：`runtime.permission_resolved`、`runtime.approval_requested`、`runtime.approval_resolved`、`runtime.question_requested`、`runtime.question_answered`
 - 终结：`graph.response_ready`、`runtime.failed`
 
+Runtime hook surface 与其事件名称的内部对应关系由
+`src/voidcode/hook/surfaces.py::HOOK_SURFACE_DESCRIPTORS` 统一描述；该 catalog
+不改变本节既有事件名称、source、payload 或序列规则。
+
 在轮次中发出的所有事件（包括来自图端的事件）都会由运行时重新编号，变为每次响应或重放中单一的、单调递增的序列。
 这确保了图端局部（graph-local）的序列值在跨审批恢复运行时，不会与运行时插入的事件发生冲突。
 

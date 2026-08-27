@@ -9,28 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
-from ..runtime.events import (
-    RUNTIME_BACKGROUND_TASK_CANCELLED,
-    RUNTIME_BACKGROUND_TASK_COMPLETED,
-    RUNTIME_BACKGROUND_TASK_FAILED,
-    RUNTIME_BACKGROUND_TASK_INTERRUPTED,
-    RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
-    RUNTIME_BACKGROUND_TASK_PROGRESS,
-    RUNTIME_BACKGROUND_TASK_REGISTERED,
-    RUNTIME_BACKGROUND_TASK_RESULT_READ,
-    RUNTIME_BACKGROUND_TASK_STARTED,
-    RUNTIME_DELEGATED_RESULT_AVAILABLE,
-    RUNTIME_SESSION_ENDED,
-    RUNTIME_SESSION_IDLE,
-    RUNTIME_SESSION_STARTED,
-    RUNTIME_STUCK_DETECTED,
-    RUNTIME_TOOL_HOOK_POST,
-    RUNTIME_TOOL_HOOK_PRE,
-    RUNTIME_TURN_PROGRESS,
-)
+from ..runtime.events import RUNTIME_TOOL_HOOK_POST, RUNTIME_TOOL_HOOK_PRE
 from ..security.shell_policy import non_interactive_shell_env
 from .config import RuntimeHooksConfig, RuntimeHookSurface
 from .plan import ResolvedHookPlan
+from .surfaces import hook_surface_descriptor
 
 
 def _empty_payload() -> Mapping[str, object]:
@@ -336,23 +319,7 @@ def _event_type_for_phase(phase: Literal["pre", "post"]) -> str:
 
 
 def _event_type_for_surface(surface: RuntimeHookSurface) -> str:
-    return {
-        "session_start": RUNTIME_SESSION_STARTED,
-        "session_end": RUNTIME_SESSION_ENDED,
-        "session_idle": RUNTIME_SESSION_IDLE,
-        "background_task_registered": RUNTIME_BACKGROUND_TASK_REGISTERED,
-        "background_task_started": RUNTIME_BACKGROUND_TASK_STARTED,
-        "background_task_progress": RUNTIME_BACKGROUND_TASK_PROGRESS,
-        "background_task_completed": RUNTIME_BACKGROUND_TASK_COMPLETED,
-        "background_task_failed": RUNTIME_BACKGROUND_TASK_FAILED,
-        "background_task_cancelled": RUNTIME_BACKGROUND_TASK_CANCELLED,
-        "background_task_interrupted": RUNTIME_BACKGROUND_TASK_INTERRUPTED,
-        "background_task_notification_enqueued": RUNTIME_BACKGROUND_TASK_NOTIFICATION_ENQUEUED,
-        "background_task_result_read": RUNTIME_BACKGROUND_TASK_RESULT_READ,
-        "delegated_result_available": RUNTIME_DELEGATED_RESULT_AVAILABLE,
-        "turn_progress": RUNTIME_TURN_PROGRESS,
-        "stuck_detected": RUNTIME_STUCK_DETECTED,
-    }[surface]
+    return hook_surface_descriptor(surface).event_type
 
 
 def _lifecycle_hook_environment(request: LifecycleHookExecutionRequest) -> dict[str, str]:

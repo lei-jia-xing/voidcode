@@ -39,6 +39,15 @@ hook preset 表达的是 agent 角色 intent，不自动执行 shell command，�
 
 hook 已经是相对独立的能力层，是后续 capability-layer 文档化的参考样板之一。agent hook preset contract 见 [`docs/contracts/agent-hook-presets.md`](../../../docs/contracts/agent-hook-presets.md)。
 
+## Surface catalog
+
+17 个 runtime hook surface 的配置字段、foreground/background phase 与事件名称由
+`src/voidcode/hook/surfaces.py` 的 `HOOK_SURFACE_DESCRIPTORS` 统一描述。`RuntimeHooksConfig`
+仍保留现有 `pre_tool`、`on_session_start`、`on_background_task_*` 等外部字段，catalog
+只负责内部查找，不改变配置形状、argv 执行、失败策略或事件顺序。`plan.py` 与
+`executor.py` 也从同一 catalog 读取 phase/event metadata，避免新增 surface 时重复维护
+多份映射。
+
 ## Declarative execution plan (v2)
 
 `materialize_hook_plan()` resolves explicit `RuntimeHooksConfig` surfaces into a runtime-owned, frozen `ResolvedHookPlan` with a `plan_hash`. Each binding carries stable identity, event, command, deterministic contiguous `order`, scope, phase, failure policy, timeout, and payload schema. Removed declaration fields are not part of the dataclass, payload, parser, or canonical hash.
