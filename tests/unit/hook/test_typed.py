@@ -14,7 +14,8 @@ from voidcode.hook.typed import (
     tool_input_rewrite_metadata,
     validate_tool_input_schema,
 )
-from voidcode.tools.contracts import ToolCall, ToolDefinition
+from voidcode.runtime.context_window import ToolResultView
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolResult
 
 
 def _event(arguments: dict[str, object]) -> ToolInputEvent:
@@ -137,3 +138,85 @@ def test_composition_seam_keeps_builtin_before_configured_stable_order() -> None
         (ToolInputHandlerBinding("configured", unchanged, priority=10),),
     )
     assert tuple(binding.name for binding in registry.bindings) == ("builtin", "configured")
+
+
+def _result_view() -> ToolResultView:
+    result = ToolResult(
+        tool_name="read",
+        status="ok",
+        content="safe source",
+        data={"tool_call_id": "call-1", "arguments": {"path": "sample.txt"}, "secret": "[REDACTED]"},
+    )
+    return ToolResultView(result=result, content=result.content)
+
+
+def test_result_handlers_compose_on_deep_copied_provider_view() -> None:
+    from voidcode.hook.typed import ToolResultHandlerBinding, ToolResultHandlerDecision, ToolResultHandlerRegistry
+
+    seen: list[str] = []
+
+    def first(result: ToolResultView) -> ToolResultHandlerDecision:
+        seen.append(result.content or "")
+        return ToolResultHandlerDecision(action="rewrite", content="summary")
+
+    def second(result: ToolResultView) -> ToolResultHandlerDecision:
+        seen.append(result.content or "")
+        return ToolResultHandlerDecision(action="rewrite", content=f"{result.content} final")
+
+    source = _result_view()
+    outcome = ToolResultHandlerRegistry(
+        (
+            ToolResultHandlerBinding("second", second, priority=10),
+            ToolResultHandlerBinding("first", first, priority=0),
+        )
+    ).apply(result=source)
+
+    assert seen == ["safe source", "summary"]
+    assert outcome.view.content == "summary final"
+    assert outcome.view.tool_name == source.tool_name
+    assert outcome.view.status == source.status
+    assert outcome.view.data == source.data
+    assert outcome.view.result is not source.result
+
+
+def test_result_handler_failure_returns_safe_source_view() -> None:
+    from voidcode.hook.typed import ToolResultHandlerBinding, ToolResultHandlerRegistry
+
+    def broken(result: ToolResultView):
+        _ = result
+        raise RuntimeError("secret failure")
+
+    source = _result_view()
+    outcome = ToolResultHandlerRegistry((ToolResultHandlerBinding("broken", broken),)).apply(result=source)
+    assert outcome.action == "error"
+    assert outcome.view.content == source.content
+    assert outcome.failure_reason == "handler 'broken' failed"
+
+
+def test_result_handler_preserves_error_authority_and_sanitizes_diagnostics() -> None:
+    from voidcode.hook.typed import ToolResultHandlerBinding, ToolResultHandlerDecision, ToolResultHandlerRegistry
+
+    source_result = ToolResult(
+        tool_name="shell_exec",
+        status="error",
+        error="original error",
+        diagnostics=ToolDiagnostics(kind="tool_error", summary="original"),
+        data={"tool_call_id": "call-2", "arguments": {"command": "echo safe"}},
+    )
+    source = ToolResultView(result=source_result, content=None)
+
+    def rewrite(result: ToolResultView) -> ToolResultHandlerDecision:
+        _ = result
+        return ToolResultHandlerDecision(
+            action="rewrite",
+            content="safe summary",
+            error="safe error",
+            diagnostics=ToolDiagnostics(kind="view", summary="view token=secret"),
+        )
+
+    outcome = ToolResultHandlerRegistry((ToolResultHandlerBinding("rewrite", rewrite),)).apply(result=source)
+    assert outcome.view.tool_name == "shell_exec"
+    assert outcome.view.status == "error"
+    assert outcome.view.data == source.data
+    assert outcome.view.error == "safe error"
+    assert "[REDACTED]" in (outcome.view.diagnostics.summary if outcome.view.diagnostics else "")

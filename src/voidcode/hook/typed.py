@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 
 import jsonschema
 
+from ..runtime.context_window import ToolResultView
 from ..tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics
 
 ToolInputAction = Literal["unchanged", "rewrite", "block", "diagnostic"]
@@ -248,6 +249,105 @@ def tool_input_rewrite_metadata(*, original: ToolCall, outcome: ToolInputHookOut
         "diagnostics": list(outcome.diagnostics[:_MAX_DIAGNOSTICS]),
         "action": outcome.action,
     }
+
+
+ToolResultHandlerAction = Literal["unchanged", "rewrite", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultHandlerDecision:
+    """Provider-visible result transformation; authority fields are absent."""
+
+    action: Literal["unchanged", "rewrite"]
+    content: str | None = None
+    error: str | None = None
+    diagnostics: ToolDiagnostics | None = None
+
+    def __post_init__(self) -> None:
+        if self.action not in {"unchanged", "rewrite"}:
+            raise ValueError(f"unsupported tool result handler action: {self.action}")
+        if self.action == "unchanged" and any(value is not None for value in (self.content, self.error, self.diagnostics)):
+            raise ValueError("unchanged result decision cannot provide view fields")
+        if self.content is not None and not isinstance(self.content, str):
+            raise ValueError("result content must be a string or null")
+        if self.error is not None and not isinstance(self.error, str):
+            raise ValueError("result error must be a string or null")
+
+
+class ToolResultHandler(Protocol):
+    def __call__(self, result: ToolResultView, /) -> ToolResultHandlerDecision: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultHandlerBinding:
+    name: str
+    handler: ToolResultHandler
+    priority: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("tool result handler name must be non-empty")
+        if not isinstance(self.priority, int) or isinstance(self.priority, bool):
+            raise ValueError("tool result handler priority must be an integer")
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultHandlerOutcome:
+    view: ToolResultView
+    action: ToolResultHandlerAction = "unchanged"
+    handler_names: tuple[str, ...] = ()
+    failure_reason: str | None = None
+
+
+class ToolResultHandlerRegistry:
+    """Stable priority-ordered composition of safe result views."""
+
+    def __init__(self, bindings: Iterable[ToolResultHandlerBinding] = ()) -> None:
+        indexed = tuple(enumerate(bindings))
+        names: set[str] = set()
+        for _index, binding in indexed:
+            if binding.name in names:
+                raise ValueError(f"duplicate tool result handler name: {binding.name}")
+            names.add(binding.name)
+        self._bindings = tuple(binding for _index, binding in sorted(indexed, key=lambda item: item[1].priority))
+
+    @classmethod
+    def empty(cls) -> ToolResultHandlerRegistry:
+        return cls()
+
+    @property
+    def bindings(self) -> tuple[ToolResultHandlerBinding, ...]:
+        return self._bindings
+
+    def apply(self, *, result: ToolResultView) -> ToolResultHandlerOutcome:
+        source = ToolResultView(result=deepcopy(result.result), content=deepcopy(result.content))
+        current = source
+        names: list[str] = []
+        for binding in self._bindings:
+            if len(names) < _MAX_HANDLER_NAMES:
+                names.append(binding.name)
+            try:
+                decision = binding.handler(deepcopy(current))
+            except Exception:
+                return ToolResultHandlerOutcome(
+                    view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' failed"
+                )
+            if not isinstance(decision, ToolResultHandlerDecision):
+                return ToolResultHandlerOutcome(
+                    view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' returned invalid decision"
+                )
+            if decision.action == "unchanged":
+                continue
+            try:
+                transformed = replace(
+                    current.result, content=deepcopy(decision.content), error=deepcopy(decision.error), diagnostics=deepcopy(decision.diagnostics)
+                )
+            except Exception as exc:
+                return ToolResultHandlerOutcome(
+                    view=source, action="error", handler_names=tuple(names), failure_reason=f"handler '{binding.name}' produced invalid view: {exc}"
+                )
+            current = ToolResultView(result=transformed, content=transformed.content)
+        return ToolResultHandlerOutcome(view=current, action="rewrite" if current != source else "unchanged", handler_names=tuple(names))
 
 
 def _arguments_sha256(arguments: Mapping[str, object]) -> str:
