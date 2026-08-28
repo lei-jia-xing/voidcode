@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from importlib import import_module
-from typing import Protocol, cast
-
-from langgraph.graph import END, START
+from typing import cast
 
 from ..command.resolver import resolve_tool_instruction
 from ..runtime.context_window import normalize_read_output
@@ -16,35 +13,6 @@ from ..runtime.events import (
 from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .contracts import GraphEvent, GraphLoopState, GraphRunRequest
-
-
-class _CompiledGraphApp(Protocol):
-    def invoke(self, state: GraphLoopState) -> object: ...
-
-
-class _StateGraphBuilder(Protocol):
-    def add_node(self, node: str, action: object) -> object: ...
-
-    def add_edge(self, start_key: str, end_key: str) -> object: ...
-
-    def add_conditional_edges(
-        self,
-        source: str,
-        path: object,
-        path_map: dict[str, str],
-    ) -> object: ...
-
-    def compile(self) -> _CompiledGraphApp: ...
-
-
-class _StateGraphFactory(Protocol):
-    def __call__(self, state_schema: object) -> object: ...
-
-
-def _create_state_graph_builder(state_schema: object) -> _StateGraphBuilder:
-    graph_module = import_module("langgraph.graph")
-    state_graph_factory = cast(_StateGraphFactory, vars(graph_module)["StateGraph"])
-    return cast(_StateGraphBuilder, state_graph_factory(state_schema))
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,17 +40,6 @@ class DeterministicGraph:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1")
         self._max_steps = max_steps
-        workflow = _create_state_graph_builder(GraphLoopState)
-        workflow.add_node("plan_turn", self._plan_turn_node)
-        workflow.add_node("finalize_turn", self._finalize_turn_node)
-        workflow.add_edge(START, "plan_turn")
-        workflow.add_conditional_edges(
-            "plan_turn",
-            self._route_after_plan,
-            {"tool": END, "finalize": "finalize_turn", "done": END, "error": END},
-        )
-        workflow.add_edge("finalize_turn", END)
-        self._app: _CompiledGraphApp = workflow.compile()
 
     def step(
         self,
@@ -91,37 +48,45 @@ class DeterministicGraph:
         *,
         session: SessionState,
     ) -> DeterministicReadOnlyStep:
-        graph_state = self._invoke(
-            self._initial_state(
-                request=request,
-                tool_results=tool_results,
-                session=session,
+        state = self._initial_state(
+            request=request,
+            tool_results=tool_results,
+            session=session,
+        )
+        planned = self._plan_turn_node(state)
+        state["events"].extend(cast(list[GraphEvent], planned.get("events", [])))
+        state["tool_calls"].extend(cast(list[ToolCall], planned.get("tool_calls", [])))
+        if "current_turn" in planned:
+            state["current_turn"] = cast(int, planned["current_turn"])
+        if "output" in planned:
+            state["output"] = cast(str | None, planned["output"])
+        if "error" in planned:
+            state["error"] = cast(str | None, planned["error"])
+
+        if state["error"] is not None:
+            raise ValueError(state["error"])
+
+        tool_calls = state["tool_calls"]
+        if state["output"] is not None:
+            return DeterministicReadOnlyStep(
+                events=tuple(state["events"]),
+                output=state["output"],
+                is_finished=True,
             )
-        )
-        if graph_state["error"] is not None:
-            raise ValueError(graph_state["error"])
+        if tool_calls:
+            return DeterministicReadOnlyStep(
+                events=tuple(state["events"]),
+                tool_call=tool_calls[-1],
+            )
 
-        tool_calls = graph_state["tool_calls"]
-        events = tuple(graph_state["events"])
-
-        is_finished = False
-        step_tool_call = None
-
-        if graph_state["output"] is not None:
-            is_finished = True
-        elif tool_calls:
-            step_tool_call = tool_calls[-1]
-
+        finalized = self._finalize_turn_node(state)
+        state["events"].extend(cast(list[GraphEvent], finalized["events"]))
+        output = cast(str, finalized["output"])
         return DeterministicReadOnlyStep(
-            events=events,
-            tool_call=step_tool_call,
-            output=graph_state["output"],
-            is_finished=is_finished,
+            events=tuple(state["events"]),
+            output=output,
+            is_finished=True,
         )
-
-    def _invoke(self, state: GraphLoopState) -> GraphLoopState:
-        result = self._app.invoke(state)
-        return cast(GraphLoopState, result)
 
     def _initial_state(
         self,
@@ -199,15 +164,6 @@ class DeterministicGraph:
             "tool_calls": [tool_call],
             "current_turn": current_turn + 1,
         }
-
-    def _route_after_plan(self, state: GraphLoopState) -> str:
-        if state["error"] is not None:
-            return "error"
-        if state["output"] is not None:
-            return "done"
-        if state["tool_calls"]:
-            return "tool"
-        return "finalize"
 
     def _finalize_turn_node(self, state: GraphLoopState) -> dict[str, object]:
         current_turn = state["current_turn"]

@@ -73,7 +73,7 @@
 
 hook 在这里很重要，但它更多是通知与干预层，而不是异步 agent 本身的执行模型。
 
-这也意味着：如果为了敏捷开发而“借用 LangGraph”，它最适合借来加速 workflow / branching / supervisor-worker orchestration 的实验，而不是拿来替代 background task substrate。本质上，LangGraph 可以帮助我们更快搭建**编排层**，但不能单独补出 task truth、child-session、notification、result retrieval 或 approval/resume governance。
+因此，异步 agent 的执行模型应继续由 runtime-owned background task substrate 提供：graph 只负责步骤推进，不能替代 task truth、child-session、notification、result retrieval 或 approval/resume governance。
 
 ## 建议的角色集
 

@@ -12,6 +12,7 @@ VoidCode 使用：
 - `uv` 用于依赖和包管理 (Python)
 - `bun` 用于前端开发和依赖管理
 - Python 3.13 作为官方支持的 uv 管理的本地版本
+当前 execution engine 由仓库内 plain-Python loop 实现：`DeterministicGraph` 用于无凭据本地演示/测试，`ProviderGraph` 用于 provider-backed 主路径；两者都由 runtime 负责治理、持久化和恢复。
 
 ## 初始设置
 

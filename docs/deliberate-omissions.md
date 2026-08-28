@@ -51,7 +51,7 @@ What voidcode will NEVER implement in the runtime core.
 | **Arbitrary sub-agent spawning** | Only supported child presets (advisor, explore, researcher, worker, product) can be delegated to; `leader` is the sole top-level executable preset (`_EXECUTABLE_AGENT_PRESETS`), not a delegation target, and `product` is a delegated read-only plan subagent (`_EXECUTABLE_SUBAGENT_PRESETS`), not a top-level preset. Open-ended agent creation is not a runtime primitive. See [agent-architecture.md](./agent-architecture.md). |
 | **Agent-to-agent bus** | No direct agent-to-agent communication channel. All coordination flows through runtime-owned parent/child session linkage and background task contracts. See [agent-boundary.md](./agent-boundary.md). |
 | **Plan mode as a runtime concept** | `RuntimeMode.plan` exists as a runtime-enforced read-only execution stance. There is no dedicated planning engine or plan-state machine; planning artifacts remain files or plan text produced by the agent. |
-| **Multi-agent topology beyond leader + child presets** | The runtime owns delegated child execution, not arbitrary orchestration graphs. LangGraph is not the multi-agent backbone. |
+| **Multi-agent topology beyond leader + child presets** | The runtime owns delegated child execution, not arbitrary orchestration graphs. The plain-Python graph layer is not a multi-agent backbone. |
 
 ### Context & Compaction
 

@@ -11,7 +11,7 @@
 - 执行循环与步骤推进逻辑
 - graph/request/response 级别的编排契约
 - engine 内部的状态流转
-- 可能由 LangGraph-backed 或非 LangGraph-backed implementation 提供的 orchestration path
+- 由仓库内 plain-Python implementations 提供的 orchestration path
 
 ## 不负责什么
 

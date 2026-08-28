@@ -35,7 +35,7 @@
 - [x] **本地工具效果统计基线**：runtime 现在可以从 append-only session events 和 session metadata 生成脱敏的 aggregate-only effectiveness projection，并通过 `voidcode stats tools`（或 `--json`）展示每个工具的调用数、成功率、错误分类、错误后成功重试、重复/续读、截断结果、参数/结果大小、context compaction、approval、resume、delegation 以及 provider token/cache usage。该投影不持久化源码、工具参数或结果正文；固定真实任务 benchmark 与 commit 基线仍暂缓。
 
 ### 计划中 / 进行中
-- [x] **LangGraph 编排**：当前 deterministic reference/debug engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。
+- [x] **确定性执行编排**：plain-Python deterministic reference/debug engine 已稳定，支持顺序轮次执行、工具解析和中断/恢复。
 - [x] **运行时服务**：会话生命周期管理、SQLite 持久化支持以及审批-恢复连续性。
 - [x] **权限引擎**：受监管的执行，支持 `allow`、`deny` 和 `ask` 模式，并在 CLI 中具有仅限 TTY 的内联审批。
 - [x] **契约优先事件**：为轮次、工具和审批实现了规范事件模式，并具备跨会话恢复的一致性自动重新编号功能。

@@ -70,22 +70,15 @@
 
 换句话说，`agent/` 可以决定“一个 agent 想带什么配置”，但不能决定“系统最终怎样执行、治理和恢复它”。
 
-## 为什么现在不需要把 LangGraph 当成前提
+## 为什么 agent 不依赖特定编排框架
 
-当前并不需要把 LangGraph 作为 `voidcode.agent` 的前置条件，原因有三点：
+当前不需要把外部编排框架作为 `voidcode.agent` 的前置条件，原因有三点：
 
-1. provider-backed execution path 已经证明：runtime 可以在不依赖 LangGraph 的前提下驱动真实执行路径。
-2. 当前最需要收口的仍然是 capability substrate：skill execution、hook model、MCP config/profile、provider resolution/fallback，而不是 graph-first 的 multi-agent orchestration。
-3. 如果在这些能力层尚未稳定时就把 multi-agent 主骨架建立在 LangGraph 之上，容易把还不稳定的执行语义过早固化进 workflow 结构中。
+1. provider-backed execution path 已经证明：runtime 可以直接驱动真实执行路径。
+2. 当前最需要收口的仍然是 capability substrate：skill execution、hook model、MCP config/profile、provider resolution/fallback，而不是 framework-first 的 multi-agent orchestration。
+3. 如果在这些能力层尚未稳定时就把 multi-agent 主骨架建立在外部 workflow 框架之上，容易把还不稳定的执行语义过早固化进 workflow 结构中。
 
-这并不意味着 LangGraph 未来没有价值。它仍然适合：
-
-- 复杂 branching / retry tree
-- supervisor / worker 协作
-- subagent handoff
-- graph-shaped orchestration
-
-但在当前阶段，`voidcode.agent` 的存在不应依赖这些能力已经落地。
+当前 graph package 只提供 runtime 选择的 plain-Python execution loops 与契约；它不替代 background task substrate，也不承载 runtime 的治理职责。
 
 ## 分阶段推进建议
 
@@ -123,14 +116,14 @@
 
 ### Phase 3：再评估 multi-agent orchestration
 
-只有当 capability substrate 已经稳定、并且真实出现 multi-agent workflow 需求时，再决定是否引入更重的 orchestration 机制（包括但不限于 LangGraph）。
+只有当 capability substrate 已经稳定、并且真实出现 multi-agent workflow 需求时，再决定是否扩大现有 plain-Python orchestration 的作用范围。
 
 ## 明确非目标
 
 本文档明确**不**主张：
 
 - 当前已经实现 multi-agent
-- 当前必须使用 LangGraph 才能进入 agent 方向
+- 当前不需要特定编排框架才能进入 agent 方向
 - 把 runtime 的控制面职责迁移到 graph 或 agent
 - 让客户端直接调用工具或绕过 runtime
 - 在当前阶段就实现完整的 supervisor / worker / delegation runtime

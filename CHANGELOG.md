@@ -63,6 +63,7 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 - **runtime:** remove category routing in favor of subagent_type
 
 - **command:** trim slash commands to init and plan
+- **runtime:** remove LangGraph dependency and replace deterministic execution with the plain-Python graph loop; provider-backed execution remains runtime-owned
 
 
 

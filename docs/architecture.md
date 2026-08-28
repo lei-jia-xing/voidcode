@@ -19,24 +19,23 @@ VoidCode 是一个受 OpenCode 和 Claude Code 启发而开发的本地优先（
 - 客户端与 **VoidCode Runtime** 通信
 - 运行时负责协调会话、权限、钩子（hooks）、工具注册、流式传输和存储
 - 运行时选择并驱动具体的 execution engine / orchestration path
-- 某些 graph path 使用 LangGraph，另一些则由 runtime 直接驱动的 graph implementation 承担
+- 所有当前 graph implementation 都是仓库内的 plain-Python execution loop；provider-backed 路径直接调用 provider
 - delegated child execution 也从 runtime 进入，使用 parent / child session linkage、background task lifecycle 与 runtime-owned result retrieval，而不是客户端或 ACP 侧的旁路执行
 
 有两个边界尤为重要：
 
-- LangGraph **不**直接与 UI 客户端通信
-- UI 客户端 **不**直接调用工具
+- execution engine 不直接与 UI 客户端通信
+- UI 客户端不直接调用工具
 
+## Plain-Python execution 与自定义运行时边界
 
-## LangGraph 与自定义运行时边界
+VoidCode 将 execution loop 保持为轻量的仓库内实现，而不是把 runtime 绑定到外部编排框架。
 
-VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
+### `DeterministicGraph` 负责（仅 deterministic/read-only slice）
 
-### LangGraph 负责（仅 deterministic/read-only slice）
-
-- `DeterministicGraph` 中的步骤编排
-- 该 slice 的图状态与检查点
-- 该 slice 的中断与恢复
+- 通过正则/命令解析推进确定性只读步骤
+- 生成该 slice 的 graph-level 事件与最终输出
+- 将每轮状态交回 runtime，由 runtime 处理工具执行、审批和恢复
 
 ### 自定义运行时负责（全部执行路径）
 
@@ -50,13 +49,13 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 - 上下文管理与压缩
 - delegated child routing、background result retrieval、cancel/retry guidance 与 lifecycle hook guardrails
 
-### `ProviderSingleAgentGraph` 负责（当前已实现的 provider-backed execution engine 路径）
+### `ProviderGraph` 负责（当前已实现的 provider-backed execution engine 路径）
 
 - 直接调用 `SingleAgentProvider.propose_turn()`
-- 不依赖 LangGraph，由 runtime 直接驱动
-- 代表后续 provider-backed execution engine 的产品主路径方向
+- 通过 runtime 提供的请求与工具结果推进 provider turn
+- 代表真实 agent 行为的产品主路径
 
-**核心架构决策：** 运行时统一持有执行治理；LangGraph 当前仅覆盖 deterministic/read-only 参考与 debug slice 的编排，provider-backed 执行路径由 runtime 直接驱动，并代表真实 agent 行为的主推荐路径。当前已交付的是 runtime-owned delegated child execution 基线，不是任意拓扑 multi-agent 平台。未来如果 multi-agent workflow 扩展 graph 编排范围，runtime 仍保持系统控制面地位。ACP 是单独的控制面 / 协议边界，与 execution engine 是不同维度，不应混为一谈。
+**核心架构决策：** 运行时统一持有执行治理；deterministic/read-only 与 provider-backed 路径都由仓库内 plain-Python execution loop 实现，runtime 仍是系统控制面。当前已交付的是 runtime-owned delegated child execution 基线，不是任意拓扑 multi-agent 平台。未来如果 multi-agent workflow 扩展编排范围，runtime 仍保持系统控制面地位。ACP 是单独的控制面 / 协议边界，与 execution engine 是不同维度，不应混为一谈。
 
 ## 关键组件
 
@@ -76,10 +75,10 @@ VoidCode 使用 LangGraph 作为编排引擎，而不是整个产品运行时。
 
 graph 是执行引擎和编排层，当前包含两条并行路径：
 
-- `DeterministicGraph`：LangGraph-backed 确定性参考/debug 切片，通过正则匹配执行只读命令（read、grep、run、write），不调用外部模型，并继续用于无凭据 smoke test 与确定性回归测试。
-- `ProviderSingleAgentGraph`：provider-backed 执行引擎路径，由 runtime 直接驱动，调用 `SingleAgentProvider.propose_turn()` 实现模型推理。
+- `DeterministicGraph`：plain-Python 确定性参考/debug 切片，通过正则匹配执行只读命令（read、grep、run、write），不调用外部模型，并继续用于无凭据 smoke test 与确定性回归测试。
+- `ProviderGraph`：provider-backed 执行引擎路径，由 runtime 直接驱动，调用 `SingleAgentProvider.propose_turn()` 实现模型推理。
 
-两条路径都由 runtime 统一选择和驱动，共享工具注册表、权限检查、钩子和检查点机制。后续 multi-agent workflow 扩展可以引入更复杂的编排拓扑，但不改变 runtime 作为控制面的前提。
+两条路径都由 runtime 统一选择和驱动，共享工具注册表、权限检查、钩子和 runtime 持久化/恢复机制。后续 multi-agent workflow 扩展可以增加编排复杂度，但不改变 runtime 作为控制面的前提。
 
 ### `tools/`
 

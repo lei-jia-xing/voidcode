@@ -40,9 +40,9 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 **当前状态：** 基本完成。仓库现在拥有可用的开发者设置、CI、贡献者文档以及稳定的 deterministic reference/debug engine。扩展基础设施已通过统一的配置模式、工具提供商接口和初始技能发现机制建立。
 
-### Epic 1: LangGraph 核心循环
+### Epic 1: 确定性执行核心循环
 
-定义图状态、节点、图编译以及中断/恢复，以便支撑 execution engine 的步骤推进。
+定义 plain-Python 图状态、步骤推进以及中断/恢复，以便支撑 execution engine 的步骤推进。
 
 **当前状态：** 完成。运行时现在实现了一个稳定的 deterministic reference/debug engine，支持轮次执行、工具解析和会话恢复。
 
@@ -58,7 +58,7 @@ VoidCode 当前处于开发阶段。路线图从基础工作贯穿至 MVP 集成
 
 **当前状态：** 部分完成。内置工具和技能发现已实现。`skill_refs` 已作为 manifest/catalog 默认选择进入 runtime skill application，`force_load_skills` 与 delegated `load_skills` 则只为目标 run / child session 注入完整 skill body。LSP 已具备 read-only runtime-managed 基线（manager、tool、事件与测试），并且仓库已经补齐了 `lsp/`、`skills/`、`provider/`、`acp/`、`mcp/` 等能力层边界目录文档；独立的 LSP server preset/config 模块也已经落地，主流 workspace 的 implicit defaults 也已进入可用状态。MCP 已具备 runtime-managed lifecycle、tool discovery、tool call 集成 groundwork，支持 runtime scope 与 session scope 生命周期，但当前仍是 config-gated / opt-in 能力（#107 目标：稳定化当前边界，而非新增功能），不包含 workspace-scoped MCP 或 marketplace。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍未扩展为更宽的协作控制面或直接 agent-to-agent bus。
 
-**技术细节：** `ProviderSingleAgentGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`，不依赖 LangGraph；deterministic engine 用于无凭据本地演示、测试和参考/debug harness。产品化主路径应继续收敛到配置了 model/provider 的 provider-backed execution，因此仅 `DeterministicReadOnlyGraph` 使用 LangGraph `StateGraph` 这一事实不应被表述为“LangGraph 已退出主路径”。
+**技术细节：** `ProviderGraph` 代表当前已实现的 provider-backed execution path，直接调用 `SingleAgentProvider.propose_turn()`；`DeterministicGraph` 是不依赖外部模型的 plain-Python 参考/debug harness，用于无凭据本地演示与确定性测试。产品化主路径应继续收敛到配置了 model/provider 的 provider-backed execution。
 
 ### Epic 4: 权限引擎
 

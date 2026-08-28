@@ -72,10 +72,10 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level overrides resolve from `~/.config/voidcode/config.json`; environment variables override file config. See [`.env.example`](./.env.example).
 ## Architecture overview
 
-VoidCode uses a runtime-centric architecture: **runtime** is the system control plane, **graph** is the execution/orchestration layer, and LangGraph currently powers only the deterministic reference/debug slice.
+VoidCode uses a runtime-centric architecture: **runtime** is the system control plane and **graph** is the execution/orchestration layer implemented in plain Python.
 
 - The runtime owns session state, permissions, tools, storage, streaming, and governance.
-- The graph advances execution state. Today that includes a LangGraph-backed deterministic reference slice and a runtime-driven provider-backed single-agent path; new product behavior should prefer the provider-backed path when a model/provider is configured.
+- The graph advances execution state through a deterministic reference slice and a provider-backed single-agent path. New product behavior should prefer the provider-backed path when a model/provider is configured.
 - Clients such as the CLI, web frontend, and future integrations talk to the runtime rather than invoking tools or graph code directly.
 - The repository already contains `src/voidcode/agent/` as a declaration layer for agent presets, but true multi-agent execution semantics are still post-MVP.
 
