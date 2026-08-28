@@ -61,7 +61,7 @@ CLI 的默认输出面向人工阅读：`run` 会在 TTY 中逐事件输出并�
 
 Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 property tests。当前这类覆盖刻意保持在 helper 层，主要用于验证像 `apply_patch`、`edit`、`todo_write`、`glob` 这类确定性字符串/patch/summary/路径规范化逻辑，而不是直接对 runtime 主循环做随机化测试。为了让 CI 行为稳定，这批测试使用有界 strategy，并通过 Hypothesis 设置保持可重复的 deterministic 运行。
 
-默认本地 Python 测试不再自动启用 coverage：`mise run test` 和 `mise run test:fast` 用于高频迭代，跳过 integration、fuzz-style 单测、大型 runtime extension 回归，以及会启动真实 CLI/TUI/MCP/tmux 边界的重型测试；`mise run test:all` 运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。并行任务使用 work-stealing 调度，避免慢测文件集中在少数 worker 上造成长尾等待。
+默认本地 Python 测试不再自动启用 coverage：`mise run test` 和 `mise run test:fast` 用于高频迭代，跳过 integration、fuzz-style 单测、大型 runtime extension 回归，以及会启动真实 CLI/TUI/MCP 边界的重型测试；`mise run test:all` 运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。并行任务使用 work-stealing 调度，避免慢测文件集中在少数 worker 上造成长尾等待。
 
 ### 前端 任务
 

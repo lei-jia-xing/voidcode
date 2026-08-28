@@ -42,7 +42,6 @@ What voidcode will NEVER implement in the runtime core.
 | Omission | Rationale |
 |----------|-----------|
 | **Per-file permission dialogs** | Trust model or containerization. Interactive per-file approval at the tool-call level does not scale; the current read-only/write policy split is sufficient. |
-| **Interactive shell / REPL tool** | `bash` is the escape hatch. An `interactive_shell` (tmux control) implementation exists in `tools/interactive_shell.py` but is not registered in `BuiltinToolProvider` by default; a full REPL-class interactive tool remains omitted. |
 | **`todo_list` as a model-facing tool** | `todo_write` exists for structured task tracking. A separate `todo_list` model-facing tool is redundant surface area. |
 
 ### Agent Architecture

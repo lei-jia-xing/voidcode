@@ -17,7 +17,6 @@ _TOOL_GUIDANCE_FILES = {
     "edit": "edit.txt",
     "glob": "glob.txt",
     "grep": "grep.txt",
-    "interactive_shell": "interactive_shell.txt",
     "invoke_tool": "invoke_tool.txt",
     "lsp": "lsp.txt",
     "multi_edit": "multi_edit.txt",

@@ -244,7 +244,7 @@ Agent 不处理 approval UI；CLI / Web 客户端把 `allow` 或 `deny` 决策�
 
 ## 当前可用工具目录
 
-默认内置 registry 当前包含下列工具。`lsp` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中；`interactive_shell` 的实现存在但当前默认不注册。文件格式化不通过独立工具暴露：`edit` / `write` / `multi_edit` / `apply_patch` 写后自动执行 format-on-write，由 formatter 配置（`formatter.enabled` / `hooks.enabled` / formatter presets）控制。
+默认内置 registry 当前包含下列工具。`lsp` 和 `mcp/<server>/<tool>` 属于 runtime-managed / dynamic 能力，只有在对应 subsystem 或配置启用时才会出现在 registry 中。文件格式化不通过独立工具暴露：`edit` / `write` / `multi_edit` / `apply_patch` 写后自动执行 format-on-write，由 formatter 配置（`formatter.enabled` / `hooks.enabled` / formatter presets）控制。
 
 ### Deterministic runtime tool catalog
 
@@ -560,14 +560,6 @@ describes a non-essential tool; it is not an authorization decision.
 
 - 选择原则：用于测试、构建、诊断或无法通过内置读写工具完成的本地操作；能用更窄工具时不要首选 shell。
 
-#### `interactive_shell`
-
-- 分组：command execution（交互式）
-- 只读：否
-- 可用性：工具实现存在于 `src/voidcode/tools/interactive_shell.py`，但当前默认内置 registry 不注册该工具（`runtime/tool_provider.py` 的 `BuiltinToolProvider` 未包含）；需 tmux 环境。详见 `docs/deliberate-omissions.md`。
-- 用途：通过 tmux 提供交互式 shell 会话（受限 tmux 子命令白名单）。
-
-- 选择原则：需要保持长驻交互进程时使用；一次性命令仍优先 `shell_exec`。
 
 #### `todo_write`
 

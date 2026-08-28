@@ -654,11 +654,7 @@ function toolIcon(tool: ChatTool) {
   if (tool.name === "apply_patch") {
     return <Diff className={className} />;
   }
-  if (
-    tool.name === "shell_exec" ||
-    tool.name === "bash" ||
-    tool.name === "interactive_shell"
-  ) {
+  if (tool.name === "shell_exec" || tool.name === "bash") {
     return <Terminal className={className} />;
   }
   if (tool.name === "task") {
@@ -1845,11 +1841,7 @@ function ToolActivity({
   ) {
     return <WriteToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   }
-  if (
-    tool.name === "shell_exec" ||
-    tool.name === "bash" ||
-    tool.name === "interactive_shell"
-  )
+  if (tool.name === "shell_exec" || tool.name === "bash")
     return <ShellToolActivity tool={tool} forceCollapsed={forceCollapsed} />;
   if (tool.name === "skill")
     return <SkillToolActivity tool={tool} forceCollapsed={forceCollapsed} />;

@@ -40,7 +40,6 @@ _SLOW_TEST_FILES = {
     Path("unit/runtime/test_mcp.py"),
     Path("unit/runtime/test_http_question_payload_fuzz.py"),
     Path("unit/runtime/test_runtime_service_extensions.py"),
-    Path("unit/tools/test_interactive_shell_tool.py"),
 }
 
 

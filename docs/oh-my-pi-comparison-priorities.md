@@ -55,7 +55,7 @@ OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优�
 | 编辑协议 | replace/patch/multi-edit、required expected hash（缺失/陈旧即拒绝）、read-before-write、seen-range 约束、near-match、formatter/LSP/tree-sitter 语法 diagnostics、per-model strict/flexible 匹配 | Hashline 默认协议、snapshot chain、seen-range 限制、block anchor、register、stale recovery、语法校验和 veto | OMP 仍明显领先，差距缩至自动 stale recovery 与协议实测 |
 | 编辑安全 | hash 已是必填协议不变量（缺失/陈旧拒绝）；workspace edit 可多文件校验；seen-range 与 tree-sitter 语法校验已接入 | 写前解析全部 section，拒绝重叠/no-op/未读范围；最新加入语法验证与边界修复 veto | 差距收窄；剩余为自动 stale recovery、no-op/重叠拒绝与真实任务实测 |
 | LSP | definitions/references/symbols/rename/code action、workspace edit、写后 diagnostics 基线 | LSP wired into every write，rename/file lifecycle 与工具展示成熟 | 能力面接近中，稳定性和覆盖率仍有差距 |
-| Shell/进程 | shell、interactive shell、后台进程、超时与 artifact output | PTY、持久 shell、Rust builtins、跨平台 process tree、minimizer | OMP 明显领先，尤其 Windows 与长进程体验 |
+| Shell/进程 | shell、后台进程、超时与 artifact output | PTY、持久 shell、Rust builtins、跨平台 process tree、minimizer | OMP 明显领先，尤其 Windows 与长进程体验 |
 | 上下文管理 | runtime-owned window policy、稳定 prompt prefix、continuity facts、确定性 projection（model_assisted 仅有回退框架，未接模型 projector）、恢复持久化 | compaction、handoff、checkpoint/rewind、非压缩重试策略、prompt cache 优化 | VoidCode 已有正确骨架；OMP 策略与实战迭代更丰富 |
 | 委派执行 | 固定 preset、深度/预算治理、后台任务、通知、取消、重试、结构化 handoff、并行组完成、子会话续跑（task `session_id`）、`voidcode://artifact/<id>` / `voidcode://transcript/<id>` URI | batch fan-out、动态 agent、并发 semaphore、JSON Schema output、隔离 worktree/container、patch/branch、agent/history URI、可复活 agent | VoidCode 治理骨架可靠；JSON Schema output 与隔离 workspace 仍是真实缺口 |
 | 模型与 provider | 直连适配、LiteLLM/custom provider、catalog、fallback、cache usage、错误归一化 | 60+ provider/大量模型、OAuth/订阅、角色路由、模型 quirks 和 schema/tool conversion | OMP 大幅领先；VoidCode 不应以数量追赶 |

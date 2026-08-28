@@ -437,9 +437,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/).
 
 - **runtime:** compact recent-tier context under pressure (#469)
 
-- add tmux-backed interactive shell tool (#470)
-
-- add background process tools and harden interactive shell (#471)
 
 - **frontend:** improve runtime visibility and child session navigation (#474)
 
