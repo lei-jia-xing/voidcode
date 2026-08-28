@@ -22,6 +22,8 @@ def test_non_interactive_shell_env_is_empty_for_other_commands(command: str) -> 
     assert non_interactive_shell_env(command) == {}
 
 
-def test_shell_policy_owns_shell_path_candidate_extraction() -> None:
-    assert extract_shell_path_candidates("tool --output=./../out.txt") == ("./../out.txt",)
-    assert extract_shell_path_candidates("touch /tmp/out.txt") == ()
+def test_shell_policy_extracts_declared_mutator_targets() -> None:
+    assert extract_shell_path_candidates("touch /tmp/out.txt") == ("/tmp/out.txt",)
+    assert extract_shell_path_candidates("cp /etc/in /tmp/out") == ("/tmp/out",)
+    assert extract_shell_path_candidates("mv /tmp/in /tmp/out") == ("/tmp/in", "/tmp/out")
+    assert extract_shell_path_candidates("unknown /tmp/nope") == ()
