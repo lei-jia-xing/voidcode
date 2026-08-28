@@ -2512,6 +2512,8 @@ class RuntimeRunLoopCoordinator:
             )
         )
         yield failed_chunk
+        if isinstance(classified_error, SingleAgentContextLimitError):
+            return {"action": "exit"}
         return {"action": "reraise", "exc": exc}
 
     def _prepare_typed_tool_call(

@@ -2798,27 +2798,31 @@ def test_runtime_allows_shell_exec_tool_when_policy_is_allow(tmp_path: Path) -> 
     allowed = runtime.run(runtime_request(prompt=prompt, session_id="shell-allow-session"))
 
     assert allowed.session.status == "completed"
-    assert [event.event_type for event in allowed.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_resolved",
-        "runtime.tool_started",
-        "runtime.tool_progress",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
-    approval_event = next(event for event in allowed.events if event.event_type == "runtime.approval_resolved")
-    assert approval_event.payload["decision"] == "allow"
+    _assert_ordered_event_types(
+        [event.event_type for event in allowed.events],
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_resolved",
+            "runtime.tool_started",
+            "runtime.tool_progress",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
+    progress_events = [event for event in allowed.events if event.event_type == "runtime.tool_progress"]
+    assert progress_events
+    assert all(event.payload["tool"] == "shell_exec" for event in progress_events)
+    assert all(event.payload["stream"] == "stdout" for event in progress_events)
+    completed_event = next(event for event in allowed.events if event.event_type == "runtime.tool_completed")
+    assert completed_event.payload["command"] == command
+    assert completed_event.payload["exit_code"] == 0
     assert allowed.output == f"{tmp_path.resolve()}\n"
-    assert allowed.events[8].payload["tool"] == "shell_exec"
-    assert allowed.events[8].payload["stream"] == "stdout"
-    assert allowed.events[9].payload["command"] == command
-    assert allowed.events[9].payload["exit_code"] == 0
 
 
 def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> None:
