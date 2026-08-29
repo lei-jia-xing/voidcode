@@ -212,7 +212,6 @@ from .contracts import (
 from .delegation_routing import (
     delegated_model_for_route_from_configs,
     provider_fallback_for_agent_selection,
-    provider_fallback_with_preferred_model,
 )
 from .edit_schema_policy import EditSchema, EditSchemaResolver, select_edit_schema
 from .effectiveness import ToolEffectivenessReport
@@ -3303,7 +3302,7 @@ class VoidCodeRuntime(RuntimeSurface):
             model = preset_agent.model if preset_agent is not None else manifest.model_preference
             if model is None:
                 model = base_model
-            provider_fallback = self._provider_fallback_for_agent_selection(
+            provider_fallback = provider_fallback_for_agent_selection(
                 model=model,
                 preset_agent=preset_agent,
                 base_provider_fallback=base_provider_fallback,
@@ -3616,7 +3615,7 @@ class VoidCodeRuntime(RuntimeSurface):
             )
             resolved_provider = resolve_provider_config(
                 model,
-                self._provider_fallback_for_agent_selection(
+                provider_fallback_for_agent_selection(
                     model=model,
                     preset_agent=agent_config,
                     base_provider_fallback=self._config.provider_fallback,
@@ -6112,31 +6111,11 @@ class VoidCodeRuntime(RuntimeSurface):
         if request_agent is not None and request_agent.provider_fallback is not None:
             return request_agent.provider_fallback
         preset_agent = self._preset_agent_config(selected_preset)
-        return self._provider_fallback_for_agent_selection(
+        return provider_fallback_for_agent_selection(
             model=model,
             preset_agent=preset_agent,
             base_provider_fallback=self._config.provider_fallback,
         )
-
-    def _provider_fallback_for_agent_selection(
-        self,
-        *,
-        model: str | None,
-        preset_agent: RuntimeAgentConfig | None,
-        base_provider_fallback: RuntimeProviderFallbackConfig | None,
-    ) -> RuntimeProviderFallbackConfig | None:
-        return provider_fallback_for_agent_selection(
-            model=model,
-            preset_agent=preset_agent,
-            base_provider_fallback=base_provider_fallback,
-        )
-
-    @staticmethod
-    def _provider_fallback_with_preferred_model(
-        provider_fallback: RuntimeProviderFallbackConfig,
-        preferred_model: str,
-    ) -> RuntimeProviderFallbackConfig:
-        return provider_fallback_with_preferred_model(provider_fallback, preferred_model)
 
     def _preset_agent_config(self, preset: str) -> RuntimeAgentConfig | None:
         if self._config.agents is None:
