@@ -1754,10 +1754,6 @@ class RuntimeBackgroundTaskSupervisor:
         parent_session_id = task.parent_session_id
         if parent_session_id is None or not is_background_task_terminal(task.status):
             return
-        session_event_appender = self._session_store
-        if not isinstance(session_event_appender, SessionEventAppender):
-            logger.debug("skipping background terminal parent event for session store without append support")
-            return
         result = self.background_task_result(task=task)
         event_type_by_status: dict[BackgroundTaskStatus, str] = {
             "completed": RUNTIME_BACKGROUND_TASK_COMPLETED,
@@ -1786,27 +1782,53 @@ class RuntimeBackgroundTaskSupervisor:
             payload["approval_request_id"] = task.approval_request_id
         if task.question_request_id is not None:
             payload["question_request_id"] = task.question_request_id
-        try:
-            appended = session_event_appender.append_session_event(
-                workspace=self._workspace,
-                session_id=parent_session_id,
-                event_type=event_type,
-                source="runtime",
-                payload=payload,
-                dedupe_key=f"{event_type}:{task.task.id}",
-            )
-            if appended is not None:
-                self.run_background_task_lifecycle_surface(
-                    task=task,
-                    surface="background_task_notification_enqueued",
+
+        # Each delivery leg is an independent post-truth observer. A sealed or
+        # unavailable parent may reject the lifecycle event, but the sanctioned
+        # completion interaction must still be attempted (it has its own
+        # durable dedupe cursor), and ACP/group observers must not be stranded
+        # behind that expected terminal-seal guard.
+        session_event_appender = self._session_store
+        if isinstance(session_event_appender, SessionEventAppender):
+            try:
+                appended = session_event_appender.append_session_event(
+                    workspace=self._workspace,
                     session_id=parent_session_id,
-                    extra_payload={
-                        "notification_event_type": event_type,
-                        "notification_event_sequence": appended.sequence,
-                    },
+                    event_type=event_type,
+                    source="runtime",
+                    payload=payload,
+                    dedupe_key=f"{event_type}:{task.task.id}",
                 )
-            self._queue_active_parent_completion_interaction(task=task, result=result)
+                if appended is not None:
+                    self.run_background_task_lifecycle_surface(
+                        task=task,
+                        surface="background_task_notification_enqueued",
+                        session_id=parent_session_id,
+                        extra_payload={
+                            "notification_event_type": event_type,
+                            "notification_event_sequence": appended.sequence,
+                        },
+                    )
+            except UnknownSessionError:
+                logger.debug(
+                    "skipping background terminal event for unavailable parent session: %s",
+                    parent_session_id,
+                )
+            except SessionSealedError:
+                logger.debug(
+                    "dropping background terminal event for sealed parent session: %s",
+                    parent_session_id,
+                )
+
+        self._queue_active_parent_completion_interaction(task=task, result=result)
+        try:
             self._emit_parallel_group_terminal_event(task=task)
+        except UnknownSessionError, SessionSealedError:
+            logger.debug(
+                "dropping background group terminal event for unavailable or sealed parent session: %s",
+                parent_session_id,
+            )
+        try:
             append_parent_acp_delegated_lifecycle_event(
                 self._session_store,
                 workspace=self._workspace,
@@ -1815,23 +1837,18 @@ class RuntimeBackgroundTaskSupervisor:
                 result_available=result.result_available,
                 payload=payload,
             )
-            publish_delegated_acp_event(
-                self._acp_adapter,
-                task=task,
-                lifecycle_status=task.status,
-                result_available=result.result_available,
-                payload=payload,
-            )
-        except UnknownSessionError:
+        except UnknownSessionError, SessionSealedError:
             logger.debug(
-                "skipping background terminal event for unavailable parent session: %s",
+                "dropping background ACP terminal event for unavailable or sealed parent session: %s",
                 parent_session_id,
             )
-        except SessionSealedError:
-            logger.debug(
-                "dropping background terminal event for sealed parent session: %s",
-                parent_session_id,
-            )
+        publish_delegated_acp_event(
+            self._acp_adapter,
+            task=task,
+            lifecycle_status=task.status,
+            result_available=result.result_available,
+            payload=payload,
+        )
 
     def _queue_active_parent_completion_interaction(
         self,
@@ -2298,6 +2315,28 @@ class RuntimeBackgroundTaskSupervisor:
     def _current_unix_ms() -> int:
         return int(time.time() * 1000)
 
+    @staticmethod
+    def _terminal_task_decision(
+        *,
+        task: BackgroundTaskState,
+        child_terminal_status: Literal["completed", "failed"],
+    ) -> tuple[BackgroundTaskStatus, str | None]:
+        """Derive task terminal truth after child evidence is authoritative.
+
+        A parent cancellation request is a durable task-side decision that wins
+        a completion race.  It must not change the child outcome: the child is
+        still sealed from ``ChildCompletionProtocol`` evidence, while the task
+        is delivered as cancelled.  Keeping this decision separate from the
+        child seal makes the ordering explicit: child seal first, task status
+        second, parent delivery last.
+        """
+        if task.cancel_requested_at is not None:
+            return (
+                "cancelled",
+                task.error or task.cancellation_cause or "cancelled by parent during delegated execution",
+            )
+        return child_terminal_status, None
+
     def finalize_background_task_from_session_response(
         self,
         *,
@@ -2337,8 +2376,10 @@ class RuntimeBackgroundTaskSupervisor:
         # transcript evidence regardless), while a strict failure flips the TASK
         # terminal status to ``failed`` — two layers, no rollback of the child
         # row. Keep-alive intermediate turns (no handoff) never validate.
-        terminal_status = child_terminal_status
-        task_error: str | None = None
+        terminal_status, task_error = self._terminal_task_decision(
+            task=current_task,
+            child_terminal_status=child_terminal_status,
+        )
         schema_validation: SchemaValidation | None = None
         structured_output: dict[str, object] | None = None
         if current_task.output_schema is not None:
@@ -2353,7 +2394,7 @@ class RuntimeBackgroundTaskSupervisor:
                 )
                 if schema_validation.valid:
                     structured_output = data
-                elif current_task.schema_mode == "strict":
+                elif current_task.schema_mode == "strict" and terminal_status != "cancelled":
                     terminal_status = "failed"
                     task_error = (
                         "delegated child schema validation failed: "
@@ -2374,7 +2415,11 @@ class RuntimeBackgroundTaskSupervisor:
             session_response=session_response,
             terminal_status=child_terminal_status,
         )
+        if current_task.status == "cancelled":
+            self.backfill_parent_background_task_event(task=current_task)
+            return
         if current_task.status == terminal_status and current_task.error is None:
+            self.backfill_parent_background_task_event(task=current_task)
             return
         if is_background_task_terminal(current_task.status) and current_task.status != "interrupted" and current_task.status != terminal_status:
             return
@@ -2398,6 +2443,11 @@ class RuntimeBackgroundTaskSupervisor:
             status=terminal_status,
             error=error,
         )
+        # A concurrent cancel can win between the load above and this update.
+        # Only the task state returned by storage is deliverable truth; never
+        # emit a stale completion event based on the pre-race decision.
+        if terminal_task.status == "cancelled" and terminal_status != "cancelled":
+            return
         self.run_background_task_lifecycle_hook(terminal_task)
 
     def _seal_child_session_from_response(

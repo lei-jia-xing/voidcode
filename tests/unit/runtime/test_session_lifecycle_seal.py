@@ -159,6 +159,17 @@ def _seed_child_session_and_task(
                 EventEnvelope(
                     session_id=child_session_id,
                     sequence=2,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={
+                        "tool": "submit_result",
+                        "status": "ok",
+                        "handoff": {"summary": "child done"},
+                    },
+                ),
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=3,
                     event_type="graph.response_ready",
                     source="graph",
                     payload={"summary": "child done"},
@@ -658,6 +669,101 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
     assert replayed.session.status == "completed"
     assert [event.sequence for event in replayed.events] == sorted(event.sequence for event in replayed.events)
 
+
+def test_finalize_is_idempotent_and_backfill_repairs_missing_parent_event(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = runtime._session_store
+    _seed_child_session_and_task(
+        store,
+        workspace=tmp_path,
+        task_id="task-idempotent",
+        parent_session_id="leader-session",
+        child_session_id="child-idempotent",
+    )
+    supervisor = runtime._background_task_supervisor
+    task = store.load_background_task(workspace=tmp_path, task_id="task-idempotent")
+    child_response = supervisor.load_background_task_child_response(task=task)
+    assert child_response is not None
+
+    # Simulate a worker that durably terminalized the task before notification
+    # append; reconciliation/backfill must repair the parent event.
+    terminal = store.mark_background_task_terminal(workspace=tmp_path, task_id="task-idempotent", status="completed")
+    supervisor.backfill_parent_background_task_event(task=terminal)
+    supervisor.finalize_background_task_from_session_response(session_response=child_response)
+    supervisor.backfill_parent_background_task_event(task=terminal)
+
+    parent = store.load_session(workspace=tmp_path, session_id="leader-session")
+    events = [
+        event
+        for event in parent.events
+        if event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED and event.payload.get("task_id") == "task-idempotent"
+    ]
+    assert len(events) == 1
+    assert store.load_session_status(workspace=tmp_path, session_id="child-idempotent") == "completed"
+    assert store.load_background_task(workspace=tmp_path, task_id="task-idempotent").status == "completed"
+
+
+def test_cancel_wins_completion_race_without_mutating_child_truth(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+    )
+    _ = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    store = runtime._session_store
+    _seed_child_session_and_task(
+        store,
+        workspace=tmp_path,
+        task_id="task-cancel-race",
+        parent_session_id="leader-session",
+        child_session_id="child-cancel-race",
+    )
+    task = store.load_background_task(workspace=tmp_path, task_id="task-cancel-race")
+    child_response = runtime._background_task_supervisor.load_background_task_child_response(task=task)
+    assert child_response is not None
+    requested = store.request_background_task_cancel(workspace=tmp_path, task_id="task-cancel-race")
+    assert requested.status == "running"
+
+    runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=child_response)
+
+    assert store.load_background_task(workspace=tmp_path, task_id="task-cancel-race").status == "cancelled"
+    # Cancellation changes task truth only; transcript evidence still seals the
+    # child session as completed and cannot be rolled back by the race winner.
+    assert store.load_session_status(workspace=tmp_path, session_id="child-cancel-race") == "completed"
+
+
+def test_unknown_parent_drops_delivery_but_preserves_child_and_task_truth(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        config=RuntimeConfig(approval_mode="allow", execution_engine="deterministic"),
+    )
+    store = runtime._session_store
+    _seed_child_session_and_task(
+        store,
+        workspace=tmp_path,
+        task_id="task-unknown-parent",
+        parent_session_id="missing-parent",
+        child_session_id="child-unknown-parent",
+    )
+    task = store.load_background_task(workspace=tmp_path, task_id="task-unknown-parent")
+    child_response = runtime._background_task_supervisor.load_background_task_child_response(task=task)
+    assert child_response is not None
+    runtime._background_task_supervisor.finalize_background_task_from_session_response(session_response=child_response)
+
+    assert store.load_background_task(workspace=tmp_path, task_id="task-unknown-parent").status == "completed"
+    assert store.load_session_status(workspace=tmp_path, session_id="child-unknown-parent") == "completed"
+    with pytest.raises(ValueError, match="unknown session"):
+        store.load_session(workspace=tmp_path, session_id="missing-parent")
+
+
+# ---------------------------------------------------------------------------
+# Shutdown drain
 
 # ---------------------------------------------------------------------------
 # Shutdown drain
