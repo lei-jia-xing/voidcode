@@ -28,7 +28,8 @@ from voidcode.runtime.mcp import (
     McpToolCallResult,
     McpToolDescriptor,
 )
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.permission import PermissionPolicy, default_policy_for_tool
+from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.service import (
     GraphRunRequest,
     RuntimeRequest,
@@ -176,7 +177,8 @@ def _write_local_tool_manifest(
     workspace: Path,
     *,
     name: str = "local/echo",
-    read_only: bool = True,
+    read_only: bool | None = True,
+    path_argument_keys: list[str] | None = None,
     command: list[str] | None = None,
     relative_path: str = ".voidcode/tools",
 ) -> Path:
@@ -221,18 +223,17 @@ def _write_local_tool_manifest(
         encoding="utf-8",
     )
     manifest = tools_dir / f"{name.replace('/', '_')}.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "name": name,
-                "description": "Echo arguments from a local manifest",
-                "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}},
-                "command": command or [sys.executable, "${manifest_dir}/echo.py"],
-                "read_only": read_only,
-            }
-        ),
-        encoding="utf-8",
-    )
+    payload: dict[str, object] = {
+        "name": name,
+        "description": "Echo arguments from a local manifest",
+        "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}},
+        "command": command or [sys.executable, "${manifest_dir}/echo.py"],
+    }
+    if read_only is not None:
+        payload["read_only"] = read_only
+    if path_argument_keys is not None:
+        payload["path_argument_keys"] = path_argument_keys
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
     return manifest
 
 
@@ -806,6 +807,62 @@ def test_local_custom_tool_provider_discovers_opted_in_manifests(tmp_path: Path)
         input_schema={"type": "object", "properties": {"message": {"type": "string"}}},
         read_only=False,
     )
+
+
+def test_local_custom_tool_manifest_read_only_uses_allow_default_policy(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=True)
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    assert tool.definition.read_only is True
+    assert tool.definition.effective_replay_policy == "safe"
+    assert default_policy_for_tool(tool.definition).mode == "allow"
+
+
+def test_local_custom_tool_manifest_mutating_uses_ask_default_policy(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=False)
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    assert tool.definition.read_only is False
+    assert tool.definition.effective_replay_policy == "never"
+    assert default_policy_for_tool(tool.definition).mode == "ask"
+
+
+def test_local_custom_tool_manifest_path_keys_are_permission_candidates(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, path_argument_keys=["target", "destination"])
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+    resolver = RuntimePermissionContextResolver(workspace=tmp_path)
+
+    candidates = resolver.candidate_paths_for_tool_call(
+        ToolCall(
+            tool_name="local/echo",
+            arguments={"target": "outside/input.txt", "destination": str(tmp_path / "out.txt")},
+        ),
+        tool=tool.definition,
+        patch_path_extractor=lambda _patch: (),
+    )
+
+    assert candidates == ("outside/input.txt", str(tmp_path / "out.txt"))
+
+
+def test_local_custom_tool_manifest_without_metadata_keeps_safe_defaults(tmp_path: Path) -> None:
+    _write_local_tool_manifest(tmp_path, read_only=None)
+    tool = LocalCustomToolProvider(
+        workspace=tmp_path,
+        config=RuntimeToolsLocalConfig(enabled=True, path=".voidcode/tools"),
+    ).provide_tools()[0]
+
+    assert tool.definition.read_only is True
+    assert tool.definition.effective_replay_policy == "safe"
+    assert tool.definition.path_argument_keys == ()
 
 
 def test_local_custom_tool_provider_requires_opt_in(tmp_path: Path) -> None:

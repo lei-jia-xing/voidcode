@@ -292,19 +292,25 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
   "input_schema": {
     "type": "object",
     "properties": {
+      "path": {"type": "string"},
       "message": {"type": "string"}
     }
   },
   "command": ["python", "${manifest_dir}/echo.py"],
-  "read_only": true
+  "read_only": true,
+  "path_argument_keys": ["path"]
 }
 ```
+
+字段语义：
+
+- `read_only` 直接进入 `ToolDefinition`，影响 runtime 的默认 permission policy（只读工具默认 allow，非只读工具默认 ask）；但 local custom tool 仍按 command execution 治理，不会仅凭声明绕过 approval、read-only mode 或 replay 约束。
+- `path_argument_keys` 是可选的字符串数组，列出 `ToolCall.arguments` 中应作为路径候选的字段名。runtime 将这些值传入统一的 permission context，用于 external-directory policy；它不会改变 local custom tool 的 `execute` operation class。
 
 执行语义：
 
 - `name` 必须稳定且不能与内置、MCP 或其他 runtime tool 重名；重名会 fail-fast，而不是覆盖。
 - `description` 与 `input_schema` 直接进入 `ToolDefinition`，供 provider/tool boundary 使用。
-- `read_only` 是 provider-visible mutability hint；本地自定义 tool 仍按 command execution 治理，默认走审批/拒绝策略，不能仅凭 manifest 声明绕过 runtime permission。
 - `command` 由 runtime 在 workspace cwd 中执行；它必须是 argv 数组，不是 shell 字符串，runtime 不隐式启动 `sh` / `cmd.exe`。tool arguments 仅以 JSON 写入 stdin，不会通过环境变量暴露完整参数 payload。
 - runtime 环境变量只携带有界执行上下文，例如 `VOIDCODE_WORKSPACE`、`VOIDCODE_TOOL_NAME`、`VOIDCODE_TOOL_CALL_ID`（如有）、`VOIDCODE_SESSION_ID`、`VOIDCODE_PARENT_SESSION_ID`（如有）和 `VOIDCODE_DELEGATION_DEPTH`，tool 作者不应从客户端获得这些上下文字段。
 

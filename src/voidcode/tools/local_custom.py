@@ -28,6 +28,7 @@ class LocalCustomToolManifest:
     command: tuple[str, ...]
     read_only: bool
     manifest_path: Path
+    path_argument_keys: tuple[str, ...] = ()
 
 
 def discover_local_custom_tools(
@@ -65,7 +66,8 @@ def _load_local_custom_tool_manifest(path: Path, *, workspace: Path) -> LocalCus
     if not isinstance(raw_payload, dict):
         raise ValueError(f"local custom tool manifest must be an object: {path}")
     payload = cast(dict[str, object], raw_payload)
-    allowed_keys = {"name", "description", "input_schema", "command", "read_only"}
+    allowed_keys = {"name", "description", "input_schema", "command", "read_only", "path_argument_keys"}
+
     unknown_keys = sorted(key for key in payload if key not in allowed_keys)
     if unknown_keys:
         raise ValueError(f"local custom tool manifest {path} has unsupported field: {unknown_keys[0]}")
@@ -87,6 +89,7 @@ def _load_local_custom_tool_manifest(path: Path, *, workspace: Path) -> LocalCus
     read_only = payload.get("read_only", True)
     if not isinstance(read_only, bool):
         raise ValueError(f"local custom tool manifest {path} read_only must be a boolean")
+    path_argument_keys = _parse_path_argument_keys(payload.get("path_argument_keys", []), manifest_path=path)
 
     _validate_command_entrypoint(command, manifest_path=path, workspace=workspace)
     return LocalCustomToolManifest(
@@ -96,6 +99,7 @@ def _load_local_custom_tool_manifest(path: Path, *, workspace: Path) -> LocalCus
         command=command,
         read_only=read_only,
         manifest_path=path,
+        path_argument_keys=path_argument_keys,
     )
 
 
@@ -110,6 +114,17 @@ def _parse_manifest_command(value: object, *, manifest_path: Path) -> tuple[str,
     if not command:
         raise ValueError(f"local custom tool manifest {manifest_path} command must contain at least one string")
     return tuple(command)
+
+
+def _parse_path_argument_keys(value: object, *, manifest_path: Path) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"local custom tool manifest {manifest_path} path_argument_keys must be an array")
+    path_argument_keys: list[str] = []
+    for index, item in enumerate(cast(list[object], value)):
+        if not isinstance(item, str) or item == "":
+            raise ValueError(f"local custom tool manifest {manifest_path} path_argument_keys[{index}] must be a non-empty string")
+        path_argument_keys.append(item)
+    return tuple(path_argument_keys)
 
 
 def _parse_input_schema(value: object, *, manifest_path: Path) -> dict[str, object]:
@@ -191,7 +206,8 @@ class LocalCustomTool:
             name=self._manifest.name,
             description=self._manifest.description,
             input_schema=self._manifest.input_schema,
-            read_only=False,
+            read_only=self._manifest.read_only,
+            path_argument_keys=self._manifest.path_argument_keys,
         )
 
     @property
@@ -201,6 +217,7 @@ class LocalCustomTool:
             "description": self._manifest.description,
             "input_schema": self._manifest.input_schema,
             "name": self._manifest.name,
+            "path_argument_keys": list(self._manifest.path_argument_keys),
             "read_only": self._manifest.read_only,
         }
         encoded = json.dumps(
