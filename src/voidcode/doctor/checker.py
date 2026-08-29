@@ -116,7 +116,7 @@ class ExecutableChecker:
                     if version:
                         # Truncate long version strings
                         return version[:100] if len(version) > 100 else version
-            except (subprocess.TimeoutExpired, OSError, ValueError):
+            except subprocess.TimeoutExpired, OSError, ValueError:
                 pass
         return None
 
@@ -205,7 +205,7 @@ class FormatterPresetChecker:
                     version = result.stdout.strip() or result.stderr.strip()
                     if version:
                         return version[:100] if len(version) > 100 else version
-            except (subprocess.TimeoutExpired, OSError, ValueError):
+            except subprocess.TimeoutExpired, OSError, ValueError:
                 pass
         return None
 

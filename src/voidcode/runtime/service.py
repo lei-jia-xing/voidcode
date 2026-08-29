@@ -518,14 +518,14 @@ class _RuntimeTranscriptReadFacade:
         bounded_limit = min(max(limit if limit is not None else 20, 1), 100)
         try:
             target = self._runtime._load_session_result(session_id=session_id)
-        except (UnknownSessionError, ValueError):
+        except UnknownSessionError, ValueError:
             # During a session's own active run the interrupted-checkpoint row
             # has not yet received the final capability snapshot, so the
             # strict session-result load can fail; fall back to the lighter
             # stored-response load for events and session identity.
             try:
                 stored = self._runtime._load_stored_response(session_id=session_id)
-            except (UnknownSessionError, ValueError):
+            except UnknownSessionError, ValueError:
                 return None
             session_state = stored.session
             events = stored.events
@@ -3027,7 +3027,7 @@ class VoidCodeRuntime(RuntimeSurface):
         active_metadata = self._active_session_metadata(session_id) if active else None
         try:
             result = self._load_session_result(session_id=session_id)
-        except (AttributeError, UnknownSessionError, ValueError):
+        except AttributeError, UnknownSessionError, ValueError:
             if not active:
                 raise
             return self._active_only_session_debug_snapshot(session_id=session_id)

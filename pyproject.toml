@@ -7,7 +7,7 @@ name = "voidcode"
 version = "0.1.1"
 description = "Local-first coding agent runtime inspired by OpenCode and Claude Code"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.14,<3.15"
 license = { text = "MIT" }
 authors = [
   { name = "VoidCode Contributors" },
@@ -20,7 +20,7 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Build Tools",
   "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
@@ -94,7 +94,7 @@ package = true
 
 [tool.ruff]
 line-length = 150
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["ARG", "B", "E", "ERA", "F", "I", "UP"]

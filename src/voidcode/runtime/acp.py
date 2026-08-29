@@ -469,7 +469,7 @@ def append_parent_acp_delegated_lifecycle_event(
             },
             dedupe_key=(f"{RUNTIME_ACP_DELEGATED_LIFECYCLE}:{task.task.id}:{lifecycle_status}:{correlation_id}"),
         )
-    except (AttributeError, UnknownSessionError):
+    except AttributeError, UnknownSessionError:
         logger.debug(
             "skipping ACP delegated lifecycle event for unavailable parent session: %s",
             parent_session_id,

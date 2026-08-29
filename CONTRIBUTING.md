@@ -4,11 +4,11 @@ Thanks for contributing to VoidCode. The project is moving through its first pro
 
 ## Development setup
 
-The recommended local environment uses `uv` for Python and Bun for the frontend. Supported Python version: **3.13**.
+The recommended local environment uses `uv` for Python and Bun for the frontend. Supported Python version: **3.14**.
 
 ```bash
 mise install
-uv sync --extra dev
+uv sync --extra dev --extra syntax
 mise run frontend:install
 uv run voidcode --help
 ```

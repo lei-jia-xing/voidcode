@@ -1325,7 +1325,7 @@ class RuntimeTransportApp:
                                 chunk,
                                 show_thinking=show_thinking,
                             )
-                        except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                        except BrokenPipeError, ConnectionError, OSError, RuntimeError:
                             # Client went away mid-stream (e.g. navigated away or
                             # dropped the connection). Stop streaming immediately
                             # instead of pushing bytes into a dead socket; this is
@@ -1345,7 +1345,7 @@ class RuntimeTransportApp:
                         logger.exception("unexpected transport streaming failure")
                     try:
                         await send({"type": "http.response.body", "body": b"", "more_body": False})
-                    except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                    except BrokenPipeError, ConnectionError, OSError, RuntimeError:
                         pass
                     return
                 finally:
@@ -1354,7 +1354,7 @@ class RuntimeTransportApp:
 
                 try:
                     await send({"type": "http.response.body", "body": b"", "more_body": False})
-                except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                except BrokenPipeError, ConnectionError, OSError, RuntimeError:
                     pass
         finally:
             if runtime is not None:
@@ -1426,7 +1426,7 @@ class RuntimeTransportApp:
                         session_id,
                     )
                     return
-        except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+        except BrokenPipeError, ConnectionError, OSError, RuntimeError:
             logger.debug(
                 "client disconnected while streaming session events for %s",
                 session_id,
@@ -1438,7 +1438,7 @@ class RuntimeTransportApp:
             self._close_runtime(runtime, workspace_coordinator=self._workspace_coordinator)
         try:
             await send({"type": "http.response.body", "body": b"", "more_body": False})
-        except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+        except BrokenPipeError, ConnectionError, OSError, RuntimeError:
             logger.debug(
                 "client disconnected before session event stream close for %s",
                 session_id,

@@ -117,7 +117,7 @@ class ProviderModelMetadata:
 def _load_static_catalog() -> dict[str, dict[str, ProviderModelMetadata]]:
     try:
         raw = _resource_files("voidcode.provider").joinpath("model_catalog_data.json").read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return {}
     data = json.loads(raw)
     result: dict[str, dict[str, ProviderModelMetadata]] = {}
@@ -289,7 +289,7 @@ def discover_available_models(
             else:
                 discovered = fetch_result
                 discovered_metadata = {}
-        except (ValueError, OSError, TimeoutError, URLError):
+        except ValueError, OSError, TimeoutError, URLError:
             discovered = ()
             discovered_metadata = {}
             source = "fallback"

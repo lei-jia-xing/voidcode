@@ -56,7 +56,7 @@ def _source_contains(item: pytest.Item, *needles: str) -> bool:
         return False
     try:
         source = inspect.getsource(test_obj)
-    except (OSError, TypeError):
+    except OSError, TypeError:
         return False
     return any(needle in source for needle in needles)
 

@@ -763,7 +763,7 @@ class _SessionBundleBuilder:
                 task_id=task.task.id,
             )
             parent_session_id: str | None = full.parent_session_id
-        except (ValueError, UnknownSessionError):
+        except ValueError, UnknownSessionError:
             parent_session_id = None
         return SessionBundleBackgroundTaskPayload(
             task_id=task.task.id,

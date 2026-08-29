@@ -2152,7 +2152,7 @@ def _wait_for_session_event(
                 workspace=runtime._workspace,
                 session_id=session_id,
             )
-        except (ValueError, RuntimeRequestError):
+        except ValueError, RuntimeRequestError:
             time.sleep(0.01)
             continue
         except Exception as exc:

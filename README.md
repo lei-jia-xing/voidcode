@@ -2,7 +2,7 @@
   <a href="./LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License" />
   </a>
-  <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python 3.13" />
+  <img src="https://img.shields.io/badge/python-3.14-blue.svg" alt="Python 3.14" />
   <img src="https://img.shields.io/badge/bun-1.3+-fbf0df.svg" alt="Bun 1.3+" />
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome" />
 </p>
@@ -31,14 +31,14 @@ The roadmap remains intentionally narrow: ship a stable, demoable single-agent M
 
 ## Quick start
 
-The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.13**.
+The recommended setup uses `uv` for Python and Bun for the frontend. Supported Python version: **3.14**.
 
 > **Current state:** the repository has a real CLI → runtime loop with session persistence, resumable approval/question waits, and a minimal HTTP/SSE transport. Provider-backed execution is the product path; deterministic execution is the repeatable no-key path used for local demos and tests.
 
 ```bash
 # Install toolchain and Python dependencies
 mise install
-uv sync --extra dev
+uv sync --extra dev --extra syntax
 
 # Explore the CLI
 uv run voidcode --help
@@ -115,7 +115,7 @@ One-time setup:
 
 ```bash
 mise install
-uv sync --extra dev
+uv sync --extra dev --extra syntax
 mise run frontend:install
 ```
 

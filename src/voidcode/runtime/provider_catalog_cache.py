@@ -29,7 +29,7 @@ class RuntimeProviderCatalogCache:
             return
         try:
             raw_payload = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        except OSError, json.JSONDecodeError, UnicodeDecodeError:
             return
         if not isinstance(raw_payload, dict):
             return

@@ -386,7 +386,7 @@ def _bounded_structured_output(value: dict[str, object] | None) -> dict[str, obj
         return None
     try:
         encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return {"unavailable": "structured output could not be serialized"}
     if len(encoded) <= _MAX_GROUP_VALUE_CHARS:
         return value

@@ -765,7 +765,7 @@ export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
 
 export function deriveActivitiesFromEvents(events: EventEnvelope[]) {
   return events.map((event) => {
-    let payloadStr = "";
+    let payloadStr: string;
     try {
       payloadStr = event.payload ? JSON.stringify(event.payload) : "";
     } catch {
@@ -807,11 +807,8 @@ export function deriveChatMessages(
       requestOrdinal += 1;
       streamedReasoningText = "";
 
-      if (currentAssistant) {
-        if (currentAssistant.status === "in_progress") {
-          currentAssistant.status = "completed";
-        }
-        currentAssistant = null;
+      if (currentAssistant?.status === "in_progress") {
+        currentAssistant.status = "completed";
       }
 
       const prompt =

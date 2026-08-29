@@ -5,7 +5,6 @@ import subprocess
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
-from urllib.request import url2pathname
 
 import pytest
 from lsprotocol import converters as lsp_converters
@@ -930,7 +929,7 @@ def test_managed_lsp_manager_shared_server_uses_single_request_id_sequence(tmp_p
 
 
 def test_path_from_file_uri_preserves_unc_host() -> None:
-    expected = Path(url2pathname("//server/share/project/main.py"))
+    expected = Path("//server/share/project/main.py")
 
     assert ManagedLspManager._path_from_file_uri("file://server/share/project/main.py") == expected
 

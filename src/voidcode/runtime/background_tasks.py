@@ -467,7 +467,7 @@ class RuntimeBackgroundTaskSupervisor:
     ) -> BackgroundTaskObservability:
         try:
             concurrency = self._concurrency_observability(task, context=context)
-        except (RuntimeRequestError, ValueError):
+        except RuntimeRequestError, ValueError:
             concurrency = None
         retry = self._retry_observability(task.task.id, context=context)
         return BackgroundTaskObservability(
@@ -624,7 +624,7 @@ class RuntimeBackgroundTaskSupervisor:
                 continue
             try:
                 identity = self._concurrency_identity_for_task(task)
-            except (RuntimeRequestError, ValueError):
+            except RuntimeRequestError, ValueError:
                 continue
             queued_provider_counts[identity.provider] = queued_provider_counts.get(identity.provider, 0) + 1
             queued_model_counts[identity.model_key] = queued_model_counts.get(identity.model_key, 0) + 1
@@ -1003,7 +1003,7 @@ class RuntimeBackgroundTaskSupervisor:
             return {}
         try:
             return {"concurrency": self._concurrency_snapshot(task).as_payload()}
-        except (RuntimeRequestError, ValueError):
+        except RuntimeRequestError, ValueError:
             return {}
 
     def drain_queued_background_tasks(self) -> None:
@@ -1877,7 +1877,7 @@ class RuntimeBackgroundTaskSupervisor:
                 content,
                 dedupe_key=f"background-task-completion:{task.task.id}:{task.status}",
             )
-        except (UnknownSessionError, SessionSealedError, ValueError):
+        except UnknownSessionError, SessionSealedError, ValueError:
             logger.debug("parent completion interaction was not queued: %s", parent_session_id)
 
     def _emit_parallel_group_terminal_event(self, *, task: BackgroundTaskState) -> None:
@@ -2635,7 +2635,7 @@ class RuntimeBackgroundTaskSupervisor:
                     session_id=session_id,
                     events=event_rows,
                 )
-            except (SessionSealedError, UnknownSessionError):
+            except SessionSealedError, UnknownSessionError:
                 # A sealed/unknown target is a valid late-observer outcome. In
                 # particular, parent notification hooks must not reopen a
                 # sealed parent or turn a missing parent into a worker error.
@@ -2767,7 +2767,7 @@ class RuntimeBackgroundTaskSupervisor:
             try:
                 _ = self._concurrency_identity_for_task(task)
                 _ = resolve_runtime_session_routing(request)
-            except (RuntimeRequestError, ValueError):
+            except RuntimeRequestError, ValueError:
                 continue
             try:
                 terminal_task = self._session_store.mark_background_task_terminal(

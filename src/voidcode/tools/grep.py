@@ -137,7 +137,7 @@ class GrepTool:
         try:
             with path.open("r", encoding="utf-8", newline="") as fh:
                 return [line.rstrip("\r\n") for line in fh]
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError, OSError:
             return None
 
     @staticmethod

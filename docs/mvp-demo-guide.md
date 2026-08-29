@@ -4,8 +4,8 @@
 
 ## 前置条件
 
-- 由 `uv` 管理的 Python 3.13 环境。
-- 仓库已通过 `mise install && uv sync --extra dev` 初始化。
+- 由 `uv` 管理的 Python 3.14 环境。
+- 仓库已通过 `mise install && uv sync --extra dev --extra syntax` 初始化。
 - 工作区中存在一个示例文件（例如 `README.md`）。
 - 验证流程需要一个 TTY 环境（真实的终端）来演示内联审批。
 

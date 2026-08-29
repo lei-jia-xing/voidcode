@@ -70,7 +70,7 @@ def runtime_file_rule_contexts(
     for rule_path in rule_paths:
         try:
             content = rule_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         truncated = len(content) > max_rule_file_chars
         if truncated:
@@ -394,7 +394,7 @@ def build_rule_catalog(workspace: Path | None, *, rule_roots: tuple[str, ...] = 
     for path in _rule_files(workspace_root=workspace_root, rule_roots=rule_roots):
         try:
             entry = _parse_rule_document(path, path.read_text(encoding="utf-8"), workspace_root=workspace_root)
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
         if entry is None:
             continue

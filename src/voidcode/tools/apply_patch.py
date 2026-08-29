@@ -826,7 +826,7 @@ def _enforce_patch_seen_ranges(
     """Require every source line each unified-diff hunk touches to be seen."""
     try:
         patch_set = PatchSet(patch_text)
-    except (UnidiffParseError, ValueError):
+    except UnidiffParseError, ValueError:
         return
 
     for patched_file in patch_set:
@@ -911,7 +911,7 @@ def _dedupe_changes(changes: list[dict[str, object]]) -> list[dict[str, object]]
 def _changes_from_unified_diff(patch_text: str) -> list[dict[str, object]]:
     try:
         patch_set = PatchSet(patch_text)
-    except (UnidiffParseError, ValueError):
+    except UnidiffParseError, ValueError:
         return []
 
     changes: list[dict[str, object]] = []

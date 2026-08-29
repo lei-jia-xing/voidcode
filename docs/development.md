@@ -11,7 +11,7 @@ VoidCode 使用：
 - `mise` 用于任务管理和加载现有的 `.venv`
 - `uv` 用于依赖和包管理 (Python)
 - `bun` 用于前端开发和依赖管理
-- Python 3.13 作为官方支持的 uv 管理的本地版本
+- Python 3.14 作为官方支持的 uv 管理的本地版本
 当前 execution engine 由仓库内 plain-Python loop 实现：`DeterministicGraph` 用于无凭据本地演示/测试，`ProviderGraph` 用于 provider-backed 主路径；两者都由 runtime 负责治理、持久化和恢复。
 
 ## 初始设置
@@ -20,7 +20,7 @@ VoidCode 使用：
 
 ```bash
 mise install
-uv sync --extra dev
+uv sync --extra dev --extra syntax
 mise run frontend:install
 ```
 
@@ -87,7 +87,7 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 
 关于规范的端到端演示流程和完整的验证阶梯（单元测试、集成测试、客户端冒烟测试），请参阅 [`docs/mvp-demo-guide.md`](./mvp-demo-guide.md)。使用该指南验证稳定的确定性运行时循环、内联审批和会话持久化。
 
-`mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。Release workflow 与本地支持政策保持一致，使用 Python 3.13 构建 Python 包；如果需要在本地复现合并前门禁，优先运行 `mise run ci`。
+`mise.toml` 不直接管理 Python 安装；它加载仓库现有的 `.venv` 并将 Python 依赖/环境管理委托给 `uv`。Release workflow 与本地支持政策保持一致，使用 Python 3.14 构建 Python 包；如果需要在本地复现合并前门禁，优先运行 `mise run ci`。
 
 ## 运行时可观测性与调试
 

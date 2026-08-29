@@ -259,7 +259,7 @@ def _run_git(workspace_root: Path, args: tuple[str, ...], *, allow_empty: bool =
             text=True,
             timeout=0.2,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None

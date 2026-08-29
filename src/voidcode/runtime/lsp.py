@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, cast
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from lsprotocol import converters as lsp_converters
@@ -661,6 +661,10 @@ class ManagedLspManager:
         raw_path = parsed.path
         if parsed.netloc and parsed.netloc != "localhost":
             raw_path = f"//{parsed.netloc}{parsed.path}"
+            # Python 3.14 rejects remote file authorities on POSIX. Preserve the
+            # UNC-style path expected by LSP clients while still decoding escapes.
+            if os.name != "nt":
+                return Path(unquote(raw_path))
         return Path(url2pathname(raw_path))
 
     @staticmethod

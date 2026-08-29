@@ -156,7 +156,7 @@ class WebFetchTool:
                     if content_length:
                         try:
                             parsed_length = int(content_length)
-                        except (TypeError, ValueError):
+                        except TypeError, ValueError:
                             parsed_length = None
                         if parsed_length is not None and parsed_length > MAX_RESPONSE_SIZE:
                             limit_mb = MAX_RESPONSE_SIZE // 1024 // 1024

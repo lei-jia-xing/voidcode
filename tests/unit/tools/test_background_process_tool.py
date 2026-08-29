@@ -255,10 +255,18 @@ def test_background_process_stop_escalates_when_descendant_ignores_sigterm(
     )
     process_id = str(start_result.data["process_id"])
     deadline = time.time() + 5
-    while time.time() < deadline and not child_file.exists():
+    child_pid: int | None = None
+    while time.time() < deadline:
+        if child_file.exists():
+            try:
+                child_pid_text = child_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                child_pid_text = ""
+            if child_pid_text.isdecimal():
+                child_pid = int(child_pid_text)
+                break
         time.sleep(0.05)
-    assert child_file.exists()
-    child_pid = int(child_file.read_text(encoding="utf-8"))
+    assert child_pid is not None
     stop_result = stop_tool.invoke(
         ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),
         workspace=tmp_path,

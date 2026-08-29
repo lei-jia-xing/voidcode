@@ -8,7 +8,7 @@ backlog 以仓库内文档（本计划 + `docs/roadmap.md` + `docs/contracts/`�
 
 VoidCode 已经拥有扎实的基础：
 
-- Python 3.13 仓库/工具链基准
+- Python 3.14 仓库/工具链基准
 - 确定性 CLI → 运行时 (runtime) → 图 (graph) → 稳定的运行时执行循环
 - 本地会话持久化与恢复
 - 已接入最小可用运行时路径的 Bun 前端外壳
