@@ -889,12 +889,6 @@ class VoidCodeRuntime(RuntimeSurface):
             local_tools,
         )
 
-    def _tool_registry_with_effective_local_tools(
-        self,
-        effective_config: EffectiveRuntimeConfig,
-    ) -> ToolRegistry:
-        return self._tool_materialization_with_effective_local_tools(effective_config).registry
-
     def _start_run_acp(
         self,
         *,
@@ -1191,7 +1185,7 @@ class VoidCodeRuntime(RuntimeSurface):
         tool_name: str,
     ) -> ToolPolicyDecision | None:
         effective_config = self.effective_runtime_config_from_metadata(session.metadata)
-        registry = self._tool_registry_with_effective_local_tools(effective_config)
+        registry = self._tool_materialization_with_effective_local_tools(effective_config).registry
         return self._tool_scope_resolver.denial(
             registry,
             agent=effective_config.agent,
