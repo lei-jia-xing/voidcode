@@ -38,6 +38,12 @@ ESSENTIAL_TOOL_NAMES = frozenset(
         "invoke_tool",
     }
 )
+READ_ONLY_SCOPE_PASSTHROUGH_TOOL_NAMES = frozenset({"shell_exec"})
+
+
+def tool_is_read_only_scope_passthrough(tool_name: str) -> bool:
+    """Whether a tool remains scoped under read-only for call-level checks."""
+    return tool_name in READ_ONLY_SCOPE_PASSTHROUGH_TOOL_NAMES
 
 
 def tool_required_by_allowlist_patterns(

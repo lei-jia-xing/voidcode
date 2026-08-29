@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from voidcode.runtime.config import RuntimeAgentConfig, RuntimeToolsConfig
-from voidcode.runtime.tool_registry import ToolRegistry
+from voidcode.runtime.tool_registry import ToolRegistry, tool_is_read_only_scope_passthrough
 from voidcode.runtime.tool_scope import RuntimeToolScopeResolver
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -124,3 +124,10 @@ def test_tool_scope_resolver_does_not_claim_delegation_for_unknown_or_allowed_to
         )
         is None
     )
+
+
+def test_read_only_scope_passthrough_is_limited_to_command_level_shell() -> None:
+    assert tool_is_read_only_scope_passthrough("shell_exec") is True
+    assert tool_is_read_only_scope_passthrough("read") is False
+    assert tool_is_read_only_scope_passthrough("write") is False
+    assert tool_is_read_only_scope_passthrough("ast_grep") is False
