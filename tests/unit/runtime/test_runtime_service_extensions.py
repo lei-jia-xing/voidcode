@@ -15686,6 +15686,63 @@ def test_runtime_agent_tool_allowlist_blocks_invocation(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Path) -> None:
+    target = tmp_path / "blocked.txt"
+    created_providers: list[_ScriptedTurnProvider] = []
+    registry = ModelProviderRegistry(
+        providers={
+            "opencode": _ScriptedModelProvider(
+                name="opencode",
+                outcomes=(
+                    ProviderTurnResult(output="parent done"),
+                    ProviderTurnResult(
+                        tool_call=ToolCall(
+                            tool_name="write",
+                            arguments={"path": "blocked.txt", "content": "blocked"},
+                        )
+                    ),
+                ),
+                created_providers=created_providers,
+                shared_outcomes=True,
+            )
+        }
+    )
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        model_provider_registry=registry,
+    )
+
+    parent = runtime.run(RuntimeRequest(prompt="parent", session_id="delegation-scope-parent"))
+    assert parent.session.status == "completed"
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "delegation policy denied tool 'write' for child preset 'explore'; this preset may only call tools allowed by its manifest tool_allowlist"
+        ),
+    ) as raised:
+        _ = runtime.run(
+            RuntimeRequest(
+                prompt="delegated child",
+                session_id="delegation-scope-child",
+                parent_session_id="delegation-scope-parent",
+                metadata={"delegation": {"mode": "sync", "subagent_type": "explore"}},
+            )
+        )
+
+    assert str(raised.value) == (
+        "delegation policy denied tool 'write' for child preset 'explore'; this preset may only call tools allowed by its manifest tool_allowlist"
+    )
+    assert len(created_providers) == 2
+    child_request = _last_main_provider_request(created_providers[-1].requests)
+    child_visible_tool_names = {tool.name for tool in child_request.available_tools}
+    assert child_visible_tool_names <= {"read", "glob", "grep", "ast_grep", "lsp", "submit_result"}
+    assert "read" in child_visible_tool_names
+    assert "write" not in child_visible_tool_names
+    assert target.exists() is False
+
+
 def test_runtime_agent_tool_allowlist_survives_approval_resume(tmp_path: Path) -> None:
     registry = ModelProviderRegistry(providers={"opencode": _WriteThenResultAwareModelProvider(name="opencode")})
     initial_runtime = VoidCodeRuntime(
