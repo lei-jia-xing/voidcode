@@ -25,10 +25,15 @@ from typing import cast
 import pytest
 
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest
-from voidcode.runtime.config import RuntimeConfig
+from voidcode.runtime.config import RuntimeBackgroundTaskConfig, RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
-from voidcode.runtime.events import RUNTIME_BACKGROUND_TASK_COMPLETED, EventEnvelope
-from voidcode.runtime.permission import PermissionPolicy
+from voidcode.runtime.events import (
+    RUNTIME_BACKGROUND_TASK_COMPLETED,
+    RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    EventEnvelope,
+)
+from voidcode.runtime.permission import PendingApproval, PermissionPolicy
+from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.service import (
     RuntimeStreamChunk,
     SessionState,
@@ -105,16 +110,20 @@ def _seed_child_session_and_task(
     task_id: str,
     parent_session_id: str,
     child_session_id: str,
+    capability_snapshot: dict[str, object] | None = None,
 ) -> None:
     """Persist a completed child session + running task row the way a worker would."""
+    metadata: dict[str, object] = {
+        "background_run": True,
+        "background_task_id": task_id,
+    }
+    if capability_snapshot is not None:
+        metadata["agent_capability_snapshot"] = capability_snapshot
     store.save_interrupted_checkpoint(
         workspace=workspace,
         session_id=child_session_id,
         prompt="child probe",
-        session_metadata={
-            "background_run": True,
-            "background_task_id": task_id,
-        },
+        session_metadata=metadata,
         tool_results=(),
         last_event_sequence=0,
         create_if_missing=True,
@@ -133,20 +142,14 @@ def _seed_child_session_and_task(
             prompt="child probe",
             session_id=child_session_id,
             parent_session_id=parent_session_id,
-            metadata={
-                "background_run": True,
-                "background_task_id": task_id,
-            },
+            metadata=metadata,
         ),
         response=RuntimeResponse(
             session=SessionState(
                 session=SessionRef(id=child_session_id, parent_id=parent_session_id),
                 status="completed",
                 turn=1,
-                metadata={
-                    "background_run": True,
-                    "background_task_id": task_id,
-                },
+                metadata=metadata,
             ),
             events=(
                 EventEnvelope(
@@ -178,6 +181,7 @@ def _seed_child_session_and_task(
             output="child done",
         ),
     )
+
     store.create_background_task(
         workspace=workspace,
         task=BackgroundTaskState(
@@ -186,6 +190,7 @@ def _seed_child_session_and_task(
             request=BackgroundTaskRequestSnapshot(
                 prompt="child probe",
                 parent_session_id=parent_session_id,
+                metadata=metadata,
             ),
             session_id=child_session_id,
             created_at=1,
@@ -193,6 +198,138 @@ def _seed_child_session_and_task(
             started_at=1,
         ),
     )
+
+
+def _seed_waiting_child_and_task(
+    store: SqliteSessionStore,
+    *,
+    workspace: Path,
+    task_id: str,
+    parent_session_id: str,
+    child_session_id: str,
+    wait_kind: str,
+    capability_snapshot: dict[str, object] | None = None,
+) -> None:
+    """Persist a running task whose child is durably blocked on approval/question."""
+    metadata = {
+        "background_run": True,
+        "background_task_id": task_id,
+        "delegation": {
+            "mode": "background",
+            "subagent_type": "worker",
+            "selected_preset": "worker",
+            "selected_execution_engine": "provider",
+        },
+    }
+    if capability_snapshot is not None:
+        metadata["agent_capability_snapshot"] = capability_snapshot
+    request = RuntimeRequest(
+        prompt="waiting child",
+        session_id=child_session_id,
+        parent_session_id=parent_session_id,
+        metadata=metadata,
+    )
+    request_id = f"{wait_kind}-request"
+    event_type = "runtime.approval_requested" if wait_kind == "approval" else "runtime.question_requested"
+    event_payload: dict[str, object] = {"request_id": request_id}
+    if wait_kind == "approval":
+        event_payload.update({"tool": "write"})
+    else:
+        event_payload.update({"tool": "question", "question_count": 1, "questions": [{"header": "Proceed", "question": "Proceed?"}]})
+    waiting_response = RuntimeResponse(
+        session=SessionState(
+            session=SessionRef(id=child_session_id, parent_id=parent_session_id),
+            status="waiting",
+            turn=1,
+            metadata=metadata,
+        ),
+        events=(
+            EventEnvelope(
+                session_id=child_session_id,
+                sequence=1,
+                event_type="runtime.request_received",
+                source="runtime",
+                payload={"prompt": request.prompt},
+            ),
+            EventEnvelope(
+                session_id=child_session_id,
+                sequence=2,
+                event_type=event_type,
+                source="runtime",
+                payload=event_payload,
+            ),
+        ),
+    )
+    store.save_interrupted_checkpoint(
+        workspace=workspace,
+        session_id=child_session_id,
+        prompt=request.prompt,
+        session_metadata=metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+    )
+    store.append_session_events(
+        workspace=workspace,
+        session_id=child_session_id,
+        events=tuple((event.event_type, event.source, event.payload, None) for event in waiting_response.events),
+    )
+    store.create_background_task(
+        workspace=workspace,
+        task=BackgroundTaskState(
+            task=BackgroundTaskRef(id=task_id),
+            status="running",
+            request=BackgroundTaskRequestSnapshot(
+                prompt=request.prompt,
+                session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                metadata=metadata,
+            ),
+            session_id=child_session_id,
+            approval_request_id=request_id if wait_kind == "approval" else None,
+            question_request_id=request_id if wait_kind == "question" else None,
+            created_at=1,
+            updated_at=1,
+            started_at=1,
+        ),
+    )
+    if wait_kind == "approval":
+        store.save_pending_approval(
+            workspace=workspace,
+            request=request,
+            response=waiting_response,
+            pending_approval=PendingApproval(
+                request_id=request_id,
+                tool_name="write",
+                arguments={"path": "child.txt", "content": "x"},
+                target_summary="write child.txt",
+                reason="non-read-only tool invocation",
+                policy_mode="ask",
+                request_event_sequence=2,
+                owner_session_id=child_session_id,
+                owner_parent_session_id=parent_session_id,
+                delegated_task_id=task_id,
+                operation_class="write",
+            ),
+        )
+    else:
+        store.save_pending_question(
+            workspace=workspace,
+            request=request,
+            response=waiting_response,
+            pending_question=PendingQuestion(
+                request_id=request_id,
+                tool_name="question",
+                arguments={},
+                prompts=(
+                    PendingQuestionPrompt(
+                        question="Proceed?",
+                        header="Proceed",
+                        options=(PendingQuestionOption(label="yes"),),
+                    ),
+                ),
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -791,3 +928,168 @@ def test_runtime_shutdown_drains_background_worker_results_before_teardown(
     assert runtime._background_task_supervisor.threads == {}
     leader = runtime._session_store.load_session(workspace=tmp_path, session_id="leader-session")
     assert any(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in leader.events)
+
+
+def _background_lifecycle_runtime(workspace: Path) -> VoidCodeRuntime:
+    return VoidCodeRuntime(
+        workspace=workspace,
+        graph=_SuccessGraph(),  # type: ignore[arg-type]
+        config=RuntimeConfig(
+            approval_mode="allow",
+            execution_engine="deterministic",
+            background_task=RuntimeBackgroundTaskConfig(delegated_reminders_enabled=False),
+        ),
+    )
+
+
+def test_fresh_and_restarted_reads_backfill_terminal_and_waiting_parent_events_once(
+    tmp_path: Path,
+) -> None:
+    runtime = _background_lifecycle_runtime(tmp_path)
+    parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    capability_snapshot = cast(dict[str, object], parent_response.session.metadata["agent_capability_snapshot"])
+    store = runtime._session_store
+    _seed_child_session_and_task(
+        store,
+        workspace=tmp_path,
+        task_id="task-terminal-read",
+        parent_session_id="leader-session",
+        child_session_id="child-terminal-read",
+        capability_snapshot=capability_snapshot,
+    )
+    _seed_waiting_child_and_task(
+        store,
+        workspace=tmp_path,
+        task_id="task-approval-read",
+        parent_session_id="leader-session",
+        child_session_id="child-approval-read",
+        wait_kind="approval",
+        capability_snapshot=capability_snapshot,
+    )
+    fresh_runtime = _background_lifecycle_runtime(tmp_path)
+    first_summaries = fresh_runtime.list_background_tasks()
+    assert {summary.task.id: summary.status for summary in first_summaries} == {
+        "task-terminal-read": "completed",
+        "task-approval-read": "running",
+    }
+    terminal_child = fresh_runtime.session_result(session_id="child-terminal-read")
+    waiting_child = fresh_runtime.session_result(session_id="child-approval-read")
+    assert terminal_child.session.status == "completed"
+    assert waiting_child.session.status == "waiting"
+
+    parent_after_first_reads = fresh_runtime.session_result(session_id="leader-session")
+    first_events = tuple(
+        event
+        for event in parent_after_first_reads.transcript
+        if event.event_type in (RUNTIME_BACKGROUND_TASK_COMPLETED, RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL)
+    )
+    assert {event.event_type for event in first_events} == {
+        RUNTIME_BACKGROUND_TASK_COMPLETED,
+        RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
+    }
+    assert {event.payload["task_id"] for event in first_events} == {
+        "task-terminal-read",
+        "task-approval-read",
+    }
+    assert all(event.payload["parent_session_id"] == "leader-session" for event in first_events)
+    assert all(event.payload["child_session_id"] in {"child-terminal-read", "child-approval-read"} for event in first_events)
+    assert [event.sequence for event in parent_after_first_reads.transcript] == sorted(
+        event.sequence for event in parent_after_first_reads.transcript
+    )
+    first_sequences = tuple(event.sequence for event in parent_after_first_reads.transcript)
+
+    # Public reads may reconcile repeatedly, but append-only parent truth must
+    # not gain a second event for either task's durable dedupe key.
+    _ = fresh_runtime.list_background_tasks()
+    _ = fresh_runtime.session_result(session_id="child-terminal-read")
+    _ = fresh_runtime.session_result(session_id="child-approval-read")
+    repeated_parent = fresh_runtime.session_result(session_id="leader-session")
+    assert tuple(event.sequence for event in repeated_parent.transcript) == first_sequences
+    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in repeated_parent.transcript) == 1
+    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL for event in repeated_parent.transcript) == 1
+
+    restarted_runtime = _background_lifecycle_runtime(tmp_path)
+    _ = restarted_runtime.list_background_tasks()
+    _ = restarted_runtime.session_result(session_id="child-terminal-read")
+    _ = restarted_runtime.session_result(session_id="child-approval-read")
+    restarted_parent = restarted_runtime.session_result(session_id="leader-session")
+    assert tuple(event.sequence for event in restarted_parent.transcript) == first_sequences
+    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_COMPLETED for event in restarted_parent.transcript) == 1
+    assert sum(event.event_type == RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL for event in restarted_parent.transcript) == 1
+
+
+@pytest.mark.parametrize("wait_kind", ["approval", "question"])
+def test_cancel_waiting_background_child_clears_pending_state_before_task_terminal_truth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_kind: str,
+) -> None:
+    runtime = _background_lifecycle_runtime(tmp_path)
+    parent_response = runtime.run(RuntimeRequest(prompt="leader", session_id="leader-session"))
+    capability_snapshot = cast(dict[str, object], parent_response.session.metadata["agent_capability_snapshot"])
+    store = runtime._session_store
+    task_id = f"task-cancel-{wait_kind}"
+    child_session_id = f"child-cancel-{wait_kind}"
+    _seed_waiting_child_and_task(
+        store,
+        workspace=tmp_path,
+        task_id=task_id,
+        parent_session_id="leader-session",
+        child_session_id=child_session_id,
+        wait_kind=wait_kind,
+        capability_snapshot=capability_snapshot,
+    )
+
+    ordering: list[str] = []
+    original_clear_approval = store.clear_pending_approval
+    original_clear_question = store.clear_pending_question
+    original_mark_terminal = store.mark_background_task_terminal
+
+    def record_clear_approval(*, workspace: Path, session_id: str) -> None:
+        ordering.append("clear_pending_approval")
+        original_clear_approval(workspace=workspace, session_id=session_id)
+
+    def record_clear_question(*, workspace: Path, session_id: str) -> None:
+        ordering.append("clear_pending_question")
+        original_clear_question(workspace=workspace, session_id=session_id)
+
+    def record_mark_terminal(
+        *,
+        workspace: Path,
+        task_id: str,
+        status: str,
+        error: str | None = None,
+    ) -> BackgroundTaskState:
+        ordering.append("mark_background_task_terminal")
+        return original_mark_terminal(workspace=workspace, task_id=task_id, status=status, error=error)
+
+    monkeypatch.setattr(store, "clear_pending_approval", record_clear_approval)
+    monkeypatch.setattr(store, "clear_pending_question", record_clear_question)
+    monkeypatch.setattr(store, "mark_background_task_terminal", record_mark_terminal)
+
+    cancelled = runtime.cancel_background_task(task_id)
+    assert ordering == [
+        "clear_pending_approval",
+        "clear_pending_question",
+        "mark_background_task_terminal",
+    ]
+    assert cancelled.status == "cancelled"
+    assert cancelled.error == "cancelled by parent while child session was waiting"
+    assert store.load_pending_approval(workspace=tmp_path, session_id=child_session_id) is None
+    assert store.load_pending_question(workspace=tmp_path, session_id=child_session_id) is None
+
+    task = store.load_background_task(workspace=tmp_path, task_id=task_id)
+    child = runtime.session_result(session_id=child_session_id)
+    assert task.status == "cancelled"
+    assert task.cancellation_cause == "cancelled by parent while child session was waiting"
+    assert child.session.status == "failed"
+    assert any(event.event_type == "runtime.failed" for event in child.transcript)
+    parent_events = [
+        event
+        for event in runtime.session_result(session_id="leader-session").transcript
+        if event.event_type == "runtime.background_task_cancelled" and event.payload.get("task_id") == task_id
+    ]
+    assert len(parent_events) == 1
+    assert parent_events[0].payload["status"] == "cancelled"
+    assert parent_events[0].payload["parent_session_id"] == "leader-session"
+    assert parent_events[0].payload["child_session_id"] == child_session_id
