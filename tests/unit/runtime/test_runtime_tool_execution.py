@@ -3,10 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from voidcode.runtime.tool_execution import RuntimeToolExecutor, ToolExecutionProgress
-from voidcode.tools.contracts import ToolCall, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolInvocation, ToolResult
 from voidcode.tools.runtime_context import (
     RuntimeLspToolFacade,
+    RuntimeToolInvocationContext,
     current_runtime_tool_context,
 )
 
@@ -25,6 +28,8 @@ def _executor(tmp_path: Path) -> RuntimeToolExecutor:
 
 
 class _ContextProbeTool:
+    definition = ToolDefinition(name="probe", description="reads runtime context")
+
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         context = current_runtime_tool_context()
         assert context is not None
@@ -40,6 +45,8 @@ class _ContextProbeTool:
 
 
 class _ProgressTool:
+    definition = ToolDefinition(name="shell_exec", description="emits progress")
+
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
         context = current_runtime_tool_context()
@@ -62,22 +69,21 @@ def _drain_execution(
 
 def test_runtime_tool_executor_binds_context_without_runtime_kernel(tmp_path: Path) -> None:
     executor = _executor(tmp_path)
-
-    progress, result = _drain_execution(
-        executor.invoke(
-            tool=_ContextProbeTool(),
-            tool_call=ToolCall(tool_name="probe", arguments={}),
-            read_paths=frozenset({"README.md"}),
-            read_lines={"README.md": frozenset({1, 2, 3})},
-            tool_timeout=None,
+    invocation = ToolInvocation(
+        tool_call=ToolCall(tool_name="probe", arguments={}),
+        tool_definition=_ContextProbeTool.definition,
+        context=RuntimeToolInvocationContext(
             session_id="session-1",
             parent_session_id="parent-1",
             delegation_depth=2,
             remaining_spawn_budget=3,
-            abort_signal=None,
+            read_paths=frozenset({"README.md"}),
+            read_lines={"README.md": frozenset({1, 2, 3})},
             model="model-1",
-        )
+        ),
     )
+
+    progress, result = _drain_execution(executor.invoke(tool=_ContextProbeTool(), invocation=invocation))
 
     assert progress == []
     assert isinstance(result, ToolResult)
@@ -86,23 +92,59 @@ def test_runtime_tool_executor_binds_context_without_runtime_kernel(tmp_path: Pa
 
 def test_runtime_tool_executor_streams_progress_without_runtime_kernel(tmp_path: Path) -> None:
     executor = _executor(tmp_path)
-
-    progress, result = _drain_execution(
-        executor.invoke(
-            tool=_ProgressTool(),
-            tool_call=ToolCall(tool_name="shell_exec", arguments={}),
-            read_paths=frozenset(),
-            read_lines={},
-            tool_timeout=None,
-            session_id="session-1",
-            parent_session_id=None,
-            delegation_depth=0,
-            remaining_spawn_budget=None,
-            abort_signal=None,
-            model=None,
-        )
+    invocation = ToolInvocation(
+        tool_call=ToolCall(tool_name="shell_exec", arguments={}),
+        tool_definition=_ProgressTool.definition,
+        context=RuntimeToolInvocationContext(session_id="session-1"),
     )
+
+    progress, result = _drain_execution(executor.invoke(tool=_ProgressTool(), invocation=invocation))
 
     assert [item.payload for item in progress] == [{"tool": "shell_exec", "stream": "stdout", "chunk": "working"}]
     assert isinstance(result, ToolResult)
     assert result.content == "done"
+
+
+def test_runtime_tool_executor_rejects_legacy_keyword_invocation(tmp_path: Path) -> None:
+    executor = _executor(tmp_path)
+    legacy_invoke = cast(Any, executor.invoke)
+    with pytest.raises(TypeError):
+        legacy_invoke(
+            tool=_ProgressTool(),
+            tool_call=ToolCall(tool_name="shell_exec", arguments={}),
+            session_id="session-1",
+        )
+
+
+def test_tool_invocation_rejects_call_definition_name_mismatch() -> None:
+    with pytest.raises(ValueError, match="same tool"):
+        ToolInvocation(
+            tool_call=ToolCall(tool_name="read"),
+            tool_definition=ToolDefinition(name="write", description="write"),
+            context=RuntimeToolInvocationContext(session_id="session-1"),
+        )
+
+
+class _TimeoutContextProbeTool:
+    definition = ToolDefinition(name="timeout_probe", description="reads timeout")
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = workspace
+        context = current_runtime_tool_context()
+        assert context is not None
+        assert context.tool_timeout_seconds == 7
+        return ToolResult(tool_name=call.tool_name, status="ok", content="timeout-propagated")
+
+
+def test_runtime_tool_executor_propagates_invocation_context_timeout(tmp_path: Path) -> None:
+    executor = _executor(tmp_path)
+    invocation = ToolInvocation(
+        tool_call=ToolCall(tool_name="timeout_probe"),
+        tool_definition=_TimeoutContextProbeTool.definition,
+        context=RuntimeToolInvocationContext(session_id="session-1", tool_timeout_seconds=7),
+    )
+    progress, result = _drain_execution(executor.invoke(tool=_TimeoutContextProbeTool(), invocation=invocation))
+
+    assert progress == []
+    assert isinstance(result, ToolResult)
+    assert result.content == "timeout-propagated"

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Literal, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, runtime_checkable
+
+if TYPE_CHECKING:
+    from .runtime_context import RuntimeToolInvocationContext
 
 type ToolResultStatus = Literal["ok", "error"]
 type ToolDiagnosticsDetails = dict[str, object]
@@ -141,6 +144,24 @@ class ToolCall:
     tool_name: str
     arguments: dict[str, object] = field(default_factory=dict)
     tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInvocation:
+    """Runtime-owned boundary for one resolved tool call.
+
+    Governance and execution metadata deliberately remain outside ``ToolCall``
+    and ``ToolResult``. The runtime resolves the definition and constructs the
+    invocation context before handing this immutable bundle to the executor.
+    """
+
+    tool_call: ToolCall
+    tool_definition: ToolDefinition
+    context: RuntimeToolInvocationContext
+
+    def __post_init__(self) -> None:
+        if self.tool_call.tool_name != self.tool_definition.name:
+            raise ValueError("tool invocation call and definition must refer to the same tool")
 
 
 @dataclass(frozen=True, slots=True)

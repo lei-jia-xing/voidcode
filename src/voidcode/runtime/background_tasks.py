@@ -16,7 +16,7 @@ from ..hook.plan import hook_plan_from_session_metadata
 from ..provider.models import ResolvedProviderConfig
 from .acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
 from .active_session import ACTIVE_SESSION_REGISTRY
-from .child_terminal import child_terminal_outcome, child_transcript_proves_completed
+from .child_terminal import child_completion_evidence, child_terminal_outcome, child_transcript_proves_completed
 from .config import RuntimeConfig
 from .contracts import (
     BackgroundTaskGroupResult,
@@ -1721,19 +1721,9 @@ class RuntimeBackgroundTaskSupervisor:
 
     @staticmethod
     def _handoff_from_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> dict[str, object] | None:
-        """Extract the last successful ``submit_result`` handoff from a transcript."""
-        for event in reversed(events):
-            if event.event_type != RUNTIME_TOOL_COMPLETED:
-                continue
-            if event.payload.get("tool") != "submit_result" or event.payload.get("status") != "ok":
-                continue
-            handoff = event.payload.get("handoff")
-            if isinstance(handoff, dict):
-                typed_handoff = cast(dict[str, object], handoff)
-                summary = typed_handoff.get("summary")
-                if isinstance(summary, str) and summary.strip():
-                    return dict(typed_handoff)
-        return None
+        """Return the handoff identified by the shared child protocol."""
+        evidence = child_completion_evidence(events)
+        return None if evidence.handoff is None else dict(evidence.handoff)
 
     @classmethod
     def _child_handoff(cls, child_result: RuntimeSessionResult) -> dict[str, object] | None:

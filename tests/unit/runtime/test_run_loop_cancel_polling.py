@@ -7,7 +7,8 @@ from pathlib import Path
 from voidcode.runtime.config import RuntimeConfig
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.tool_execution import RuntimeToolExecutor
-from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
+from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolInvocation, ToolResult
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext
 
 
 class _AbortSignal:
@@ -50,15 +51,14 @@ def test_progress_capable_running_tool_interrupts_on_abort_signal(tmp_path: Path
         lsp=runtime,
     ).invoke(
         tool=tool,
-        tool_call=ToolCall(tool_name=tool.definition.name, arguments={}),
-        read_paths=frozenset(),
-        read_lines={},
-        tool_timeout=None,
-        session_id="tool-abort",
-        abort_signal=abort_signal,
-        parent_session_id=None,
-        delegation_depth=0,
-        remaining_spawn_budget=None,
+        invocation=ToolInvocation(
+            tool_call=ToolCall(tool_name=tool.definition.name, arguments={}),
+            tool_definition=tool.definition,
+            context=RuntimeToolInvocationContext(
+                session_id="tool-abort",
+                abort_signal=abort_signal,
+            ),
+        ),
     )
     tool_outcome: list[object] = []
     errors: list[BaseException] = []

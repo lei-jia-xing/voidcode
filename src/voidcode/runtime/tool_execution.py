@@ -4,22 +4,20 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import (
     RuntimeTimeoutAwareTool,
     RuntimeToolTimeoutError,
-    ToolCall,
+    ToolInvocation,
     ToolResult,
 )
 from ..tools.runtime_context import (
     RuntimeArtifactReadFacade,
     RuntimeLspToolFacade,
     RuntimeToolCatalogFacade,
-    RuntimeToolInvocationContext,
     RuntimeTranscriptFacade,
     bind_runtime_tool_context,
 )
@@ -59,48 +57,21 @@ class RuntimeToolExecutor:
         self,
         *,
         tool: Any,
-        tool_call: ToolCall,
-        read_paths: frozenset[str],
-        read_lines: Mapping[str, frozenset[int]],
-        tool_timeout: int | None,
-        session_id: str,
-        parent_session_id: str | None,
-        delegation_depth: int,
-        remaining_spawn_budget: int | None,
-        abort_signal: ProviderAbortSignal | None,
-        model: str | None = None,
+        invocation: ToolInvocation,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:
-        if tool_call.tool_name == "shell_exec" or (tool_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)):
+        """Execute one runtime-owned invocation."""
+        effective_timeout = invocation.context.tool_timeout_seconds
+        if invocation.tool_call.tool_name == "shell_exec" or (effective_timeout is not None and not isinstance(tool, RuntimeTimeoutAwareTool)):
             return (
                 yield from self._invoke_with_progress(
                     tool=tool,
-                    tool_call=tool_call,
-                    read_paths=read_paths,
-                    read_lines=read_lines,
-                    tool_timeout=tool_timeout,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    delegation_depth=delegation_depth,
-                    remaining_spawn_budget=remaining_spawn_budget,
-                    abort_signal=abort_signal,
-                    model=model,
+                    invocation=invocation,
+                    tool_timeout=effective_timeout,
                 )
             )
 
         try:
-            return self._invoke_tool(
-                tool=tool,
-                tool_call=tool_call,
-                read_paths=read_paths,
-                read_lines=read_lines,
-                tool_timeout=tool_timeout,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                delegation_depth=delegation_depth,
-                remaining_spawn_budget=remaining_spawn_budget,
-                abort_signal=abort_signal,
-                model=model,
-            )
+            return self._invoke_tool(tool=tool, invocation=invocation, tool_timeout=effective_timeout)
         except Exception as exc:
             return exc
 
@@ -108,59 +79,36 @@ class RuntimeToolExecutor:
         self,
         *,
         tool: Any,
-        tool_call: ToolCall,
-        read_paths: frozenset[str],
-        read_lines: Mapping[str, frozenset[int]],
+        invocation: ToolInvocation,
         tool_timeout: int | None,
-        session_id: str,
-        parent_session_id: str | None,
-        delegation_depth: int,
-        remaining_spawn_budget: int | None,
-        abort_signal: ProviderAbortSignal | None,
-        model: str | None = None,
         emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None,
     ) -> ToolResult:
-        with bind_runtime_tool_context(
-            RuntimeToolInvocationContext(
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                delegation_depth=delegation_depth,
-                remaining_spawn_budget=remaining_spawn_budget,
-                read_paths=read_paths,
-                read_lines=read_lines,
-                model=model,
-                abort_signal=abort_signal,
-                emit_tool_progress=emit_tool_progress,
-                lsp=self.lsp,
-                lsp_diagnostics_on_write=self.lsp_diagnostics_on_write,
-                tool_catalog=self.tool_catalog,
-                artifact=self.artifact,
-                transcript=self.transcript,
-            )
-        ):
+        context = replace(
+            invocation.context,
+            emit_tool_progress=emit_tool_progress,
+            lsp=self.lsp,
+            lsp_diagnostics_on_write=self.lsp_diagnostics_on_write,
+            tool_catalog=self.tool_catalog,
+            artifact=self.artifact,
+            transcript=self.transcript,
+        )
+        with bind_runtime_tool_context(context):
             if tool_timeout is not None and isinstance(tool, RuntimeTimeoutAwareTool):
                 return tool.invoke_with_runtime_timeout(
-                    tool_call,
+                    invocation.tool_call,
                     workspace=self.workspace,
                     timeout_seconds=tool_timeout,
                 )
-            return tool.invoke(tool_call, workspace=self.workspace)
+            return tool.invoke(invocation.tool_call, workspace=self.workspace)
 
     def _invoke_with_progress(
         self,
         *,
         tool: Any,
-        tool_call: ToolCall,
-        read_paths: frozenset[str],
-        read_lines: Mapping[str, frozenset[int]],
+        invocation: ToolInvocation,
         tool_timeout: int | None,
-        session_id: str,
-        parent_session_id: str | None,
-        delegation_depth: int,
-        remaining_spawn_budget: int | None,
-        abort_signal: ProviderAbortSignal | None,
-        model: str | None = None,
     ) -> Generator[ToolExecutionProgress, None, ToolResult | Exception]:
+        tool_call = invocation.tool_call
         progress_queue: queue.Queue[_ToolQueueItem] = queue.Queue(maxsize=_PROGRESS_QUEUE_MAX_ITEMS)
 
         def emit_tool_progress(payload: Mapping[str, object]) -> None:
@@ -177,16 +125,8 @@ class RuntimeToolExecutor:
             try:
                 result = self._invoke_tool(
                     tool=tool,
-                    tool_call=tool_call,
-                    read_paths=read_paths,
-                    read_lines=read_lines,
+                    invocation=invocation,
                     tool_timeout=tool_timeout,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    delegation_depth=delegation_depth,
-                    remaining_spawn_budget=remaining_spawn_budget,
-                    abort_signal=abort_signal,
-                    model=model,
                     emit_tool_progress=emit_tool_progress,
                 )
                 progress_queue.put(_ToolResultItem(result))
@@ -215,8 +155,8 @@ class RuntimeToolExecutor:
                     poll_timeout = min(poll_timeout, remaining)
                 item = progress_queue.get(timeout=poll_timeout)
             except queue.Empty:
-                if abort_signal is not None and abort_signal.cancelled:
-                    reason = getattr(abort_signal, "reason", None)
+                if invocation.context.abort_signal is not None and invocation.context.abort_signal.cancelled:
+                    reason = getattr(invocation.context.abort_signal, "reason", None)
                     terminal_item = _ToolExceptionItem(RuntimeError(reason if isinstance(reason, str) else "run interrupted"))
                     break
                 if deadline is not None and time.monotonic() >= deadline:
@@ -242,4 +182,5 @@ class RuntimeToolExecutor:
             worker.join(timeout=1)
         if isinstance(terminal_item, _ToolExceptionItem):
             return terminal_item.exception
+        assert terminal_item is not None
         return terminal_item.result

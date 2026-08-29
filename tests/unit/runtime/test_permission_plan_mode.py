@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -14,9 +15,12 @@ from voidcode.runtime.permission import (
     PLAN_MODE_DENIAL_REASON,
     OperationClass,
     PermissionPolicy,
+    default_policy_for_tool,
     is_plan_mode_blocked,
     resolve_permission,
 )
+from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
+from voidcode.tools import AstGrepTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition
 
 
@@ -185,3 +189,65 @@ def test_runtime_mode_helper_rejects_invalid_unvalidated_metadata() -> None:
 def test_runtime_read_only_helper_rejects_invalid_unvalidated_read_only() -> None:
     with pytest.raises(RuntimeRequestError, match="read_only"):
         _ = runtime_read_only_from_metadata({"read_only": "true"})
+
+
+def test_default_policy_allows_read_only_and_asks_for_write() -> None:
+    read_tool = _read_only_tool()
+    write_tool = _write_tool()
+
+    assert default_policy_for_tool(read_tool).mode == "allow"
+    assert default_policy_for_tool(write_tool).mode == "ask"
+    assert (
+        resolve_permission(
+            read_tool,
+            _call("grep"),
+            policy=default_policy_for_tool(read_tool),
+        ).decision
+        == "allow"
+    )
+    assert (
+        resolve_permission(
+            write_tool,
+            _call(),
+            policy=default_policy_for_tool(write_tool),
+        ).decision
+        == "ask"
+    )
+
+
+@pytest.mark.parametrize("mode", ["search", "preview"])
+def test_ast_grep_non_replace_is_read_operation(mode: str) -> None:
+    definition = ToolDefinition(name="ast_grep", description="AST search", read_only=True)
+    operation = operation_class_for_tool(
+        "ast_grep",
+        definition.read_only,
+        tool_instance=AstGrepTool(),
+        arguments={"mode": mode},
+    )
+    assert operation == "read"
+
+
+def test_ast_grep_replace_is_write_operation_and_denied_in_plan_mode(tmp_path: Path) -> None:
+    definition = ToolDefinition(name="ast_grep", description="AST rewrite", read_only=True)
+    call = ToolCall(
+        tool_name="ast_grep",
+        arguments={"mode": "replace", "path": "sample.py", "apply": True},
+    )
+    resolver = RuntimePermissionContextResolver(workspace=tmp_path)
+    _scope, _path, operation, _candidates = resolver.permission_context_for_tool_call(
+        tool=definition,
+        tool_instance=AstGrepTool(),
+        tool_call=call,
+        patch_path_extractor=lambda _patch: (),
+    )
+    assert operation == "write"
+    outcome = resolve_permission(
+        definition,
+        call,
+        policy=default_policy_for_tool(definition),
+        operation_class=operation,
+        read_only=True,
+    )
+    assert outcome.decision == "deny"
+    assert outcome.pending_approval is not None
+    assert outcome.pending_approval.policy_surface == "mode.plan"

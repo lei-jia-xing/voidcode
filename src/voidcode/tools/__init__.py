@@ -7,7 +7,7 @@ from .background_process_logs import BackgroundProcessLogsTool
 from .background_process_send import BackgroundProcessSendTool
 from .background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
 from .background_process_stop import BackgroundProcessStopTool
-from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolResult, ToolResultStatus
+from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolInvocation, ToolResult, ToolResultStatus
 from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
@@ -76,6 +76,7 @@ __all__ = [
     "ToolCall",
     "ToolDefinition",
     "ToolDiagnostics",
+    "ToolInvocation",
     "ToolResult",
     "ToolResultStatus",
     "MAX_MODEL_FIELD_CHARS",

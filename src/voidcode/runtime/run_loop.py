@@ -39,6 +39,7 @@ from ..tools.contracts import (
     ToolDefinition,
     ToolDiagnostics,
     ToolDiagnosticsDetails,
+    ToolInvocation,
     ToolResult,
 )
 from ..tools.guards import read_tracking_for_tool_results
@@ -49,6 +50,7 @@ from ..tools.output import (
     sanitize_tool_result_data,
 )
 from ..tools.question import QuestionTool
+from ..tools.runtime_context import RuntimeToolInvocationContext
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context_window import (
@@ -835,18 +837,24 @@ class RuntimeRunLoopCoordinator:
         model: str | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult | Exception, int]]:
         sequence = start_sequence - 1
+        invocation = ToolInvocation(
+            tool_call=tool_call,
+            tool_definition=tool.definition,
+            context=RuntimeToolInvocationContext(
+                session_id=session.session.id,
+                parent_session_id=parent_session_id,
+                delegation_depth=delegation_depth,
+                remaining_spawn_budget=remaining_spawn_budget,
+                read_paths=read_paths,
+                read_lines=read_lines,
+                tool_timeout_seconds=tool_timeout,
+                model=model,
+                abort_signal=abort_signal,
+            ),
+        )
         execution = self._tool_executor.invoke(
             tool=tool,
-            tool_call=tool_call,
-            read_paths=read_paths,
-            read_lines=read_lines,
-            tool_timeout=tool_timeout,
-            session_id=session.session.id,
-            parent_session_id=parent_session_id,
-            delegation_depth=delegation_depth,
-            remaining_spawn_budget=remaining_spawn_budget,
-            abort_signal=abort_signal,
-            model=model,
+            invocation=invocation,
         )
         while True:
             try:
