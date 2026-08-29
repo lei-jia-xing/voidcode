@@ -891,6 +891,68 @@ class RuntimeRunLoopCoordinator:
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
 
+    def _persist_resolved_tool_intent(
+        self,
+        *,
+        session: SessionState,
+        tool: Any,
+        tool_call: ToolCall,
+        tool_call_id: str | None,
+    ) -> tuple[ToolCall, str, dict[str, object], SessionState]:
+        """Persist the canonical final call before its pre-tool hook when required."""
+        canonical_tool_call_id = tool_call_id or tool_call.tool_call_id or f"runtime-tool-{uuid4().hex}"
+        canonical_tool_call = replace(tool_call, tool_call_id=canonical_tool_call_id)
+        execution_intent = ToolExecutionIntent.from_call(
+            canonical_tool_call,
+            tool.definition,
+            tool_call_id=canonical_tool_call_id,
+        )
+        intent_payload = execution_intent.metadata_payload()
+        session = replace(
+            session,
+            metadata=session_metadata_with_runtime_state_updates(
+                session.metadata,
+                updates={"pending_tool_intent": intent_payload},
+            ),
+        )
+        persist_tool_execution_intent(self._session_store, self._workspace, session, intent_payload)
+        return canonical_tool_call, canonical_tool_call_id, intent_payload, session
+
+    def _emit_started_tool_event(
+        self,
+        *,
+        session: SessionState,
+        tool_call: ToolCall,
+        tool_call_id: str,
+        execution_intent_payload: dict[str, object] | None = None,
+    ) -> Generator[RuntimeStreamChunk, None, int]:
+        """Persist and yield one canonical ``runtime.tool_started`` event."""
+        sanitized_args = sanitize_tool_arguments(dict(tool_call.arguments))
+        started_display = build_tool_display(tool_call.tool_name, sanitized_args)
+        started_status = build_tool_status(
+            tool_call.tool_name,
+            tool_call_id,
+            phase="running",
+            status="running",
+            display=started_display,
+        )
+        payload: dict[str, object] = {
+            "tool": tool_call.tool_name,
+            "tool_call_id": tool_call_id,
+            "display": started_display,
+            "tool_status": started_status,
+        }
+        if execution_intent_payload is not None:
+            payload["execution_intent"] = execution_intent_payload
+        envelope = self._persist_event(
+            session_id=session.session.id,
+            event_type=RUNTIME_TOOL_STARTED,
+            source="runtime",
+            payload=payload,
+        )
+        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+        return envelope.sequence
+
     def execute_approved_tool_call(
         self,
         *,
@@ -991,37 +1053,18 @@ class RuntimeRunLoopCoordinator:
             return
 
         tool_timeout = runtime.effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
-        explicit_tool_call_id = tool_call.tool_call_id
-        tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
-        start_args = dict(tool_call.arguments)
-        started_display = build_tool_display(tool_call.tool_name, start_args)
-        execution_intent = ToolExecutionIntent.from_call(
-            tool_call,
-            tool.definition,
+        tool_call, tool_call_id, intent_payload, _ = self._persist_resolved_tool_intent(
+            session=session,
+            tool=tool,
+            tool_call=tool_call,
+            tool_call_id=tool_call.tool_call_id,
+        )
+        sequence = yield from self._emit_started_tool_event(
+            session=session,
+            tool_call=tool_call,
             tool_call_id=tool_call_id,
+            execution_intent_payload=intent_payload,
         )
-        persist_tool_execution_intent(self._session_store, self._workspace, session, execution_intent.metadata_payload())
-        started_status = build_tool_status(
-            tool_call.tool_name,
-            tool_call_id,
-            phase="running",
-            status="running",
-            display=started_display,
-        )
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type=RUNTIME_TOOL_STARTED,
-            source="runtime",
-            payload={
-                "tool": tool_call.tool_name,
-                "tool_call_id": tool_call_id,
-                "execution_intent": execution_intent.metadata_payload(),
-                "display": started_display,
-                "tool_status": started_status,
-            },
-        )
-        sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
 
         if _is_abort_signal_requested(abort_signal):
             yield from self._started_tool_abort_chunks(
@@ -1594,20 +1637,12 @@ class RuntimeRunLoopCoordinator:
             if action == "continue":
                 continue
 
-            execution_intent = ToolExecutionIntent.from_call(
-                plan_tool_call,
-                tool.definition,
+            plan_tool_call, tool_call_id, _intent_payload, session = self._persist_resolved_tool_intent(
+                session=session,
+                tool=tool,
+                tool_call=plan_tool_call,
                 tool_call_id=tool_call_id,
             )
-            intent_payload = execution_intent.metadata_payload()
-            session = replace(
-                session,
-                metadata=session_metadata_with_runtime_state_updates(
-                    session.metadata,
-                    updates={"pending_tool_intent": intent_payload},
-                ),
-            )
-            persist_tool_execution_intent(self._session_store, self._workspace, session, intent_payload)
             sequence, verdict = yield from self._run_tool_hook_phase(
                 session=session,
                 sequence=sequence,
@@ -2887,28 +2922,11 @@ class RuntimeRunLoopCoordinator:
         active_graph_request: GraphRunRequest,
         tool_exception_recovery_enabled: bool,
     ) -> Generator[RuntimeStreamChunk, None, tuple[str, ToolResult | None, SessionState, int]]:
-        start_args = dict(plan_tool_call.arguments)
-        started_display = build_tool_display(plan_tool_call.tool_name, start_args)
-        started_status = build_tool_status(
-            plan_tool_call.tool_name,
-            tool_call_id,
-            phase="running",
-            status="running",
-            display=started_display,
+        sequence = yield from self._emit_started_tool_event(
+            session=session,
+            tool_call=plan_tool_call,
+            tool_call_id=tool_call_id,
         )
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type=RUNTIME_TOOL_STARTED,
-            source="runtime",
-            payload={
-                "tool": plan_tool_call.tool_name,
-                "tool_call_id": tool_call_id,
-                "display": started_display,
-                "tool_status": started_status,
-            },
-        )
-        sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         if _is_abort_requested(active_graph_request):
             yield from self._started_tool_abort_chunks(
                 session=session,
@@ -3489,20 +3507,12 @@ class RuntimeRunLoopCoordinator:
         if permission_action != "ok":
             return
 
-        execution_intent = ToolExecutionIntent.from_call(
-            inner_call,
-            tool.definition,
-            tool_call_id=outer_call_id or f"runtime-tool-{uuid4().hex}",
+        inner_call, outer_call_id, _intent_payload, session = self._persist_resolved_tool_intent(
+            session=session,
+            tool=tool,
+            tool_call=inner_call,
+            tool_call_id=outer_call_id,
         )
-        intent_payload = execution_intent.metadata_payload()
-        session = replace(
-            session,
-            metadata=session_metadata_with_runtime_state_updates(
-                session.metadata,
-                updates={"pending_tool_intent": intent_payload},
-            ),
-        )
-        persist_tool_execution_intent(self._session_store, self._workspace, session, intent_payload)
         pre_hook_outcome = run_tool_hooks_for_session(
             hooks=self._config.hooks,
             workspace=self._workspace,
@@ -3541,34 +3551,11 @@ class RuntimeRunLoopCoordinator:
             return
 
         tool_timeout = runtime.effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
-        start_args = dict(inner_call.arguments)
-        started_display = build_tool_display(inner_name, start_args)
-        started_status = build_tool_status(
-            inner_name,
-            outer_call_id,
-            phase="running",
-            status="running",
-            display=started_display,
+        sequence = yield from self._emit_started_tool_event(
+            session=session,
+            tool_call=inner_call,
+            tool_call_id=outer_call_id,
         )
-        execution_intent = ToolExecutionIntent.from_call(
-            inner_call,
-            tool.definition,
-            tool_call_id=outer_call_id or f"runtime-tool-{uuid4().hex}",
-        )
-        persist_tool_execution_intent(self._session_store, self._workspace, session, execution_intent.metadata_payload())
-        envelope = self._persist_event(
-            session_id=session.session.id,
-            event_type=RUNTIME_TOOL_STARTED,
-            source="runtime",
-            payload={
-                "tool": inner_name,
-                "tool_call_id": outer_call_id,
-                "display": started_display,
-                "tool_status": started_status,
-            },
-        )
-        sequence = envelope.sequence
-        yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         if _is_abort_signal_requested(abort_signal):
             yield from self._started_tool_abort_chunks(
                 session=session,

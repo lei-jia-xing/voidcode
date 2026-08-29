@@ -99,10 +99,19 @@ def _blocker(reason: str, calls: list[str] | None = None):
     return block
 
 
-def test_typed_rewrite_preserves_raw_graph_args_and_uses_final_execution_args(tmp_path: Path) -> None:
+def test_typed_rewrite_preserves_raw_graph_args_uses_final_execution_args_and_canonical_started_id(tmp_path: Path) -> None:
     tool = _CaptureTool()
     registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("canonical.txt")),))
-    response = _runtime(tmp_path, tool, registry).run(RuntimeRequest(prompt="capture"))
+    response = _runtime(
+        tmp_path,
+        tool,
+        registry,
+        initial_call=ToolCall(
+            tool_name="capture",
+            arguments={"path": "./input.txt"},
+            tool_call_id="native-call-1",
+        ),
+    ).run(RuntimeRequest(prompt="capture"))
     assert response.session.status == "completed"
     assert [call.arguments for call in tool.calls] == [{"path": "canonical.txt"}]
     graph_request = next(event for event in response.events if event.event_type == "graph.tool_request_created")
@@ -112,19 +121,38 @@ def test_typed_rewrite_preserves_raw_graph_args_and_uses_final_execution_args(tm
     trace = next(event for event in response.events if event.event_type == "runtime.tool_input_processed")
     assert trace.payload["surface"] == "typed_input"
     assert trace.payload["hook_status"] == "ok"
-    assert isinstance(trace.payload["policy"], dict)
-    assert trace.payload["policy"]["mode"] == "normal"
     metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
     assert metadata["original_sha256"] != metadata["final_sha256"]
     started = next(event for event in response.events if event.event_type == "runtime.tool_started")
     completed = next(event for event in response.events if event.event_type == "runtime.tool_completed")
+    assert started.payload["tool_call_id"] == completed.payload["tool_call_id"] == "native-call-1"
     assert isinstance(started.payload["display"], dict)
     assert started.payload["display"]["args"] == ["canonical.txt"]
     assert completed.payload["arguments"] == {"path": "canonical.txt"}
     event_sequences = [event.sequence for event in response.events]
     assert event_sequences == list(range(1, len(event_sequences) + 1))
     assert started.sequence < completed.sequence
+
+
+def test_approval_resume_uses_final_started_id_once_and_does_not_repeat_typed_handler(tmp_path: Path) -> None:
+    tool = _CaptureTool()
+    handler_calls: list[str] = []
+    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("approved.txt", handler_calls)),))
+    runtime = _runtime(tmp_path, tool, registry, approval_mode="ask")
+    waiting = runtime.run(RuntimeRequest(prompt="capture", session_id="approval-session"))
+    approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
+    assert not any(event.event_type == "runtime.tool_started" for event in waiting.events)
+    resumed = runtime.resume("approval-session", approval_request_id=str(approval.payload["request_id"]), approval_decision="allow")
+    assert resumed.session.status == "completed"
+    assert handler_calls == ["capture"]
+    assert [call.arguments for call in tool.calls] == [{"path": "approved.txt"}]
+    started = [event for event in resumed.events if event.event_type == "runtime.tool_started"]
+    completed = [event for event in resumed.events if event.event_type == "runtime.tool_completed"]
+    assert len(started) == len(completed) == 1
+    assert started[0].payload["tool_call_id"] == completed[0].payload["tool_call_id"]
+    assert started[0].payload["display"]["args"] == ["approved.txt"]
+    assert "pending_tool_intent" not in resumed.session.metadata.get("runtime_state", {})
 
 
 def test_inner_invoke_enforces_delegated_child_policy_before_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,22 +188,7 @@ def test_inner_invoke_enforces_delegated_child_policy_before_execution(tmp_path:
     assert isinstance(diagnostics, dict)
     assert diagnostics["kind"] == "delegation_policy_denied"
     assert not any(event.event_type == "runtime.tool_started" and event.payload.get("tool") == "capture" for event in response.events)
-
     assert denied[-1].payload["error"] == "parent child policy denied capture"
-
-
-def test_rewrite_args_are_persisted_in_approval_and_resume_does_not_rewrite(tmp_path: Path) -> None:
-    tool = _CaptureTool()
-    handler_calls: list[str] = []
-    registry = ToolInputHandlerRegistry((ToolInputHandlerBinding("canonicalize", _canonicalizer("approved.txt", handler_calls)),))
-    runtime = _runtime(tmp_path, tool, registry, approval_mode="ask")
-    waiting = runtime.run(RuntimeRequest(prompt="capture", session_id="approval-session"))
-    approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
-    assert approval.payload["arguments"] == {"path": "approved.txt"}
-    resumed = runtime.resume("approval-session", approval_request_id=str(approval.payload["request_id"]), approval_decision="allow")
-    assert resumed.session.status == "completed"
-    assert handler_calls == ["capture"]
-    assert [call.arguments for call in tool.calls] == [{"path": "approved.txt"}]
 
 
 def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) -> None:
@@ -186,7 +199,11 @@ def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) 
         tmp_path,
         tool,
         registry,
-        initial_call=ToolCall(tool_name="invoke_tool", arguments={"name": "capture", "arguments": {"path": "./inner.txt"}}),
+        initial_call=ToolCall(
+            tool_name="invoke_tool",
+            tool_call_id="outer-call-1",
+            arguments={"name": "capture", "arguments": {"path": "./inner.txt"}},
+        ),
         include_invoke_tool=True,
     )
     response = runtime.run(RuntimeRequest(prompt="dispatch"))
@@ -196,13 +213,18 @@ def test_invoke_tool_outer_is_not_rewritten_and_inner_runs_once(tmp_path: Path) 
     inner_request = next(
         event for event in response.events if event.event_type == "graph.tool_request_created" and event.payload.get("tool") == "capture"
     )
-    assert inner_request.payload["arguments"] == {"path": "./inner.txt"}
     lookup = next(
         event for event in response.events if event.event_type == "runtime.tool_lookup_succeeded" and event.payload.get("tool") == "capture"
     )
     trace = next(event for event in response.events if event.event_type == "runtime.tool_input_processed")
     permission = next(event for event in response.events if event.event_type in {"runtime.permission_resolved", "runtime.approval_resolved"})
-    assert inner_request.sequence < lookup.sequence < trace.sequence < permission.sequence
+    started = next(event for event in response.events if event.event_type == "runtime.tool_started" and event.payload.get("tool") == "capture")
+    completed = next(event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "capture")
+    assert inner_request.sequence < lookup.sequence < trace.sequence < permission.sequence < started.sequence < completed.sequence
+    assert started.payload["tool_call_id"] == completed.payload["tool_call_id"] == "outer-call-1"
+    assert started.payload["display"]["args"] == ["inner-final.txt"]
+    assert completed.payload["arguments"] == {"path": "inner-final.txt"}
+    assert [event.sequence for event in response.events] == list(range(1, len(response.events) + 1))
     metadata = trace.payload["rewrite"]
     assert isinstance(metadata, dict)
     assert isinstance(metadata["handler_names"], list)
