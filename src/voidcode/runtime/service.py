@@ -112,6 +112,7 @@ from .agent_capability import (
     agent_mcp_binding_payload,
     validate_agent_capability_snapshot,
 )
+from .background_facade import _RuntimeBackgroundTaskFacade
 from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .bundle import (
     SessionBundle,
@@ -597,6 +598,7 @@ class VoidCodeRuntime(RuntimeSurface):
     _run_loop_coordinator: RuntimeRunLoopCoordinator
     _resume_coordinator: RuntimeResumeCoordinator
     _background_task_supervisor: RuntimeBackgroundTaskSupervisor
+    _background_task_facade: _RuntimeBackgroundTaskFacade
     _background_process_manager: BackgroundProcessManager
     _context_transform_registry: RuntimeContextTransformRegistry
     _tool_result_handler_registry: ToolResultHandlerRegistry
@@ -723,6 +725,7 @@ class VoidCodeRuntime(RuntimeSurface):
             config=self._config,
             acp_adapter=self._acp_adapter,
         )
+        self._background_task_facade = _RuntimeBackgroundTaskFacade(self._background_task_supervisor)
         self._run_loop_coordinator = RuntimeRunLoopCoordinator(
             self,
             session_store=self._session_store,
@@ -808,7 +811,7 @@ class VoidCodeRuntime(RuntimeSurface):
         this returns, every task row is terminal and all child/background-task
         results are durable — no pending worker writes can be lost to teardown.
         """
-        self._background_task_supervisor.shutdown(timeout_seconds=timeout_seconds)
+        self._background_task_facade.shutdown(timeout_seconds=timeout_seconds)
 
     def _tool_catalog_lookup(self, tool_name: str) -> ToolDefinition | None:
         """Read-only registry lookup for on-demand tool documentation.
@@ -2717,7 +2720,7 @@ class VoidCodeRuntime(RuntimeSurface):
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState:
         validated_request = self._validated_request(request)
-        return self._background_task_supervisor.start_background_task(validated_request)
+        return self._background_task_facade.start(validated_request)
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
@@ -2827,10 +2830,10 @@ class VoidCodeRuntime(RuntimeSurface):
         )
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
-        return self._background_task_supervisor.cancel_background_task(task_id)
+        return self._background_task_facade.cancel(task_id)
 
     def retry_background_task(self, task_id: str) -> BackgroundTaskState:
-        return self._background_task_supervisor.retry_background_task(task_id)
+        return self._background_task_facade.retry(task_id)
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
         """Steer a keep-alive background task with a new instruction.
@@ -2839,7 +2842,7 @@ class VoidCodeRuntime(RuntimeSurface):
         keep-alive and currently ``idle`` (or ``interrupted``, treated as a
         resumable breakpoint) and the content must be non-empty.
         """
-        return self._background_task_supervisor.steer_background_task(task_id, content)
+        return self._background_task_facade.steer(task_id, content)
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult:
         delegated_task = self._session_store.load_background_task_by_child_session(
