@@ -10132,6 +10132,14 @@ def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
         workspace=tmp_path,
         graph=_ApprovalThenCaptureSkillGraph(),
         mcp_manager=mcp_manager,
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_start=((sys.executable, "-c", "pass"),),
+                on_session_end=((sys.executable, "-c", "pass"),),
+            ),
+        ),
         permission_policy=PermissionPolicy(mode="ask"),
     )
 
@@ -10139,6 +10147,7 @@ def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
 
     assert waiting.session.status == "waiting"
     assert mcp_manager.release_session_ids == []
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in waiting.events) == 1
 
     resumed = runtime.resume(
         "mcp-approval-waiting",
@@ -10148,7 +10157,68 @@ def test_runtime_waiting_approval_preserves_mcp_session_until_resume_completion(
 
     assert resumed.session.status == "completed"
     assert mcp_manager.release_session_ids == ["mcp-approval-waiting"]
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in resumed.events) == 1
+    resumed_suffix = [event for event in resumed.events if event.sequence > waiting.events[-1].sequence]
+    suffix_types = [event.event_type for event in resumed_suffix]
+    assert RUNTIME_SESSION_ENDED in suffix_types
+    assert suffix_types[-1] == RUNTIME_MCP_SERVER_STOPPED
+    assert suffix_types.index(RUNTIME_SESSION_ENDED) < suffix_types.index(RUNTIME_MCP_SERVER_STOPPED)
     assert any(event.event_type == RUNTIME_MCP_SERVER_STOPPED for event in resumed.events)
+
+
+def test_runtime_waiting_question_releases_mcp_after_resume_without_duplicate_session_start(
+    tmp_path: Path,
+) -> None:
+    class _RecordingMcpManager(_NoopMcpManager):
+        def __init__(self) -> None:
+            self.release_session_ids: list[str] = []
+
+        def release_session(self, *, session_id: str) -> tuple[McpRuntimeEvent, ...]:
+            self.release_session_ids.append(session_id)
+            return (
+                McpRuntimeEvent(
+                    event_type=RUNTIME_MCP_SERVER_STOPPED,
+                    payload={"server": "echo", "workspace_root": str(tmp_path)},
+                ),
+            )
+
+    mcp_manager = _RecordingMcpManager()
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        mcp_manager=mcp_manager,
+        config=RuntimeConfig(
+            approval_mode="ask",
+            hooks=RuntimeHooksConfig(
+                enabled=True,
+                on_session_start=((sys.executable, "-c", "pass"),),
+                on_session_end=((sys.executable, "-c", "pass"),),
+            ),
+        ),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    waiting = runtime.run(RuntimeRequest(prompt="go", session_id="mcp-question-waiting"))
+
+    assert waiting.session.status == "waiting"
+    assert mcp_manager.release_session_ids == []
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in waiting.events) == 1
+    question_request_id = str(waiting.events[-1].payload["request_id"])
+
+    resumed = runtime.answer_question(
+        session_id="mcp-question-waiting",
+        question_request_id=question_request_id,
+        responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+    )
+
+    assert resumed.session.status == "completed"
+    assert mcp_manager.release_session_ids == ["mcp-question-waiting"]
+    assert sum(event.event_type == RUNTIME_SESSION_STARTED for event in resumed.events) == 1
+    resumed_suffix = [event for event in resumed.events if event.sequence > waiting.events[-1].sequence]
+    suffix_types = [event.event_type for event in resumed_suffix]
+    assert RUNTIME_SESSION_ENDED in suffix_types
+    assert suffix_types[-1] == RUNTIME_MCP_SERVER_STOPPED
+    assert suffix_types.index(RUNTIME_SESSION_ENDED) < suffix_types.index(RUNTIME_MCP_SERVER_STOPPED)
 
 
 def test_runtime_emits_mcp_failed_and_continues_run_on_startup_refresh(
@@ -16220,6 +16290,24 @@ def test_answer_question_emits_single_question_tool_completed_event(tmp_path: Pa
 
     assert len(question_tool_events) == 1
     assert len({event.sequence for event in question_tool_events}) == 1
+
+
+def test_runtime_answer_question_rejects_stale_request_id(tmp_path: Path) -> None:
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        graph=_QuestionThenDoneGraph(),
+        config=RuntimeConfig(approval_mode="ask"),
+        permission_policy=PermissionPolicy(mode="ask"),
+    )
+
+    _ = runtime.run(RuntimeRequest(prompt="go", session_id="stale-question-request"))
+
+    with pytest.raises(ValueError, match="question request id does not match pending session question"):
+        _ = runtime.answer_question(
+            session_id="stale-question-request",
+            question_request_id="stale-question-id",
+            responses=(QuestionResponse(header="Runtime path", answers=("Reuse existing",)),),
+        )
 
 
 def test_answered_question_does_not_override_later_pending_approval(tmp_path: Path) -> None:
