@@ -4,7 +4,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..graph.contracts import GraphRunRequest
 from ..provider.protocol import ProviderAbortSignal
@@ -1126,6 +1126,35 @@ class RuntimeResumeCoordinator:
             response=response,
         )
 
+    @staticmethod
+    def _checkpoint_state_from_payload(
+        *,
+        checkpoint_payload: dict[str, object],
+        stored_metadata: dict[str, object],
+        resume_label: Literal["approval", "question"],
+    ) -> ApprovalResumeCheckpointState:
+        prefix = f"persisted {resume_label} resume checkpoint"
+        prompt = checkpoint_payload.get("prompt")
+        session_metadata = checkpoint_payload.get("session_metadata")
+        raw_tool_results = checkpoint_payload.get("tool_results")
+        if not isinstance(prompt, str):
+            raise ValueError(f"{prefix} prompt must be a string")
+        if not isinstance(session_metadata, dict):
+            raise ValueError(f"{prefix} session_metadata must be an object")
+        recovered_metadata = verified_checkpoint_session_metadata(
+            checkpoint_metadata=cast(dict[str, object], session_metadata),
+            stored_metadata=stored_metadata,
+        )
+        if recovered_metadata is None:
+            raise ValueError(f"{prefix} session_metadata does not match session")
+        if not isinstance(raw_tool_results, list):
+            raise ValueError(f"{prefix} tool_results must be a list")
+        return ApprovalResumeCheckpointState(
+            prompt=prompt,
+            session_metadata=recovered_metadata,
+            tool_results=RuntimeResumeCoordinator.tool_results_from_checkpoint(cast(list[object], raw_tool_results)),
+        )
+
     def approval_resume_state_from_checkpoint(
         self,
         *,
@@ -1148,25 +1177,10 @@ class RuntimeResumeCoordinator:
         stored_snapshot_hash = stored_snapshot_payload.get("snapshot_hash") if isinstance(stored_snapshot_payload, dict) else None
         if checkpoint_snapshot_hash is not None and stored_snapshot_hash is not None and checkpoint_snapshot_hash != stored_snapshot_hash:
             raise ValueError("persisted approval resume checkpoint skill snapshot hash does not match session")
-        prompt = checkpoint_payload.get("prompt")
-        session_metadata = checkpoint_payload.get("session_metadata")
-        raw_tool_results = checkpoint_payload.get("tool_results")
-        if not isinstance(prompt, str):
-            raise ValueError("persisted approval resume checkpoint prompt must be a string")
-        if not isinstance(session_metadata, dict):
-            raise ValueError("persisted approval resume checkpoint session_metadata must be an object")
-        recovered_metadata = verified_checkpoint_session_metadata(
-            checkpoint_metadata=cast(dict[str, object], session_metadata),
+        return self._checkpoint_state_from_payload(
+            checkpoint_payload=checkpoint_payload,
             stored_metadata=stored_metadata,
-        )
-        if recovered_metadata is None:
-            raise ValueError("persisted approval resume checkpoint session_metadata does not match session")
-        if not isinstance(raw_tool_results, list):
-            raise ValueError("persisted approval resume checkpoint tool_results must be a list")
-        return ApprovalResumeCheckpointState(
-            prompt=prompt,
-            session_metadata=recovered_metadata,
-            tool_results=self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)),
+            resume_label="approval",
         )
 
     def question_resume_state_from_checkpoint(
@@ -1183,25 +1197,10 @@ class RuntimeResumeCoordinator:
         checkpoint_payload = checkpoint_envelope.payload
         if checkpoint_payload.get("pending_question_request_id") != pending.request_id:
             raise ValueError("persisted question resume checkpoint request id does not match pending question")
-        prompt = checkpoint_payload.get("prompt")
-        session_metadata = checkpoint_payload.get("session_metadata")
-        raw_tool_results = checkpoint_payload.get("tool_results")
-        if not isinstance(prompt, str):
-            raise ValueError("persisted question resume checkpoint prompt must be a string")
-        if not isinstance(session_metadata, dict):
-            raise ValueError("persisted question resume checkpoint session_metadata must be an object")
-        recovered_metadata = verified_checkpoint_session_metadata(
-            checkpoint_metadata=cast(dict[str, object], session_metadata),
+        return self._checkpoint_state_from_payload(
+            checkpoint_payload=checkpoint_payload,
             stored_metadata=stored_metadata,
-        )
-        if recovered_metadata is None:
-            raise ValueError("persisted question resume checkpoint session_metadata does not match session")
-        if not isinstance(raw_tool_results, list):
-            raise ValueError("persisted question resume checkpoint tool_results must be a list")
-        return ApprovalResumeCheckpointState(
-            prompt=prompt,
-            session_metadata=recovered_metadata,
-            tool_results=self.tool_results_from_checkpoint(cast(list[object], raw_tool_results)),
+            resume_label="question",
         )
 
     @staticmethod
