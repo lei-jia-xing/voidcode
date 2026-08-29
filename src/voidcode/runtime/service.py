@@ -2470,7 +2470,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     output=response.output,
                 )
         if response.session.status == "waiting":
-            pending_question = self._pending_question_from_response(response)
+            pending_question = pending_question_from_response(response)
             if pending_question is not None:
                 self._session_store.save_pending_question(
                     workspace=self._workspace,
@@ -2479,7 +2479,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     pending_question=pending_question,
                 )
                 return
-            pending_approval = self._pending_approval_from_response(response)
+            pending_approval = pending_approval_from_response(response)
             self._session_store.save_pending_approval(
                 workspace=self._workspace,
                 request=request,
@@ -4398,17 +4398,17 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> RuntimeResponse:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
-            checkpoint = self._load_resume_checkpoint(session_id=session_id)
+            checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-                return self._resume_provider_failure_response(
+                return self._resume_coordinator.resume_provider_failure_response(
                     session_id=session_id,
                     checkpoint=checkpoint,
                     finalize_background_task=True,
                 )
             if checkpoint is not None and checkpoint.get("kind") == "interrupted":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
-                return self._resume_interrupted_response(
+                return self._resume_coordinator.resume_interrupted_response(
                     session_id=session_id,
                     checkpoint=checkpoint,
                     finalize_background_task=True,
@@ -4421,7 +4421,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        _, response = self._resume_pending_approval_response(
+        _, response = self._resume_coordinator.resume_pending_approval_response(
             session_id=session_id,
             approval_request_id=approval_request_id,
             approval_decision=approval_decision,
@@ -4438,7 +4438,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> Iterator[RuntimeStreamChunk]:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
-            checkpoint = self._load_resume_checkpoint(session_id=session_id)
+            checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
                 run_id = os.urandom(8).hex()
@@ -4452,7 +4452,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     },
                 )
                 try:
-                    yield from self._resume_provider_failure_stream(
+                    yield from self._resume_coordinator.resume_provider_failure_stream(
                         session_id=session_id,
                         checkpoint=checkpoint,
                         run_id=run_id,
@@ -4475,7 +4475,7 @@ class VoidCodeRuntime(RuntimeSurface):
                     },
                 )
                 try:
-                    yield from self._resume_interrupted_stream(
+                    yield from self._resume_coordinator.resume_interrupted_stream(
                         session_id=session_id,
                         checkpoint=checkpoint,
                         run_id=run_id,
@@ -4507,7 +4507,7 @@ class VoidCodeRuntime(RuntimeSurface):
             },
         )
         try:
-            yield from self._resume_pending_approval_stream(
+            yield from self._resume_coordinator.resume_pending_approval_stream(
                 session_id=session_id,
                 approval_request_id=approval_request_id,
                 approval_decision=approval_decision,
@@ -4605,7 +4605,7 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             question_request_id=question_request_id,
         )
-        _, response = self._answer_pending_question_response(
+        _, response = self._resume_coordinator.answer_pending_question_response(
             session_id=session_id,
             question_request_id=question_request_id,
             responses=responses,
@@ -4637,7 +4637,7 @@ class VoidCodeRuntime(RuntimeSurface):
             },
         )
         try:
-            yield from self._answer_pending_question_stream(
+            yield from self._resume_coordinator.answer_pending_question_stream(
                 session_id=session_id,
                 question_request_id=question_request_id,
                 responses=responses,
@@ -4647,244 +4647,6 @@ class VoidCodeRuntime(RuntimeSurface):
             )
         finally:
             self._unregister_active_session_id(session_id, run_id=run_id)
-
-    def _pending_approval_from_response(self, response: RuntimeResponse) -> PendingApproval:
-        return pending_approval_from_response(response)
-
-    def _pending_question_from_response(self, response: RuntimeResponse) -> PendingQuestion | None:
-        return pending_question_from_response(response)
-
-    def _resume_pending_approval_stream(
-        self,
-        *,
-        session_id: str,
-        approval_request_id: str,
-        approval_decision: PermissionResolution,
-        run_id: str | None = None,
-        abort_signal: ProviderAbortSignal | None = None,
-        finalize_background_task: bool = False,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._resume_coordinator.resume_pending_approval_stream(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
-            approval_decision=approval_decision,
-            run_id=run_id,
-            abort_signal=abort_signal,
-            finalize_background_task=finalize_background_task,
-        )
-
-    def _resume_pending_approval_response(
-        self,
-        *,
-        session_id: str,
-        approval_request_id: str,
-        approval_decision: PermissionResolution,
-    ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
-        return self._resume_coordinator.resume_pending_approval_response(
-            session_id=session_id,
-            approval_request_id=approval_request_id,
-            approval_decision=approval_decision,
-        )
-
-    def _answer_pending_question_stream(
-        self,
-        *,
-        session_id: str,
-        question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-        run_id: str | None = None,
-        abort_signal: ProviderAbortSignal | None = None,
-        finalize_background_task: bool = False,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._resume_coordinator.answer_pending_question_stream(
-            session_id=session_id,
-            question_request_id=question_request_id,
-            responses=responses,
-            run_id=run_id,
-            abort_signal=abort_signal,
-            finalize_background_task=finalize_background_task,
-        )
-
-    def _answer_pending_question_response(
-        self,
-        *,
-        session_id: str,
-        question_request_id: str,
-        responses: tuple[QuestionResponse, ...],
-    ) -> tuple[tuple[EventEnvelope, ...], RuntimeResponse]:
-        return self._resume_coordinator.answer_pending_question_response(
-            session_id=session_id,
-            question_request_id=question_request_id,
-            responses=responses,
-        )
-
-    def _answer_pending_question_impl(
-        self,
-        *,
-        stored: RuntimeResponse,
-        pending: PendingQuestion,
-        responses: tuple[QuestionResponse, ...],
-        checkpoint: dict[str, object] | None,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._resume_coordinator.answer_pending_question_impl(
-            stored=stored,
-            pending=pending,
-            responses=responses,
-            checkpoint=checkpoint,
-        )
-
-    def _response_from_resumed_chunks(
-        self,
-        *,
-        stored_response: RuntimeResponse,
-        streamed_events: list[EventEnvelope],
-        output: str | None,
-        final_session: SessionState | None,
-    ) -> RuntimeResponse:
-        return self._resume_coordinator.response_from_resumed_chunks(
-            stored_response=stored_response,
-            streamed_events=streamed_events,
-            output=output,
-            final_session=final_session,
-        )
-
-    def _resume_pending_approval_impl(
-        self,
-        *,
-        stored: RuntimeResponse,
-        pending: PendingApproval,
-        approval_decision: PermissionResolution,
-        checkpoint: dict[str, object] | None,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._resume_coordinator.resume_pending_approval_impl(
-            stored=stored,
-            pending=pending,
-            approval_decision=approval_decision,
-            checkpoint=checkpoint,
-        )
-
-    def _approval_resume_state_from_checkpoint(
-        self,
-        *,
-        checkpoint: dict[str, object] | None,
-        pending: PendingApproval,
-        stored_metadata: dict[str, object],
-    ) -> _ApprovalResumeCheckpointState | None:
-        state = self._resume_coordinator.approval_resume_state_from_checkpoint(
-            checkpoint=checkpoint,
-            pending=pending,
-            stored_metadata=stored_metadata,
-        )
-        if state is None:
-            return None
-        return _ApprovalResumeCheckpointState(
-            prompt=state.prompt,
-            session_metadata=state.session_metadata,
-            tool_results=state.tool_results,
-        )
-
-    def _question_resume_state_from_checkpoint(
-        self,
-        *,
-        checkpoint: dict[str, object] | None,
-        pending: PendingQuestion,
-        stored_metadata: dict[str, object],
-    ) -> _ApprovalResumeCheckpointState | None:
-        state = self._resume_coordinator.question_resume_state_from_checkpoint(
-            checkpoint=checkpoint,
-            pending=pending,
-            stored_metadata=stored_metadata,
-        )
-        if state is None:
-            return None
-        return _ApprovalResumeCheckpointState(
-            prompt=state.prompt,
-            session_metadata=state.session_metadata,
-            tool_results=state.tool_results,
-        )
-
-    @staticmethod
-    def _validated_resume_checkpoint_envelope(
-        *, checkpoint: dict[str, object] | None, expected_kind: str
-    ) -> _PersistedResumeCheckpointEnvelope | None:
-        envelope = RuntimeResumeCoordinator.validated_resume_checkpoint_envelope(
-            checkpoint=checkpoint,
-            expected_kind=expected_kind,
-        )
-        if envelope is None:
-            return None
-        return _PersistedResumeCheckpointEnvelope(
-            kind=envelope.kind,
-            version=envelope.version,
-            payload=envelope.payload,
-        )
-
-    def _load_resume_checkpoint(self, *, session_id: str) -> dict[str, object] | None:
-        return self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
-
-    def _resume_provider_failure_response(
-        self,
-        *,
-        session_id: str,
-        checkpoint: dict[str, object],
-        finalize_background_task: bool = False,
-    ) -> RuntimeResponse:
-        return self._resume_coordinator.resume_provider_failure_response(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            finalize_background_task=finalize_background_task,
-        )
-
-    def _resume_interrupted_response(
-        self,
-        *,
-        session_id: str,
-        checkpoint: dict[str, object],
-        finalize_background_task: bool = False,
-    ) -> RuntimeResponse:
-        return self._resume_coordinator.resume_interrupted_response(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            finalize_background_task=finalize_background_task,
-        )
-
-    def _resume_provider_failure_stream(
-        self,
-        *,
-        session_id: str,
-        checkpoint: dict[str, object],
-        run_id: str | None = None,
-        abort_signal: ProviderAbortSignal | None = None,
-        finalize_background_task: bool = False,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._resume_coordinator.resume_provider_failure_stream(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            run_id=run_id,
-            abort_signal=abort_signal,
-            finalize_background_task=finalize_background_task,
-        )
-
-    def _resume_interrupted_stream(
-        self,
-        *,
-        session_id: str,
-        checkpoint: dict[str, object],
-        run_id: str | None = None,
-        abort_signal: ProviderAbortSignal | None = None,
-        finalize_background_task: bool = False,
-    ) -> Iterator[RuntimeStreamChunk]:
-        yield from self._resume_coordinator.resume_interrupted_stream(
-            session_id=session_id,
-            checkpoint=checkpoint,
-            run_id=run_id,
-            abort_signal=abort_signal,
-            finalize_background_task=finalize_background_task,
-        )
-
-    @staticmethod
-    def _tool_results_from_checkpoint(raw_tool_results: list[object]) -> tuple[ToolResult, ...]:
-        return RuntimeResumeCoordinator.tool_results_from_checkpoint(raw_tool_results)
 
     @staticmethod
     def _replay_response(response: RuntimeResponse) -> Iterator[RuntimeStreamChunk]:
@@ -6515,17 +6277,3 @@ class _PreparedStreamSession:
     rehydrated_tool_results: tuple[ToolResult, ...]
     resolved_hook_presets: ResolvedHookPresetSnapshot
     resolved_hook_plan: ResolvedHookPlan
-
-
-@dataclass(frozen=True, slots=True)
-class _ApprovalResumeCheckpointState:
-    prompt: str
-    session_metadata: dict[str, object]
-    tool_results: tuple[ToolResult, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _PersistedResumeCheckpointEnvelope:
-    kind: str
-    version: int
-    payload: dict[str, object]
