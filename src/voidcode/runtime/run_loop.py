@@ -587,6 +587,21 @@ class _ProviderAttemptReset:
     session: SessionState
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedToolCall:
+    """Resolved runtime tool and final call passed to the executor seam.
+
+    Each entry point owns its policy, permission, typed-input, and lifecycle
+    preconditions. Once those checks have resolved a tool and call, execution
+    must cross this one boundary so every path constructs the same canonical
+    :class:`ToolInvocation` and observes the same progress stream.
+    """
+
+    tool: Any
+    tool_call: ToolCall
+    tool_call_id: str
+
+
 def _is_tool_timeout_like_exception(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
@@ -819,27 +834,33 @@ class RuntimeRunLoopCoordinator:
         )
         return completed_chunk, failed_chunk
 
-    def _invoke_tool(
+    def _execute_resolved_tool_call(
         self,
         *,
-        tool: Any,
-        tool_call: ToolCall,
+        resolved_call: _ResolvedToolCall,
         read_paths: frozenset[str],
         read_lines: Mapping[str, frozenset[int]],
         tool_timeout: int | None,
         session: SessionState,
         start_sequence: int,
-        tool_call_id: str,
         abort_signal: ProviderAbortSignal | None,
         parent_session_id: str | None,
         delegation_depth: int,
         remaining_spawn_budget: int | None,
         model: str | None = None,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult | Exception, int]]:
+        """Execute one already-resolved call through the canonical tool boundary.
+
+        Policy, permission, typed-input, and lifecycle checks remain owned by
+        each caller. This seam begins only after those checks have resolved the
+        final tool and arguments, and centralizes immutable invocation context
+        construction plus progress persistence for native, approval-resume,
+        and ``invoke_tool`` inner calls.
+        """
         sequence = start_sequence - 1
         invocation = ToolInvocation(
-            tool_call=tool_call,
-            tool_definition=tool.definition,
+            tool_call=resolved_call.tool_call,
+            tool_definition=resolved_call.tool.definition,
             context=RuntimeToolInvocationContext(
                 session_id=session.session.id,
                 parent_session_id=parent_session_id,
@@ -853,7 +874,7 @@ class RuntimeRunLoopCoordinator:
             ),
         )
         execution = self._tool_executor.invoke(
-            tool=tool,
+            tool=resolved_call.tool,
             invocation=invocation,
         )
         while True:
@@ -865,7 +886,7 @@ class RuntimeRunLoopCoordinator:
                 session_id=session.session.id,
                 event_type=RUNTIME_TOOL_PROGRESS,
                 source="tool",
-                payload={"tool_call_id": tool_call_id, **progress.payload},
+                payload={"tool_call_id": resolved_call.tool_call_id, **progress.payload},
             )
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -1018,15 +1039,17 @@ class RuntimeRunLoopCoordinator:
                 tool_results=tuple(tool_results),
                 workspace=self._workspace,
             )
-            tool_outcome, sequence = yield from self._invoke_tool(
-                tool=tool,
-                tool_call=tool_call,
+            tool_outcome, sequence = yield from self._execute_resolved_tool_call(
+                resolved_call=_ResolvedToolCall(
+                    tool=tool,
+                    tool_call=tool_call,
+                    tool_call_id=tool_call_id,
+                ),
                 read_paths=read_tracking.read_paths,
                 read_lines=read_tracking.read_lines,
                 tool_timeout=tool_timeout,
                 session=session,
                 start_sequence=sequence + 1,
-                tool_call_id=tool_call_id,
                 abort_signal=abort_signal,
                 parent_session_id=session.session.parent_id,
                 delegation_depth=delegation_depth_from_metadata(session.metadata),
@@ -2900,15 +2923,17 @@ class RuntimeRunLoopCoordinator:
                 tool_results=tuple(tool_results),
                 workspace=self._workspace,
             )
-            tool_outcome, sequence = yield from self._invoke_tool(
-                tool=tool,
-                tool_call=plan_tool_call,
+            tool_outcome, sequence = yield from self._execute_resolved_tool_call(
+                resolved_call=_ResolvedToolCall(
+                    tool=tool,
+                    tool_call=plan_tool_call,
+                    tool_call_id=tool_call_id,
+                ),
                 read_paths=read_tracking.read_paths,
                 read_lines=read_tracking.read_lines,
                 tool_timeout=tool_timeout,
                 session=session,
                 start_sequence=sequence + 1,
-                tool_call_id=tool_call_id,
                 abort_signal=active_graph_request.abort_signal,
                 parent_session_id=session.session.parent_id,
                 delegation_depth=delegation_depth_from_metadata(session.metadata),
@@ -3559,15 +3584,17 @@ class RuntimeRunLoopCoordinator:
                 tool_results=tuple(tool_results),
                 workspace=self._workspace,
             )
-            tool_outcome, sequence = yield from self._invoke_tool(
-                tool=tool,
-                tool_call=inner_call,
+            tool_outcome, sequence = yield from self._execute_resolved_tool_call(
+                resolved_call=_ResolvedToolCall(
+                    tool=tool,
+                    tool_call=inner_call,
+                    tool_call_id=outer_call_id,
+                ),
                 read_paths=read_tracking.read_paths,
                 read_lines=read_tracking.read_lines,
                 tool_timeout=tool_timeout,
                 session=session,
                 start_sequence=sequence + 1,
-                tool_call_id=outer_call_id,
                 abort_signal=abort_signal,
                 parent_session_id=session.session.parent_id,
                 delegation_depth=delegation_depth_from_metadata(session.metadata),

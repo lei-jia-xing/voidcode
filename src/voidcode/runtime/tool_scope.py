@@ -5,7 +5,7 @@ from fnmatch import fnmatchcase
 from .config import RuntimeAgentConfig
 from .contracts import runtime_mode_from_metadata, runtime_read_only_from_metadata
 from .tool_provider import scoped_tool_registry_for_agent
-from .tool_registry import ToolPolicyDecision, ToolRegistry, tool_is_read_only_scope_passthrough
+from .tool_registry import ToolPolicyDecision, ToolRegistry
 
 
 class RuntimeToolScopeResolver:
@@ -51,18 +51,6 @@ class RuntimeToolScopeResolver:
         read_only = runtime_read_only_from_metadata(metadata)
 
         tool = registry.tools.get(tool_name)
-        # shell_exec stays callable under the read-only stance: read-only shell
-        # commands (git status, tests, etc.) remain available, while mutating
-        # uses are still denied by the permission layer's operation-class
-        # defense in depth.
-        if read_only and tool_is_read_only_scope_passthrough(tool_name):
-            return ToolPolicyDecision(
-                tool_name=tool_name,
-                allowed=True,
-                mode=mode,
-                read_only=read_only,
-                decision="allow",
-            )
         if read_only and tool is not None and not tool.definition.read_only:
             return ToolPolicyDecision(
                 tool_name=tool_name,

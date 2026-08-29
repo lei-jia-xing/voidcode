@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import pytest
+
 from voidcode.graph.contracts import GraphEvent, GraphRunRequest
 from voidcode.hook.typed import ToolInputDecision, ToolInputEvent, ToolInputHandlerBinding, ToolInputHandlerRegistry
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
@@ -120,6 +122,46 @@ def test_typed_rewrite_preserves_raw_graph_args_and_uses_final_execution_args(tm
     assert isinstance(started.payload["display"], dict)
     assert started.payload["display"]["args"] == ["canonical.txt"]
     assert completed.payload["arguments"] == {"path": "canonical.txt"}
+    event_sequences = [event.sequence for event in response.events]
+    assert event_sequences == list(range(1, len(event_sequences) + 1))
+    assert started.sequence < completed.sequence
+
+
+def test_inner_invoke_enforces_delegated_child_policy_before_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _CaptureTool()
+    runtime = _runtime(
+        tmp_path,
+        tool,
+        ToolInputHandlerRegistry(()),
+        initial_call=ToolCall(
+            tool_name="invoke_tool",
+            arguments={"name": "capture", "arguments": {"path": "inner.txt"}},
+        ),
+        include_invoke_tool=True,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "delegation_tool_policy_error",
+        lambda *, session, tool_name: "parent child policy denied capture" if tool_name == "capture" else None,
+    )
+
+    response = runtime.run(
+        RuntimeRequest(
+            prompt="dispatch from child",
+            session_id="inner-policy",
+        )
+    )
+    assert response.session.status == "completed"
+    assert tool.calls == []
+    denied = [event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "capture"]
+    assert denied
+    assert denied[-1].payload["status"] == "error"
+    diagnostics = denied[-1].payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["kind"] == "delegation_policy_denied"
+    assert not any(event.event_type == "runtime.tool_started" and event.payload.get("tool") == "capture" for event in response.events)
+
+    assert denied[-1].payload["error"] == "parent child policy denied capture"
 
 
 def test_rewrite_args_are_persisted_in_approval_and_resume_does_not_rewrite(tmp_path: Path) -> None:

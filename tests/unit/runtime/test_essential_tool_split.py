@@ -203,7 +203,8 @@ def test_tool_catalog_default_mode_keeps_full_current_registry(tmp_path: Path) -
     assert "documentation: voidcode://tool/apply_patch" in catalog
 
 
-def test_catalog_matches_provider_projection_for_read_only_scoped_registry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("metadata", [{"read_only": True}, {"mode": "plan"}])
+def test_catalog_matches_provider_projection_for_read_only_scoped_registry(tmp_path: Path, metadata: dict[str, object]) -> None:
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_ScriptedGraph(_ScriptedStep(output="done", is_finished=True)),
@@ -216,14 +217,14 @@ def test_catalog_matches_provider_projection_for_read_only_scoped_registry(tmp_p
     effective_config = runtime._initial_effective_config
     scoped_registry = runtime.tool_registry_for_effective_config(
         effective_config,
-        metadata={"read_only": True},
+        metadata=metadata,
     )
 
     provider_names = {definition.name for definition in runtime.provider_tool_definitions(scoped_registry, effective_config)}
     catalog_names = {entry.name for entry in scoped_registry.capability_catalog(essential_only=True)}
     assert provider_names == catalog_names
     assert "write" not in catalog_names
-    assert "shell_exec" in catalog_names
+    assert "shell_exec" not in catalog_names
 
 
 def test_provider_path_keeps_allowlist_required_tools_top_level(tmp_path: Path) -> None:

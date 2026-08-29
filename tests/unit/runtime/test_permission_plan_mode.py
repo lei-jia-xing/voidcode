@@ -20,7 +20,7 @@ from voidcode.runtime.permission import (
     resolve_permission,
 )
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver, operation_class_for_tool
-from voidcode.tools import AstGrepTool
+from voidcode.tools import AstGrepTool, ShellExecTool
 from voidcode.tools.contracts import ToolCall, ToolDefinition
 
 
@@ -89,6 +89,31 @@ def test_resolve_permission_read_only_denies_write_tool() -> None:
     assert outcome.pending_approval.policy_mode == "deny"
     assert outcome.pending_approval.policy_surface == "mode.plan"
     assert outcome.pending_approval.reason == PLAN_MODE_DENIAL_REASON
+
+
+def test_resolve_permission_read_only_denies_shell_execute_operation() -> None:
+    shell_tool = ShellExecTool()
+    shell = shell_tool.definition
+    call = ToolCall(tool_name="shell_exec", arguments={"command": "pwd"})
+    operation = operation_class_for_tool(
+        call.tool_name,
+        shell.read_only,
+        tool_instance=shell_tool,
+        arguments=call.arguments,
+    )
+    outcome = resolve_permission(
+        shell,
+        call,
+        policy=PermissionPolicy(mode="allow"),
+        operation_class=operation,
+        read_only=True,
+    )
+
+    assert operation == "execute"
+    assert outcome.decision == "deny"
+    assert outcome.pending_approval is not None
+    assert outcome.pending_approval.policy_surface == "mode.plan"
+    assert outcome.pending_approval.operation_class == "execute"
 
 
 def test_resolve_permission_read_only_allows_read_only_tool() -> None:

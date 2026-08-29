@@ -497,22 +497,24 @@ class _SequentialSafeBoundaryGraph(_SequentialToolGraph):
         return True
 
 
-def _approval_runtime(tmp_path: Path, *, mode: str = "ask") -> tuple[RuntimeRequestFactory, RuntimeRunner]:
+def _approval_runtime(
+    tmp_path: Path,
+    *,
+    mode: str = "ask",
+    graph: object | None = None,
+) -> tuple[RuntimeRequestFactory, RuntimeRunner]:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     permission_policy = cast(Callable[..., object], permission_module.PermissionPolicy)
     policy = permission_policy(mode=mode)
-    runtime = cast(
-        RuntimeRunner,
-        cast(
-            object,
-            runtime_class(
-                workspace=tmp_path,
-                permission_policy=policy,
-                mcp_manager=_NoopMcpManager(),
-            ),
-        ),
-    )
+    runtime_kwargs: dict[str, object] = {
+        "workspace": tmp_path,
+        "permission_policy": policy,
+        "mcp_manager": _NoopMcpManager(),
+    }
+    if graph is not None:
+        runtime_kwargs["graph"] = graph
+    runtime = cast(RuntimeRunner, cast(object, runtime_class(**runtime_kwargs)))
     return runtime_request, runtime
 
 
@@ -2898,6 +2900,24 @@ def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> N
     assert denied.events[-1].payload["status"] == "error"
     assert denied.events[-1].payload["permission_denied"] is True
     assert denied.output is None
+
+
+@pytest.mark.parametrize("metadata", [{"mode": "plan"}, {"read_only": True}])
+def test_runtime_rejects_shell_invocation_under_read_only_ceiling(tmp_path: Path, metadata: dict[str, object]) -> None:
+    command = _cwd_command()
+    runtime_request, runtime = _approval_runtime(
+        tmp_path,
+        mode="allow",
+        graph=_SingleToolGraph("shell_exec", {"command": command}),
+    )
+    with pytest.raises(ValueError, match="read-only runtime policy denies mutating tools: 'shell_exec'"):
+        runtime.run(
+            runtime_request(
+                prompt="run shell command",
+                session_id=f"shell-read-only-{len(metadata)}",
+                metadata=metadata,
+            )
+        )
 
 
 def test_runtime_emits_pre_and_post_hook_events_around_successful_tool_run(tmp_path: Path) -> None:

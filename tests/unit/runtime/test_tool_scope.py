@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from voidcode.runtime.config import RuntimeAgentConfig, RuntimeToolsConfig
-from voidcode.runtime.tool_registry import ToolRegistry, tool_is_read_only_scope_passthrough
+from voidcode.runtime.tool_registry import ToolRegistry
 from voidcode.runtime.tool_scope import RuntimeToolScopeResolver
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
@@ -23,7 +25,7 @@ class _Tool:
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = call, workspace
-        return ToolResult(content="ok")
+        return ToolResult(tool_name=self.definition.name, status="ok", content="ok")
 
 
 def _registry() -> ToolRegistry:
@@ -48,10 +50,26 @@ def test_tool_scope_resolver_applies_agent_scope_before_runtime_policy() -> None
     assert tuple(scoped.tools) == ("read",)
 
 
+@pytest.mark.parametrize("metadata", [{"mode": "normal"}, {}])
+def test_tool_scope_resolver_preserves_shell_in_normal_mode(metadata: dict[str, object]) -> None:
+    scoped = RuntimeToolScopeResolver().scope(_registry(), agent=None, metadata=metadata)
+
+    assert "shell_exec" in scoped.tools
+    assert "write" in scoped.tools
+
+
+@pytest.mark.parametrize("metadata", [{"mode": "plan"}, {"read_only": True}])
+def test_tool_scope_resolver_excludes_shell_in_read_only_modes(metadata: dict[str, object]) -> None:
+    scoped = RuntimeToolScopeResolver().scope(_registry(), agent=None, metadata=metadata)
+
+    assert "shell_exec" not in scoped.tools
+    assert "write" not in scoped.tools
+
+
 def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> None:
     resolver = RuntimeToolScopeResolver()
     registry = _registry()
-    metadata = {"mode": "plan"}
+    metadata: dict[str, object] = {"mode": "plan"}
 
     scoped = resolver.scope(registry, agent=None, metadata=metadata)
     denial = resolver.denial(
@@ -73,16 +91,7 @@ def test_tool_scope_resolver_uses_same_decision_for_schema_and_raw_call() -> Non
     }
 
 
-def test_tool_scope_resolver_preserves_shell_for_command_level_classification() -> None:
-    scoped = RuntimeToolScopeResolver().scope(
-        _registry(),
-        agent=None,
-        metadata={"read_only": True},
-    )
-
-    assert "shell_exec" in scoped.tools
-    assert "write" not in scoped.tools
-
+def test_delegation_policy_error_denies_write_for_manifest_scoped_child() -> None:
     agent = RuntimeAgentConfig(
         preset="worker",
         manifest_tool_allowlist=("read",),
@@ -124,10 +133,3 @@ def test_tool_scope_resolver_does_not_claim_delegation_for_unknown_or_allowed_to
         )
         is None
     )
-
-
-def test_read_only_scope_passthrough_is_limited_to_command_level_shell() -> None:
-    assert tool_is_read_only_scope_passthrough("shell_exec") is True
-    assert tool_is_read_only_scope_passthrough("read") is False
-    assert tool_is_read_only_scope_passthrough("write") is False
-    assert tool_is_read_only_scope_passthrough("ast_grep") is False
