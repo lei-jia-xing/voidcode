@@ -12,7 +12,7 @@ from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
 
 type ProviderMessageRole = Literal["system", "user", "assistant", "tool"]
-type ProviderStreamEventKind = Literal["delta", "content", "error", "done"]
+type ProviderStreamEventKind = Literal["delta", "content", "tool_call_start", "tool_call_delta", "tool_call_end", "error", "done"]
 type ProviderStreamChannel = Literal["text", "tool", "reasoning", "error"]
 type ProviderCacheRetention = Literal["none", "short", "long"]
 # Provider-native finish reasons are intentionally preserved at the adapter boundary.
@@ -265,6 +265,15 @@ class ProviderStreamEvent:
     error_kind: ProviderErrorKind | None = None
     done_reason: ProviderDoneReason | None = None
     usage: ProviderTokenUsage | None = None
+    # Tool-call lifecycle fields are deliberately separate from ``text``. An
+    # arguments delta is an opaque JSON fragment; only the graph/provider may
+    # aggregate and validate it into a ToolCall at the end of a turn.
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    arguments_delta: str | None = None
+    tool_call_ordinal: int | None = None
+    fragment_ordinal: int | None = None
+    parsed_arguments: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +301,15 @@ class ProviderWireMaterialization:
 def normalize_provider_stream_event(event: ProviderStreamEvent) -> ProviderStreamEvent:
     if event.kind in {"delta", "content"} and event.text is None:
         raise ValueError(f"provider stream event '{event.kind}' requires text")
+    if event.kind in {"tool_call_start", "tool_call_delta", "tool_call_end"}:
+        if not event.tool_call_id:
+            raise ValueError(f"provider stream event '{event.kind}' requires tool_call_id")
+        if event.kind == "tool_call_start" and not event.tool_name:
+            raise ValueError("provider stream event 'tool_call_start' requires tool_name")
+        if event.kind == "tool_call_delta" and event.arguments_delta is None:
+            raise ValueError("provider stream event 'tool_call_delta' requires arguments_delta")
+        if event.parsed_arguments is not None and event.kind != "tool_call_end":
+            raise ValueError("parsed_arguments are only valid on tool_call_end")
     if event.kind == "error" and event.error is None:
         raise ValueError("provider stream event 'error' requires error")
     if event.kind == "done" and event.done_reason is None:

@@ -1583,3 +1583,195 @@ def test_provider_graph_safe_boundary_reflects_pending_tool_calls() -> None:
     assert second_step.tool_call.tool_call_id == "call-beta"
     assert graph.pending_tool_call_count == 0
     assert graph.is_at_safe_boundary() is True
+
+
+def test_provider_graph_maps_tool_call_lifecycle_and_builds_final_call() -> None:
+    class _LifecycleProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="unused")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="tool_call_start",
+                        channel="tool",
+                        tool_call_id="call-1",
+                        tool_name="read",
+                        tool_call_ordinal=0,
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_delta",
+                        channel="tool",
+                        tool_call_id="call-1",
+                        arguments_delta='{"path":',
+                        tool_call_ordinal=0,
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_delta",
+                        channel="tool",
+                        tool_call_id="call-1",
+                        arguments_delta='"sample.txt"}',
+                        tool_call_ordinal=0,
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_end",
+                        channel="tool",
+                        tool_call_id="call-1",
+                        tool_call_ordinal=0,
+                        parsed_arguments={"path": "sample.txt"},
+                    ),
+                    ProviderStreamEvent(kind="done", done_reason="tool_calls"),
+                )
+            )
+
+    graph = ProviderGraph(
+        provider=_LifecycleProvider(),
+        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+    )
+    context = RuntimeContextWindow(prompt="read sample.txt")
+    step = graph.step(
+        GraphRunRequest(
+            session=_session(),
+            prompt=context.prompt,
+            available_tools=_tool_definitions(),
+            context_window=context,
+            assembled_context=_assembled_from_context_window(context),
+            metadata={"provider_stream": True},
+        ),
+        (),
+        session=_session(),
+    )
+    assert step.tool_call is not None and step.tool_call.arguments == {"path": "sample.txt"}
+    assert [event.event_type for event in step.events if event.event_type.startswith("graph.tool_call_")] == [
+        "graph.tool_call_start",
+        "graph.tool_call_delta",
+        "graph.tool_call_delta",
+        "graph.tool_call_end",
+    ]
+
+
+def test_provider_graph_rejects_incomplete_lifecycle_call() -> None:
+    class _IncompleteProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="unused")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="tool_call_start",
+                        channel="tool",
+                        tool_call_id="call-1",
+                        tool_name="read",
+                        tool_call_ordinal=0,
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_delta",
+                        channel="tool",
+                        tool_call_id="call-1",
+                        arguments_delta='{"path":',
+                        tool_call_ordinal=0,
+                    ),
+                    ProviderStreamEvent(kind="done", done_reason="tool_calls"),
+                )
+            )
+
+    graph = ProviderGraph(
+        provider=_IncompleteProvider(),
+        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+    )
+    context = RuntimeContextWindow(prompt="read sample.txt")
+    with pytest.raises(ProviderExecutionError, match="neither output nor tool calls"):
+        graph.step(
+            GraphRunRequest(
+                session=_session(),
+                prompt=context.prompt,
+                available_tools=_tool_definitions(),
+                context_window=context,
+                assembled_context=_assembled_from_context_window(context),
+                metadata={"provider_stream": True},
+            ),
+            (),
+            session=_session(),
+        )
+
+
+def test_provider_graph_merges_explicit_and_complete_streamed_tool_calls() -> None:
+    class _MixedToolCallProvider:
+        name = "opencode"
+
+        def propose_turn(self, request: ProviderTurnRequest) -> ProviderTurnResult:
+            _ = request
+            return ProviderTurnResult(output="unused")
+
+        def stream_turn(self, request: ProviderTurnRequest):
+            _ = request
+            return iter(
+                (
+                    ProviderStreamEvent(
+                        kind="content",
+                        channel="tool",
+                        text=(
+                            '{"tool_calls":['
+                            '{"tool_name":"read","tool_call_id":"complete",'
+                            '"arguments":{"path":"complete.txt"}},'
+                            '{"tool_name":"write","tool_call_id":"explicit",'
+                            '"arguments":{"path":"out.txt"}}]}'
+                        ),
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_start",
+                        channel="tool",
+                        tool_call_id="explicit",
+                        tool_name="write",
+                        tool_call_ordinal=1,
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_delta",
+                        channel="tool",
+                        tool_call_id="explicit",
+                        arguments_delta='{"path":"out.txt"}',
+                        tool_call_ordinal=1,
+                        fragment_ordinal=0,
+                    ),
+                    ProviderStreamEvent(
+                        kind="tool_call_end",
+                        channel="tool",
+                        tool_call_id="explicit",
+                        tool_call_ordinal=1,
+                        fragment_ordinal=0,
+                        parsed_arguments={"path": "out.txt"},
+                    ),
+                    ProviderStreamEvent(kind="done", done_reason="tool_calls"),
+                )
+            )
+
+    graph = ProviderGraph(
+        provider=_MixedToolCallProvider(),
+        provider_model=resolve_provider_model("opencode/gpt-5.4", registry=ModelProviderRegistry.with_defaults()),
+    )
+    context = RuntimeContextWindow(prompt="read and write")
+    step = graph.step(
+        GraphRunRequest(
+            session=_session(),
+            prompt=context.prompt,
+            available_tools=_tool_definitions(),
+            context_window=context,
+            assembled_context=_assembled_from_context_window(context),
+            metadata={"provider_stream": True},
+        ),
+        (),
+        session=_session(),
+    )
+
+    assert [call.tool_call_id for call in step.tool_calls] == ["complete", "explicit"]
+    assert [call.tool_name for call in step.tool_calls] == ["read", "write"]

@@ -56,6 +56,19 @@ class _ProgressTool:
         return ToolResult(tool_name=call.tool_name, status="ok", content="done")
 
 
+class _BurstProgressTool:
+    definition = ToolDefinition(name="shell_exec", description="emits many progress events")
+
+    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        _ = workspace
+        context = current_runtime_tool_context()
+        assert context is not None
+        assert context.emit_tool_progress is not None
+        for index in range(10_000):
+            context.emit_tool_progress({"stream": "stdout", "chunk": f"chunk-{index}"})
+        return ToolResult(tool_name=call.tool_name, status="ok", content="done")
+
+
 def _drain_execution(
     execution: Any,
 ) -> tuple[list[ToolExecutionProgress], ToolResult | Exception]:
@@ -93,16 +106,56 @@ def test_runtime_tool_executor_binds_context_without_runtime_kernel(tmp_path: Pa
 def test_runtime_tool_executor_streams_progress_without_runtime_kernel(tmp_path: Path) -> None:
     executor = _executor(tmp_path)
     invocation = ToolInvocation(
-        tool_call=ToolCall(tool_name="shell_exec", arguments={}),
+        tool_call=ToolCall(tool_name="shell_exec", arguments={}, tool_call_id="call-1"),
         tool_definition=_ProgressTool.definition,
-        context=RuntimeToolInvocationContext(session_id="session-1"),
+        context=RuntimeToolInvocationContext(session_id="session-1", run_id="run-1", invocation_id="call-1"),
     )
 
     progress, result = _drain_execution(executor.invoke(tool=_ProgressTool(), invocation=invocation))
 
-    assert [item.payload for item in progress] == [{"tool": "shell_exec", "stream": "stdout", "chunk": "working"}]
+    assert [item.payload for item in progress] == [
+        {
+            "tool": "shell_exec",
+            "stream": "stdout",
+            "chunk": "working",
+            "run_id": "run-1",
+            "invocation_id": "call-1",
+            "tool_call_id": "call-1",
+            "ordinal": 1,
+        }
+    ]
     assert isinstance(result, ToolResult)
     assert result.content == "done"
+
+
+def test_runtime_tool_executor_reports_progress_queue_loss_without_blocking_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("voidcode.runtime.tool_execution._PROGRESS_QUEUE_MAX_ITEMS", 1)
+    executor = _executor(tmp_path)
+    invocation = ToolInvocation(
+        tool_call=ToolCall(tool_name="shell_exec", arguments={}, tool_call_id="call-burst"),
+        tool_definition=_BurstProgressTool.definition,
+        context=RuntimeToolInvocationContext(
+            session_id="session-1",
+            run_id="run-burst",
+            invocation_id="call-burst",
+        ),
+    )
+
+    progress, result = _drain_execution(executor.invoke(tool=_BurstProgressTool(), invocation=invocation))
+
+    assert isinstance(result, ToolResult)
+    assert result.content == "done"
+    gaps = [item.payload for item in progress if item.payload.get("gap") is True]
+    assert gaps
+    assert sum(int(item["dropped_count"]) for item in gaps) > 0
+    assert all(item["loss_reason"] == "progress_queue_full" for item in gaps)
+    assert all(item["run_id"] == "run-burst" for item in gaps)
+    assert all(item["invocation_id"] == "call-burst" for item in gaps)
+    ordinals = [int(item.payload["ordinal"]) for item in progress]
+    assert ordinals == sorted(ordinals)
 
 
 def test_runtime_tool_executor_rejects_legacy_keyword_invocation(tmp_path: Path) -> None:

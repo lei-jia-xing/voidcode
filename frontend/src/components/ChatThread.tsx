@@ -531,7 +531,10 @@ function ToolDisclosureRow({
   const { t } = useTranslation();
   const panelId = useId();
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const canExpand = Boolean(children);
+  const hasPartialArguments = Boolean(
+    tool.partialArgumentsPreview || tool.partialArguments,
+  );
+  const canExpand = Boolean(children) || hasPartialArguments;
   const hasPrimaryAction = typeof primaryAction === "function";
   const statusLabel =
     tool.status === "completed" ? null : t(`tool.status.${tool.status}`);
@@ -622,6 +625,22 @@ function ToolDisclosureRow({
       )}
       {canExpand && expanded && (
         <div id={panelId} className="ml-8 pb-2 text-[var(--vc-text-muted)]">
+          {hasPartialArguments && (
+            <ToolDetailBlock
+              label={t("tool.arguments.partial")}
+              value={
+                tool.partialArgumentsPreview ?? tool.partialArguments ?? ""
+              }
+            />
+          )}
+          {tool.argumentsStreamDegraded && (
+            <div
+              className="mt-1 text-[11px] text-[var(--vc-text-subtle)]"
+              role="status"
+            >
+              {t("tool.arguments.degraded")}
+            </div>
+          )}
           {children}
         </div>
       )}
@@ -811,9 +830,15 @@ function ShellToolActivity({
     toolValue(data?.command) ??
     copyableValue(tool, "command") ??
     "shell";
+  const liveOutput = tool.liveOutput;
   const stdout =
-    toolValue(data?.stdout) ?? toolValue(data?.output) ?? tool.content;
-  const stderr = toolValue(data?.stderr);
+    toolValue(data?.stdout) ??
+    toolValue(data?.output) ??
+    tool.content ??
+    (tool.status === "running" ? liveOutput?.stdout : null);
+  const stderr =
+    toolValue(data?.stderr) ??
+    (tool.status === "running" ? liveOutput?.stderr : null);
   const exitCode =
     toolValue(data?.exit_code) ??
     toolValue(data?.exitCode) ??
@@ -839,9 +864,10 @@ function ShellToolActivity({
       <ShellTerminalBlock
         command={command}
         stdout={failed ? null : (stdout ?? null)}
-        stderr={failed ? null : stderr}
+        stderr={failed ? null : (stderr ?? null)}
         error={failed ? (error ?? stderr ?? stdout ?? null) : null}
         exitCode={exitCode}
+        degraded={tool.status === "running" && liveOutput?.degraded === true}
         tone={failed ? "error" : "normal"}
         copyCommand={copyableValue(tool, "command") ?? command}
         copyOutput={
@@ -861,6 +887,7 @@ function ShellTerminalBlock({
   tone,
   copyCommand,
   copyOutput,
+  degraded,
 }: {
   command: string;
   stdout: string | null;
@@ -870,6 +897,7 @@ function ShellTerminalBlock({
   tone: "normal" | "error";
   copyCommand: string;
   copyOutput: string | null;
+  degraded?: boolean;
 }) {
   const { t } = useTranslation();
   const transcript = [
@@ -914,6 +942,14 @@ function ShellTerminalBlock({
           )}
         </span>
       </div>
+      {degraded && (
+        <div
+          className="border-b px-3 py-1 text-[11px] text-[var(--vc-text-subtle)]"
+          role="status"
+        >
+          {t("tool.shell.outputIncomplete")}
+        </div>
+      )}
       <pre
         className={`max-h-72 overflow-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap ${
           tone === "error"

@@ -240,7 +240,14 @@ def _model_requires_reasoning_content_with_tool_calls(
 class _StreamedToolCallAccumulator:
     tool_call_id: str | None = None
     tool_name: str | None = None
-    arguments: str | dict[str, object] = ""
+    argument_fragments: tuple[str, ...] = ()
+    tool_call_ordinal: int = 0
+    explicit_streaming: bool = False
+    started: bool = False
+
+    @property
+    def arguments(self) -> str:
+        return "".join(self.argument_fragments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1081,28 +1088,68 @@ class LiteLLMBackendSingleAgentProvider:
                             index = index_obj if isinstance(index_obj, int) else 0
                             accumulator = streamed_tool_calls.get(
                                 index,
-                                _StreamedToolCallAccumulator(),
+                                _StreamedToolCallAccumulator(tool_call_ordinal=index),
                             )
                             tool_call_id_obj = tool_call.get("id")
+                            has_provider_id = isinstance(tool_call_id_obj, str) and bool(tool_call_id_obj)
                             tool_call_id = accumulator.tool_call_id
-                            if isinstance(tool_call_id_obj, str) and tool_call_id_obj:
-                                tool_call_id = tool_call_id_obj
+                            if has_provider_id:
+                                tool_call_id = _normalize_tool_call_id(
+                                    cast(str, tool_call_id_obj),
+                                    fallback=f"tool_call_{index + 1}",
+                                )
                             function_obj = tool_call.get("function")
                             tool_name = accumulator.tool_name
-                            arguments = accumulator.arguments
+                            fragment: str | None = None
                             if isinstance(function_obj, dict):
                                 function = cast(dict[str, object], function_obj)
                                 name_obj = function.get("name")
                                 if isinstance(name_obj, str) and name_obj:
                                     tool_name = name_obj
-                                arguments = self._merge_tool_argument_fragment(
-                                    arguments,
-                                    function.get("arguments"),
+                                arguments_obj = function.get("arguments")
+                                if isinstance(arguments_obj, str):
+                                    fragment = arguments_obj
+                                elif isinstance(arguments_obj, dict):
+                                    fragment = json.dumps(arguments_obj, ensure_ascii=False, separators=(",", ":"))
+                            first_fragment_is_complete = False
+                            if fragment and not accumulator.argument_fragments:
+                                try:
+                                    first_fragment_is_complete = isinstance(json.loads(fragment), dict)
+                                except json.JSONDecodeError:
+                                    pass
+                            explicit_streaming = accumulator.explicit_streaming or (has_provider_id and not first_fragment_is_complete)
+                            started = accumulator.started
+                            if explicit_streaming and tool_name is not None and not started:
+                                yield ProviderStreamEvent(
+                                    kind="tool_call_start",
+                                    channel="tool",
+                                    tool_call_id=tool_call_id,
+                                    tool_name=self._runtime_tool_name(
+                                        tool_name,
+                                        provider_to_original=provider_to_original,
+                                    ),
+                                    tool_call_ordinal=index,
                                 )
+                                started = True
+                            if explicit_streaming and fragment:
+                                yield ProviderStreamEvent(
+                                    kind="tool_call_delta",
+                                    channel="tool",
+                                    tool_call_id=tool_call_id,
+                                    arguments_delta=fragment,
+                                    tool_call_ordinal=index,
+                                    fragment_ordinal=len(accumulator.argument_fragments),
+                                )
+                            fragments = accumulator.argument_fragments
+                            if fragment is not None:
+                                fragments = (*fragments, fragment)
                             streamed_tool_calls[index] = _StreamedToolCallAccumulator(
                                 tool_call_id=tool_call_id,
                                 tool_name=tool_name,
-                                arguments=arguments,
+                                argument_fragments=fragments,
+                                tool_call_ordinal=index,
+                                explicit_streaming=explicit_streaming,
+                                started=started,
                             )
                 done_reason = self._done_reason(first_choice.get("finish_reason"))
         except Exception as exc:
@@ -1130,9 +1177,33 @@ class LiteLLMBackendSingleAgentProvider:
                 {"tool_calls": tool_payloads},
                 provider_to_original=provider_to_original,
             )
-            if tool_calls:
+            explicit_calls: list[tuple[int, _StreamedToolCallAccumulator, ToolCall]] = []
+            complete_calls: list[ToolCall] = []
+            for (index, accumulator), tool_call in zip(completed_tool_calls, tool_calls, strict=False):
+                if accumulator.explicit_streaming:
+                    try:
+                        parsed = json.loads(accumulator.arguments)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict):
+                        explicit_calls.append((index, accumulator, tool_call))
+                else:
+                    complete_calls.append(tool_call)
+            for index, accumulator, tool_call in explicit_calls:
+                yield ProviderStreamEvent(
+                    kind="tool_call_end",
+                    channel="tool",
+                    tool_call_id=tool_call.tool_call_id or accumulator.tool_call_id,
+                    tool_name=self._runtime_tool_name(
+                        tool_call.tool_name,
+                        provider_to_original=provider_to_original,
+                    ),
+                    tool_call_ordinal=index,
+                    parsed_arguments=dict(tool_call.arguments),
+                )
+            if complete_calls:
                 event_tool_payloads: list[dict[str, object]] = []
-                for tool_payload in tool_calls:
+                for tool_payload in complete_calls:
                     event_tool_payload: dict[str, object] = {
                         "tool_name": tool_payload.tool_name,
                         "arguments": tool_payload.arguments,

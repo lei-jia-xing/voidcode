@@ -388,6 +388,37 @@ def test_shell_exec_emits_incremental_stdout_progress_and_preserves_final_output
     assert "omega\n" in {item["chunk"] for item in progress}
 
 
+def test_shell_exec_progress_carries_run_and_invocation_identity_for_both_streams(tmp_path: Path) -> None:
+    tool = ShellExecTool()
+    command = (
+        f"\"{sys.executable}\" -c \"import sys; sys.stdout.write('out\\n'); sys.stdout.flush(); sys.stderr.write('err\\n'); sys.stderr.flush()\""
+    )
+    progress: list[dict[str, object]] = []
+    with bind_runtime_tool_context(
+        RuntimeToolInvocationContext(
+            session_id="shell-progress",
+            run_id="run-1",
+            invocation_id="call-1",
+            emit_tool_progress=lambda payload: progress.append(dict(payload)),
+        )
+    ):
+        result = tool.invoke(
+            ToolCall(tool_name="shell_exec", arguments={"command": command}, tool_call_id="call-1"),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert {item["stream"] for item in progress} == {"stdout", "stderr"}
+    assert all(item["run_id"] == "run-1" for item in progress)
+    assert all(item["invocation_id"] == "call-1" for item in progress)
+    assert all(item["tool_call_id"] == "call-1" for item in progress)
+    ordinals = [int(item["ordinal"]) for item in progress]
+    assert ordinals == sorted(ordinals)
+    for stream in ("stdout", "stderr"):
+        offsets = [int(item["offset"]) for item in progress if item["stream"] == stream]
+        assert offsets == sorted(offsets)
+
+
 def test_shell_exec_progress_callback_failure_does_not_break_final_result(
     tmp_path: Path,
 ) -> None:

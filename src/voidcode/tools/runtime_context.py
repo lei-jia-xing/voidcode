@@ -70,6 +70,10 @@ class RuntimeTranscriptFacade(Protocol):
 @dataclass(frozen=True, slots=True)
 class RuntimeToolInvocationContext:
     session_id: str
+    #: Stable runtime run identifier, when this invocation belongs to an active run.
+    run_id: str | None = None
+    #: Stable identifier shared by tool_started/progress/completed events.
+    invocation_id: str | None = None
     parent_session_id: str | None = None
     delegation_depth: int = 0
     remaining_spawn_budget: int | None = None

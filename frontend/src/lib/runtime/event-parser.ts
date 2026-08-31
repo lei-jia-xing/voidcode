@@ -108,9 +108,19 @@ export interface ChatMessage {
     copyable?: Record<string, unknown>;
     status: "pending" | "running" | "completed" | "failed";
     arguments?: Record<string, unknown>;
+    partialArguments?: string;
+    partialArgumentsPreview?: string;
+    argumentsStreamEnded?: boolean;
+    argumentsStreamDegraded?: boolean;
     result?: Record<string, unknown>;
     content?: string | null;
     error?: string | null;
+    liveOutput?: {
+      stdout: string;
+      stderr: string;
+      truncated?: boolean;
+      degraded?: boolean;
+    };
     hooks?: {
       phase: string;
       status?: string;
@@ -301,16 +311,23 @@ function upsertTool(
   existing.name = tool.name;
   existing.status = tool.status;
   existing.id = tool.id ?? existing.id;
-  existing.partKey =
-    existing.partKey ?? tool.partKey ?? tool.id ?? `${tool.name}#${sequence}`;
   existing.label = tool.label ?? existing.label;
   existing.summary = tool.summary ?? existing.summary;
   existing.display = tool.display ?? existing.display;
   existing.copyable = tool.copyable ?? existing.copyable;
   existing.arguments = tool.arguments ?? existing.arguments;
+  if (tool.partialArguments !== undefined)
+    existing.partialArguments = tool.partialArguments;
+  if (tool.partialArgumentsPreview !== undefined)
+    existing.partialArgumentsPreview = tool.partialArgumentsPreview;
+  if (tool.argumentsStreamEnded !== undefined)
+    existing.argumentsStreamEnded = tool.argumentsStreamEnded;
+  if (tool.argumentsStreamDegraded !== undefined)
+    existing.argumentsStreamDegraded = tool.argumentsStreamDegraded;
   existing.result = tool.result ?? existing.result;
   if (tool.content !== undefined) existing.content = tool.content;
   if (tool.error !== undefined) existing.error = tool.error;
+  existing.liveOutput = tool.liveOutput ?? existing.liveOutput;
   existing.hooks = tool.hooks ?? existing.hooks;
   return existing;
 }
@@ -517,6 +534,217 @@ function applyToolStatus(
       error,
     },
     sequence,
+  );
+}
+
+const TOOL_ARGUMENTS_PREVIEW_LIMIT = 12_000;
+type ToolArgumentsState = {
+  text: string;
+  preview: string;
+  lastFragmentOrdinal: number;
+  seen: Set<string>;
+  degraded: boolean;
+};
+
+function applyToolCallEvent(
+  currentAssistant: ChatMessage | null,
+  event: EventEnvelope,
+  argumentsState: Map<string, ToolArgumentsState>,
+) {
+  if (!currentAssistant) return;
+  const payload = event.payload ?? {};
+  const id =
+    nonEmptyString(payload.tool_call_id) ??
+    nonEmptyString(payload.invocation_id);
+  if (!id) return;
+  const type = event.event_type;
+  const name =
+    nonEmptyString(payload.tool) ??
+    nonEmptyString(payload.tool_name) ??
+    "unknown_tool";
+  const state = argumentsState.get(id) ?? {
+    text: "",
+    preview: "",
+    lastFragmentOrdinal: -1,
+    seen: new Set<string>(),
+    degraded: false,
+  };
+  const rawPreview =
+    nonEmptyString(payload.arguments_preview) ??
+    (type === "graph.tool_call_start"
+      ? nonEmptyString(payload.arguments)
+      : undefined);
+  if (
+    payload.gap === true ||
+    (typeof payload.dropped_count === "number" && payload.dropped_count > 0)
+  )
+    state.degraded = true;
+  if (rawPreview && rawPreview.length > state.preview.length) {
+    state.preview = rawPreview.slice(0, TOOL_ARGUMENTS_PREVIEW_LIMIT);
+    if (rawPreview.length > TOOL_ARGUMENTS_PREVIEW_LIMIT) state.degraded = true;
+  }
+  if (type === "graph.tool_call_delta") {
+    const fragment =
+      typeof payload.arguments_delta === "string"
+        ? payload.arguments_delta
+        : "";
+    const fragmentOrdinal =
+      typeof payload.fragment_ordinal === "number"
+        ? payload.fragment_ordinal
+        : state.lastFragmentOrdinal + 1;
+    const dedupe = `${nonEmptyString(payload.run_id) ?? ""}:${fragmentOrdinal}:${fragment}`;
+    if (
+      !state.seen.has(dedupe) &&
+      fragmentOrdinal > state.lastFragmentOrdinal
+    ) {
+      state.seen.add(dedupe);
+      state.lastFragmentOrdinal = fragmentOrdinal;
+      state.text = `${state.text}${fragment}`.slice(
+        0,
+        TOOL_ARGUMENTS_PREVIEW_LIMIT,
+      );
+      state.preview = state.text;
+      if (state.text.length >= TOOL_ARGUMENTS_PREVIEW_LIMIT)
+        state.degraded = true;
+    }
+  }
+  argumentsState.set(id, state);
+  const existing = findTool(currentAssistant.tools, { id });
+  upsertTool(
+    currentAssistant,
+    {
+      id,
+      name: existing?.name ?? name,
+      status:
+        existing?.status === "completed" || existing?.status === "failed"
+          ? existing.status
+          : "running",
+      partialArguments: state.text || undefined,
+      partialArgumentsPreview: state.preview || undefined,
+      argumentsStreamEnded:
+        type === "graph.tool_call_end" || existing?.argumentsStreamEnded,
+      argumentsStreamDegraded:
+        state.degraded || existing?.argumentsStreamDegraded,
+    },
+    event.sequence,
+  );
+}
+
+const SHELL_PREVIEW_LIMIT = 12_000;
+type ShellProgressState = {
+  stdout: string;
+  stderr: string;
+  offsets: { stdout: number; stderr: number };
+  last: { stdout: number; stderr: number };
+  seen: Set<string>;
+  degraded: boolean;
+};
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+function applyToolProgress(
+  currentAssistant: ChatMessage | null,
+  event: EventEnvelope,
+  progressState: Map<string, ShellProgressState>,
+) {
+  if (
+    !currentAssistant ||
+    currentAssistant.status === "failed" ||
+    currentAssistant.status === "interrupted"
+  )
+    return;
+  const payload = event.payload ?? {};
+  const id =
+    nonEmptyString(payload.invocation_id) ??
+    nonEmptyString(payload.tool_call_id);
+  if (!id) return;
+  const stream =
+    payload.stream === "stderr"
+      ? "stderr"
+      : payload.stream === "stdout"
+        ? "stdout"
+        : null;
+  const chunk = typeof payload.chunk === "string" ? payload.chunk : null;
+  const loss =
+    payload.gap === true ||
+    (typeof payload.dropped_count === "number" && payload.dropped_count > 0);
+  const tool = findTool(currentAssistant.tools, { id });
+  if (tool && (tool.status === "completed" || tool.status === "failed")) return;
+  const state = progressState.get(id) ?? {
+    stdout: "",
+    stderr: "",
+    offsets: { stdout: 0, stderr: 0 },
+    last: { stdout: -1, stderr: -1 },
+    seen: new Set<string>(),
+    degraded: false,
+  };
+  if (loss) state.degraded = true;
+  if (!stream || chunk === null) {
+    if (loss && tool) {
+      upsertTool(
+        currentAssistant,
+        {
+          id,
+          name: tool.name,
+          status: "running",
+          liveOutput: {
+            stdout: state.stdout,
+            stderr: state.stderr,
+            degraded: true,
+          },
+        },
+        event.sequence,
+      );
+      progressState.set(id, state);
+    }
+    return;
+  }
+  const name =
+    nonEmptyString(payload.tool_name) ??
+    nonEmptyString(payload.tool) ??
+    "shell_exec";
+  const ordinal =
+    typeof payload.ordinal === "number"
+      ? payload.ordinal
+      : state.last[stream] + 1;
+  const offset = typeof payload.offset === "number" ? payload.offset : null;
+  const dedupe = `${stream}:${typeof payload.run_id === "string" ? payload.run_id : ""}:${ordinal}:${offset ?? ""}:${chunk}`;
+  if (state.seen.has(dedupe) || ordinal <= state.last[stream]) return;
+  const expectedOffset = state.offsets[stream];
+  if (offset !== null && offset < expectedOffset) {
+    state.degraded = true;
+    state.seen.add(dedupe);
+    progressState.set(id, state);
+    return;
+  }
+  if (offset !== null && offset > expectedOffset) state.degraded = true;
+  state.last[stream] = ordinal;
+  state.seen.add(dedupe);
+  state[stream] = `${state[stream]}${chunk}`.slice(-SHELL_PREVIEW_LIMIT);
+  state.offsets[stream] = (offset ?? expectedOffset) + utf8ByteLength(chunk);
+  if (
+    state.stdout.length === SHELL_PREVIEW_LIMIT ||
+    state.stderr.length === SHELL_PREVIEW_LIMIT
+  )
+    state.degraded = true;
+  progressState.set(id, state);
+  upsertTool(
+    currentAssistant,
+    {
+      id,
+      name,
+      status: "running",
+      liveOutput: {
+        stdout: state.stdout,
+        stderr: state.stderr,
+        truncated:
+          state.stdout.length === SHELL_PREVIEW_LIMIT ||
+          state.stderr.length === SHELL_PREVIEW_LIMIT,
+        degraded: state.degraded,
+      },
+    },
+    event.sequence,
   );
 }
 
@@ -798,6 +1026,8 @@ export function deriveChatMessages(
   // turns, so comparing against it would miss for every turn after the first
   // and the aggregate would be appended again (doubled thinking blocks).
   let streamedReasoningText = "";
+  const progressState = new Map<string, ShellProgressState>();
+  const argumentsState = new Map<string, ToolArgumentsState>();
 
   for (const event of events) {
     const messageSessionId = event.session_id || fallbackSessionId || "session";
@@ -806,6 +1036,8 @@ export function deriveChatMessages(
     if (event.event_type === "runtime.request_received") {
       requestOrdinal += 1;
       streamedReasoningText = "";
+      progressState.clear();
+      argumentsState.clear();
 
       if (currentAssistant?.status === "in_progress") {
         currentAssistant.status = "completed";
@@ -875,6 +1107,14 @@ export function deriveChatMessages(
           );
         }
       }
+    } else if (event.event_type === "runtime.tool_progress") {
+      applyToolProgress(currentAssistant, event, progressState);
+    } else if (
+      event.event_type === "graph.tool_call_start" ||
+      event.event_type === "graph.tool_call_delta" ||
+      event.event_type === "graph.tool_call_end"
+    ) {
+      applyToolCallEvent(currentAssistant, event, argumentsState);
     } else if (
       event.event_type === "graph.loop_step" ||
       event.event_type === "graph.model_turn"

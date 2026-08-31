@@ -1440,3 +1440,341 @@ describe("Live Stream Reasoning Contract", () => {
     ).toBe("full chain of thought");
   });
 });
+
+describe("Shell tool progress contract", () => {
+  const event = (
+    sequence: number,
+    event_type: string,
+    payload: Record<string, unknown>,
+  ): EventEnvelope => ({
+    session_id: "test",
+    sequence,
+    event_type,
+    source: "runtime",
+    payload,
+  });
+  const start = event(2, "runtime.tool_started", {
+    tool: "shell_exec",
+    tool_call_id: "shell-1",
+    arguments: { command: "printf hi" },
+    tool_status: {
+      invocation_id: "shell-1",
+      tool_name: "shell_exec",
+      phase: "running",
+      status: "running",
+      display: { kind: "shell", title: "Shell", summary: "printf hi" },
+    },
+  });
+
+  it("appends separate streams, ignores duplicate/out-of-order chunks, and bounds preview", () => {
+    const messages = deriveChatMessages(
+      [
+        event(1, "runtime.request_received", { prompt: "run" }),
+        start,
+        event(3, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "one",
+          ordinal: 1,
+        }),
+        event(4, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stderr",
+          chunk: "warn",
+          ordinal: 2,
+        }),
+        event(5, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "one",
+          ordinal: 1,
+        }),
+        event(6, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "old",
+          ordinal: 0,
+        }),
+        event(7, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "x".repeat(13_000),
+          ordinal: 3,
+        }),
+      ],
+      null,
+    );
+    const tool = messages[1].tools[0];
+    expect(tool.liveOutput?.stdout).toHaveLength(12_000);
+    expect(tool.liveOutput?.stdout.endsWith("x".repeat(12_000))).toBe(true);
+    expect(tool.liveOutput?.stderr).toBe("warn");
+  });
+
+  it("reconciles completed data and rejects cancellation late progress", () => {
+    const completed = event(4, "runtime.tool_completed", {
+      tool_call_id: "shell-1",
+      status: "ok",
+      data: { stdout: "final", stderr: "" },
+      tool_status: {
+        invocation_id: "shell-1",
+        tool_name: "shell_exec",
+        phase: "completed",
+        status: "completed",
+        display: { kind: "shell", title: "Shell", summary: "done" },
+      },
+    });
+    const messages = deriveChatMessages(
+      [
+        event(1, "runtime.request_received", { prompt: "run" }),
+        start,
+        event(3, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "preview",
+          ordinal: 1,
+        }),
+        completed,
+        event(5, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "late",
+          ordinal: 2,
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0].result?.data).toEqual({
+      stdout: "final",
+      stderr: "",
+    });
+    expect(messages[1].tools[0].liveOutput?.stdout).toBe("preview");
+
+    const cancelled = deriveChatMessages(
+      [
+        event(1, "runtime.request_received", { prompt: "run" }),
+        start,
+        event(3, "runtime.failed", { cancelled: true, error: "cancelled" }),
+        event(4, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "late",
+          ordinal: 1,
+        }),
+      ],
+      null,
+    );
+    expect(cancelled[1].tools[0].liveOutput).toBeUndefined();
+  });
+  it("marks live output degraded when backend reports dropped chunks", () => {
+    const messages = deriveChatMessages(
+      [
+        event(1, "runtime.request_received", { prompt: "run" }),
+        start,
+        event(3, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "before",
+          ordinal: 1,
+        }),
+        event(4, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          gap: true,
+          dropped_count: 2,
+          loss_reason: "buffer_overflow",
+          dropped_ordinal_start: 2,
+          dropped_ordinal_end: 3,
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0].liveOutput).toMatchObject({
+      stdout: "before",
+      degraded: true,
+    });
+  });
+  it("does not carry progress across requests that reuse an invocation id", () => {
+    const secondStart = event(6, "runtime.tool_started", {
+      tool: "shell_exec",
+      tool_call_id: "shell-1",
+      arguments: { command: "second" },
+      tool_status: {
+        invocation_id: "shell-1",
+        tool_name: "shell_exec",
+        phase: "running",
+        status: "running",
+        display: { kind: "shell", title: "Shell", summary: "second" },
+      },
+    });
+    const messages = deriveChatMessages(
+      [
+        event(1, "runtime.request_received", { prompt: "first" }),
+        start,
+        event(3, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "first output",
+          ordinal: 1,
+        }),
+        event(4, "runtime.completed", { output: "done" }),
+        event(5, "runtime.request_received", { prompt: "second" }),
+        secondStart,
+        event(7, "runtime.tool_progress", {
+          invocation_id: "shell-1",
+          stream: "stdout",
+          chunk: "second output",
+          ordinal: 1,
+        }),
+      ],
+      null,
+    );
+    const secondAssistant = messages[3];
+    expect(secondAssistant.tools[0].liveOutput?.stdout).toBe("second output");
+  });
+});
+
+describe("Provider tool-call delta contract", () => {
+  const event = (
+    sequence: number,
+    event_type: string,
+    payload: Record<string, unknown>,
+  ): EventEnvelope => ({
+    session_id: "test",
+    sequence,
+    event_type,
+    source: "graph",
+    payload,
+  });
+  const base = event(1, "runtime.request_received", { prompt: "build" });
+
+  it("tracks start, bounded deltas, and end without creating a result", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", {
+          tool_call_id: "call-a",
+          tool: "write",
+        }),
+        event(3, "graph.tool_call_delta", {
+          tool_call_id: "call-a",
+          arguments_delta: '{"path":',
+          fragment_ordinal: 0,
+        }),
+        event(4, "graph.tool_call_end", { tool_call_id: "call-a" }),
+      ],
+      null,
+    );
+    const tool = messages[1].tools[0];
+    expect(tool).toMatchObject({
+      id: "call-a",
+      name: "write",
+      status: "running",
+      partialArguments: '{"path":',
+      argumentsStreamEnded: true,
+    });
+    expect(tool.result).toBeUndefined();
+  });
+
+  it("keeps concurrent calls isolated and ignores duplicate or late deltas", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", { tool_call_id: "a", tool: "write" }),
+        event(3, "graph.tool_call_start", { tool_call_id: "b", tool: "write" }),
+        event(4, "graph.tool_call_delta", {
+          tool_call_id: "a",
+          arguments_delta: "A",
+          fragment_ordinal: 1,
+        }),
+        event(5, "graph.tool_call_delta", {
+          tool_call_id: "a",
+          arguments_delta: "old",
+          fragment_ordinal: 0,
+        }),
+        event(6, "graph.tool_call_delta", {
+          tool_call_id: "a",
+          arguments_delta: "A",
+          fragment_ordinal: 1,
+        }),
+        event(7, "graph.tool_call_delta", {
+          tool_call_id: "b",
+          arguments_delta: "B",
+          fragment_ordinal: 0,
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools.map((tool) => tool.partialArguments)).toEqual([
+      "A",
+      "B",
+    ]);
+  });
+
+  it("tracks UTF-8 byte offsets independently from JavaScript character length", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", {
+          tool_call_id: "shell",
+          tool: "shell_exec",
+        }),
+        event(3, "runtime.tool_progress", {
+          invocation_id: "shell",
+          stream: "stdout",
+          chunk: "é",
+          offset: 0,
+          ordinal: 1,
+        }),
+        event(4, "runtime.tool_progress", {
+          invocation_id: "shell",
+          stream: "stdout",
+          chunk: "ok",
+          offset: 2,
+          ordinal: 2,
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0].liveOutput).toMatchObject({
+      stdout: "éok",
+      degraded: false,
+    });
+  });
+
+  it("resets identity and bounds degraded fragments across requests", () => {
+    const huge = "x".repeat(13_000);
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", {
+          tool_call_id: "same",
+          tool: "write",
+        }),
+        event(3, "graph.tool_call_delta", {
+          tool_call_id: "same",
+          arguments_delta: huge,
+          fragment_ordinal: 0,
+          gap: true,
+        }),
+        event(4, "runtime.completed", { output: "done" }),
+        event(5, "runtime.request_received", { prompt: "again" }),
+        event(6, "graph.tool_call_start", {
+          tool_call_id: "same",
+          tool: "read",
+        }),
+        event(7, "graph.tool_call_delta", {
+          tool_call_id: "same",
+          arguments_delta: "new",
+          fragment_ordinal: 0,
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0].partialArguments).toHaveLength(12_000);
+    expect(messages[1].tools[0].argumentsStreamDegraded).toBe(true);
+    expect(messages[3].tools[0]).toMatchObject({
+      name: "read",
+      partialArguments: "new",
+    });
+  });
+});

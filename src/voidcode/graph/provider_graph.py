@@ -327,14 +327,15 @@ class ProviderGraph:
         run_id: str | None,
         stream_event_sink: object | None = None,
     ) -> ProviderStep:
-        stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         stream_events: list[GraphEvent] = []
         output_parts: list[str] = []
         tool_payload_parts: list[str] = []
+        complete_tool_payload_order: int | None = None
+        lifecycle_tool_calls: dict[str, dict[str, object]] = {}
         done_reason: str | None = None
         provider_usage: ProviderTokenUsage | None = None
-
-        for stream_event in stream_provider.stream_turn(turn_request):
+        stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
+        for stream_event_index, stream_event in enumerate(stream_provider.stream_turn(turn_request)):
             graph_event = self._stream_event_to_graph_event(stream_event)
             if stream_event_sink is None:
                 stream_events.append(graph_event)
@@ -344,8 +345,32 @@ class ProviderGraph:
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
                 if stream_event.text is not None:
                     output_parts.append(stream_event.text)
+            if stream_event.kind in {"tool_call_start", "tool_call_delta", "tool_call_end"}:
+                tool_call_id = stream_event.tool_call_id
+                if tool_call_id is not None:
+                    state = lifecycle_tool_calls.setdefault(
+                        tool_call_id,
+                        {
+                            "tool_call_id": tool_call_id,
+                            "tool_name": stream_event.tool_name,
+                            "ordinal": stream_event.tool_call_ordinal if stream_event.tool_call_ordinal is not None else len(lifecycle_tool_calls),
+                            "stream_order": stream_event_index,
+                            "fragments": [],
+                            "ended": False,
+                        },
+                    )
+                    if stream_event.tool_name is not None:
+                        state["tool_name"] = stream_event.tool_name
+                    fragments = cast(list[str], state["fragments"])
+                    if stream_event.arguments_delta is not None:
+                        fragments.append(stream_event.arguments_delta)
+                    if stream_event.parsed_arguments is not None:
+                        state["parsed_arguments"] = dict(stream_event.parsed_arguments)
+                    if stream_event.kind == "tool_call_end":
+                        state["ended"] = True
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "tool" and stream_event.text is not None:
                 tool_payload_parts.append(stream_event.text)
+                complete_tool_payload_order = stream_event_index
             if stream_event.kind == "error":
                 if stream_event.error_kind == "cancelled":
                     raise ProviderExecutionError(
@@ -410,10 +435,48 @@ class ProviderGraph:
                 details={"source": "graph_stream", "reason": "done_error"},
             )
 
-        streamed_tool_calls = self._parse_streamed_tool_calls(
+        ordered_tool_calls: list[tuple[tuple[int, int, int], ToolCall]] = []
+        for state in sorted(lifecycle_tool_calls.values(), key=lambda item: cast(int, item["ordinal"])):
+            if state.get("ended") is not True or not isinstance(state.get("tool_name"), str):
+                continue
+            parsed_arguments = state.get("parsed_arguments")
+            if not isinstance(parsed_arguments, dict):
+                raw_arguments = "".join(cast(list[str], state["fragments"]))
+                try:
+                    parsed_arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(parsed_arguments, dict):
+                continue
+            explicit_call = ToolCall(
+                tool_name=cast(str, state["tool_name"]),
+                arguments=cast(dict[str, object], parsed_arguments),
+                tool_call_id=cast(str, state["tool_call_id"]),
+            )
+            ordered_tool_calls.append(
+                (
+                    (cast(int, state["stream_order"]), 0, cast(int, state["ordinal"])),
+                    explicit_call,
+                )
+            )
+        complete_tool_calls = self._parse_streamed_tool_calls(
             tool_payload_parts,
             model_name=turn_request.model_name,
         )
+        complete_order = complete_tool_payload_order if complete_tool_payload_order is not None else len(stream_events)
+        for complete_index, complete_call in enumerate(complete_tool_calls):
+            ordered_tool_calls.append(((complete_order, 1, complete_index), complete_call))
+        ordered_tool_calls.sort(key=lambda item: item[0])
+        seen_tool_call_ids: set[str] = set()
+        merged_tool_calls: list[ToolCall] = []
+        for _order, tool_call in ordered_tool_calls:
+            tool_call_id = tool_call.tool_call_id
+            if tool_call_id is not None:
+                if tool_call_id in seen_tool_call_ids:
+                    continue
+                seen_tool_call_ids.add(tool_call_id)
+            merged_tool_calls.append(tool_call)
+        streamed_tool_calls = tuple(merged_tool_calls)
         output = "".join(output_parts)
 
         if streamed_tool_calls:
@@ -597,6 +660,18 @@ class ProviderGraph:
         }
         if stream_event.text is not None:
             payload["text"] = stream_event.text
+        if stream_event.tool_call_id is not None:
+            payload["tool_call_id"] = stream_event.tool_call_id
+        if stream_event.tool_name is not None:
+            payload["tool_name"] = stream_event.tool_name
+        if stream_event.arguments_delta is not None:
+            payload["arguments_delta"] = stream_event.arguments_delta
+        if stream_event.tool_call_ordinal is not None:
+            payload["ordinal"] = stream_event.tool_call_ordinal
+        if stream_event.fragment_ordinal is not None:
+            payload["fragment_ordinal"] = stream_event.fragment_ordinal
+        if stream_event.parsed_arguments is not None:
+            payload["parsed_arguments"] = dict(stream_event.parsed_arguments)
         if stream_event.metadata is not None:
             payload["metadata"] = stream_event.metadata
         if stream_event.error is not None:
@@ -611,7 +686,13 @@ class ProviderGraph:
             payload["done_reason"] = stream_event.done_reason
         if stream_event.usage is not None:
             payload["usage"] = stream_event.usage.metadata_payload()
-        return GraphEvent(event_type="graph.provider_stream", source="graph", payload=payload)
+        lifecycle_event_types = {
+            "tool_call_start": "graph.tool_call_start",
+            "tool_call_delta": "graph.tool_call_delta",
+            "tool_call_end": "graph.tool_call_end",
+        }
+        event_type = lifecycle_event_types.get(stream_event.kind, "graph.provider_stream")
+        return GraphEvent(event_type=event_type, source="graph", payload=payload)
 
     @staticmethod
     def _graph_event(event_type: str, payload: dict[str, object]) -> GraphEvent:

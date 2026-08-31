@@ -3788,3 +3788,73 @@ def test_anthropic_long_cache_retention_marks_system_when_tools_are_absent() -> 
     assert block["type"] == "text"
     assert "# Summarize" in block["text"]
     assert block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_litellm_stream_emits_explicit_tool_call_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(
+            ([{"index": 0, "id": "call-read", "function": {"name": "read", "arguments": '{"path":'}}], None),
+            ([{"index": 0, "function": {"arguments": '"sample.txt"}'}}], "tool_calls"),
+        ),
+    )
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+    assert [event.kind for event in events] == ["tool_call_start", "tool_call_delta", "tool_call_delta", "tool_call_end", "done"]
+    assert {event.tool_call_id for event in events[:-1]} == {"call-read"}
+    assert events[-2].parsed_arguments == {"path": "sample.txt"}
+
+
+def test_litellm_stream_keeps_parallel_tool_call_fragments_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(
+            (
+                [
+                    {"index": 0, "id": "call-a", "function": {"name": "read", "arguments": '{"path":'}},
+                    {"index": 1, "id": "call-b", "function": {"name": "read", "arguments": '{"path":'}},
+                ],
+                None,
+            ),
+            (
+                [
+                    {"index": 1, "function": {"arguments": '"b.txt"}'}},
+                    {"index": 0, "function": {"arguments": '"a.txt"}'}},
+                ],
+                "tool_calls",
+            ),
+        ),
+    )
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+    ends = {event.tool_call_id: event.parsed_arguments for event in events if event.kind == "tool_call_end"}
+    assert ends == {"call-a": {"path": "a.txt"}, "call-b": {"path": "b.txt"}}
+
+
+def test_litellm_stream_does_not_end_incomplete_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(([{"index": 0, "id": "call-read", "function": {"name": "read", "arguments": '{"path":'}}], "tool_calls"),),
+    )
+    events = list(provider.stream_turn(_build_turn_request(model_name="openai")))
+    assert [event.kind for event in events] == ["tool_call_start", "tool_call_delta", "done"]
+    assert not any(event.kind == "tool_call_end" for event in events)
+
+
+def test_litellm_stream_abort_does_not_emit_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _AbortSignal:
+        cancelled = True
+
+    provider = LiteLLMBackendSingleAgentProvider(name="openai", config=None)
+    _patch_litellm_completion(
+        monkeypatch,
+        mode="stream",
+        stream_tool_chunks=(([{"index": 0, "id": "call-read", "function": {"name": "read", "arguments": '{"path":'}}], None),),
+    )
+    events = list(provider.stream_turn(replace(_build_turn_request(model_name="openai"), abort_signal=_AbortSignal())))
+    assert [event.kind for event in events] == ["error", "done"]
+    assert not any(event.kind.startswith("tool_call_") for event in events)

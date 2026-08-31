@@ -35,6 +35,18 @@ CLI 仍是目前最完整的流消费者；TUI 和 Web 已具备最小可用的�
 - 持久化重放必须保留与实时交付相同的可观测排序模型
 - 运行时内部可以为恢复维护 checkpoint / resume anchor，但这不会改变客户端可见的完整事件重放契约
 
+### Tool-call 参数增量
+
+Provider streaming 可发送 `graph.tool_call_start`、`graph.tool_call_delta` 和
+`graph.tool_call_end` 事件。事件按 `tool_call_id`（并保留 ordinal）关联；
+`arguments_delta` 是可拼接的原始 JSON 片段，不能被当作完整工具输入执行。
+
+这些参数增量是 **live-only** 观察数据，不写入持久化 session truth，也不出现在
+replay 中。只有参数完整且有效后，graph 才创建现有的
+`graph.tool_request_created`；随后仍经过运行时权限、审批和工具执行边界。
+abort、timeout 或 provider error 不会伪造完整 tool call。Provider 不支持参数增量
+时继续使用 completed-only tool-call 兼容路径。
+
 ## 客户端预期
 
 ### CLI

@@ -355,12 +355,20 @@ def test_shell_exec_progress_streams_before_tool_completion(tmp_path: Path) -> N
     assert first_progress.payload["tool"] == "shell_exec"
     assert first_progress.payload["stream"] == "stdout"
     assert first_progress.payload["chunk"] == "alpha\n"
+    assert isinstance(first_progress.payload["run_id"], str)
+    assert first_progress.payload["invocation_id"] == first_progress.payload["tool_call_id"]
 
     chunks.extend(iterator)
     event_types = [c.event.event_type for c in chunks if c.kind == "event" and c.event is not None]
     assert event_types.index("runtime.tool_started") < event_types.index(RUNTIME_TOOL_PROGRESS)
     assert event_types.index(RUNTIME_TOOL_PROGRESS) < event_types.index("runtime.tool_completed")
+    progress_events = [c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == RUNTIME_TOOL_PROGRESS]
+    assert progress_events
+    assert len({event.payload["run_id"] for event in progress_events}) == 1
+    assert len({event.payload["invocation_id"] for event in progress_events}) == 1
+    assert [int(event.payload["ordinal"]) for event in progress_events] == sorted(int(event.payload["ordinal"]) for event in progress_events)
     completed = next(c.event for c in chunks if c.kind == "event" and c.event is not None and c.event.event_type == "runtime.tool_completed")
+    assert completed.payload["tool_call_id"] == first_progress.payload["invocation_id"]
     assert completed.payload["stdout"] == "alpha\nomega\n"
 
 
@@ -393,6 +401,9 @@ def test_shell_exec_runtime_timeout_preserves_partial_progress_and_final_output(
     assert completed.payload["stdout"] == "partial\n"
     assert completed.payload["interrupted"] is True
     assert completed.payload["timed_out"] is True
+    assert isinstance(progress_events[0].payload["run_id"], str)
+    assert progress_events[0].payload["invocation_id"] == completed.payload["tool_call_id"]
+    assert progress_events[0].payload["ordinal"] == 1
 
 
 def test_runtime_does_not_hang_after_tool_timeout(tmp_path: Path) -> None:

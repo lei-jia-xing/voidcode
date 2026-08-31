@@ -221,6 +221,21 @@ def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path
                 source="graph",
                 payload={"kind": "delta", "channel": "text", "text": "hello"},
             )
+            yield GraphEvent(
+                event_type="graph.tool_call_start",
+                source="graph",
+                payload={"kind": "tool_call_start", "tool_call_id": "call-1", "tool_name": "read", "ordinal": 0},
+            )
+            yield GraphEvent(
+                event_type="graph.tool_call_delta",
+                source="graph",
+                payload={"kind": "tool_call_delta", "tool_call_id": "call-1", "arguments_delta": '{"path":'},
+            )
+            yield GraphEvent(
+                event_type="graph.tool_call_end",
+                source="graph",
+                payload={"kind": "tool_call_end", "tool_call_id": "call-1", "parsed_arguments": {"path": "sample.txt"}},
+            )
             yield _GraphStep(
                 events=(GraphEvent(event_type="graph.response_ready", source="graph", payload={"output_preview": "done"}),),
                 output="done",
@@ -241,6 +256,11 @@ def test_execute_graph_loop_streaming_dedupes_raw_provider_stream(tmp_path: Path
     )
 
     event_types = [chunk.event.event_type for chunk in chunks if chunk.event is not None]
+    assert [event_type for event_type in event_types if event_type.startswith("graph.tool_call_")] == [
+        "graph.tool_call_start",
+        "graph.tool_call_delta",
+        "graph.tool_call_end",
+    ]
     assert "graph.provider_stream" in event_types  # live client-only delta still streamed
     # The live raw provider_stream chunk is client-only: not persisted, not DB-sequenced.
     # Streaming turns additionally report the reasoning output diagnostic.

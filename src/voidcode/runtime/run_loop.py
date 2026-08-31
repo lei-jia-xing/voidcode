@@ -863,6 +863,8 @@ class RuntimeRunLoopCoordinator:
             tool_definition=resolved_call.tool.definition,
             context=RuntimeToolInvocationContext(
                 session_id=session.session.id,
+                run_id=run_id_from_session_metadata(session.metadata),
+                invocation_id=resolved_call.tool_call_id,
                 parent_session_id=parent_session_id,
                 delegation_depth=delegation_depth,
                 remaining_spawn_budget=remaining_spawn_budget,
@@ -1837,8 +1839,15 @@ class RuntimeRunLoopCoordinator:
         reasoning_capture_state: ReasoningCaptureState,
         current_chunk_session: SessionState,
     ) -> Generator[RuntimeStreamChunk, None, int]:
+        live_only_event_types = {
+            "graph.provider_stream",
+            "graph.tool_call_start",
+            "graph.tool_call_delta",
+            "graph.tool_call_end",
+        }
+        step_events = tuple(event for event in getattr(graph_step, "events", ()) if event.event_type not in live_only_event_types)
         renumbered_events = renumber_events(
-            getattr(graph_step, "events", ()),
+            step_events,
             session_id=session.session.id,
             start_sequence=sequence + 1,
             reasoning_capture_state=reasoning_capture_state,

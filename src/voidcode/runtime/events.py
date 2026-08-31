@@ -32,6 +32,9 @@ type CoreEventType = Literal[
     "runtime.mcp_server_failed",
     "graph.loop_step",
     "graph.model_turn",
+    "graph.tool_call_start",
+    "graph.tool_call_delta",
+    "graph.tool_call_end",
     "graph.tool_request_created",
     "runtime.tool_lookup_succeeded",
     "runtime.tool_started",
@@ -153,13 +156,16 @@ RUNTIME_MCP_SERVER_IDLE_CLEANED: Final[CoreEventType] = "runtime.mcp_server_idle
 RUNTIME_MCP_SERVER_FAILED: Final[CoreEventType] = "runtime.mcp_server_failed"
 GRAPH_LOOP_STEP: Final[CoreEventType] = "graph.loop_step"
 GRAPH_MODEL_TURN: Final[CoreEventType] = "graph.model_turn"
+GRAPH_TOOL_CALL_START: Final[CoreEventType] = "graph.tool_call_start"
+GRAPH_TOOL_CALL_DELTA: Final[CoreEventType] = "graph.tool_call_delta"
+GRAPH_TOOL_CALL_END: Final[CoreEventType] = "graph.tool_call_end"
 GRAPH_TOOL_REQUEST_CREATED: Final[CoreEventType] = "graph.tool_request_created"
-RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[CoreEventType] = "runtime.tool_lookup_succeeded"
-RUNTIME_TOOL_STARTED: Final[CoreEventType] = "runtime.tool_started"
-RUNTIME_PERMISSION_RESOLVED: Final[CoreEventType] = "runtime.permission_resolved"
 RUNTIME_TOOL_HOOK_PRE: Final[CoreEventType] = "runtime.tool_hook_pre"
 RUNTIME_TOOL_HOOK_POST: Final[CoreEventType] = "runtime.tool_hook_post"
 RUNTIME_TOOL_COMPLETED: Final[CoreEventType] = "runtime.tool_completed"
+RUNTIME_TOOL_LOOKUP_SUCCEEDED: Final[CoreEventType] = "runtime.tool_lookup_succeeded"
+RUNTIME_TOOL_STARTED: Final[CoreEventType] = "runtime.tool_started"
+RUNTIME_PERMISSION_RESOLVED: Final[CoreEventType] = "runtime.permission_resolved"
 GRAPH_RESPONSE_READY: Final[CoreEventType] = "graph.response_ready"
 RUNTIME_APPROVAL_REQUESTED: Final[CoreEventType] = "runtime.approval_requested"
 RUNTIME_APPROVAL_RESOLVED: Final[CoreEventType] = "runtime.approval_resolved"
@@ -231,6 +237,9 @@ EMITTED_EVENT_TYPES: Final[tuple[CoreEventType, ...]] = (
     RUNTIME_MCP_SERVER_FAILED,
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
+    GRAPH_TOOL_CALL_START,
+    GRAPH_TOOL_CALL_DELTA,
+    GRAPH_TOOL_CALL_END,
     GRAPH_TOOL_REQUEST_CREATED,
     RUNTIME_TOOL_LOOKUP_SUCCEEDED,
     RUNTIME_TOOL_STARTED,
