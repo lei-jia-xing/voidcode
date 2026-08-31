@@ -13,12 +13,12 @@ What voidcode MUST do. Keep this surface minimal.
 |------|-----------|-------|
 | Execution | Single-agent loop with provider-backed and deterministic engines | `runtime/service.py` |
 | Persistence | Append-only event log + SQLite session store | `runtime/storage.py` |
-| Tools | Builtin registry: read, write, edit, glob, grep, web_fetch, web_search, apply_patch, multi_edit, todo_write, lsp | `tools/` |
+| Tools | Builtin registry（非穷尽示例）：read, write, edit, glob, grep, web_fetch, web_search, apply_patch, multi_edit, todo_write, lsp | `tools/`；runtime-managed LSP/MCP 以及 task/process 等能力会按配置和运行时路径注入 |
 | Background processes | Spawn, poll logs, send stdin, and stop long-running workspace processes (dev servers, watchers) | `tools/background_process_*.py`; `shell_exec` remains the one-shot escape hatch |
 | Approval | Permission policy driven by `ToolDefinition.read_only` | `runtime/permission.py` |
-| Delegation | Runtime-owned background tasks with fixed child presets (advisor, explore, researcher, worker) | `docs/contracts/background-task-delegation.md` |
+| Delegation | Runtime-owned background tasks with fixed child presets (advisor, explore, researcher, worker, product), single/batch dispatch (`task`/`task_batch`), bounded output, status/list/group, explicit retry/cancel, and keep-alive steer | `docs/contracts/background-task-delegation.md` |
 | Resume | Session replay, approval continuation, context compaction | `runtime/service.py` |
-| Config | Merged precedence: env → user → repo-local → request → session metadata | `runtime/config.py` |
+| Config | Runtime config fields resolve as explicit/request → repo-local → environment → built-in defaults; user config is a separate merge surface（主要是 provider configs 与 TUI/Web settings），而 persisted session metadata 是单独的 resume/session override，不与上述层级混为一谈 | `runtime/config.py` |
 
 ## 🟡 Extension Points
 
@@ -48,7 +48,7 @@ What voidcode will NEVER implement in the runtime core.
 
 | Omission | Rationale |
 |----------|-----------|
-| **Arbitrary sub-agent spawning** | Only supported child presets (advisor, explore, researcher, worker, product) can be delegated to; `leader` is the sole top-level executable preset (`_EXECUTABLE_AGENT_PRESETS`), not a delegation target, and `product` is a delegated read-only plan subagent (`_EXECUTABLE_SUBAGENT_PRESETS`), not a top-level preset. Open-ended agent creation is not a runtime primitive. See [agent-architecture.md](./agent-architecture.md). |
+| **Arbitrary sub-agent spawning** | Runtime supports only fixed child presets (advisor, explore, researcher, worker, product) through `task` / `task_batch`; `leader` is the sole top-level executable preset (`_EXECUTABLE_AGENT_PRESETS`), not a delegation target, and `product` is a delegated read-only plan subagent (`_EXECUTABLE_SUBAGENT_PRESETS`), not a top-level preset. Keep-alive worker re-entry, explicit retry/cancel/steer, and bounded output/list/group surfaces are implemented within this fixed boundary. Open-ended agent creation is not a runtime primitive. See [agent-architecture.md](./agent-architecture.md). |
 | **Agent-to-agent bus** | No direct agent-to-agent communication channel. All coordination flows through runtime-owned parent/child session linkage and background task contracts. See [agent-boundary.md](./agent-boundary.md). |
 | **Plan mode as a runtime concept** | `RuntimeMode.plan` exists as a runtime-enforced read-only execution stance. There is no dedicated planning engine or plan-state machine; planning artifacts remain files or plan text produced by the agent. |
 | **Multi-agent topology beyond leader + child presets** | The runtime owns delegated child execution, not arbitrary orchestration graphs. The plain-Python graph layer is not a multi-agent backbone. |

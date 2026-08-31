@@ -182,6 +182,60 @@ OMP 的 thinking-level 模型：`Effort` 枚举 `minimal|low|medium|high|xhigh|m
 - diff、approval、question 和 child result 保持跨客户端语义一致 —— 继续推进；
 - 先优化首个真实改码任务，不追求 OMP 全部客户端形态。
 
+## 2026-08-31 工具与控制面补充审计
+
+> 本节记录本轮对 VoidCode 工具/runtime 与 OMP 文档的事实核对；保留上文历史结论，不把“存在源码”写成成熟产品能力。状态只使用“已实现 / 部分实现 / 缺失 / 未知”，并以当前仓库与 `omp://` 证据为边界。
+
+### 摘要
+
+- `apply_patch` 应继续保留，不建议现在与 `edit`、`multi_edit`、`write` 或 `apply_workspace_edit` 合并或删除。它在 VoidCode 中承担独有的跨文件 unified diff，以及 Add/Delete/Move/Rename、mode-only 和 patch context 路径；但 mode-only 假成功、unified path scope / containment 与 preview parser 仍是后续风险。
+- 后台 delegated task 的 runtime、SQLite、CLI、HTTP 已形成 status/output/cancel/retry/steer/list/group baseline；模型侧没有清晰的 aggregate `ps`。`background_output` 的 selector、parent ownership 与 bounded projection 已有，但 Web/TUI 的 roster/control parity 仍不完整。
+- background process 目前是 in-memory manager：已有启动、保留 stdout/stderr、精确复用、stdin、停止的窄路径，缺少 `ps`/`list`、持久化、readiness、follow、restart。
+- `todo_write` 仍是 flat `{content, status}`；OMP `todo` 有 phase tree、block/unblock/reason，但没有证据支持 dependencies。客户端差距是真实的：`ChildSessionSidebar` 存在但未挂载到 `App`，Web `RuntimeClient` 没有 task control methods，VoidCode TUI 没有 Agent Hub/task roster。
+- ownership/security 不能写成已修复：`background_cancel` 的 parent check 需要核对和补强；`background_output` 单 task 路径当前先 load 再 check，不能把它描述为先授权后读取。
+
+### 事实矩阵
+
+| 领域 | VoidCode 已核对事实 | OMP 对照证据 | 状态 |
+|---|---|---|---|
+| `apply_patch` 形态 | `src/voidcode/tools/apply_patch.py` 的 `_parse_marker_patch` 支持 `*** Add File`、`*** Delete File`、`*** Update File`、`*** Move to`；`_changes_from_unified_diff` / `_changes_from_patch_metadata` 识别跨文件 unified diff、A/D/M/R；unified hunk 保留上下文，marker hunk 也支持 `@@` context。`_verify_patch_expected_hashes`、`_guard_changes_before_write`、`_enforce_patch_seen_ranges` 及 `git apply --check` 组成现有护栏。 | `omp://tools/edit.md` 说明默认 `edit` 是 hashline（一个 section 对一个既有文件），另有可选 `apply_patch` mode；其 canonical 规则明确区分 snapshot/context 与 `CUT`/`REM`/`MV` 等文件和 patch 操作。 | **已实现（应保留）** |
+| `apply_patch` 边界 | `edit` 负责单文件、已读 snapshot 上的行/块替换；`multi_edit` 负责同一文件的多个有序替换；`write` 负责创建或完整重写；`apply_workspace_edit` 负责带 `expectedHash` 的 LSP 风格多文件 text edits。`apply_patch` 负责跨文件 unified diff / 文件级操作，不是前三者的别名。 | `omp://tools/edit.md` 的工具选择和 `PUT`/`CUT`/`REM`/`MV` 规则支持同样的边界判断，并明确不应把 unified-diff 行混入 hashline body。 | **已实现（边界清晰）** |
+| `apply_patch` 后续风险 | `_looks_like_mode_only_patch` 与 `_normalize_diff_block` 已识别/补齐 mode-only 的 `---`/`+++`；但 `invoke` 在 `git apply --check` 或 apply 失败时对 mode-only 仍可能返回 `status="ok"`（只返回变化摘要，未证明落盘）。此外，unified path scope、所有路径 containment、quoted/metadata path 解析与 `runtime/tool_call_preview.py` 的 preview parser 仍需专门验证；这些是风险记录，不是已修复声明。 | `omp://tools/edit.md` 的限制部分把 stale、越界、overlap、no-op、unified-diff contamination 和 streaming preview 的解析/跳过列为协议行为，可作为后续测试基线。 | **部分实现（风险未关闭）** |
+| 后台 delegated task | `src/voidcode/runtime/background_tasks.py` 的 `RuntimeBackgroundTaskSupervisor`、`src/voidcode/runtime/storage_background_tasks.py` 的 SQLite mixin、`src/voidcode/runtime/service.py` 的 facade，以及 `src/voidcode/runtime/http.py` 的 transport 已提供 status/output/cancel/retry/steer/list/group；CLI `src/voidcode/cli/app.py` 的 `tasks` 组也提供对应命令。 | `omp://tools/task.md` 记录 async jobs、批量任务、schema output、隔离产物和生命周期；`omp://agent-hub.md` 记录人类可见的 running/idle/parked/aborted roster 与控制。 | **已实现（runtime/SQLite/CLI/HTTP baseline）** |
+| 后台结果读取与 ownership | `src/voidcode/tools/background_output.py` 的 `_BackgroundOutputArgs` 强制 `task_id` / `task_ids` / `parallel_group_id` 三选一；group path 把当前 runtime tool context 作为 owner，并返回 bounded no-transcript projection。`src/voidcode/runtime/background_tasks.py` 的 `_resolve_background_task_group` 也核对 parent ownership，并以 Condition wait 支持 block。 | `docs/contracts/background-task-delegation.md` 与 `omp://tools/task.md` 都支持 bounded result/artifact，而不是把 child transcript复制到 parent。 | **已实现（aggregate selector/projection；单 task 授权顺序仍有风险）** |
+| aggregate `ps` | 当前 runtime status snapshot 只有 queued/running/terminal counts 与 concurrency observability；没有面向模型的清晰 aggregate process/agent `ps` 工具或等价 roster projection。 | OMP 有 `omp://agent-hub.md` 的 TUI Agent Hub 与 `/jobs` snapshot，但该证据不等于一个 VoidCode 可直接复制的模型侧 aggregate `ps` 契约。 | **缺失（模型侧）** |
+| background process | `src/voidcode/tools/background_process_start.py` 的 `BackgroundProcessManager` 仅保存 `_processes` 内存字典，已有 exact command+workspace reuse、bounded stdout/stderr、stdin write 和 process-group stop；`background_process_logs.py` 是 retained-tail read，不是 continuous watch。 | `omp://natives-shell-pty-process.md` 的 `ps` 有 `fromPid/fromPath`、`children`、`status`、`waitForExit`、`killTree/terminate`；shell/PTY 还提供持久会话、follow-like streaming 与显式 restart/kill primitives。 | **部分实现** |
+| todo state | `src/voidcode/tools/todo_write.py` 的 `_TodoItemModel` 只有 `content` 与 `status`（`pending/in_progress/completed/cancelled`），且是整表替换；`src/voidcode/runtime/todos.py` 只投影 flat item、position、updated_at 和计数。Web `TodoPanel` 只消费这套 flat snapshot，TUI 没有 OMP 式 phase tree/blocker 控件。 | `omp://tools/todo.md` 的 `todo` 是单操作模型，支持 phase tree、`block`/`unblock` 与 `reason`，并有 TUI tree renderer；该文档没有提供 dependencies 的实现证据。 | **部分实现（VoidCode）；OMP dependencies 未知** |
+| 客户端 task surface | `frontend/src/components/ChildSessionSidebar.tsx` 与测试存在，但 `frontend/src/App.tsx` 没有挂载该组件；`frontend/src/lib/runtime/client.ts` 目前有 `listBackgroundTasks`、`listSessionBackgroundTasks`、`getBackgroundTaskOutput`，缺 task cancel/retry/steer/list-group control methods。VoidCode `src/voidcode/tui/` 没有 Agent Hub/task roster。 | `omp://agent-hub.md` 明确有 roster、inspector、steer/revive/kill controls；`omp://tools/task.md` 也记录 async progress/result delivery。 | **部分实现（Web）；缺失（TUI parity）** |
+| ownership/security | `src/voidcode/tools/background_cancel.py` 只校验 task id 并调用 runtime cancel，不能据此证明调用者是 parent；该 parent check 需要核对/补强。`background_output.py` 单 task 分支先调用 `load_background_task_result`，之后才比较 `result.parent_session_id` 与当前 context；不能夸大为已修复的先授权后读取。 | OMP `omp://tools/task.md` 描述 ownerId/parent-child lifecycle，但不替代 VoidCode 自身的 authorization review。 | **部分实现（未证明已修复）** |
+
+### P0 / P1 / P2 顺序
+
+#### P0：先封住“可写错或可越权”的路径
+
+1. 修正并回归验证 `apply_patch` mode-only 的成功判定：`status="ok"` 必须对应已验证的实际变更；同时补齐 unified path scope、containment、quoted/metadata path 与 preview parser 的失败语义。
+2. 在 `background_cancel` 统一落实 parent ownership；在 `background_output` 单 task 读取前完成 ownership check，确保不存在先读取再授权的路径。保留现有 aggregate selector 三选一、bounded projection 和 Condition wait。
+
+#### P1：补足可操作性而不另造真相
+
+1. 定义 runtime-owned、bounded 的模型侧 aggregate task/agent `ps` projection，复用 SQLite task truth、group truth 与现有 status/output，不复制 transcript。
+2. 让 Web/TUI 消费同一 control-plane：挂载 `ChildSessionSidebar`，为 `RuntimeClient` 增加受 runtime 授权的 cancel/retry/steer（以及需要时 group）调用，并为 TUI 补 task roster/control parity；不在客户端本地推导状态。
+3. 把 process 能力分阶段推进：先明确 `list/ps`、readiness、follow、restart 的 runtime contract，再决定哪些状态需要持久化；不要把当前 in-memory manager 描述成 OMP `ps` 等价物。
+
+#### P2：提高计划表达力与长期可观测性
+
+1. 在已有 todo contract 上评估 phase/group/blocker/reason 与 UI 投影；只有确定 dependencies 的语义、持久化和恢复规则后才决定是否加入，当前不以 OMP 文档推断该能力已存在。
+2. 用针对性行为验证覆盖 patch failure、ownership boundary、aggregate projection、process lifecycle 与客户端 control parity；不要以工具数量或静态源码存在代替真实任务证据。
+
+### 明确不做什么
+
+- 不合并、删除或弱化 `apply_patch`；不把它降级成 `edit`/`multi_edit`/`write`/`apply_workspace_edit` 的别名。先修风险和补证据，再考虑协议收敛。
+- 不复制 OMP peer bus、完整 child transcript 或第二套 execution truth；SQLite/session/runtime 仍是唯一权威，结果继续走 bounded projection 与 artifact/session reference。
+- 不把 OMP Agent Hub 的 TUI roster、`ps` 语义或 todo dependencies 未经证据直接宣称为 VoidCode 已实现；也不把客户端局部状态升级为 runtime truth。
+- 不因这次审计引入 Rust native core、任意 agent topology、全量 process supervisor 或新的平行设计文档；本节是 canonical comparison record，后续实现仍应回到现有 contracts 与 runtime 边界。
+
+**本节结论：** 保留 `apply_patch` 的差异化能力，先处理可证明的 mode-only / scope / ownership 风险；随后补齐 runtime-owned aggregate 与 Web/TUI 操作 parity；todo phase/blocker 与 process lifecycle 作为有边界的 P2 评估项，所有未知保持未知。
+
 ## 当前不建议引入
 
 - 大规模 Rust native core；

@@ -23,7 +23,7 @@
 - 不定义 TUI 专用交互；
 - 不引入新的执行语义、权限语义或工具实现；
 - 不扩展 secret / config 写入；
-- 不承诺 post-MVP multi-agent / delegated execution 已经落地；
+- 不把当前受控的 delegated execution 误述为 arbitrary multi-agent topology 或完整产品化协作平台；
 - 不替代 `src/voidcode/tools/contracts.py` 中的 Python 类型定义。
 
 ## 与现有文档和代码的关系
@@ -565,7 +565,7 @@ describes a non-essential tool; it is not an authorization decision.
 
 - 分组：agent work state
 - 只读：是（`ToolDefinition.read_only=true`，见 `src/voidcode/tools/todo_write.py`；todo 状态视为 runtime work state，不进入 approval）
-- 用途：把 agent 当前 todo list 写入 `.voidcode/todos.json`。
+- 用途：把 agent 当前 todo list 写入当前 session 的 runtime-owned todo state；它不写 `.voidcode/todos.json` 或其他 workspace 文件。
 - 参数：
 
 ```json
@@ -578,17 +578,19 @@ describes a non-essential tool; it is not an authorization decision.
 
 `status` 允许 `pending`、`in_progress`、`completed`、`cancelled`。
 
-- 成功返回：
+- 工具成功返回（runtime 随后负责持久化）：
 
 ```json
 {
   "content": "Updated 1 todos",
   "data": {
-    "path": ".voidcode/todos.json",
+    "todos": [{"content": "Implement docs", "status": "in_progress"}],
     "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "cancelled": 0}
   }
 }
 ```
+
+runtime 在成功的 `todo_write` 后更新 session metadata 中的 runtime todo state（`SessionState.metadata["runtime_state"]["todos"]`），并发出 `runtime.todo_updated` 事件；SQLite session store 持久化该 metadata。`todo_write` 的工具结果不是单独的 workspace 文件真相。
 
 - 选择原则：用于 runtime-visible work state；不要把它当成项目文档或长期 memory。
 

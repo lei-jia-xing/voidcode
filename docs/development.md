@@ -43,6 +43,8 @@ uv run voidcode tasks list --workspace .
 uv run voidcode tasks status <task-id> --workspace .
 uv run voidcode tasks output <task-id> --workspace .
 uv run voidcode tasks cancel <task-id> --workspace .
+uv run voidcode tasks retry <task-id> --workspace .
+uv run voidcode tasks steer <task-id> "<next worker prompt>" --workspace .
 ```
 
 CLI 的默认输出面向人工阅读：`run` 会在 TTY 中逐事件输出并处理 approval/question；`sessions resume`/`answer` 也通过 stream API 显示增量事件。使用 `--json` 时，stdout 是一个完整 JSON 对象（包含事件列表、session 状态与 output），不是逐行 progress stream；脚本不得把 stdout 当作实时 progress。非交互阻塞会返回 approval-required 或 question-required 非零退出码并给出下一条命令。
@@ -62,7 +64,7 @@ CLI 的默认输出面向人工阅读：`run` 会在 TTY 中逐事件输出并�
 
 Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 property tests。当前这类覆盖刻意保持在 helper 层，主要用于验证像 `apply_patch`、`edit`、`todo_write`、`glob` 这类确定性字符串/patch/summary/路径规范化逻辑，而不是直接对 runtime 主循环做随机化测试。为了让 CI 行为稳定，这批测试使用有界 strategy，并通过 Hypothesis 设置保持可重复的 deterministic 运行。
 
-默认本地 Python 测试不再自动启用 coverage：`mise run test` 和 `mise run test:fast` 用于高频迭代，跳过 integration、fuzz-style 单测、大型 runtime extension 回归，以及会启动真实 CLI/TUI/MCP 边界的重型测试；`mise run test:all` 运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。并行任务使用 work-stealing 调度，避免慢测文件集中在少数 worker 上造成长尾等待。
+默认本地 Python 测试不再自动启用 coverage：`mise run test` 和 `mise run test:fast` 按 `mise.toml` 仅选择 `tests/unit`，并通过 marker expression 排除标记为 `slow` 或 `fuzz` 的测试；它们不会额外排除未标记的 runtime、CLI、TUI 或 MCP unit tests。`mise run test:all` 运行完整 pytest；`mise run test:coverage` 与 CI 的 Python 测试路径保持 coverage-bearing 验证。并行任务使用 work-stealing 调度，避免慢测文件集中在少数 worker 上造成长尾等待。
 
 ### 前端 任务
 
@@ -123,6 +125,8 @@ Python 测试现在同时包含示例型测试和一小批基于 Hypothesis 的 
 - `background_output` 可以读取摘要，也可以用 bounded `full_session=true` 查看 child transcript；`message_limit` 被限制在 1 到 100，失败结果只建议在用户明确要求时用 `session_id` 继续或重试。
 - `background_cancel` 对 unknown、running、completed、cancelled 等状态返回确定性 payload，不应被包装成未验证的文本约定。
 - CI 与本地测试使用 fake provider 和 fake MCP 覆盖 delegated/MCP lifecycle；不需要 live provider，也不需要真实 `npx @playwright/mcp` 才能验证这些契约。
+
+这些 `tasks` 命令覆盖当前已实现的 delegated background task control surface：`retry` 为显式重试并创建新的 task handle，`steer` 仅用于 keep-alive 任务的 `idle` / 可恢复 `interrupted` 状态。它们不等同于 `background_process_*`：后者仍是窄范围的 in-memory workspace process manager，当前缺少持久化、`ps` / `list`、readiness、follow 和 restart。
 
 相关验证命令：
 

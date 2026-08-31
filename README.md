@@ -69,7 +69,7 @@ Workspace-local runtime config lives in `.voidcode.json` at the workspace root (
 }
 ```
 
-For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level overrides resolve from `~/.config/voidcode/config.json`; environment variables override file config. See [`.env.example`](./.env.example).
+For a provider path, use one explicit model such as `"model": "openai/gpt-4o-mini"` and provide `OPENAI_API_KEY` through the environment. User-level provider/TUI/Web settings resolve from `~/.config/voidcode/config.json`; environment variables are field-specific inputs rather than a blanket override: for top-level runtime fields, explicit/request and repo-local values take precedence over environment values, while provider configs merge repo-local > environment > user. See [`.env.example`](./.env.example).
 ## Architecture overview
 
 VoidCode uses a runtime-centric architecture: **runtime** is the system control plane and **graph** is the execution/orchestration layer implemented in plain Python.
@@ -159,14 +159,18 @@ Release notes are generated with `git-cliff` using [`cliff.toml`](./cliff.toml).
 
 ## Documentation map
 
-For a deeper view of the current design and roadmap, see:
+Start with the [`docs/README.md`](./docs/README.md) documentation map for the recommended reading order and document-status rules. The map groups the canonical architecture, current-state, development, runtime-contract, operations, and comparison records:
 
+- [`docs/README.md`](./docs/README.md)
 - [`docs/architecture.md`](./docs/architecture.md)
-- [`docs/roadmap.md`](./docs/roadmap.md)
-- [`docs/mvp-todo-plan.md`](./docs/mvp-todo-plan.md)
-- [`docs/mvp-demo-guide.md`](./docs/mvp-demo-guide.md)
-- [`docs/contracts/README.md`](./docs/contracts/README.md)
+- [`docs/current-state.md`](./docs/current-state.md)
 - [`docs/development.md`](./docs/development.md)
+- [`docs/contracts/README.md`](./docs/contracts/README.md)
+- [`docs/mvp-demo-guide.md`](./docs/mvp-demo-guide.md)
+- [`docs/mvp-todo-plan.md`](./docs/mvp-todo-plan.md) — 历史交付清单/参考
+- [`docs/oh-my-pi-comparison-priorities.md`](./docs/oh-my-pi-comparison-priorities.md)
+
+Design and audit documents under `docs/` may be historical material; use the runtime contracts, `current-state.md`, and the comparison record as the basis for the current implementation.
 
 These internal docs are currently maintained in Chinese.
 

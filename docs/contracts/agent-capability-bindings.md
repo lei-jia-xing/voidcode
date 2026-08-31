@@ -10,7 +10,7 @@ runtime materialize agent capability 时按以下顺序收口：
 
 1. resolved `AgentManifest` defaults：builtin preset defaults，或从 project/user 本地 markdown manifest 发现并解析出的 custom defaults（prompt body、tool allowlist、skill refs、hook preset refs、MCP binding intent、model/execution defaults）；
 2. repo/runtime config overrides：`agent`、`agents`、`categories`、provider/model、tool/skill/MCP config；
-3. request metadata overrides：request `agent`、`skills`、`force_load_skills`、delegation route metadata 和 `workflow_mode` selector；
+3. request metadata overrides：request `agent`、`skills`、`force_load_skills` 与 delegation route metadata；runtime `mode` / `read_only` 是独立的执行姿态，不是 agent capability binding selector；
 4. delegated child-only bindings：`load_skills` / `force_load_skills` 只进入目标 child session。
 
 这个优先级会写入 `session.metadata.agent_capability_snapshot.precedence`，用于 debug/replay 时解释一个 session 的能力来源。
@@ -57,7 +57,7 @@ Custom markdown manifest 与 config-defined prompt override 的 prompt materiali
 
 Custom manifest 仍只是 declaration layer：它可以收窄或建议 capability defaults，但不能授予 runtime 未配置、未允许、未审批或未通过现有 delegation/session contract 的执行权。
 
-Workflow mode 本身不是 agent capability binding 的新执行层。它只是 request/runtime 选择用的模式 selector，会进入 snapshot 和 prompt materialization，但不会改变 agent-owned binding 的边界。
+Runtime `mode`（当前为 `normal` / `plan`）是独立的 session/request 执行姿态：`plan` 由 runtime 聚合为只读策略并启用相应 guidance transform，不属于 agent capability binding，也不会生成 workflow snapshot。`agent_capability_snapshot.agent.mode` 则表示所选 agent manifest 的 `primary` / `subagent` 声明；两者不可混同。旧的 `workflow_mode` selector、workflow snapshot 与 `workflow_mode_prompt_context` 已移除，不应作为当前 schema 或 prompt materialization 依据。
 
 ## Hooks 与 skills 边界
 

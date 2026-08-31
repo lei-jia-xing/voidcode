@@ -1,6 +1,6 @@
 # 当前实现状态
 
-本文档提供了 VoidCode 仓库截至 2026 年 8 月 15 日的真实快照。VoidCode 当前已经具备清晰的 **MVP 主路径基线**：稳定的 execution engine 基线、受监管的工具执行、会话恢复，以及由 CLI 与 Web 共享的真实运行时路径都已经落地；TUI 已具备核心交互（流式时间线、可折叠工具块、会话管理/恢复），但优先级仍低于 CLI + Web 主路径。
+本文档提供了 VoidCode 仓库截至 2026 年 8 月 31 日的真实快照。VoidCode 当前已经具备清晰的 **MVP 主路径基线**：稳定的 execution engine 基线、受监管的工具执行、会话恢复，以及由 CLI 与 Web 共享的真实运行时路径都已经落地；TUI 已具备核心交互（流式时间线、可折叠工具块、会话管理/恢复），但优先级仍低于 CLI + Web 主路径。
 
 关于将当前仓库状态连接到预期 MVP 的具体交付清单，请参阅 [`docs/mvp-todo-plan.md`](./mvp-todo-plan.md)。关于规范的客户端面向契约，请参阅 [`docs/contracts/README.md`](./contracts/README.md)。
 
@@ -23,13 +23,13 @@
 - [x] **契约层**：代码中存在类型化的会话、事件、运行时、图和工具契约。
 - [x] **稳定的 deterministic reference/debug engine**：CLI 可以通过运行时、图和工具边界执行受监管的本地确定性多步请求，并发出可观测事件。它保留为无凭据本地演示、测试和参考 harness；新产品行为优先沿 provider-backed execution path 演进。
 - [x] **扩展基础设施基础**：运行时现在包括工具、技能、LSP 和 ACP 的类型化配置和发现基础设施，并为 hooks/config MVP 提供了清晰的配置边界。
-- [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册 `grep`、`read`、`shell_exec` 和 `write`。
+- [x] **内置工具提供商**：专门的 `BuiltinToolProvider` 负责通过运行时边界注册内置和可选工具（例如 `grep`、`read`、`shell_exec` 和 `write`；具体集合会随可选 LSP/MCP/skill/task/background 等注入而变化）。
 - [x] **技能发现基础设施**：对 `.voidcode/skills/<name>/SKILL.md` 文件存在极简发现机制；运行时在每次运行时发出 `runtime.skills_loaded` 事件。
-- [x] **LSP 和 ACP/MCP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件、只读 tool 基线，以及主流 workspace 的 implicit defaults）。MCP 已具备 runtime-managed lifecycle、tool discovery 和 tool call 基础集成，但当前仍是 config-gated / opt-in 能力，默认不会进入 MVP 主执行路径；现阶段重点仍是边界稳定化而非功能扩张。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍保持严格收敛的 MVP 范围。
+- [x] **LSP 和 ACP/MCP 扩展基础设施**：LSP 已具备运行时管理的基础能力（配置、manager、事件、只读 tool 基线，以及主流 workspace 的 implicit defaults）。MCP 已具备 runtime-managed lifecycle、tool discovery 和 tool call 基础集成；其行为依配置与 execution engine path：deterministic path、显式 `mcp.enabled=false` 或显式 graph override 不会启动默认 remote discovery，provider-backed 主路径在默认 descriptor 配置下可能尝试 discovery/refresh。因此不是所有运行都会启动 MCP，不能笼统描述为 config-gated/opt-in。ACP 已进入最小的 runtime-managed transport / lifecycle 路径，但仍保持严格收敛的 MVP 范围。
 - [x] **极简 HTTP 传输**：精简的后端 HTTP 层现在暴露了 `GET /api/sessions`、`GET /api/sessions/{session_id}` 和 `POST /api/runtime/run/stream`，其中 SSE 数据块直接从运行时边界序列化，并且现在可以通过 `voidcode serve` 在本地提供服务。
 - [x] **运行时配置分层**：运行时现在显式支持 `execution_engine`、`provider_fallback` 与 `max_steps`，并将恢复关键配置持久化到 `SessionState.metadata["runtime_config"]`，以保证 `config show`、resume 和 provider fallback 语义一致。
 - [x] **Runtime Harness Policy v1 基线**：运行时已 materialize/persist `RuntimePolicySnapshot` v1，并覆盖固定 precedence、neutral intent metadata、hook non-authority、product non-delegation、严格版本读取、prompt activation persistence/replay 以及 bounded `runtime.policy_materialized` observability；缺失或版本不匹配的快照直接失败。
-- [x] **Delegated child execution 基线**：runtime-owned `task` / background task / child session path 已经支持受控 subagent routing、parent/child lineage、result retrieval、cancel surfaces、hook guardrails、CLI/HTTP parity 与 fake-provider/fake-MCP 测试覆盖；它仍不是任意拓扑 multi-agent 平台。
+- [x] **Delegated child execution 基线**：runtime-owned `task` / `task_batch` / background task / child session path 已经支持受控 subagent routing、parent/child lineage、result retrieval、status/list/group、显式 retry/cancel，以及 keep-alive steer；CLI/HTTP parity、hook guardrails 与 fake-provider/fake-MCP 测试覆盖已具备。它仍不是任意拓扑 multi-agent 平台。
 - [x] **工具活动显示契约基线**：运行时现在为工具事件附加 backend-owned `display` 与 `tool_status` payload（包含 tool name、phase/status、label 与可用的 invocation id），Web 侧通过 `frontend/src/lib/runtime/event-parser.ts` 消费这些字段，而不是仅依赖事件名猜测工具状态。
 - [x] **Capability doctor 与 first-task readiness**：`voidcode doctor` 已经输出结构化 capability report，并包含 `first_task_readiness`，用于把 provider/model/auth、本地工具、formatter/LSP/MCP 状态转化为首次真实任务的 next step。
 - [x] **本地工具效果统计基线**：runtime 现在可以从 append-only session events 和 session metadata 生成脱敏的 aggregate-only effectiveness projection，并通过 `voidcode stats tools`（或 `--json`）展示每个工具的调用数、成功率、错误分类、错误后成功重试、重复/续读、截断结果、参数/结果大小、context compaction、approval、resume、delegation 以及 provider token/cache usage。该投影不持久化源码、工具参数或结果正文；固定真实任务 benchmark 与 commit 基线仍暂缓。

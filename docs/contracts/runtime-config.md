@@ -350,10 +350,10 @@ Runtime Harness Policy v1 的仓库本地配置面必须保持 schema-bounded。
 
 当前 runtime 已经能够解析内置 agent preset，但会区分“顶层 active agent”与“delegated child agent”两条执行边界：
 
-- 顶层 active run 默认使用 builtin `leader`，也可显式选择 builtin `product` 或本地自定义 `mode: primary` manifest
-- runtime-owned delegation path 上的 child run 还可执行 builtin `advisor`、`explore`、`researcher`、`worker`，以及本地自定义 `mode: subagent` manifest
+- 顶层 active run 的唯一 builtin preset 是 `leader`；`product` 不能作为 top-level active agent
+- runtime-owned delegation path 上的 child run 可执行 builtin `advisor`、`explore`、`researcher`、`worker`、`product`，以及本地自定义 `mode: subagent` manifest
 
-这个限制是有意的：`leader` 与 `product` 是顶层 active agent；child preset 不是任意可选的顶层 active agent，只有在 delegation path（例如带 `parent_session_id` 且通过 subagent routing 校验的请求）中才会进入真实执行路径。
+这个限制是有意的：`product` 是 delegated read-only plan child，只有在 delegation path（例如带 `parent_session_id` 且通过 subagent routing 校验的请求）中才会进入真实执行路径。
 
 ### 本地 markdown agent manifest
 
@@ -390,7 +390,7 @@ You are a focused reviewer. Stay within the runtime-provided tools and report ri
 
 `voidcode agents list --workspace <path> [--json]` 会列出 builtin 与本地 custom primary agents，并在 custom agents 上显示 `source_scope` / `source_path`。
 
-`leader` 与 `product` preset 当前进入 runtime truth 的字段是：
+`leader` 顶层 preset 与 `product` delegated child preset 当前进入 runtime truth 的字段是：
 
 - `preset`
 - `prompt_profile`：注入 provider turn 的 agent profile system message
@@ -544,7 +544,7 @@ workspace 本地覆盖路径保持为：
 代码库中当前的具体存储/映射点包括：
 
 - `VoidCodeRuntime(workspace=...)` 提供活跃的工作区根目录
-- `RuntimeRequest.metadata` 是当前的灵活请求作用域容器
+- `RuntimeRequest.metadata` 是经过 `validate_runtime_request_metadata` 校验的、schema-bounded 请求作用域容器；未知字段、错误类型和无效嵌套 shape 会 fail-fast
 - `SessionState.metadata` 在内存中存储运行时/会话元数据
 - SQLite 会话存储将 `SessionState.metadata` 作为持久化会话 payload 的一部分进行保存
 - SQLite 会话存储还将 `workspace` 持久化为 `sessions.workspace` 中的一等公民列，并将其用于会话列出和查找
@@ -602,7 +602,7 @@ https://raw.githubusercontent.com/lei-jia-xing/voidcode/master/schema/voidcode.c
 - hooks 不得改变工具参数或结果，只能观察与失败中止
 - 除 `approval_mode` / `model` / `execution_engine` / `max_steps` / `reasoning_effort` 外，其余扩展领域继续保持浅层仓库本地配置
 - 仅 `approval_mode` / `model` / `execution_engine` / `max_steps` / `reasoning_effort` 在此轨道中具备恢复关键的优先级行为
-- 当前的请求元数据是灵活的，但尚不属于稳定的公共模式（Schema）；将其收紧为稳定 runtime request metadata schema 的后续实现工作由 `#175` 跟踪
+- 当前 request metadata 已是受限的 runtime schema：顶层字段必须属于稳定 allowlist（内部字段仅由 runtime 使用），`command` / `delegation` 等嵌套对象也会拒绝未知字段或无效类型；入口统一 fail-fast，详见 `src/voidcode/runtime/contracts.py::validate_runtime_request_metadata`。
 
 ## 非目标
 
