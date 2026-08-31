@@ -69,6 +69,7 @@ from voidcode.runtime.config import (
     RuntimeToolsBuiltinConfig,
     RuntimeToolsConfig,
     load_runtime_config,
+    serialize_runtime_agent_config,
     serialize_runtime_background_task_config,
 )
 from voidcode.runtime.context_transforms import (
@@ -80,6 +81,7 @@ from voidcode.runtime.context_window import (
     ContextProjection,
     ContextWindowPolicy,
     RuntimeContextWindow,
+    ToolResultView,
 )
 from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequestError, runtime_read_only_from_metadata, validate_runtime_request_metadata
 from voidcode.runtime.events import (
@@ -6901,6 +6903,248 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
         "prompt_materialization": _prompt_materialization_payload("worker"),
         "model": "opencode/gpt-5.4",
     }
+
+
+def test_provider_delegated_child_approval_restart_replay_preserves_runtime_truth(
+    tmp_path: Path,
+) -> None:
+    """Characterize provider child config across an approval-blocked restart."""
+    from voidcode.agent import AgentMcpBindingIntent
+
+    skill_dir = tmp_path / ".voidcode" / "skills" / "demo"
+    _write_demo_skill(skill_dir, content="# Demo\nUse the delegated demo skill.")
+
+    class _RestartableDelegationProvider:
+        name = "scripted"
+
+        def __init__(self) -> None:
+            self.created_providers: list[object] = []
+            self.requests: list[ProviderTurnRequest] = []
+
+        def turn_provider(self) -> object:
+            model_provider = self
+
+            class _Provider:
+                name = model_provider.name
+
+                def propose_turn(self, request: object) -> ProviderTurnResult:
+                    turn_request = cast(ProviderTurnRequest, request)
+                    model_provider.requests.append(turn_request)
+                    delegation = turn_request.assembled_context.metadata.get("delegation")
+                    if isinstance(delegation, dict):
+                        if not turn_request.tool_results:
+                            return ProviderTurnResult(
+                                tool_call=ToolCall(
+                                    tool_name="write",
+                                    arguments={"path": "approval.txt", "content": "approved"},
+                                )
+                            )
+                        return ProviderTurnResult(
+                            tool_call=ToolCall(
+                                tool_name="submit_result",
+                                arguments={"summary": "child approval result"},
+                            )
+                        )
+                    if not turn_request.tool_results:
+                        return ProviderTurnResult(
+                            tool_call=ToolCall(
+                                tool_name="task",
+                                arguments={
+                                    "prompt": "perform delegated approval",
+                                    "run_in_background": False,
+                                    "load_skills": ["demo"],
+                                    "subagent_type": "worker",
+                                    "description": "Provider child approval characterization",
+                                },
+                            )
+                        )
+                    return ProviderTurnResult(output="parent observed child approval")
+
+            provider = _Provider()
+            model_provider.created_providers.append(provider)
+            return provider
+
+    scripted_provider = _RestartableDelegationProvider()
+    fallback_provider = _ScriptedModelProvider(
+        name="fallback",
+        outcomes=(ProviderTurnResult(output="unexpected fallback"),),
+    )
+    registry = ModelProviderRegistry(
+        providers={"scripted": scripted_provider, "fallback": fallback_provider},
+    )
+    child_tools = RuntimeToolsConfig(
+        allowlist=("read", "write", "submit_result", "lsp", "mcp/*"),
+        default=("read", "write", "submit_result", "lsp", "mcp/*"),
+    )
+    child_fallback = RuntimeProviderFallbackConfig(
+        preferred_model="scripted/child-model",
+        fallback_models=("fallback/child-fallback",),
+    )
+    worker_agent = RuntimeAgentConfig(
+        preset="worker",
+        prompt_profile="worker",
+        model="scripted/child-model",
+        execution_engine="provider",
+        tools=child_tools,
+        skills=RuntimeSkillsConfig(enabled=True),
+        mcp_binding=AgentMcpBindingIntent(profile="delegated", servers=("echo",)),
+        provider_fallback=child_fallback,
+    )
+    config = RuntimeConfig(
+        approval_mode="ask",
+        execution_engine="provider",
+        model="scripted/leader-model",
+        provider_fallback=RuntimeProviderFallbackConfig(
+            preferred_model="scripted/leader-model",
+            fallback_models=("fallback/leader-fallback",),
+        ),
+        tools=RuntimeToolsConfig(allowlist=("task", "read", "write", "submit_result", "lsp", "mcp/*")),
+        skills=RuntimeSkillsConfig(enabled=True),
+        lsp=RuntimeLspConfig(
+            enabled=True,
+            servers={"stub": RuntimeLspServerConfig(command=("stub-lsp",), extensions=(".py",))},
+        ),
+        mcp=RuntimeMcpConfig(
+            enabled=True,
+            servers={"echo": RuntimeMcpServerConfig(command=("stub-mcp",), scope="session")},
+        ),
+        agent=RuntimeAgentConfig(
+            preset="leader",
+            prompt_profile="leader",
+            model="scripted/leader-model",
+            execution_engine="provider",
+            tools=RuntimeToolsConfig(allowlist=("task", "read", "write", "submit_result", "lsp", "mcp/*")),
+            skills=RuntimeSkillsConfig(enabled=True),
+            mcp_binding=AgentMcpBindingIntent(profile="delegated", servers=("echo",)),
+            provider_fallback=RuntimeProviderFallbackConfig(
+                preferred_model="scripted/leader-model",
+                fallback_models=("fallback/leader-fallback",),
+            ),
+        ),
+        agents={"worker": worker_agent},
+    )
+
+    class _ConfiguredNoopMcpManager(_NoopMcpManager):
+        @property
+        def configuration(self) -> McpConfigState:
+            assert config.mcp is not None
+            return McpConfigState(configured_enabled=True, servers=dict(config.mcp.servers or {}))
+
+    database_path = tmp_path / "provider-child-runtime.sqlite3"
+
+    def build_runtime() -> VoidCodeRuntime:
+        return VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config,
+            permission_policy=PermissionPolicy(mode="ask"),
+            model_provider_registry=registry,
+            session_store=SqliteSessionStore(database_path=database_path),
+            lsp_manager=DisabledLspManager(config.lsp),
+            mcp_manager=_ConfiguredNoopMcpManager(),
+        )
+
+    runtime = build_runtime()
+    parent = runtime.run(RuntimeRequest(prompt="delegate approval", session_id="provider-parent"))
+    task_events = [event for event in parent.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "task"]
+    assert task_events, f"parent did not route task: status={parent.session.status!r} output={parent.output!r} events={parent.events!r}"
+    task_event = task_events[0]
+    child_session_id = cast(str, task_event.payload["session_id"])
+    child_waiting = runtime.session_result(session_id=child_session_id)
+    approval_event = next(event for event in child_waiting.transcript if event.event_type == "runtime.approval_requested")
+    approval_request_id = cast(str, approval_event.payload["request_id"])
+    assert len(scripted_provider.created_providers) >= 2
+    assert any(request.session_id == "provider-parent" for request in scripted_provider.requests)
+    assert any(
+        request.session_id == child_session_id and isinstance(request.assembled_context.metadata.get("delegation"), dict)
+        for request in scripted_provider.requests
+    )
+
+    def persisted_truth(response: RuntimeResponse | RuntimeSessionResult) -> dict[str, object]:
+        metadata = response.session.metadata
+        runtime_config = cast(dict[str, object], metadata["runtime_config"])
+        agent = cast(dict[str, object], runtime_config["agent"])
+        capability = cast(dict[str, object], metadata["agent_capability_snapshot"])
+        return {
+            "model": runtime_config["model"],
+            "fallback_models": runtime_config["fallback_models"],
+            "resolved_provider": runtime_config["resolved_provider"],
+            "agent": agent,
+            "agent_tools": agent["tools"],
+            "agent_skills": agent["skills"],
+            "agent_mcp_binding": agent["mcp_binding"],
+            "lsp": runtime_config["lsp"],
+            "mcp": runtime_config["mcp"],
+            "capability": capability,
+            "skill_snapshot": metadata["skill_snapshot"],
+            "mode": metadata.get("mode"),
+            "read_only": metadata.get("read_only"),
+        }
+
+    persisted_before = persisted_truth(child_waiting)
+    effective_before = runtime.effective_runtime_config(session_id=child_session_id)
+    assert child_waiting.session.status == "waiting"
+    assert child_waiting.session.session.parent_id == "provider-parent"
+    assert parent.output == "parent observed child approval"
+    assert persisted_before["model"] == "scripted/child-model"
+    assert persisted_before["fallback_models"] == ["fallback/child-fallback"]
+    assert cast(dict[str, object], persisted_before["resolved_provider"])["active_target"] == {
+        "raw_model": "scripted/child-model",
+        "provider": "scripted",
+        "model": "child-model",
+    }
+    assert cast(dict[str, object], persisted_before["agent_skills"]) == {"enabled": True, "paths": None}
+    assert cast(dict[str, object], persisted_before["agent_mcp_binding"]) == {"profile": "delegated", "servers": ["echo"]}
+    assert cast(dict[str, object], persisted_before["lsp"])["servers"] == ["stub"]
+    assert cast(dict[str, object], persisted_before["mcp"])["servers"] == ["echo"]
+    assert cast(dict[str, object], persisted_before["capability"])["skills"] == {
+        "manifest_refs": [],
+        "selected_names": [],
+        "force_loaded_names": ["demo"],
+        "scope": "target_session",
+    }
+    assert "workflow" not in cast(dict[str, object], persisted_before["agent"])
+
+    restarted_runtime = build_runtime()
+    restarted_waiting = restarted_runtime.session_result(session_id=child_session_id)
+    effective_restarted = restarted_runtime.effective_runtime_config(session_id=child_session_id)
+    assert persisted_truth(restarted_waiting) == persisted_before
+    assert effective_restarted.execution_engine == effective_before.execution_engine == "provider"
+    assert effective_restarted.model == effective_before.model == "scripted/child-model"
+    assert effective_restarted.provider_fallback == effective_before.provider_fallback == child_fallback
+    assert effective_restarted.resolved_provider.active_target.selection == effective_before.resolved_provider.active_target.selection
+    assert tuple(target.selection for target in effective_restarted.resolved_provider.target_chain.all_targets) == tuple(
+        target.selection for target in effective_before.resolved_provider.target_chain.all_targets
+    )
+    assert serialize_runtime_agent_config(effective_restarted.agent) == cast(dict[str, object], persisted_before["agent"])
+
+    provider_request_count = len(scripted_provider.requests)
+    resumed = restarted_runtime.resume(
+        child_session_id,
+        approval_request_id=approval_request_id,
+        approval_decision="allow",
+    )
+    resumed_provider_requests = scripted_provider.requests[provider_request_count:]
+    assert resumed_provider_requests
+    assert any(
+        request.session_id == child_session_id
+        and isinstance(request.assembled_context.metadata.get("delegation"), dict)
+        and any(
+            isinstance(tool_result, ToolResultView) and tool_result.tool_name == "write" and tool_result.status == "ok"
+            for tool_result in request.tool_results
+        )
+        for request in resumed_provider_requests
+    )
+    result_after_resume = restarted_runtime.session_result(session_id=child_session_id)
+    replayed = restarted_runtime.replay_session(session_id=child_session_id)
+
+    assert resumed.session.status == "completed"
+    assert resumed.output == "child approval result"
+    assert result_after_resume.status == "completed"
+    assert result_after_resume.output == resumed.output
+    assert replayed.session.status == "completed"
+    assert replayed.output == resumed.output
+    assert persisted_truth(result_after_resume) == persisted_before
+    assert persisted_truth(replayed) == persisted_before
 
 
 def test_runtime_product_child_projects_only_submit_result_handoff_to_parent(tmp_path: Path) -> None:
