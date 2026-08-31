@@ -1675,6 +1675,44 @@ describe("Provider tool-call delta contract", () => {
     expect(tool.result).toBeUndefined();
   });
 
+  it("renders the backend canonical diff preview without creating an execution result", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", {
+          tool_call_id: "call-diff",
+          tool: "write",
+          diff_preview: { path: "note.txt", diff: "@@ -1 +1 @@\n-old\n+new" },
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0].diffPreview).toEqual({
+      path: "note.txt",
+      diff: "@@ -1 +1 @@\n-old\n+new",
+    });
+    expect(messages[1].tools[0].result).toBeUndefined();
+  });
+
+  it("captures canonical diff previews from raw graph tool requests", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_request_created", {
+          tool_call_id: "raw-diff",
+          tool: "edit",
+          diff_preview: { path: "src/app.ts", diff: "@@ -1 +1 @@\n-old\n+new" },
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0]).toMatchObject({
+      id: "raw-diff",
+      diffPreview: { path: "src/app.ts", diff: "@@ -1 +1 @@\n-old\n+new" },
+    });
+    expect(messages[1].tools[0].result).toBeUndefined();
+  });
+
   it("keeps concurrent calls isolated and ignores duplicate or late deltas", () => {
     const messages = deriveChatMessages(
       [
@@ -1739,6 +1777,33 @@ describe("Provider tool-call delta contract", () => {
       stdout: "éok",
       degraded: false,
     });
+  });
+
+  it("keeps canonical degraded preview reasons visible without creating a result", () => {
+    const messages = deriveChatMessages(
+      [
+        base,
+        event(2, "graph.tool_call_start", {
+          tool_call_id: "call-degraded",
+          tool: "write",
+          diff_preview: {
+            schema_version: 1,
+            phase: "partial",
+            live_only: true,
+            status: "degraded",
+            bounded: true,
+            truncated: false,
+            reason: "preview_callback_unavailable",
+          },
+        }),
+      ],
+      null,
+    );
+    expect(messages[1].tools[0].diffPreview).toMatchObject({
+      degraded: true,
+      error: "preview_callback_unavailable",
+    });
+    expect(messages[1].tools[0].result).toBeUndefined();
   });
 
   it("resets identity and bounds degraded fragments across requests", () => {

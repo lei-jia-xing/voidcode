@@ -134,6 +134,7 @@ from .session_metadata_helpers import (
 )
 from .skill_metadata import skill_snapshot_from_metadata
 from .storage import SessionStore
+from .tool_call_preview import PREVIEW_SNAPSHOT_MAX_BYTES, WRITE_PREVIEW_TOOLS, build_partial_tool_call_preview, build_tool_call_preview
 from .tool_display import build_tool_display, build_tool_status
 from .tool_execution import RuntimeToolExecutor
 from .tool_replay import ToolExecutionIntent
@@ -552,6 +553,7 @@ def _graph_request_without_provider_attempt(
         assembled_context=request.assembled_context,
         metadata=_metadata_without_provider_attempt(request.metadata),
         abort_signal=request.abort_signal,
+        tool_call_preview=request.tool_call_preview,
     )
 
 
@@ -665,6 +667,23 @@ class RuntimeRunLoopCoordinator:
         self._tool_input_handler_registry = tool_input_handler_registry
         self._tool_result_handler_registry = tool_result_handler_registry
         self._tool_executor = tool_executor
+
+    def _tool_call_preview(
+        self,
+        tool_name: str,
+        fragments: tuple[str, ...],
+        parsed_arguments: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        """Build a live-only preview within the runtime workspace boundary."""
+        try:
+            return build_partial_tool_call_preview(
+                workspace=self._workspace,
+                tool_name=tool_name,
+                argument_text="".join(fragments),
+                parsed_arguments=parsed_arguments,
+            )
+        except Exception:
+            return None
 
     def _persist_events(
         self,
@@ -1484,6 +1503,7 @@ class RuntimeRunLoopCoordinator:
                 assembled_context=assembled_context,
                 metadata=current_metadata,
                 abort_signal=current_abort_signal,
+                tool_call_preview=self._tool_call_preview,
             )
             effective_runtime_config = runtime.effective_runtime_config_from_metadata(session.metadata)
             session, sequence, terminated = yield from self._emit_turn_context_events(
@@ -2293,8 +2313,63 @@ class RuntimeRunLoopCoordinator:
         stream_step = getattr(graph, "stream_step", None)
         if active_graph_request.metadata.get("provider_stream") is True and callable(stream_step):
             graph_step = None
-            for streamed_item in stream_step(
+            partial_fragments: dict[str, list[str]] = {}
+            partial_fragment_chars: dict[str, int] = {}
+            partial_tool_names: dict[str, str] = {}
+
+            def decorate_live_event(event: GraphEvent) -> GraphEvent:
+                if event.event_type not in {"graph.tool_call_start", "graph.tool_call_delta", "graph.tool_call_end"}:
+                    return event
+                payload = dict(event.payload)
+                raw_call_id = payload.get("tool_call_id")
+                call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id else None
+                raw_name = payload.get("tool_name")
+                tool_name = raw_name if isinstance(raw_name, str) else None
+                tracking_id = call_id or f"anonymous:{tool_name or 'unknown'}"
+                if call_id is not None or tool_name in WRITE_PREVIEW_TOOLS:
+                    partial_tool_names[tracking_id] = tool_name or partial_tool_names.get(tracking_id, "")
+                    fragments = partial_fragments.setdefault(tracking_id, [])
+                    raw_delta = payload.get("arguments_delta")
+                    if isinstance(raw_delta, str):
+                        chars = partial_fragment_chars.get(tracking_id, 0)
+                        if chars < PREVIEW_SNAPSHOT_MAX_BYTES:
+                            fragment = raw_delta[: PREVIEW_SNAPSHOT_MAX_BYTES - chars]
+                            fragments.append(fragment)
+                            partial_fragment_chars[tracking_id] = chars + len(fragment)
+                    raw_parsed = payload.get("parsed_arguments")
+                    parsed = raw_parsed if isinstance(raw_parsed, dict) else None
+                    tool_name = partial_tool_names.get(tracking_id) or tool_name
+                    if tool_name in WRITE_PREVIEW_TOOLS:
+                        if "diff_preview" not in payload:
+                            try:
+                                diff_preview = build_partial_tool_call_preview(
+                                    workspace=self._workspace,
+                                    tool_name=tool_name,
+                                    argument_text="".join(fragments),
+                                    parsed_arguments=cast(dict[str, object] | None, parsed),
+                                )
+                            except Exception:
+                                diff_preview = None
+                            if diff_preview is not None:
+                                payload["diff_preview"] = diff_preview
+                        # The write payload can include arbitrary source or
+                        # secret-like content; diff_preview is the canonical,
+                        # bounded projection for these lifecycle events.
+                        payload.pop("arguments_delta", None)
+                        payload.pop("parsed_arguments", None)
+                return GraphEvent(event_type=event.event_type, source=event.source, payload=payload)
+
+            stream_request = replace(
                 active_graph_request,
+                tool_call_preview=lambda tool_name, fragments, parsed: build_partial_tool_call_preview(
+                    workspace=self._workspace,
+                    tool_name=tool_name,
+                    argument_text="".join(fragments),
+                    parsed_arguments=parsed,
+                ),
+            )
+            for streamed_item in stream_step(
+                stream_request,
                 tuple(tool_results),
                 session=session,
             ):
@@ -2311,6 +2386,7 @@ class RuntimeRunLoopCoordinator:
                         graph_step = streamed_item
                     continue
                 if isinstance(streamed_item, GraphEvent):
+                    streamed_item = decorate_live_event(streamed_item)
                     # Live client-only stream deltas are NOT persisted, so
                     # they must not advance the persisted-sequence cursor.
                     # They share the current cursor value; the renumbered
@@ -2480,6 +2556,7 @@ class RuntimeRunLoopCoordinator:
                     assembled_context=active_graph_request.assembled_context,
                     metadata=retry_metadata,
                     abort_signal=current_abort_signal,
+                    tool_call_preview=self._tool_call_preview,
                 )
                 return {
                     "action": "retry",
@@ -2541,6 +2618,7 @@ class RuntimeRunLoopCoordinator:
                     assembled_context=fallback_assembled_context,
                     metadata=fallback_metadata,
                     abort_signal=fallback_abort_signal,
+                    tool_call_preview=self._tool_call_preview,
                 )
                 return {
                     "action": "fallback",
@@ -2675,7 +2753,8 @@ class RuntimeRunLoopCoordinator:
             )
             yield failed_chunk
             raise ValueError("graph step did not produce a tool call or output")
-
+        if not isinstance(plan_tool_call, ToolCall):
+            raise TypeError("graph step tool_call must be a ToolCall")
         original_tool_call = plan_tool_call
         explicit_tool_call_id = plan_tool_call.tool_call_id
         tool_call_id = explicit_tool_call_id or f"runtime-tool-{uuid4().hex}"
@@ -2684,6 +2763,18 @@ class RuntimeRunLoopCoordinator:
             "arguments": dict(original_tool_call.arguments),
             **({"path": path} if isinstance((path := original_tool_call.arguments.get("path")), str) else {}),
         }
+        if original_tool_call.tool_name in WRITE_PREVIEW_TOOLS:
+            try:
+                diff_preview = build_tool_call_preview(
+                    workspace=self._workspace,
+                    tool_name=original_tool_call.tool_name,
+                    arguments=original_tool_call.arguments,
+                    phase="final",
+                )
+            except Exception:
+                diff_preview = None
+            if diff_preview is not None:
+                graph_payload["diff_preview"] = diff_preview
         if explicit_tool_call_id is not None or runtime.effective_runtime_config_from_metadata(session.metadata).execution_engine == "provider":
             graph_payload["tool_call_id"] = tool_call_id
         envelope = self._persist_event(
@@ -3389,6 +3480,18 @@ class RuntimeRunLoopCoordinator:
             "tool": original_inner_call.tool_name,
             "arguments": dict(original_inner_call.arguments),
         }
+        if original_inner_call.tool_name in WRITE_PREVIEW_TOOLS:
+            try:
+                diff_preview = build_tool_call_preview(
+                    workspace=self._workspace,
+                    tool_name=original_inner_call.tool_name,
+                    arguments=original_inner_call.arguments,
+                    phase="final",
+                )
+            except Exception:
+                diff_preview = None
+            if diff_preview is not None:
+                tool_request_payload["diff_preview"] = diff_preview
         if outer_call_id is not None:
             tool_request_payload["tool_call_id"] = outer_call_id
         envelope = self._persist_event(

@@ -41,6 +41,7 @@ import { ChatMessage, MessagePart } from "../lib/runtime/event-parser";
 import type {
   BackgroundTaskSummary,
   QuestionAnswer,
+  ToolDiffPreview,
 } from "../lib/runtime/types";
 import {
   estimateStreamedTextHeight,
@@ -504,6 +505,56 @@ function DiffDetailBlock({
     </div>
   );
 }
+function DiffPreviewBlock({ preview }: { preview?: ToolDiffPreview }) {
+  const { t } = useTranslation();
+  if (!preview) return null;
+  const unified = preview.diff;
+  const hasBeforeAfter =
+    preview.old_text !== undefined || preview.new_text !== undefined;
+  if (!unified && !hasBeforeAfter && !preview.error) return null;
+  return (
+    <div
+      className="mt-2 rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-2 text-xs"
+      data-diff-preview
+    >
+      <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--vc-text-subtle)]">
+        <span>{t("tool.diffPreview.title")}</span>
+        <span className="rounded border border-[color:var(--vc-border-subtle)] px-1.5 py-0.5">
+          {t("tool.diffPreview.readOnly")}
+        </span>
+        {(preview.degraded || preview.truncated) && (
+          <span className="text-[var(--vc-warning-text)]">
+            {t("tool.diffPreview.degraded")}
+          </span>
+        )}
+      </div>
+      {preview.path && (
+        <div className="mb-1 font-mono text-[11px] text-[var(--vc-text-muted)]">
+          {preview.path}
+        </div>
+      )}
+      {preview.error && (
+        <div className="mb-1 text-[var(--vc-danger-text)]" role="status">
+          {preview.error}
+        </div>
+      )}
+      {unified ? (
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
+          {unified}
+        </pre>
+      ) : (
+        <div className="grid gap-2 md:grid-cols-2">
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[color:var(--vc-danger-border)] pl-2 font-mono text-[11px]">
+            {preview.old_text ?? t("tool.diffPreview.empty")}
+          </pre>
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words border-l-2 border-[color:var(--vc-success-border)] pl-2 font-mono text-[11px]">
+            {preview.new_text ?? t("tool.diffPreview.empty")}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ToolDisclosureRow({
   tool,
@@ -802,8 +853,9 @@ function WriteToolActivity({
         />
       ) : (
         <>
+          <DiffPreviewBlock preview={tool.diffPreview} />
           <DiffDetailBlock label="Diff" diff={diff} />
-          {!diff && tool.content && (
+          {!diff && !tool.diffPreview && tool.content && (
             <ToolDetailBlock
               label="Output"
               value={tool.content}

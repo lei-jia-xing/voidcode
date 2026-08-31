@@ -266,12 +266,28 @@ Runtime hook surface 与其事件名称的内部对应关系由
   - `error_kind: str` (可选; 错误分类)
   - `done_reason: str` (可选; 完成原因)
 
+### `graph.tool_call_start` / `graph.tool_call_delta` / `graph.tool_call_end`
+- source: `graph`
+- 非写工具保持既有参数增量字段（包括 `arguments_delta`，以及 end 时的 `parsed_arguments`）。
+- `write`、`edit`、`multi_edit`、`apply_patch` 的 live payload 使用 `diff_preview` 作为
+  参数观察的 canonical 字段，并省略原始 `arguments_delta` / `parsed_arguments`，避免
+  任意文件内容或秘密直接流向客户端。
+- `diff_preview` 是有界、只读 projection：`schema_version: 1`、`phase: "partial"`、
+  `live_only: true`、`status: "ready" | "degraded"`、`bounded: true`、
+  `truncated: bool`，以及安全目标路径、统计、hash 和有界 unified diff（apply_patch
+  可使用 `paths` 与 patch 格式 diff）。失败或缺字段时保持事件生命周期并返回稳定
+  `reason`，不得抛出破坏执行主循环的异常。
+- 该 preview 不写入 session truth、checkpoint 或 replay。完整的
+  `graph.tool_request_created` 可附带 `phase: "final"` 的 `diff_preview`；最终
+  `runtime.tool_completed` 数据仍是实际执行 diff 的权威来源。
+
 ### `graph.tool_request_created`
 - source: `graph`
 - 当前 payload:
   - `tool: str`
   - `arguments: dict[str, object]`
   - `path: str`（可选；仅在 `arguments` 中存在 `path` 时包含）
+  - `diff_preview: object`（可选；写工具完整参数的最终只读预览）
 
 ### `runtime.tool_lookup_succeeded`
 - source: `runtime`

@@ -1,10 +1,5 @@
 export type SessionStatus =
-  | "idle"
-  | "running"
-  | "waiting"
-  | "completed"
-  | "failed"
-  | "interrupted";
+  "idle" | "running" | "waiting" | "completed" | "failed" | "interrupted";
 export type EventSource = "runtime" | "graph" | "tool";
 export type ApprovalDecision = "allow" | "deny";
 export type GitStatusState = "git_ready" | "not_git_repo" | "git_error";
@@ -236,6 +231,17 @@ export interface ToolDisplay {
   args?: string[];
   copyable?: Record<string, unknown>;
   hidden?: boolean;
+}
+/** Read-only live preview for a write-like tool call; never an execution result. */
+export interface ToolDiffPreview {
+  path?: string;
+  kind?: string;
+  old_text?: string;
+  new_text?: string;
+  diff?: string;
+  truncated?: boolean;
+  degraded?: boolean;
+  error?: string;
 }
 
 export interface ToolStatusPayload {

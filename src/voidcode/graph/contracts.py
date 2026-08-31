@@ -11,6 +11,7 @@ from ..runtime.session import SessionState
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 type AppliedSkill = dict[str, str]
+type ToolCallPreviewBuilder = Callable[[str, tuple[str, ...], dict[str, object] | None], dict[str, object] | None]
 
 
 def _update_or_replace(current: object, new: object) -> object:
@@ -47,6 +48,7 @@ class GraphRunRequest:
     metadata: dict[str, object] = field(default_factory=dict)
     abort_signal: ProviderAbortSignal | None = None
     stream_event_sink: Callable[[GraphEvent], None] | None = None
+    tool_call_preview: ToolCallPreviewBuilder | None = None
 
 
 @runtime_checkable

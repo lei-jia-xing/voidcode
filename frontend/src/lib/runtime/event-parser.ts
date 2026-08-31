@@ -1,6 +1,7 @@
 import {
   EventEnvelope,
   QuestionPrompt,
+  ToolDiffPreview,
   ToolDisplay,
   ToolStatusPayload,
 } from "./types";
@@ -121,6 +122,7 @@ export interface ChatMessage {
       truncated?: boolean;
       degraded?: boolean;
     };
+    diffPreview?: ToolDiffPreview;
     hooks?: {
       phase: string;
       status?: string;
@@ -326,6 +328,7 @@ function upsertTool(
     existing.argumentsStreamDegraded = tool.argumentsStreamDegraded;
   existing.result = tool.result ?? existing.result;
   if (tool.content !== undefined) existing.content = tool.content;
+  existing.diffPreview = tool.diffPreview ?? existing.diffPreview;
   if (tool.error !== undefined) existing.error = tool.error;
   existing.liveOutput = tool.liveOutput ?? existing.liveOutput;
   existing.hooks = tool.hooks ?? existing.hooks;
@@ -486,12 +489,81 @@ function responseTextFromPayload(
     nonEmptyString(payload.text)
   );
 }
+const TOOL_DIFF_PREVIEW_LIMIT = 12_000;
+const WRITE_TOOL_NAMES: Record<string, true> = {
+  write: true,
+  edit: true,
+  multi_edit: true,
+  apply_patch: true,
+  ast_grep_replace: true,
+};
+type DiffPreviewState = {
+  preview: ToolDiffPreview;
+  lastSequence: number;
+  seen: Set<number>;
+};
+
+function parseDiffPreview(value: unknown): ToolDiffPreview | undefined {
+  const record = objectPayload(value);
+  if (!record) return undefined;
+  const preview: ToolDiffPreview = {};
+  for (const key of ["path", "kind", "old_text", "new_text", "diff"] as const) {
+    if (typeof record[key] === "string")
+      preview[key] = record[key].slice(0, TOOL_DIFF_PREVIEW_LIMIT);
+  }
+  // `reason` is the canonical bounded explanation when a preview is degraded
+  // or unavailable. Surface it through the existing non-execution error slot
+  // so the UI does not silently discard a valid degraded preview.
+  if (typeof record.error === "string") {
+    preview.error = record.error.slice(0, TOOL_DIFF_PREVIEW_LIMIT);
+  } else if (typeof record.reason === "string") {
+    preview.error = record.reason.slice(0, TOOL_DIFF_PREVIEW_LIMIT);
+  }
+  for (const key of ["truncated", "degraded"] as const) {
+    if (typeof record[key] === "boolean") preview[key] = record[key];
+  }
+  if (record.status === "degraded") preview.degraded = true;
+  return Object.keys(preview).length > 0 ? preview : undefined;
+}
+
+function updateDiffPreview(
+  states: Map<string, DiffPreviewState>,
+  id: string,
+  toolName: string,
+  event: EventEnvelope,
+): ToolDiffPreview | undefined {
+  if (!WRITE_TOOL_NAMES[toolName]) return undefined;
+  const incoming = parseDiffPreview(event.payload?.diff_preview);
+  const state = states.get(id);
+  if (
+    state &&
+    (state.seen.has(event.sequence) || event.sequence < state.lastSequence)
+  )
+    return state.preview;
+  if (!incoming && !state) return undefined;
+  const preview = { ...(state?.preview ?? {}), ...(incoming ?? {}) };
+  if (
+    event.payload?.gap === true ||
+    (typeof event.payload?.dropped_count === "number" &&
+      event.payload.dropped_count > 0)
+  )
+    preview.degraded = true;
+  const next = {
+    preview,
+    lastSequence: Math.max(state?.lastSequence ?? -1, event.sequence),
+    seen: state?.seen ?? new Set<number>(),
+  };
+  next.seen.add(event.sequence);
+  states.set(id, next);
+  return preview;
+}
 
 function applyToolStatus(
   currentAssistant: ChatMessage | null,
   toolStatus: ToolStatusPayload,
   sequence: number,
   eventPayload?: Record<string, unknown>,
+  diffPreview?: ToolDiffPreview,
 ) {
   if (!currentAssistant) return;
 
@@ -532,6 +604,7 @@ function applyToolStatus(
       result,
       content,
       error,
+      diffPreview,
     },
     sequence,
   );
@@ -550,6 +623,7 @@ function applyToolCallEvent(
   currentAssistant: ChatMessage | null,
   event: EventEnvelope,
   argumentsState: Map<string, ToolArgumentsState>,
+  diffPreviewState: Map<string, DiffPreviewState>,
 ) {
   if (!currentAssistant) return;
   const payload = event.payload ?? {};
@@ -610,6 +684,12 @@ function applyToolCallEvent(
   }
   argumentsState.set(id, state);
   const existing = findTool(currentAssistant.tools, { id });
+  const diffPreview = updateDiffPreview(
+    diffPreviewState,
+    id,
+    existing?.name ?? name,
+    event,
+  );
   upsertTool(
     currentAssistant,
     {
@@ -625,6 +705,7 @@ function applyToolCallEvent(
         type === "graph.tool_call_end" || existing?.argumentsStreamEnded,
       argumentsStreamDegraded:
         state.degraded || existing?.argumentsStreamDegraded,
+      diffPreview,
     },
     event.sequence,
   );
@@ -752,6 +833,7 @@ function applyToolProgress(
 function applyRawToolEvent(
   currentAssistant: ChatMessage | null,
   event: EventEnvelope,
+  diffPreviewState: Map<string, DiffPreviewState>,
 ) {
   if (!currentAssistant) return;
 
@@ -797,6 +879,9 @@ function applyRawToolEvent(
       ? payload
       : undefined;
 
+  const diffPreview = id
+    ? updateDiffPreview(diffPreviewState, id, name, event)
+    : undefined;
   upsertTool(
     currentAssistant,
     {
@@ -811,6 +896,7 @@ function applyRawToolEvent(
       result,
       content,
       error,
+      diffPreview,
     },
     event.sequence,
   );
@@ -1011,7 +1097,6 @@ export function deriveActivitiesFromEvents(events: EventEnvelope[]) {
     };
   });
 }
-
 export function deriveChatMessages(
   events: EventEnvelope[],
   currentOutput: string | null,
@@ -1020,15 +1105,10 @@ export function deriveChatMessages(
   const messages: ChatMessage[] = [];
   let currentAssistant: ChatMessage | null = null;
   let requestOrdinal = 0;
-  // Streamed reasoning deltas of the CURRENT turn (client-only
-  // graph.provider_stream events). The aggregated runtime.reasoning_part is
-  // deduplicated against this turn's text only: `thinking` accumulates across
-  // turns, so comparing against it would miss for every turn after the first
-  // and the aggregate would be appended again (doubled thinking blocks).
   let streamedReasoningText = "";
   const progressState = new Map<string, ShellProgressState>();
   const argumentsState = new Map<string, ToolArgumentsState>();
-
+  const diffPreviewState = new Map<string, DiffPreviewState>();
   for (const event of events) {
     const messageSessionId = event.session_id || fallbackSessionId || "session";
     const toolStatus = getToolStatusPayload(event);
@@ -1038,6 +1118,7 @@ export function deriveChatMessages(
       streamedReasoningText = "";
       progressState.clear();
       argumentsState.clear();
+      diffPreviewState.clear();
 
       if (currentAssistant?.status === "in_progress") {
         currentAssistant.status = "completed";
@@ -1114,15 +1195,16 @@ export function deriveChatMessages(
       event.event_type === "graph.tool_call_delta" ||
       event.event_type === "graph.tool_call_end"
     ) {
-      applyToolCallEvent(currentAssistant, event, argumentsState);
+      applyToolCallEvent(
+        currentAssistant,
+        event,
+        argumentsState,
+        diffPreviewState,
+      );
     } else if (
       event.event_type === "graph.loop_step" ||
       event.event_type === "graph.model_turn"
     ) {
-      // Turn boundary: the current turn's aggregated reasoning_part has been
-      // emitted (or the turn produced no reasoning). Scope the streamed
-      // reasoning accumulator to one turn so a turn whose deltas were never
-      // followed by an aggregate cannot bleed into the next turn's dedup.
       streamedReasoningText = "";
     } else if (event.event_type === "graph.provider_stream") {
       if (currentAssistant) {
@@ -1158,9 +1240,15 @@ export function deriveChatMessages(
             toolStatus,
             event.sequence,
             event.payload,
+            updateDiffPreview(
+              diffPreviewState,
+              toolStatus.invocation_id,
+              toolStatus.tool_name,
+              event,
+            ),
           );
         } else {
-          applyRawToolEvent(currentAssistant, event);
+          applyRawToolEvent(currentAssistant, event, diffPreviewState);
         }
       }
     } else if (event.event_type === "runtime.approval_requested") {

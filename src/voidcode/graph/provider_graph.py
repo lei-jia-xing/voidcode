@@ -22,7 +22,11 @@ from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_R
 from ..runtime.session import SessionState
 from ..runtime.session_metadata_helpers import runtime_state_run_id
 from ..tools.contracts import ToolCall, ToolResult
-from .contracts import GraphEvent, GraphRunRequest, GraphStreamItem
+from .contracts import GraphEvent, GraphRunRequest, GraphStreamItem, ToolCallPreviewBuilder
+
+_PREVIEW_ARGUMENT_MAX_CHARS = 64 * 1024
+
+_WRITE_PREVIEW_TOOLS = frozenset({"write", "edit", "multi_edit", "apply_patch"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +217,7 @@ class ProviderGraph:
                 session_id=session_id,
                 run_id=run_id,
                 stream_event_sink=request.stream_event_sink,
+                tool_call_preview=request.tool_call_preview,
             )
 
         turn_result = self._provider.propose_turn(turn_request)
@@ -326,6 +331,7 @@ class ProviderGraph:
         session_id: str,
         run_id: str | None,
         stream_event_sink: object | None = None,
+        tool_call_preview: ToolCallPreviewBuilder | None = None,
     ) -> ProviderStep:
         stream_events: list[GraphEvent] = []
         output_parts: list[str] = []
@@ -336,15 +342,8 @@ class ProviderGraph:
         provider_usage: ProviderTokenUsage | None = None
         stream_provider = cast(StreamableTurnProvider, cast(object, self._provider))
         for stream_event_index, stream_event in enumerate(stream_provider.stream_turn(turn_request)):
-            graph_event = self._stream_event_to_graph_event(stream_event)
-            if stream_event_sink is None:
-                stream_events.append(graph_event)
-            else:
-                cast(Any, stream_event_sink)(graph_event)
-            provider_usage = stream_event.usage or provider_usage
-            if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
-                if stream_event.text is not None:
-                    output_parts.append(stream_event.text)
+            preview: dict[str, object] | None = None
+            preview_tool_name: str | None = stream_event.tool_name
             if stream_event.kind in {"tool_call_start", "tool_call_delta", "tool_call_end"}:
                 tool_call_id = stream_event.tool_call_id
                 if tool_call_id is not None:
@@ -356,18 +355,63 @@ class ProviderGraph:
                             "ordinal": stream_event.tool_call_ordinal if stream_event.tool_call_ordinal is not None else len(lifecycle_tool_calls),
                             "stream_order": stream_event_index,
                             "fragments": [],
+                            "preview_fragments": [],
+                            "preview_chars": 0,
                             "ended": False,
                         },
                     )
                     if stream_event.tool_name is not None:
                         state["tool_name"] = stream_event.tool_name
+                    preview_tool_name = cast(str | None, state.get("tool_name"))
                     fragments = cast(list[str], state["fragments"])
                     if stream_event.arguments_delta is not None:
                         fragments.append(stream_event.arguments_delta)
+                        preview_fragments = cast(list[str], state["preview_fragments"])
+                        preview_chars = cast(int, state["preview_chars"])
+                        if preview_chars < _PREVIEW_ARGUMENT_MAX_CHARS:
+                            fragment = stream_event.arguments_delta[: _PREVIEW_ARGUMENT_MAX_CHARS - preview_chars]
+                            preview_fragments.append(fragment)
+                            state["preview_chars"] = preview_chars + len(fragment)
                     if stream_event.parsed_arguments is not None:
                         state["parsed_arguments"] = dict(stream_event.parsed_arguments)
                     if stream_event.kind == "tool_call_end":
                         state["ended"] = True
+                    callback = tool_call_preview
+                    if callback is not None and preview_tool_name is not None:
+                        try:
+                            preview = callback(
+                                preview_tool_name,
+                                tuple(cast(list[str], state["preview_fragments"])),
+                                cast(dict[str, object] | None, state.get("parsed_arguments")),
+                            )
+                        except Exception:
+                            # A preview is strictly observational. A client
+                            # preview failure must never abort provider execution.
+                            preview = None
+                    elif preview_tool_name in _WRITE_PREVIEW_TOOLS:
+                        preview = {
+                            "schema_version": 1,
+                            "phase": "partial",
+                            "live_only": True,
+                            "tool": preview_tool_name,
+                            "status": "degraded",
+                            "bounded": True,
+                            "truncated": False,
+                            "reason": "preview_callback_unavailable",
+                        }
+            graph_event = self._stream_event_to_graph_event(
+                stream_event,
+                diff_preview=preview,
+                redact_arguments=preview_tool_name in _WRITE_PREVIEW_TOOLS,
+            )
+            if stream_event_sink is None:
+                stream_events.append(graph_event)
+            else:
+                cast(Any, stream_event_sink)(graph_event)
+            provider_usage = stream_event.usage or provider_usage
+            if stream_event.kind in {"delta", "content"} and stream_event.channel == "text":
+                if stream_event.text is not None:
+                    output_parts.append(stream_event.text)
             if stream_event.kind in {"delta", "content"} and stream_event.channel == "tool" and stream_event.text is not None:
                 tool_payload_parts.append(stream_event.text)
                 complete_tool_payload_order = stream_event_index
@@ -653,7 +697,12 @@ class ProviderGraph:
         )
 
     @staticmethod
-    def _stream_event_to_graph_event(stream_event: ProviderStreamEvent) -> GraphEvent:
+    def _stream_event_to_graph_event(
+        stream_event: ProviderStreamEvent,
+        *,
+        diff_preview: dict[str, object] | None = None,
+        redact_arguments: bool = False,
+    ) -> GraphEvent:
         payload: dict[str, object] = {
             "kind": stream_event.kind,
             "channel": stream_event.channel,
@@ -664,14 +713,16 @@ class ProviderGraph:
             payload["tool_call_id"] = stream_event.tool_call_id
         if stream_event.tool_name is not None:
             payload["tool_name"] = stream_event.tool_name
-        if stream_event.arguments_delta is not None:
+        if stream_event.arguments_delta is not None and not redact_arguments:
             payload["arguments_delta"] = stream_event.arguments_delta
         if stream_event.tool_call_ordinal is not None:
             payload["ordinal"] = stream_event.tool_call_ordinal
         if stream_event.fragment_ordinal is not None:
             payload["fragment_ordinal"] = stream_event.fragment_ordinal
-        if stream_event.parsed_arguments is not None:
+        if stream_event.parsed_arguments is not None and not redact_arguments:
             payload["parsed_arguments"] = dict(stream_event.parsed_arguments)
+        if diff_preview is not None:
+            payload["diff_preview"] = diff_preview
         if stream_event.metadata is not None:
             payload["metadata"] = stream_event.metadata
         if stream_event.error is not None:
