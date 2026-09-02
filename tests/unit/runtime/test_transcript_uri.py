@@ -25,8 +25,7 @@ from voidcode.runtime.contracts import (
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.task import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
-from voidcode.tools import ReadTool, ToolCall
-from voidcode.tools.submit_result import SubmitResultTool
+from voidcode.tools import ReadTool, ToolCall, YieldTool
 
 
 @dataclass(slots=True)
@@ -46,13 +45,13 @@ class _FinishGraph:
 
 
 class _ChildFinishGraph:
-    """Runs a delegated child session, ending with submit_result."""
+    """Runs a delegated child session to completion with yield."""
 
     def step(self, request: Any, tool_results: tuple[Any, ...], *, session: Any) -> _Step:
         _ = request, session
         if not tool_results:
             return _Step(
-                tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "child done"}),
+                tool_call=ToolCall(tool_name="yield", arguments={"summary": "child done"}),
                 output=None,
                 is_finished=False,
             )
@@ -83,7 +82,7 @@ class _TranscriptReadGraph:
 
 
 class _ChildReadGraph:
-    """Reads a transcript URI from a child session, then submits the result."""
+    """Reads a transcript URI from a child session, then yields the result."""
 
     def __init__(self, path: str, limit: int | None = None) -> None:
         self._path = path
@@ -103,7 +102,7 @@ class _ChildReadGraph:
                 is_finished=False,
             )
         return _Step(
-            tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "read done"}),
+            tool_call=ToolCall(tool_name="yield", arguments={"summary": "read done"}),
             output=None,
             is_finished=False,
         )
@@ -153,7 +152,7 @@ def _read_completed_payload(events: list[Any]) -> dict[str, object]:
 def _seed_sessions(tmp_path: Path) -> VoidCodeRuntime:
     seed = _runtime(tmp_path, _FinishGraph())
     _run(seed, session_id="leader")
-    child_seed = _runtime(tmp_path, _ChildFinishGraph(), tools=(ReadTool(), SubmitResultTool()))
+    child_seed = _runtime(tmp_path, _ChildFinishGraph(), tools=(ReadTool(), YieldTool()))
     _run(child_seed, session_id="child", parent_session_id="leader")
     # A second child run adds more persisted events so bounded reads truncate.
     _run(child_seed, session_id="child", parent_session_id="leader")
@@ -195,7 +194,7 @@ def test_child_reads_own_transcript_via_uri(tmp_path: Path) -> None:
     reader = _runtime(
         tmp_path,
         _ChildReadGraph("voidcode://transcript/child", limit=100),
-        tools=(ReadTool(), SubmitResultTool()),
+        tools=(ReadTool(), YieldTool()),
     )
     events = _collect_events(reader, session_id="child")
     payload = _read_completed_payload(events)

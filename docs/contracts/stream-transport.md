@@ -35,6 +35,8 @@ CLI 仍是目前最完整的流消费者；TUI 和 Web 已具备最小可用的�
 - 持久化重放必须保留与实时交付相同的可观测排序模型
 - 运行时内部可以为恢复维护 checkpoint / resume anchor，但这不会改变客户端可见的完整事件重放契约
 
+Delegated child `yield` progress 也可在最终输出前到达：runtime 以 `runtime.background_task_progress` 事件及 parent outbox 的 bounded projection 交付，客户端按 `EventEnvelope.sequence` 增量渲染。该 progress 已受 runtime 上限和去重约束，并不构成任意多路 agent streaming；最终 handoff 仍由 terminal `yield` 提供。
+
 ### Tool-call 参数增量与写入预览
 
 Provider streaming 可发送 `graph.tool_call_start`、`graph.tool_call_delta` 和

@@ -49,14 +49,14 @@
 - `researcher`
 - `product`
 
-其中 `leader` 是唯一的顶层执行 preset；`worker`、`advisor`、`explore`、`researcher`、`product` 均通过 runtime-owned delegation path 作为 delegated child presets 执行。`product` 是只读 plan child，由 leader 通过 `task(subagent_type="product")` 委托并以 `submit_result` 交回计划。
+其中 `leader` 是唯一的顶层执行 preset；`worker`、`advisor`、`explore`、`researcher`、`product` 均通过 runtime-owned delegation path 作为 delegated child presets 执行。`product` 是只读 plan child，由 leader 通过 `task(subagent_type="product")` 委托并以 `yield` 交回计划。
 
 ## Preset intent vs runtime truth
 
 本目录描述的是“一个角色默认希望带什么组合”，不是“runtime 今天已经能怎样执行它”。
 
 - `leader`：唯一的顶层执行/编码角色；`preset` / `prompt_profile` / `model` / `execution_engine` / `tools` / `skills` / `provider_fallback` 会进入 runtime config truth 并随 session 持久化
-- `product`：delegated read-only plan child；由 leader 通过 `task(subagent_type="product")` 委托，使用 `submit_result` 返回计划；不能作为 top-level active agent
+- `product`：delegated read-only plan child；由 leader 通过 `task(subagent_type="product")` 委托，使用 `yield` 返回计划；不能作为 top-level active agent。
 - `worker`：delegated focused executor preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
 - `advisor`：delegated advisory preset；可进入 child execution，但不作为任意顶层 active agent 直接运行
 - `explore`：delegated local-code exploration preset；可进入 child execution，但不作为任意顶层 active agent 直接运行

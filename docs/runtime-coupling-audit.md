@@ -6,6 +6,8 @@
 > 基准：`docs/oh-my-pi-comparison-priorities.md` + `docs/architecture.md` 提炼的 OMP 设计原则（分层清晰 / 协议不变量 / 单一职责边界）
 > 方法：AST 方法清点、跨模块属性访问统计、magic-string metadata key 统计、状态/语义重复实现比对。全部结论附 `文件:行号` 代码证据。
 
+> 本审计中的 `submit_result` 仅是审计时点的历史实现名；当前 runtime 不识别或接受该名称，当前 child completion protocol 为 `yield`。保留以下名称是审计证据，不代表兼容协议或已实现 incremental yield/peer bus。
+
 ---
 
 ## 1. 结论先行：耦合严重度排序

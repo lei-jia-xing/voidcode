@@ -31,6 +31,7 @@ _TOOL_GUIDANCE_FILES = {
     "todo_write": "todo_write.txt",
     "web_fetch": "web_fetch.txt",
     "web_search": "web_search.txt",
+    "yield": "yield.txt",
     "write": "write.txt",
 }
 

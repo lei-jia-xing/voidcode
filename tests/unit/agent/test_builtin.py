@@ -125,7 +125,7 @@ def test_leader_prompt_lists_product_as_a_delegable_child_specialist() -> None:
     assert "narrowest specialist that fits" in prompt
     assert "explore, advisor, worker, researcher, product" in prompt
     assert "delegate to the product agent" in prompt
-    assert "read its plan back via submit_result" in prompt
+    assert "read the plan back through its yield handoff" in prompt
     assert "top-level planning preset" not in prompt
 
 
@@ -299,14 +299,14 @@ def test_product_prompt_and_manifest_form_a_non_interactive_planning_agent() -> 
     assert "question" not in manifest.tool_allowlist
     assert "todo_write" not in manifest.tool_allowlist
     assert "task" not in manifest.tool_allowlist
-    assert "submit_result" in manifest.tool_allowlist
+    assert "yield" in manifest.tool_allowlist
     assert "background_output" not in manifest.tool_allowlist
     assert "without user interaction" in manifest.description
     assert "product agent" in prompt
     assert "Do not ask the user questions or wait for clarification" in prompt
     assert "do not write, edit, or execute code" in prompt
     assert "items to verify during implementation" in prompt
-    assert "call submit_result" in prompt
+    assert "call yield" in prompt
 
 
 def test_leader_prompt_balances_low_filler_output_with_complete_delivery() -> None:

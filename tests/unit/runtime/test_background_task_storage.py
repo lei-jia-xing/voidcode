@@ -1480,6 +1480,7 @@ def test_background_task_storage_reconciliation_preserves_approval_blocked_child
 
 def test_runtime_events_define_delegated_background_task_durability_fields() -> None:
     assert DELEGATED_BACKGROUND_TASK_EVENT_TYPES == (
+        "runtime.background_task_progress",
         "runtime.background_task_waiting_approval",
         "runtime.background_task_idle_reminder",
         "runtime.background_task_awaiting_steer",

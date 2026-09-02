@@ -71,9 +71,9 @@ def _seed_interrupted_child_with_handoff(
     delegation: dict[str, object] | None = None,
 ) -> None:
     """Seed a task + child whose ROW is ``interrupted`` but whose transcript
-    proves a successful ``submit_result`` handoff — the exact unsealed-seal
-    state the run loop can leave behind and the shape a keep-alive final turn
-    takes before finalize upgrades it."""
+    proves a successful ``yield`` handoff — the exact unsealed-seal state the
+    run loop can leave behind and the shape a keep-alive final turn takes
+    before finalize upgrades it."""
     store.save_interrupted_checkpoint(
         workspace=workspace,
         session_id=child_session_id,
@@ -100,14 +100,14 @@ def _seed_interrupted_child_with_handoff(
                 "runtime.tool_completed",
                 "tool",
                 {
-                    "tool": "submit_result",
+                    "tool": "yield",
                     "status": "ok",
                     "arguments": arguments,
                     "handoff": handoff,
                 },
                 None,
             ),
-            ("graph.response_ready", "graph", {"output_preview": "done", "source": "submit_result"}, None),
+            ("graph.response_ready", "graph", {"output_preview": "done", "source": "yield"}, None),
         ),
     )
     metadata: dict[str, object] = {}
@@ -291,7 +291,7 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
     runtime, store = _runtime_with_store(tmp_path, monkeypatch)
     task_id = "task-intermediate"
     child_session_id = "child-intermediate"
-    # Mid-flight transcript: a tool ran but no submit_result handoff and no
+    # Mid-flight transcript: a tool ran but no yield handoff and no
     # graph.response_ready — the turn is genuinely resumable (keep-alive).
     store.save_interrupted_checkpoint(
         workspace=tmp_path,

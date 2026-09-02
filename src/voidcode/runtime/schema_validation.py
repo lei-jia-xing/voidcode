@@ -1,14 +1,8 @@
 """JSON Schema validation for delegated child structured output.
 
-Phase 1 of the delegation-flexibility design: the parent declares an
-invocation-level ``outputSchema`` on the ``task`` tool; the child's final
-``submit_result`` ``data`` is validated against it at task finalize. The
-verdict is persisted as runtime truth (``SchemaValidation``) and surfaced
-through ``BackgroundTaskResult``.
-
-Error formatting mirrors ``tools/_pydantic_args.format_validation_error``
-(``location: message (received type)`` joined with ``; ``) so validation
-failures read like the repo's other tool-validation errors.
+The parent declares ``outputSchema`` on ``task`` and the child's final
+terminal ``yield`` data is validated at task finalize. The verdict is
+persisted as runtime truth and surfaced through ``BackgroundTaskResult``.
 """
 
 from __future__ import annotations

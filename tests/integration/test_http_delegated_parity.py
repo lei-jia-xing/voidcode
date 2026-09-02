@@ -209,7 +209,7 @@ class _DelegatedHandoffGraph:
                 {
                     "events": getattr(step, "events", ()),
                     "tool_call": contracts_module.ToolCall(
-                        tool_name="submit_result",
+                        tool_name="yield",
                         arguments={"summary": summary},
                     ),
                     "output": None,

@@ -4388,6 +4388,22 @@ class VoidCodeRuntime(RuntimeSurface):
             allow_terminal_completion=True,
         )
 
+    def queue_progress_interaction(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        dedupe_key: str,
+    ) -> tuple[dict[str, object], ...]:
+        """Persist one bounded nonterminal child-progress message for parent delivery."""
+        return self._queue_runtime_message(
+            session_id,
+            content=content,
+            kind="steering",
+            dedupe_key=dedupe_key,
+            allow_terminal_completion=True,
+        )
+
     def _queue_runtime_message(
         self,
         session_id: str,

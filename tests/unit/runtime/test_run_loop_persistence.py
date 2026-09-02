@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -428,3 +429,30 @@ def test_execute_graph_loop_captures_safe_boundary_checkpoint(tmp_path: Path) ->
     assert isinstance(raw_tool_results, list)
     assert [cast(dict[str, object], entry)["tool_name"] for entry in raw_tool_results] == ["read"]
     assert cast(int, checkpoint["last_event_sequence"]) > 0
+
+
+def test_yield_progress_numbering_uses_persisted_events_and_fits_runtime_metadata(tmp_path: Path) -> None:
+    store = SqliteSessionStore()
+    _create_session_row(store, workspace=tmp_path, session_id="session-1")
+    runtime = _runtime_with_store(tmp_path, store)
+    coordinator = runtime._run_loop_coordinator
+    session = SessionState(session=SessionRef(id="session-1"), status="running", turn=1, metadata={})
+    result = ToolResult(
+        tool_name="yield",
+        status="ok",
+        data={"yield_kind": "progress", "progress": {"type": "progress", "result": "x" * 4_050}},
+    )
+
+    numbered = coordinator._number_yield_progress(session=session, tool_result=result)
+    progress = cast(dict[str, object], numbered.data["progress"])
+    assert progress["ordinal"] == 1
+    assert len(json.dumps(progress, ensure_ascii=False, separators=(",", ":"))) <= 4_096
+
+    _ = coordinator._persist_event(
+        session_id="session-1",
+        event_type="runtime.tool_completed",
+        source="tool",
+        payload={"tool": "yield", "status": "ok", **numbered.data},
+    )
+    second = coordinator._number_yield_progress(session=session, tool_result=result)
+    assert cast(dict[str, object], second.data["progress"])["ordinal"] == 2

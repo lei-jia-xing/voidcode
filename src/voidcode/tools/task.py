@@ -215,7 +215,7 @@ class TaskTool:
                     "type": "object",
                     "description": (
                         "Optional arbitrary JSON Schema (outputSchema) declaring the structured "
-                        "shape of the child's submit_result data. The child's final data is "
+                        "shape of the child's yield data. The child's final data is "
                         "validated against this schema at task finalize and surfaced as "
                         "structured_output. Requires run_in_background=true."
                     ),
@@ -291,10 +291,10 @@ class TaskTool:
             task = self._runtime.start_background_task(request)
             waiting_reason = task.observability.waiting_reason if task.observability is not None else None
             keep_alive_guidance = (
-                " This task is keep-alive: after each turn without a final result the worker "
+                " This task is keep-alive: after each turn without a terminal yield the worker "
                 "parks as idle and emits runtime.background_task_awaiting_steer; dispatch the "
                 "next instruction with steer_task(task_id=..., prompt=...) and repeat until "
-                "the worker submits its final result."
+                "the worker submits its terminal yield."
                 if args.keep_alive
                 else ""
             )

@@ -315,7 +315,7 @@ class DelegatedReminderState:
 
 @dataclass(frozen=True, slots=True)
 class SchemaValidation:
-    """Runtime truth for validating a child's ``submit_result`` ``data``.
+    """Runtime truth for validating a child's terminal ``yield`` data.
 
     Persisted with the task row at finalize: ``schema_source`` is always
     ``"invocation"`` in v1 (schemas are declared per-call on the ``task``

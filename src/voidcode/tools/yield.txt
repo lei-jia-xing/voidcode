@@ -1,0 +1,9 @@
+# Delegated handoff and bounded progress
+
+- Use `yield` only from a delegated child session; it is not available to the leader.
+- Terminal success uses `summary` (non-empty) and optional object `data`. Omit `type`, or use `type: "result"`; a terminal success must provide `summary`.
+- Terminal failure uses a non-empty `error` and may use `type: "error"`; it must not include `summary` or `result`.
+- Nonterminal incremental progress uses any other non-empty `type` string or non-empty string list. It must include `result` or non-empty `data`; `summary` is not valid on progress sections. Progress does not complete the child.
+- `type` values are trimmed and bounded (at most 100 entries, each at most 64 characters). Progress sections are bounded to 4,096 characters each and 65,536 retained characters total; at most 100 sections are retained.
+- Progress is a runtime-owned notification projection, not a peer message bus or arbitrary transcript stream. The runtime assigns an ordinal, persists the child event, and delivers a bounded projection to the parent.
+- The runtime persists terminal handoff, completes the child task, and notifies the parent through its normal background-task event, outbox, and result surfaces. Use `background_output` for bounded progress/result retrieval.

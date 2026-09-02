@@ -40,7 +40,7 @@ class _TranscriptChildCompletionProtocol:
         handoff: dict[str, object] | None = None
         response_ready = False
         for event in events:
-            if event.event_type == RUNTIME_TOOL_COMPLETED and event.payload.get("tool") == "submit_result" and event.payload.get("status") == "ok":
+            if event.event_type == RUNTIME_TOOL_COMPLETED and event.payload.get("tool") == "yield" and event.payload.get("status") == "ok":
                 raw_handoff = event.payload.get("handoff")
                 if isinstance(raw_handoff, dict):
                     summary = raw_handoff.get("summary")
@@ -58,13 +58,16 @@ class _TranscriptChildCompletionProtocol:
         evidence: ChildCompletionEvidence,
     ) -> Literal["completed", "failed"] | None:
         if session_status == "completed":
-            return "completed"
+            # A sealed child row is not sufficient proof: old sessions (or a
+            # graph that emitted plain output) may be completed without the
+            # new terminal yield. Surface that mismatch as a deterministic
+            # failure rather than silently delivering a false handoff.
+            return "completed" if evidence.completed else "failed"
         if session_status == "failed":
             return "failed"
         if session_status == "interrupted" and evidence.completed:
             return "completed"
-        # ``running`` (permission-denied tail) maps to ``failed`` exactly like
-        # the legacy derivation.
+        # ``running`` (permission-denied tail) maps to ``failed``.
         if session_status == "running":
             return "failed"
         return None
@@ -84,6 +87,10 @@ def child_transcript_proves_completed(events: Sequence[EventEnvelope]) -> bool:
 
 def child_terminal_outcome(session_response: RuntimeResponse) -> Literal["completed", "failed"] | None:
     """Derive the child's terminal outcome from its session row + transcript."""
+    # Ordinary background work has no delegated parent and does not use the
+    # child handoff protocol; its completed row is already authoritative.
+    if session_response.session.session.parent_id is None and session_response.session.status == "completed":
+        return "completed"
     return child_completion_protocol.terminal_decision(
         session_status=session_response.session.status,
         evidence=child_completion_evidence(session_response.events),

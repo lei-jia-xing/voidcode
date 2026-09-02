@@ -619,11 +619,16 @@ runtime 在成功的 `todo_write` 后更新 session metadata 中的 runtime todo
 - 用途：向用户提出澄清问题并等待回答。
 - 参数：`questions`（`{question, header, options, multiple}` 数组）。
 
-#### `submit_result`
+#### `yield`
 
-- 分组：delegated execution
-- 只读：是
-- 用途：提交委托工作的最终结构化 handoff；子 agent 在工具完成后必须调用，父 agent 才能消费结果。
+- 分组：delegated execution；只读：是。
+- 仅 delegated child 可调用。参数允许 `summary`、`data`、`type`、`result`、`error`，并拒绝未知字段。
+- 终态成功：`summary` 必须是非空字符串；`type` 省略或为 `"result"`；`data` 是可选结构化对象。
+- 终态失败：`error` 必须是非空字符串；可用 `type: "error"`；不得同时提供 `summary` 或 `result`。
+- 非终态进度：`type` 为除 `result`/`error` 外的非空字符串或非空字符串数组；必须提供 `result` 或非空 `data`，不得提供 `summary`。每次调用提交一个 bounded progress section，不完成 child。
+- runtime 为 progress section 分配单调 `ordinal`，每段最多 4096 字符、累计最多 100 段/65536 字符，`type` 最多 100 项且每项最多 64 字符；超限按确定性错误/截断规则处理。
+- progress 先作为 child 的 `runtime.tool_completed` truth，再以 `runtime.background_task_progress` 的有界、去重 projection 投递 parent；它不是 peer bus，也不替代 terminal result 或 transcript。
+- parent 通过 runtime events/outbox、`background_output`（单任务可读 bounded progress；聚合仍不返回 transcript）消费；完整 child history 仍走显式 transcript/session recovery。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
 #### `background_output`
@@ -652,7 +657,7 @@ runtime 在成功的 `todo_write` 后更新 session metadata 中的 runtime todo
 - 只读：是
 - 用途：向 keep-alive delegated worker 派发下一轮指令。
 - 参数：`task_id`、`prompt`。
-- 仅 task 的 parent session 可调用；runtime 必须先完成 parent ownership authorization，再读取 task state 或派发 steer；task 必须由 `task(keep_alive=true, run_in_background=true)` 创建，并处于 `idle`（awaiting_steer）或 `interrupted`（可恢复断点）。running task 有 turn 在飞，不能 steer；不支持 pipelining。steer turn 完成后 worker 回到 idle，除非通过 `submit_result` 完成任务。
+- 仅 task 的 parent session 可调用；runtime 必须先完成 parent ownership authorization，再读取 task state 或派发 steer；task 必须由 `task(keep_alive=true, run_in_background=true)` 创建，并处于 `idle`（awaiting_steer）或 `interrupted`（可恢复断点）。running task 有 turn 在飞，不能 steer；不支持 pipelining。steer turn 完成后 worker 回到 idle，除非通过 `yield` 完成任务。
 - 详见 `src/voidcode/tools/steer_task.txt` 与 `docs/contracts/background-task-delegation.md`。
 
 #### `background_cancel`

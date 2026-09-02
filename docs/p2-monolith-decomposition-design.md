@@ -5,6 +5,8 @@
 > 范围：`src/voidcode/runtime/storage.py`（5280 行）、`src/voidcode/runtime/run_loop.py:1142-2558`（execute_graph_loop，1417 行）
 > 约定：不写实现代码，函数签名草案可；标注 `[推断]` 处为未直接验证的推测
 
+> 本设计中的 `submit_result` 仅是拆解前代码树的历史实现名；当前 runtime 不识别或接受该名称，当前 child completion protocol 为 `yield`。本文不宣称 incremental yield、peer bus 或其他增量协作能力已实现。
+
 ---
 
 ## 1. 结论先行

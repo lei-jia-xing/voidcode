@@ -4,19 +4,19 @@ Covers the observable contracts of the keep-alive delegated worker
 (design doc ``docs/keep-alive-subagent-design.md`` section 4/5):
 
 - intermediate keep-alive turns park the task ``idle`` (awaiting steer)
-  without the one-shot ``submit_result`` requirement;
+  without the one-shot ``yield`` requirement;
 - ``steer_background_task`` dispatches a new worker turn on the *same*
   child session, and the child transcript accumulates across turns;
-- the final steer turn that calls ``submit_result`` completes the task and
+- the final steer turn that calls ``yield`` completes the task and
   repairs the child session row to ``completed``;
 - cancelling an idle keep-alive task marks it ``cancelled`` while the child
   session stays resumable;
 - runtime shutdown parks an idle keep-alive task ``interrupted`` with the
   child session and transcript preserved, and a fresh runtime (process
   restart) can steer the same task id (``interrupted -> running``);
-- the one-shot child ``submit_result`` contract is unchanged: a delegated
-  child whose turn carries no ``keep_alive_turn`` metadata still raises
-  ``ValueError`` when it completes without ``submit_result``.
+- the one-shot child ``yield`` contract is enforced: a delegated child
+  whose turn carries no ``keep_alive_turn`` metadata still raises
+  ``ValueError`` when it completes without ``yield``.
 
 The tests run the deterministic graph engine (no provider, no network) with
 a prompt-driven graph that performs one tool call per child turn.
@@ -198,7 +198,7 @@ class _KeepAliveChildGraph:
     one tool call per turn, selected by the turn prompt (the steer content),
     then finishes the turn. Intermediate keep-alive turns therefore park the
     child ``interrupted`` and the task ``idle``; the final turn's
-    ``submit_result`` produces the transcript handoff that completes the
+    ``yield`` produces the transcript handoff that completes the
     task. Every child request is recorded so tests can assert that later
     turns rehydrate the accumulated transcript.
     """
@@ -236,10 +236,10 @@ class _KeepAliveChildGraph:
             )
         self._child_requests.append(request)
         tool_names = [cast(ToolResultLike, result).tool_name for result in tool_results]
-        if "submit_result" in prompt and "submit_result" not in tool_names:
+        if "yield" in prompt and "yield" not in tool_names:
             return _GraphStep(
                 tool_call=_tool_call(
-                    tool_name="submit_result",
+                    tool_name="yield",
                     arguments={
                         "summary": "final keep-alive handoff",
                         "data": {"completed_work": ["wrote second.txt"]},
@@ -364,15 +364,12 @@ def _keep_alive_runtime(
     return runtime_request, runtime
 
 
-def test_keep_alive_intermediate_turn_parks_idle_without_submit_result(tmp_path: Path) -> None:
-    """A keep-alive intermediate turn completes without submit_result.
+def test_keep_alive_intermediate_turn_parks_idle_without_yield(tmp_path: Path) -> None:
+    """A keep-alive intermediate turn completes without yield.
 
-    The run loop must skip the one-shot ``delegated child must call
-    submit_result`` check when the internal ``keep_alive_turn`` metadata is
-    set; the child parks ``interrupted`` (resumable) and the task parks
-    ``idle`` (awaiting steer). The parent session receives the
-    ``runtime.background_task_awaiting_steer`` event even though its row is
-    already sealed.
+    The run loop must skip the one-shot ``delegated child must call yield``
+    check when the internal ``keep_alive_turn`` metadata is set; the child
+    parks ``interrupted`` (resumable) and the task parks ``idle``.
     """
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     runtime_request, runtime = _keep_alive_runtime(tmp_path, child_requests=[])
@@ -396,7 +393,7 @@ def test_keep_alive_intermediate_turn_parks_idle_without_submit_result(tmp_path:
 
     # The one-shot error never fired: it would have failed the task or the
     # leader turn.
-    assert "delegated child must call submit_result" not in _event_text(child.transcript)
+    assert "delegated child must call yield" not in _event_text(child.transcript)
 
     deadline = time.monotonic() + 3.0
     awaiting_steer = None
@@ -423,8 +420,8 @@ def test_keep_alive_two_steers_accumulate_child_transcript_then_final_turn_compl
 
     Each steer dispatches a fresh worker turn on the same child session; the
     next turn's assembled context rehydrates the accumulated transcript (both
-    prior prompts and their outputs). The final steer's ``submit_result``
-    completes the task and repairs the child session row to ``completed``.
+    prompts and their outputs). The final steer's ``yield`` completes the
+    task and repairs the child session row to ``completed``.
     """
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     child_requests: list[object] = []
@@ -448,7 +445,7 @@ def test_keep_alive_two_steers_accumulate_child_transcript_then_final_turn_compl
     assert (tmp_path / "second.txt").read_text(encoding="utf-8") == "second marker"
 
     # Steer 2 (final): the child submits its handoff.
-    final_steer = runtime.steer_background_task(task_id, "final submit_result handoff")
+    final_steer = runtime.steer_background_task(task_id, "final yield handoff")
     assert final_steer.status == "running"
     completed = _wait_for_background_task_status(runtime, task_id, {"completed"})
 
@@ -458,7 +455,7 @@ def test_keep_alive_two_steers_accumulate_child_transcript_then_final_turn_compl
 
     # The final turn's assembled context rehydrated BOTH prior turns: the
     # prompts and their tool outputs accumulated in the child transcript.
-    final_turn_context = _context_text(_first_child_request_with_prompt(child_requests, "final submit_result handoff"))
+    final_turn_context = _context_text(_first_child_request_with_prompt(child_requests, "final yield handoff"))
     assert "read sample.txt" in final_turn_context
     assert "Read 1 line(s) from sample.txt." in final_turn_context
     assert "write second.txt second marker" in final_turn_context
@@ -551,12 +548,11 @@ def test_keep_alive_shutdown_parks_interrupted_and_fresh_runtime_resumes_same_ta
     assert "Read 1 line(s) from sample.txt." in resumed_context
 
 
-def test_keep_alive_one_shot_child_submit_result_contract_unchanged(tmp_path: Path) -> None:
-    """Regression: the one-shot child contract is byte-for-byte unchanged.
+def test_keep_alive_one_shot_child_yield_contract(tmp_path: Path) -> None:
+    """A one-shot child still requires terminal yield.
 
-    A delegated child turn WITHOUT the internal ``keep_alive_turn`` metadata
-    still raises ``ValueError`` when it completes without ``submit_result`` —
-    the run loop gating must not leak into non-keep-alive children.
+    A delegated child turn without ``keep_alive_turn`` must fail when it
+    completes without yield.
     """
     runtime_request, runtime_class = _load_runtime_types()
     runtime = cast(
@@ -566,7 +562,7 @@ def test_keep_alive_one_shot_child_submit_result_contract_unchanged(tmp_path: Pa
     leader = runtime.run(runtime_request(prompt="leader", session_id="leader-session"))
     assert leader.session.status == "completed"
 
-    with pytest.raises(ValueError, match="delegated child must call submit_result"):
+    with pytest.raises(ValueError, match="delegated child must call yield"):
         runtime.run(
             runtime_request(
                 prompt="child turn without handoff",

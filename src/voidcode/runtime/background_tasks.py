@@ -36,6 +36,7 @@ from .events import (
     RUNTIME_BACKGROUND_TASK_FAILED,
     RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED,
     RUNTIME_BACKGROUND_TASK_INTERRUPTED,
+    RUNTIME_BACKGROUND_TASK_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_FAILED,
     RUNTIME_PROVIDER_FALLBACK,
@@ -764,50 +765,57 @@ class RuntimeBackgroundTaskSupervisor:
         if not isinstance(content, str) or not content.strip():
             raise ValueError("background task steer requires non-empty content")
         self.reconcile_background_tasks_if_needed()
-        current_task = self._session_store.load_background_task(
-            workspace=self._workspace,
-            task_id=task_id,
-        )
-        if not current_task.keep_alive:
-            raise ValueError(f"background task {task_id} is not a keep-alive task and cannot be steered")
-        if current_task.status not in ("idle", "interrupted"):
-            raise ValueError(f"background task {task_id} can only be steered while idle or interrupted; task is {current_task.status}")
-        request = RuntimeRequest(
-            prompt=current_task.request.prompt,
-            session_id=current_task.request.session_id,
-            parent_session_id=current_task.request.parent_session_id,
-            metadata=cast(RuntimeRequestMetadataPayload, current_task.request.metadata),
-            allocate_session_id=current_task.request.allocate_session_id,
-        )
-        identity = self._concurrency_identity_for_request(request)
+        # Serialize the parked-state check, transition, slot reservation, and
+        # worker registration. A second steer must observe running and never
+        # create a duplicate worker for the same child session.
         with self._queue_lock:
+            current_task = self._session_store.load_background_task(
+                workspace=self._workspace,
+                task_id=task_id,
+            )
+            if not current_task.keep_alive:
+                raise ValueError(f"background task {task_id} is not a keep-alive task and cannot be steered")
+            if current_task.status not in ("idle", "interrupted"):
+                raise ValueError(f"background task {task_id} can only be steered while idle or interrupted; task is {current_task.status}")
+            request = RuntimeRequest(
+                prompt=current_task.request.prompt,
+                session_id=current_task.request.session_id,
+                parent_session_id=current_task.request.parent_session_id,
+                metadata=cast(RuntimeRequestMetadataPayload, current_task.request.metadata),
+                allocate_session_id=current_task.request.allocate_session_id,
+            )
+            identity = self._concurrency_identity_for_request(request)
             if not self._can_start_task(identity):
                 raise ValueError(f"background task {task_id} steer blocked by the provider/model concurrency limit; retry when a worker slot frees")
+            steered_task = self._session_store.mark_background_task_steered(
+                workspace=self._workspace,
+                task_id=task_id,
+                steer_prompt=content.strip(),
+            )
+            if steered_task.status != "running":
+                return self.task_with_observability(steered_task)
             self._reserve_slot(identity)
-        # Register the worker thread BEFORE flipping the row to ``running`` so
-        # a concurrent drain orphan-scan never sees a ``running`` row without
-        # an owner while this steer dispatch is in flight.
-        worker, worker_start_gate = self._spawn_worker_thread(
-            task_id=task_id,
-            reserved_identity=identity,
-        )
-        steered_task = self._session_store.mark_background_task_steered(
-            workspace=self._workspace,
-            task_id=task_id,
-            steer_prompt=content.strip(),
-        )
-        if steered_task.status != "running":
-            # Raced to a terminal state (e.g. a concurrent cancel) between
-            # validation and dispatch; undo the reserved slot and thread.
-            with self._queue_lock:
-                self._threads.pop(task_id, None)
+            try:
+                worker, worker_start_gate = self._spawn_worker_thread(
+                    task_id=task_id,
+                    reserved_identity=identity,
+                )
+            except Exception as exc:
                 self._release_slot(identity)
-            return self.task_with_observability(steered_task)
+                failed_task = self._session_store.mark_background_task_terminal(
+                    workspace=self._workspace,
+                    task_id=task_id,
+                    status="failed",
+                    error=str(exc),
+                )
+                self.run_background_task_lifecycle_hook(failed_task)
+                return self.task_with_observability(failed_task)
         try:
             worker.start()
         except RuntimeError as exc:
             with self._queue_lock:
-                self._threads.pop(task_id, None)
+                if self._threads.get(task_id) is worker:
+                    self._threads.pop(task_id, None)
                 self._release_slot(identity)
             failed_task = self._session_store.mark_background_task_terminal(
                 workspace=self._workspace,
@@ -1508,12 +1516,10 @@ class RuntimeBackgroundTaskSupervisor:
             return task
         # A child whose ROW is still ``interrupted`` can already be terminally
         # finished: the run loop persists every event before the generator-driven
-        # terminal seal, so a transcript ending in a successful ``submit_result``
-        # handoff plus ``graph.response_ready`` proves completion even when the
-        # seal was skipped/downgraded (worker early-exit, worker death, overlap
-        # guard). ``finalize_background_task_from_session_response`` repairs the
-        # unsealed session row while it terminalizes the task. Genuinely
-        # resumable interrupted children (no handoff) yield None and stay put.
+        # terminal seal, so a transcript ending in a successful terminal
+        # ``yield`` handoff plus ``graph.response_ready`` proves completion
+        # even when the seal was skipped/downgraded (worker early-exit, worker
+        # death, overlap guard). The child terminal protocol is authoritative.
         if child_terminal_outcome(child_response) is not None:
             self.finalize_background_task_from_session_response(session_response=child_response)
             return self._session_store.load_background_task(
@@ -1682,6 +1688,7 @@ class RuntimeBackgroundTaskSupervisor:
             hook_reminder=hook_reminder,
             structured_output=task.structured_output,
             schema_validation=task.schema_validation,
+            progress=self._child_progress(child_result=child_result),
         )
 
     @staticmethod
@@ -1730,6 +1737,32 @@ class RuntimeBackgroundTaskSupervisor:
         return sum(1 for event in child_result.transcript if event.event_type == RUNTIME_TOOL_COMPLETED)
 
     @staticmethod
+    def _child_progress(*, child_result: RuntimeSessionResult | None) -> tuple[dict[str, object], ...]:
+        if child_result is None:
+            return ()
+        retained: list[dict[str, object]] = []
+        retained_chars = 0
+        for event in child_result.transcript:
+            if event.event_type != RUNTIME_TOOL_COMPLETED or event.payload.get("tool") != "yield":
+                continue
+            if event.payload.get("yield_kind") != "progress":
+                continue
+            progress = event.payload.get("progress")
+            if not isinstance(progress, dict):
+                continue
+            try:
+                encoded = json.dumps(progress, ensure_ascii=False, separators=(",", ":"), default=str)
+            except TypeError, ValueError:
+                continue
+            if len(encoded) > 4_096 or retained_chars + len(encoded) > 65_536:
+                break
+            retained.append(dict(progress))
+            retained_chars += len(encoded)
+            if len(retained) >= 100:
+                break
+        return tuple(retained)
+
+    @staticmethod
     def _leader_safe_child_summary(
         *,
         child_result: RuntimeSessionResult | None,
@@ -1741,7 +1774,7 @@ class RuntimeBackgroundTaskSupervisor:
             return RuntimeBackgroundTaskSupervisor._render_child_handoff(handoff)
         child_session_id = child_result.session.session.id
         if child_result.status == "completed":
-            return f"Child session {child_session_id} completed without required submit_result handoff."
+            return f"Child session {child_session_id} completed without required yield handoff."
         if child_result.status == "waiting":
             return child_result.summary
         if child_result.status == "failed":
@@ -2022,6 +2055,74 @@ class RuntimeBackgroundTaskSupervisor:
                     continue
             self.backfill_parent_background_task_event(task=task)
 
+    def emit_background_task_incremental_progress(
+        self,
+        *,
+        task: BackgroundTaskState,
+        child_event: EventEnvelope,
+    ) -> None:
+        """Project one child ``yield`` progress section into the parent.
+
+        The child event remains the execution truth.  This parent event is a
+        bounded, deduplicated notification projection only; it never copies a
+        transcript or routes through a peer bus.
+        """
+        parent_session_id = task.parent_session_id
+        child_session_id = task.session_id
+        if parent_session_id is None or child_session_id is None:
+            return
+        if child_event.event_type != RUNTIME_TOOL_COMPLETED or child_event.payload.get("tool") != "yield":
+            return
+        if child_event.payload.get("yield_kind") != "progress":
+            return
+        progress = child_event.payload.get("progress")
+        if not isinstance(progress, dict):
+            return
+        try:
+            encoded = json.dumps(progress, ensure_ascii=False, separators=(",", ":"), default=str)
+        except TypeError, ValueError:
+            return
+        if len(encoded) > 4_096:
+            return
+        appender = self._session_store
+        if not isinstance(appender, SessionEventAppender):
+            return
+        payload: dict[str, object] = {
+            "task_id": task.task.id,
+            "parent_session_id": parent_session_id,
+            "child_session_id": child_session_id,
+            "status": "running",
+            "progress": dict(progress),
+            "progress_event_sequence": child_event.sequence,
+        }
+        try:
+            appended = appender.append_session_event(
+                workspace=self._workspace,
+                session_id=parent_session_id,
+                event_type=RUNTIME_BACKGROUND_TASK_PROGRESS,
+                source="runtime",
+                payload=payload,
+                dedupe_key=(f"{RUNTIME_BACKGROUND_TASK_PROGRESS}:{task.task.id}:{child_event.sequence}"),
+            )
+            if appended is None:
+                return
+            result_text = progress.get("result")
+            message = (
+                f"Runtime background task progress: task_id={task.task.id} "
+                f"ordinal={progress.get('ordinal', '?')} "
+                f"type={progress.get('type', 'progress')}. "
+                f"{result_text if isinstance(result_text, str) else 'Structured progress is available via background_output.'}"
+            )
+            queue_progress = getattr(self._surface, "queue_progress_interaction", None)
+            if callable(queue_progress):
+                queue_progress(
+                    parent_session_id,
+                    message[:4_096],
+                    dedupe_key=f"background-task-progress:{task.task.id}:{child_event.sequence}",
+                )
+        except UnknownSessionError, SessionSealedError, ValueError:
+            logger.debug("dropping incremental background progress for unavailable parent: %s", parent_session_id)
+
     def emit_background_task_waiting_approval(
         self,
         *,
@@ -2110,8 +2211,8 @@ class RuntimeBackgroundTaskSupervisor:
     ) -> None:
         """Notify the parent that a keep-alive task parked ``idle`` (awaiting steer).
 
-        Emitted by the worker after a keep-alive turn without a submit_result
-        handoff. The event type is part of
+        Emitted by the worker after a keep-alive turn without a terminal
+        ``yield`` handoff. The event type is part of
         ``DELEGATED_BACKGROUND_TASK_EVENT_TYPES``, so it can land on an
         already-sealed parent session row; the dedupe key is per-turn (the
         child session's last event sequence) because the same task parks idle
@@ -2394,17 +2495,15 @@ class RuntimeBackgroundTaskSupervisor:
             return
         child_terminal_status = child_terminal_outcome(session_response)
         if child_terminal_status is None:
-            # Resumable child (``interrupted`` without a submit_result handoff):
-            # never seal the session row nor terminalize the task.
+            # Resumable child (``interrupted`` without a terminal yield
+            # handoff): never seal the session row nor terminalize the task.
             return
         # Schema validation (Phase 1 delegation flexibility): when the task row
         # carries a parent-declared ``output_schema``, validate the child's
-        # final ``submit_result`` ``data`` against it. The verdict is persisted
-        # as runtime truth BEFORE the terminal update. ``child_terminal_status``
-        # stays the transcript-derived outcome (the child row is sealed by
-        # transcript evidence regardless), while a strict failure flips the TASK
-        # terminal status to ``failed`` — two layers, no rollback of the child
-        # row. Keep-alive intermediate turns (no handoff) never validate.
+        # final terminal yield ``data`` against it. The verdict is persisted as
+        # runtime truth BEFORE the terminal update. The child row is sealed by
+        # transcript evidence regardless, while strict failure flips the TASK
+        # terminal status to ``failed`` — two layers, no rollback.
         terminal_status, task_error = self._terminal_task_decision(
             task=current_task,
             child_terminal_status=child_terminal_status,
@@ -2748,8 +2847,8 @@ class RuntimeBackgroundTaskSupervisor:
                 continue
             child_status = child_response.session.status
             # ``waiting`` (approval/question) survives restarts by design; a
-            # terminal child (row-sealed, or transcript-proven via a
-            # submit_result handoff even when the row is still ``interrupted``)
+            # terminal child (row-sealed, or transcript-proven via a terminal
+            # yield handoff even when the row is still ``interrupted``)
             # finalizes the task — and repairs the unsealed row.
             if child_status == "waiting" or child_terminal_outcome(child_response) is not None:
                 self.finalize_background_task_from_session_response(session_response=child_response)
@@ -2915,8 +3014,8 @@ class RuntimeBackgroundTaskSupervisor:
             # Keep-alive turns run on the persisted steer prompt when present
             # (written by ``mark_background_task_steered``); the first turn
             # uses the original request prompt. ``keep_alive_turn`` is the
-            # internal metadata the run loop gates on (D3): it skips the
-            # one-shot submit_result requirement and parks the final step as
+            # internal metadata the run loop gates on: it skips the
+            # one-shot yield requirement and parks the final step as
             # ``interrupted`` (resumable child) instead of ``completed``.
             keep_alive_turn = dispatch_task.request.metadata.get("keep_alive") is True
             turn_prompt = dispatch_task.steer_prompt or dispatch_task.request.prompt
@@ -2956,6 +3055,11 @@ class RuntimeBackgroundTaskSupervisor:
                                 "progress_event_sequence": chunk.event.sequence,
                             },
                         )
+                        if chunk.event.event_type == RUNTIME_TOOL_COMPLETED:
+                            self.emit_background_task_incremental_progress(
+                                task=dispatch_task,
+                                child_event=chunk.event,
+                            )
                         if chunk.event.event_type == RUNTIME_SESSION_IDLE:
                             current_task = self._session_store.load_background_task(
                                 workspace=self._workspace,
@@ -3066,12 +3170,41 @@ class RuntimeBackgroundTaskSupervisor:
                     slot_reserved = True
                     continue
                 if keep_alive_turn:
+                    # Cancellation may arrive after the final streamed chunk
+                    # was observed but before the idle transition. Re-check
+                    # durable task truth so a cancelled request cannot strand
+                    # an idle task without a worker to consume it.
+                    current_task = self._session_store.load_background_task(
+                        workspace=self._workspace,
+                        task_id=task_id,
+                    )
+                    if current_task.cancel_requested_at is not None or current_task.status == "cancelled":
+                        self.finalize_background_task_from_session_response(session_response=response)
+                        terminal_task = self._session_store.load_background_task(
+                            workspace=self._workspace,
+                            task_id=task_id,
+                        )
+                        if not is_background_task_terminal(terminal_task.status):
+                            terminal_task = self._session_store.mark_background_task_terminal(
+                                workspace=self._workspace,
+                                task_id=task_id,
+                                status="cancelled",
+                                error="cancelled by parent after delegated turn completed",
+                            )
+                            self.run_background_task_lifecycle_hook(terminal_task)
+                        return
                     # Keep-alive finalize: only durable outcomes finalize the
                     # task — a ``failed`` turn, a ``waiting`` turn (existing
                     # waiting path keeps the task ``running`` and emits the
                     # idle reminder + waiting approval), or a transcript-proven
-                    # submit_result handoff (``child_transcript_proves_completed``
-                    # only trusts transcript evidence, never the bare row
+                    # terminal yield handoff.
+                if keep_alive_turn:
+                    # Keep-alive finalize: only durable outcomes finalize the
+                    # task — a ``failed`` turn, a ``waiting`` turn (existing
+                    # waiting path keeps the task ``running`` and emits the
+                    # idle reminder + waiting approval), or a transcript-proven
+                    # terminal yield handoff (``child_transcript_proves_completed``
+                    # trusts durable transcript evidence, never the bare row
                     # status). Any other finished turn parks the task ``idle``
                     # (awaiting steer) and exits this thread; the next steer
                     # dispatches a fresh worker against the same child session.

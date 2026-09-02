@@ -16,10 +16,10 @@ from ..tools.invoke_tool import InvokeTool
 from ..tools.local_custom import discover_local_custom_tools
 from ..tools.read import ReadTool
 from ..tools.shell_exec import ShellExecTool
-from ..tools.submit_result import SubmitResultTool
 from ..tools.web_fetch import WebFetchTool
 from ..tools.web_search import WebSearchTool
 from ..tools.write import WriteTool
+from ..tools.yield_tool import YieldTool
 from .config import RuntimeAgentConfig, RuntimeToolsLocalConfig
 from .edit_schema_policy import EditSchemaResolver
 
@@ -46,7 +46,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "shell_exec",
         "skill",
         "steer_task",
-        "submit_result",
+        "yield",
         "task",
         "task_batch",
         "todo_write",
@@ -254,7 +254,7 @@ class BuiltinToolProvider:
             InvokeTool(),
             ReadTool(),
             ShellExecTool(),
-            SubmitResultTool(),
+            YieldTool(),
             WebFetchTool(),
             WebSearchTool(),
             WriteTool(hooks_config=self._hooks_config),

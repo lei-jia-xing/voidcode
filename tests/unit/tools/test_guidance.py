@@ -20,6 +20,17 @@ def test_guidance_loader_maps_dynamic_mcp_tools_to_shared_sidecar() -> None:
     assert guidance
 
 
+def test_yield_guidance_describes_terminal_child_handoff() -> None:
+    filename = guidance_filename_for_tool("yield")
+    assert filename == "yield.txt"
+    guidance = guidance_for_tool("yield")
+    assert "delegated child session" in guidance
+    assert "summary" in guidance
+    assert "data" in guidance
+    assert "incremental" in guidance
+    assert "peer message bus" in guidance
+
+
 def test_steer_task_guidance_describes_parent_and_lifecycle_rules() -> None:
     filename = guidance_filename_for_tool("steer_task")
     assert filename == "steer_task.txt"

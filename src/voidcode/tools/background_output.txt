@@ -8,10 +8,10 @@ Selectors (provide exactly one):
 Semantics:
 - Aggregate reads are scoped to the current runtime tool context's parent session. Do not guess or supply another owner.
 - `block=false` (the default) returns the current snapshot immediately; it does not wait. Do not repeatedly poll this tool in a tight loop.
-- Prefer the runtime completion reminder instead of checking a running task repeatedly. Use `block=true` only when intentionally waiting in the current turn.
+- Prefer the runtime completion or progress notification instead of checking a running task repeatedly. Use `block=true` only when intentionally waiting in the current turn.
 
 - Blocking waits use `timeout` in milliseconds; `block=true` requires at least 1000ms.
-- Do not read a running child transcript just to peek at intermediate progress. Use this surface for an intentional status/result retrieval.
-- `full_session=true` applies only to a single `task_id`: it returns bounded child-session metadata and a transcript preview, controlled by `message_limit` (1–100). Child raw output is kept outside the active provider context.
-- Aggregate selectors always return bounded per-task status/summary/error/structured-output projections and never child transcripts; `full_session` does not change that.
+- A single-task result may include bounded `yield` progress sections (at most 100 sections and 65,536 retained characters); aggregate selectors return bounded per-task progress projections and never child transcripts.
+- Progress is observational and does not imply a terminal task state. Read the terminal summary/structured output separately when the task completes.
+- `full_session=true` applies only to a single `task_id`: it returns bounded child-session metadata and a transcript preview, controlled by `message_limit` (1–100). Do not read a running child transcript just to peek; child raw output is kept outside the active provider context.
 - Failed, cancelled, or interrupted tasks are outcomes to report. Do not retry automatically or loop; retry only when explicitly requested.

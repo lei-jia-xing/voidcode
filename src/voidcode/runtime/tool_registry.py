@@ -32,8 +32,8 @@ ESSENTIAL_TOOL_NAMES = frozenset(
         "todo_write",
         # Skill loading is a first-class runtime mechanism.
         "skill",
-        # Terminal output contract: the graph loop completes on submit_result.
-        "submit_result",
+        # Terminal output contract: the graph loop completes on yield.
+        "yield",
         # On-demand access mechanisms (dispatch + doc read).
         "invoke_tool",
     }

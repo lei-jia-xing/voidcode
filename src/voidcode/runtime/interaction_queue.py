@@ -27,7 +27,7 @@ _DELIVERY_CURSOR_METADATA_KEY = "runtime_interaction_delivery_cursor"
 
 
 def _is_durable_delivery_key(value: str | None) -> bool:
-    return value is not None and value.startswith("background-task-completion:")
+    return value is not None and value.startswith(("background-task-completion:", "background-task-progress:"))
 
 
 _DELIVERY_CURSOR_LIMIT = 128

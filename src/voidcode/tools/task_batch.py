@@ -142,7 +142,7 @@ class TaskBatchTool:
                             "command": {"type": "string", "minLength": 1},
                             "outputSchema": {
                                 "type": "object",
-                                "description": "Optional JSON Schema for this child's submit_result data.",
+                                "description": "Optional JSON Schema for this child's yield data.",
                             },
                             "schemaMode": {
                                 "type": "string",

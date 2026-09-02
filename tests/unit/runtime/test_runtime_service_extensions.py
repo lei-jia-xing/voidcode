@@ -365,6 +365,42 @@ def _private_attr(instance: object, name: str) -> Any:
     return getattr(instance, name)
 
 
+def _persist_yield_evidence(
+    store: SqliteSessionStore,
+    *,
+    workspace: Path,
+    session_id: str,
+    parent_session_id: str,
+    task_id: str,
+    prompt: str = "background child",
+) -> None:
+    metadata = {"background_run": True, "background_task_id": task_id}
+    store.save_interrupted_checkpoint(
+        workspace=workspace,
+        session_id=session_id,
+        prompt=prompt,
+        session_metadata=metadata,
+        tool_results=(),
+        last_event_sequence=0,
+        create_if_missing=True,
+        parent_session_id=parent_session_id,
+    )
+    store.append_session_events(
+        workspace=workspace,
+        session_id=session_id,
+        events=(
+            ("runtime.request_received", "runtime", {"prompt": prompt}, None),
+            (
+                "runtime.tool_completed",
+                "tool",
+                {"tool": "yield", "status": "ok", "handoff": {"summary": prompt}},
+                None,
+            ),
+            ("graph.response_ready", "graph", {"output_preview": prompt, "source": "yield"}, None),
+        ),
+    )
+
+
 def _assert_ordered_event_types(actual: list[str], expected: list[str]) -> None:
     remaining = iter(actual)
     for expected_type in expected:
@@ -622,7 +658,7 @@ class _ApprovalThenCaptureSkillGraph:
         if not tool_results:
             return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
         if session.session.parent_id is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
+            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -805,7 +841,7 @@ class _QuestionThenDoneGraph:
                 )
             )
         if session.session.parent_id is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
+            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -859,7 +895,7 @@ class _QuestionThenApprovalGraph:
                 )
             )
         if session.session.parent_id is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
+            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
 
@@ -1621,7 +1657,7 @@ class _BackgroundTaskSuccessGraph:
         if session.session.parent_id is not None:
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="submit_result",
+                    tool_name="yield",
                     arguments={"summary": request.prompt},
                 )
             )
@@ -1638,7 +1674,7 @@ class _BackgroundTaskApprovalGraph:
     ) -> _StubStep:
         _ = request, session
         if tool_results:
-            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": "done"}))
+            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(
             tool_call=ToolCall(
                 tool_name="write",
@@ -2006,7 +2042,7 @@ class _ParentSkillThenSyncTaskGraph:
             type(self).child_system_segments = tuple(segment.content for segment in request.assembled_context.segments if segment.role == "system")
             return _StubStep(
                 tool_call=ToolCall(
-                    tool_name="submit_result",
+                    tool_name="yield",
                     arguments={"summary": "child done"},
                 )
             )
@@ -6418,13 +6454,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
     _write_agent_manifest(
         manifest_path,
         "\n".join(
-            (
-                "id: local-auditor",
-                "name: Local Auditor",
-                "description: Local delegated auditor",
-                "mode: subagent",
-                "tool_allowlist: [read, submit_result]",
-            )
+            ("id: local-auditor", "name: Local Auditor", "description: Local delegated auditor", "mode: subagent", "tool_allowlist: [read, yield]")
         ),
         body="Audit from local markdown.",
     )
@@ -6451,7 +6481,7 @@ def test_runtime_subagent_type_routing_allows_custom_subagent_manifest(
     assert agent_payload["prompt_source"] == "custom_markdown"
     assert agent_payload["manifest_source_scope"] == "project"
     assert agent_payload["manifest_source_path"] == str(manifest_path)
-    assert agent_payload["manifest_tool_allowlist"] == ["read", "submit_result"]
+    assert agent_payload["manifest_tool_allowlist"] == ["read", "yield"]
     prompt_materialization = cast(dict[str, object], agent_payload["prompt_materialization"])
     assert prompt_materialization["body"] == "Audit from local markdown."
     assert response.session.metadata["delegation"] == {
@@ -6854,7 +6884,7 @@ def test_runtime_background_delegation_executes_on_real_provider_child_path(
                 outcomes=(
                     ProviderTurnResult(
                         tool_call=ToolCall(
-                            tool_name="submit_result",
+                            tool_name="yield",
                             arguments={"summary": "delegated child complete"},
                         )
                     ),
@@ -6943,7 +6973,7 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
                             )
                         return ProviderTurnResult(
                             tool_call=ToolCall(
-                                tool_name="submit_result",
+                                tool_name="yield",
                                 arguments={"summary": "child approval result"},
                             )
                         )
@@ -6975,8 +7005,8 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
         providers={"scripted": scripted_provider, "fallback": fallback_provider},
     )
     child_tools = RuntimeToolsConfig(
-        allowlist=("read", "write", "submit_result", "lsp", "mcp/*"),
-        default=("read", "write", "submit_result", "lsp", "mcp/*"),
+        allowlist=("read", "write", "yield", "lsp", "mcp/*"),
+        default=("read", "write", "yield", "lsp", "mcp/*"),
     )
     child_fallback = RuntimeProviderFallbackConfig(
         preferred_model="scripted/child-model",
@@ -7000,7 +7030,7 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
             preferred_model="scripted/leader-model",
             fallback_models=("fallback/leader-fallback",),
         ),
-        tools=RuntimeToolsConfig(allowlist=("task", "read", "write", "submit_result", "lsp", "mcp/*")),
+        tools=RuntimeToolsConfig(allowlist=("task", "read", "write", "yield", "lsp", "mcp/*")),
         skills=RuntimeSkillsConfig(enabled=True),
         lsp=RuntimeLspConfig(
             enabled=True,
@@ -7015,7 +7045,7 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
             prompt_profile="leader",
             model="scripted/leader-model",
             execution_engine="provider",
-            tools=RuntimeToolsConfig(allowlist=("task", "read", "write", "submit_result", "lsp", "mcp/*")),
+            tools=RuntimeToolsConfig(allowlist=("task", "read", "write", "yield", "lsp", "mcp/*")),
             skills=RuntimeSkillsConfig(enabled=True),
             mcp_binding=AgentMcpBindingIntent(profile="delegated", servers=("echo",)),
             provider_fallback=RuntimeProviderFallbackConfig(
@@ -7149,7 +7179,7 @@ def test_provider_delegated_child_approval_restart_replay_preserves_runtime_trut
     assert persisted_truth(replayed) == persisted_before
 
 
-def test_runtime_product_child_projects_only_submit_result_handoff_to_parent(tmp_path: Path) -> None:
+def test_runtime_product_child_projects_only_yield_handoff_to_parent(tmp_path: Path) -> None:
     output_schema: dict[str, object] = {
         "type": "object",
         "properties": {"steps": {"type": "array", "items": {"type": "string"}}},
@@ -7197,7 +7227,7 @@ def test_runtime_product_child_projects_only_submit_result_handoff_to_parent(tmp
         tmp_path / "submitted",
         ProviderTurnResult(
             tool_call=ToolCall(
-                tool_name="submit_result",
+                tool_name="yield",
                 arguments={"summary": "plan ready", "data": data},
             )
         ),
@@ -7219,7 +7249,7 @@ def test_runtime_product_child_projects_only_submit_result_handoff_to_parent(tmp
     assert unsubmitted_result.structured_output is None
     assert unsubmitted_result.schema_validation is None
     assert unsubmitted_result.error is not None
-    assert "submit_result" in unsubmitted_result.error
+    assert "yield" in unsubmitted_result.error
     unsubmitted_event = next(event for event in unsubmitted_parent.events if event.event_type == RUNTIME_BACKGROUND_TASK_FAILED)
     assert unsubmitted_event.payload["status"] == "failed"
     assert unsubmitted_event.payload["result_available"] is True
@@ -7981,6 +8011,13 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
             started_at=1,
         ),
     )
+    _persist_yield_evidence(
+        store,
+        workspace=tmp_path,
+        session_id="child-session",
+        parent_session_id="leader-session",
+        task_id="task-recover",
+    )
     store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
@@ -8016,6 +8053,13 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
                 EventEnvelope(
                     session_id="child-session",
                     sequence=2,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={"tool": "yield", "status": "ok", "handoff": {"summary": "background child"}},
+                ),
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=3,
                     event_type="graph.response_ready",
                     source="graph",
                     payload={},
@@ -8035,7 +8079,7 @@ def test_runtime_reconciles_persisted_child_terminal_truth_and_backfills_parent_
     assert reconciled.status == "completed"
     assert reconciled.session_id == "child-session"
     assert len(recovered_events) == 1
-    safe_summary = "Child session child-session completed without required submit_result handoff."
+    safe_summary = "background child"
     assert recovered_events[0].payload == {
         "task_id": "task-recover",
         "parent_session_id": "leader-session",
@@ -8114,6 +8158,14 @@ def test_runtime_reconciliation_parent_events_are_idempotent_across_restart_read
         ),
     )
     if child_status is not None:
+        if child_status == "completed":
+            _persist_yield_evidence(
+                store,
+                workspace=tmp_path,
+                session_id=child_session_id,
+                parent_session_id="leader-session",
+                task_id=task_id,
+            )
         store.save_run(
             workspace=tmp_path,
             request=RuntimeRequest(
@@ -8197,6 +8249,13 @@ def test_runtime_session_debug_snapshot_does_not_reconcile_parent_background_eve
             started_at=1,
         ),
     )
+    _persist_yield_evidence(
+        store,
+        workspace=tmp_path,
+        session_id="child-session",
+        parent_session_id="leader-session",
+        task_id="task-debug-inspect",
+    )
     store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
@@ -8232,6 +8291,13 @@ def test_runtime_session_debug_snapshot_does_not_reconcile_parent_background_eve
                 EventEnvelope(
                     session_id="child-session",
                     sequence=2,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={"tool": "yield", "status": "ok", "handoff": {"summary": "background child"}},
+                ),
+                EventEnvelope(
+                    session_id="child-session",
+                    sequence=3,
                     event_type="graph.response_ready",
                     source="graph",
                     payload={},
@@ -8337,6 +8403,13 @@ def test_runtime_load_background_task_result_reconciles_before_parent_terminal_b
             result_available=False,
         ),
     )
+    _persist_yield_evidence(
+        store,
+        workspace=tmp_path,
+        session_id=child_session_id,
+        parent_session_id="leader-session",
+        task_id=task_id,
+    )
     store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
@@ -8366,6 +8439,13 @@ def test_runtime_load_background_task_result_reconciles_before_parent_terminal_b
                 EventEnvelope(
                     session_id=child_session_id,
                     sequence=2,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={"tool": "yield", "status": "ok", "handoff": {"summary": "background child"}},
+                ),
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=3,
                     event_type="graph.response_ready",
                     source="graph",
                     payload={},
@@ -12013,7 +12093,7 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
             model="opencode/gpt-5.4",
             agent=RuntimeAgentConfig(
                 preset="leader",
-                tools=RuntimeToolsConfig(allowlist=("read", "task", "submit_result")),
+                tools=RuntimeToolsConfig(allowlist=("read", "task", "yield")),
             ),
         ),
     )
@@ -12036,8 +12116,8 @@ def test_runtime_child_capability_snapshot_is_bounded_by_parent_policy(
     child_tools = set(cast(list[str], child_tool_payload["effective_names"]))
     child_delegation = cast(dict[str, object], child_capability["delegation"])
 
-    assert child_tools - {"submit_result"} <= parent_tools
-    assert child_tools == {"read", "submit_result"}
+    assert child_tools - {"yield"} <= parent_tools
+    assert child_tools == {"read", "yield"}
     assert child_delegation["parent_bounded"] is True
     assert child_delegation["can_expand_parent_policy"] is False
     assert cast(list[str], child_delegation["allowed_child_presets"]) == [
@@ -14805,7 +14885,7 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert leader_prompt is not None
     assert "Delegate only through the runtime's task tool" in leader_prompt
     assert "choosing the narrowest specialist that fits (explore, advisor, worker, researcher, product)" in leader_prompt
-    assert "delegate to the product agent and read its plan back via submit_result" in leader_prompt
+    assert "delegate to the product agent and read the plan back through its yield handoff" in leader_prompt
     assert "a child's completion is an incremental result, not a finished deliverable" in leader_prompt
     assert "Collect outstanding child results with background_output" in leader_prompt
     assert "Never present an unrun command, unread file, or unverified change as done" in leader_prompt
@@ -14813,19 +14893,18 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert explore_prompt is not None
     assert "Stay read-only: do not edit or write files" in explore_prompt
     assert "report relevant files with absolute paths, observed patterns or call paths" in explore_prompt
-    assert "Your delegated run is not complete until you call submit_result" in explore_prompt
+    assert "Your delegated run is not complete until you call yield" in explore_prompt
 
     assert advisor_prompt is not None
     assert "Stay read-only: do not edit or write files" in advisor_prompt
     assert "Analyze tradeoffs and risk, and hand back a recommendation" in advisor_prompt
-    assert "Your delegated run is not complete until you call submit_result" in advisor_prompt
+    assert "Your delegated run is not complete until you call yield" in advisor_prompt
 
     assert worker_prompt is not None
     assert "Stay tightly scoped to the delegated task" in worker_prompt
     assert "do not delegate or spawn child agents" in worker_prompt
     assert (
-        "Your delegated run is not complete until you call submit_result with a non-empty "
-        "summary of what changed, what passed, and any remaining risk"
+        "Your delegated run is not complete until you call yield with a non-empty summary of what changed, what passed, and any remaining risk"
     ) in worker_prompt
     assert "If the parent declared an outputSchema, put structured detail in the data object matching that schema" in worker_prompt
 
@@ -15983,7 +16062,7 @@ def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Pa
     assert len(created_providers) == 2
     child_request = _last_main_provider_request(created_providers[-1].requests)
     child_visible_tool_names = {tool.name for tool in child_request.available_tools}
-    assert child_visible_tool_names <= {"read", "glob", "grep", "ast_grep", "lsp", "submit_result"}
+    assert child_visible_tool_names <= {"read", "glob", "grep", "ast_grep", "lsp", "yield"}
     assert "read" in child_visible_tool_names
     assert "write" not in child_visible_tool_names
     assert target.exists() is False
@@ -18295,6 +18374,13 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
             started_at=1,
         ),
     )
+    _persist_yield_evidence(
+        session_store,
+        workspace=tmp_path,
+        session_id=child_session_id,
+        parent_session_id=parent_session_id,
+        task_id=task_id,
+    )
     session_store.save_run(
         workspace=tmp_path,
         request=RuntimeRequest(
@@ -18330,6 +18416,13 @@ def test_runtime_provider_failure_resume_reconciles_parent_background_tasks(
                 EventEnvelope(
                     session_id=child_session_id,
                     sequence=2,
+                    event_type="runtime.tool_completed",
+                    source="tool",
+                    payload={"tool": "yield", "status": "ok", "handoff": {"summary": "background child"}},
+                ),
+                EventEnvelope(
+                    session_id=child_session_id,
+                    sequence=3,
                     event_type="graph.response_ready",
                     source="graph",
                     payload={},

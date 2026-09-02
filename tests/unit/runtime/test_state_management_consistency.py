@@ -483,11 +483,11 @@ def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> 
 
 
 # ── 7. completed children are sealed completed; interrupted rows with a
-#       submit_result handoff are repaired ───────────────────────────────────
+#       yield handoff are repaired ─────────────────────────────────────────
 
 
-class _SubmitResultChildGraph:
-    """Top-level runs finish immediately; delegated children call submit_result."""
+class _YieldChildGraph:
+    """Top-level runs finish immediately; delegated children call yield."""
 
     def step(
         self,
@@ -501,7 +501,7 @@ class _SubmitResultChildGraph:
             return _StubStep(
                 output=None,
                 is_finished=False,
-                tool_call=ToolCall(tool_name="submit_result", arguments={"summary": request.prompt}),
+                tool_call=ToolCall(tool_name="yield", arguments={"summary": request.prompt}),
             )
         return _StubStep(output=request.prompt, is_finished=True)
 
@@ -530,8 +530,8 @@ def _seed_unsealed_completed_child(
     child_session_id: str,
 ) -> tuple[EventEnvelope, ...]:
     """Seed a task + child whose ROW is ``interrupted`` but whose transcript
-    proves a successful ``submit_result`` handoff (the unsealed-seal state the
-    run loop can leave behind when its generator-driven seal is skipped)."""
+    proves a successful ``yield`` handoff (the unsealed-seal state the run
+    loop can leave behind when its generator-driven seal is skipped)."""
     store.save_interrupted_checkpoint(
         workspace=workspace,
         session_id=child_session_id,
@@ -553,14 +553,14 @@ def _seed_unsealed_completed_child(
                 "runtime.tool_completed",
                 "tool",
                 {
-                    "tool": "submit_result",
+                    "tool": "yield",
                     "status": "ok",
                     "arguments": {"summary": "done"},
                     "handoff": {"summary": "done", "data": {"completed_work": ["completed the probe"]}},
                 },
                 None,
             ),
-            ("graph.response_ready", "graph", {"output_preview": "done", "source": "submit_result"}, None),
+            ("graph.response_ready", "graph", {"output_preview": "done", "source": "yield"}, None),
         ),
     )
     store.create_background_task(
@@ -580,12 +580,12 @@ def _seed_unsealed_completed_child(
 
 
 def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) -> None:
-    """A delegated child that finishes with submit_result is persisted
+    """A delegated child that finishes with yield is persisted
     ``completed`` with ``last_event_sequence`` equal to its actual event-log
     max — never left ``interrupted`` at a stale checkpoint."""
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        graph=_SubmitResultChildGraph(),  # type: ignore[arg-type]
+        graph=_YieldChildGraph(),  # type: ignore[arg-type]
         config=RuntimeConfig(
             approval_mode="allow",
             execution_engine="deterministic",
@@ -612,13 +612,13 @@ def test_completed_background_child_session_is_sealed_completed(tmp_path: Path) 
     assert store.load_session_status(workspace=tmp_path, session_id=task.session_id) == "completed"
 
 
-def test_interrupted_child_with_submit_result_handoff_is_repaired_completed(
+def test_interrupted_child_with_yield_handoff_is_repaired_completed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An ``interrupted`` child whose transcript proves a successful
-    ``submit_result`` handoff is repaired: the task is finalized ``completed``
-    AND the unsealed session row is sealed ``completed`` (watermark = max)."""
+    ``yield`` handoff is repaired: the task is finalized ``completed`` AND
+    the unsealed session row is sealed ``completed`` (watermark = max)."""
     store = SqliteSessionStore()
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(db_path))
@@ -712,7 +712,7 @@ def test_interrupted_child_without_handoff_stays_resumable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuinely resumable interrupted child (no submit_result handoff) is
+    """A genuinely resumable interrupted child (no yield handoff) is
     never sealed ``completed`` nor its task terminalized by the repair path."""
     store = SqliteSessionStore()
     db_path = tmp_path / "test.db"
@@ -732,7 +732,7 @@ def test_interrupted_child_without_handoff_stays_resumable(
         last_event_sequence=0,
         create_if_missing=True,
     )
-    # Mid-flight transcript: a tool ran but no submit_result handoff, no
+    # Mid-flight transcript: a tool ran but no yield handoff, no
     # graph.response_ready — the run is genuinely resumable.
     store.append_session_events(
         workspace=tmp_path,

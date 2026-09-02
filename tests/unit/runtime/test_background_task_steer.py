@@ -27,7 +27,8 @@ import importlib
 import threading
 import time
 from pathlib import Path
-from typing import Protocol, cast
+from types import SimpleNamespace
+from typing import Any, Protocol, cast
 from unittest.mock import patch
 
 import pytest
@@ -198,11 +199,52 @@ def test_steer_background_task_rejects_running_turn_in_flight(tmp_path: Path) ->
     assert idle.status == "idle"
 
 
+def test_concurrent_steers_launch_only_one_worker(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    idle_task = _idle_keep_alive_task(tmp_path, runtime)
+    supervisor = cast(Any, runtime)._background_task_supervisor
+    first_spawn_entered = threading.Event()
+    release_first_spawn = threading.Event()
+    spawn_calls: list[str] = []
+
+    def fake_spawn(*, task_id: str, reserved_identity: object) -> tuple[object, threading.Event]:
+        _ = reserved_identity
+        spawn_calls.append(task_id)
+        if len(spawn_calls) == 1:
+            first_spawn_entered.set()
+            assert release_first_spawn.wait(timeout=2)
+        return SimpleNamespace(start=lambda: None), threading.Event()
+
+    outcomes: list[object] = []
+
+    def steer() -> None:
+        try:
+            outcomes.append(runtime.steer_background_task(idle_task.task.id, "continue"))
+        except ValueError as exc:
+            outcomes.append(exc)
+
+    with patch.object(supervisor, "_spawn_worker_thread", side_effect=fake_spawn):
+        first = threading.Thread(target=steer)
+        second = threading.Thread(target=steer)
+        first.start()
+        assert first_spawn_entered.wait(timeout=1)
+        second.start()
+        release_first_spawn.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert spawn_calls == [idle_task.task.id]
+    assert len(outcomes) == 2
+    assert sum(isinstance(outcome, ValueError) for outcome in outcomes) == 1
+
+
 def test_steer_background_task_idle_dispatch_runs_turn_and_parks_idle(tmp_path: Path) -> None:
     """Steering an idle keep-alive task flips to running with the steer prompt.
 
     The dispatched turn runs on the same child session and parks the task
-    back ``idle`` (no submit_result), clearing the ``steer_prompt`` column.
+    back ``idle`` (no terminal yield), clearing the ``steer_prompt`` column.
     """
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     runtime = _runtime(tmp_path)

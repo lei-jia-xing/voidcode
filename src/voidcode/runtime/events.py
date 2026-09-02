@@ -81,6 +81,7 @@ type RuntimeEventType = Literal[
     "runtime.tool_input_processed",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
+    "runtime.background_task_progress",
     "runtime.background_task_waiting_approval",
     "runtime.background_task_idle_reminder",
     "runtime.background_task_awaiting_steer",
@@ -507,6 +508,7 @@ KNOWN_EVENT_TYPES: Final[tuple[KnownEventType, ...]] = (
     *RUNTIME_EVENT_TYPES,
 )
 DELEGATED_BACKGROUND_TASK_EVENT_TYPES: Final[tuple[DelegatedBackgroundTaskEventType, ...]] = (
+    RUNTIME_BACKGROUND_TASK_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     RUNTIME_BACKGROUND_TASK_IDLE_REMINDER,
     RUNTIME_BACKGROUND_TASK_AWAITING_STEER,

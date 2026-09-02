@@ -43,6 +43,7 @@ from .todo_write import TodoWriteTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
 from .write import WriteTool
+from .yield_tool import YieldArgs, YieldTool
 
 __all__ = [
     "BackgroundPsTool",
@@ -75,6 +76,8 @@ __all__ = [
     "WebFetchTool",
     "WriteTool",
     "WebSearchTool",
+    "YieldArgs",
+    "YieldTool",
     "ToolCall",
     "ToolDefinition",
     "ToolDiagnostics",

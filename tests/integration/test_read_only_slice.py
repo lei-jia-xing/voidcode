@@ -771,7 +771,7 @@ class _DelegationE2EModelProvider:
                 if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
-                            tool_name="submit_result",
+                            tool_name="yield",
                             arguments={"summary": "child final", "data": {"completed_work": ["returned delegated result"]}},
                         )
                     )
@@ -815,7 +815,7 @@ class _ParentToolResultGuardrailProvider:
                 if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
-                            tool_name="submit_result",
+                            tool_name="yield",
                             arguments={"summary": "child clean"},
                         )
                     )
@@ -866,7 +866,7 @@ class _BackgroundOutputGuardrailProvider:
                 if _is_delegated_child_request(request):
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
-                            tool_name="submit_result",
+                            tool_name="yield",
                             arguments={"summary": "child transcript sentinel"},
                         )
                     )
@@ -972,7 +972,7 @@ class _ParentBackgroundOutputGraph:
             return _GraphStep(
                 events=(),
                 tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
-                    tool_name="submit_result",
+                    tool_name="yield",
                     arguments={"summary": "child background final"},
                 ),
             )
@@ -1046,7 +1046,7 @@ class _McpEchoGraph:
             return _GraphStep(
                 events=(),
                 tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
-                    tool_name="submit_result",
+                    tool_name="yield",
                     arguments={"summary": "mcp child done", "data": {"completed_work": ["called delegated MCP"]}},
                 ),
             )
@@ -1939,7 +1939,7 @@ def test_provider_existing_session_parent_mismatch_excludes_prior_conversation_c
         ),
     )
 
-    with pytest.raises(ValueError, match="delegated child must call submit_result"):
+    with pytest.raises(ValueError, match="delegated child must call yield"):
         runtime.run(
             runtime_request(
                 prompt="user parent-one sentinel",

@@ -14,7 +14,7 @@ _WORKSPACE_DISCOVERY_TOOLS = (
     "lsp",
 )
 
-_CHILD_HANDOFF_TOOLS = ("submit_result",)
+_CHILD_HANDOFF_TOOLS = ("yield",)
 
 
 _LEADER_TOOL_ALLOWLIST = (

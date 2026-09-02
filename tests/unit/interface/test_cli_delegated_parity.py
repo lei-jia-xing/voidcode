@@ -86,7 +86,7 @@ class _DelegatedHandoffGraph:
         step = self._delegate.step(request, tool_results, session=session)
         if step.is_finished and cast(Any, session).session.parent_id is not None:
             tool_call = ToolCall(
-                tool_name="submit_result",
+                tool_name="yield",
                 arguments={"summary": step.output or "Delegated task completed."},
             )
             return SimpleNamespace(
@@ -509,7 +509,7 @@ def test_cli_sessions_resume_replays_completed_session_after_restart(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def test_cli_sessions_list_omits_child_that_failed_required_handoff(tmp_path: Path, capsys: Any) -> None:
+def test_cli_sessions_list_omits_child_that_failed_required_yield(tmp_path: Path, capsys: Any) -> None:
     cli = importlib.import_module("voidcode.cli.app")
     workspace = tmp_path
     runtime_module = importlib.import_module("voidcode.runtime")
@@ -517,7 +517,7 @@ def test_cli_sessions_list_omits_child_that_failed_required_handoff(tmp_path: Pa
 
     runtime = runtime_module.VoidCodeRuntime(workspace=workspace)
     _ = runtime.run(runtime_module.RuntimeRequest(prompt="read sample.txt", session_id="leader-session"))
-    with pytest.raises(ValueError, match="delegated child must call submit_result"):
+    with pytest.raises(ValueError, match="delegated child must call yield"):
         runtime.run(
             runtime_module.RuntimeRequest(
                 prompt="read sample.txt",

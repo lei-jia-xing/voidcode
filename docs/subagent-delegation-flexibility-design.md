@@ -7,20 +7,20 @@
 - 目标仓库：`voidcode`
 - 关联文档：`docs/contracts/background-task-delegation.md`（本设计修订它的 surface 契约）、`docs/oh-my-pi-comparison-priorities.md`（OMP 对比调研与缺口清单）、`docs/keep-alive-subagent-design.md`（idle/steer 前置设计）、`docs/agent-architecture.md`、`docs/architecture.md`
 
+> 文中 `submit_result` 是该 design-only 文档记录的历史完成工具名称；当前 child completion tool 统一称为 `yield`，当前运行时不再识别或接受 `submit_result`。本 design-only 文档不宣称 yield、peer bus 或其他增量协作能力已经实现。
+
 ## 结论先行
 
 **目标**：让 delegated subagent 委派获得 OMP 式的灵活性——任意结构化输出契约（invocation-level JSON Schema）、batch fan-out、可复活 agent 生命周期——**同时保持 voidcode 的 runtime-owned 治理不变量不变**（持久化状态机、通知去重、重启 reconcile、child ⊆ parent 的 delegation gate、完整 transcript 不复制）。
 
-**核心判断**：OMP 与 voidcode 的差距不是"缺一个机制"，而是**契约位置不同**。但必须先拆开 `submit_result` 的两个职责——它同时是「完成提交点」和「固定结构契约」：
+- **完成提交点（必须保留）**：等价于 OMP 的隐藏 `yield` 工具——OMP 并没有因为 `outputSchema` 就放弃 yield（child 仍必须经过 yield 结束，最多 3 次提醒，最后一次强制 `toolChoice=yield`）。当前 VoidCode runtime 以 `yield` 作为唯一 child completion tool；`submit_result` 不再被识别或接受。当前 completion evidence、interrupted 修复、keep-alive 判定、`summary_output` 渲染均必须迁移到 `yield` 证据链；移除完成提交点会拆掉这些语义。
+- **固定结构契约（替换为 schema 声明）**：`yield` 的结构化 handoff 由 parent 声明的任意 JSON Schema 约束。
 
-- **完成提交点（必须保留）**：等价于 OMP 的隐藏 `yield` 工具——OMP 并没有因为 `outputSchema` 就放弃 yield（child 仍必须经过 yield 结束，最多 3 次提醒，最后一次强制 `toolChoice=yield`）。voidcode 的完成判定（`child_terminal.py`）、interrupted 修复、keep-alive 判定、`summary_output` 渲染全部建立在「`submit_result` ok + 非空 `handoff.summary` + `graph.response_ready`」的 transcript 证据链上。去掉提交点等于拆掉状态机的判定锚点——**这不是兼容性问题，是架构一致性问题**。
-- **固定结构契约（替换为 schema 声明）**：`submit_result` 的固定字段（`completed_work/files_touched/verification/...`）换成 parent 声明的任意 JSON Schema，确实更灵活。
-
-因此本设计**不向后兼容**：`submit_result(summary, data?)` 中 `summary` 保留（完成证据 + parent 摘要，语义不变），固定字段删除，`data` 为任意 JSON 并由 invocation-level `outputSchema` 校验（permissive/strict）。无 `outputSchema` 时 `data` 不校验，`summary` 仍是完成判定的最小契约。
+因此本设计**不向后兼容**：`yield(summary, data?)` 中 `summary` 保留（完成证据 + parent 摘要，语义不变），固定字段删除，`data` 为任意 JSON 并由 invocation-level `outputSchema` 校验（无 schema 不校验）。
 
 **分阶段范围**（详见各节）：
 
-1. **Phase 1（推荐优先落地）**：`task` 工具增加 invocation-level `outputSchema` + `schemaMode`（permissive/strict）；`submit_result` 签名改为 `(summary, data?)`，固定字段删除，`data` 由 schema 校验（无 schema 不校验）。校验结果作为 runtime truth 持久化并进入 `BackgroundTaskResult`。提交点证据链（非空 `summary` + `graph.response_ready`）零改动。
+1. **Phase 1（已实现）**：`task` 委托支持 terminal `yield`（`summary`/`data`，可省略 `type` 或使用 `type: "result"`）、terminal `error`，以及不终止 child 的 bounded progress（其他非空 `type` string/list + `result` 或非空 `data`）。progress 通过 `runtime.background_task_progress` 与 parent outbox 投影，结果与校验作为 runtime truth 持久化。
 2. **Phase 2**：`task` 工具 batch 形态（`context` + `tasks[]`），映射到现有 `parallel_group_id` / `parallel_group_size` + `runtime.background_task_group_completed` 语义，不新增并发模型。
 3. **Phase 3**：可复活生命周期对齐——keep-alive 之外补 idle 资源回收（OMP `agentIdleTtlMs` 对应物）与 revive 语义文档化；续跑复用现有 `steer_task` 与 `task(session_id=<child>)` 两条已 shipped 路径。
 4. **Phase 4（远期，不承诺）**：isolated workspace + patch/branch 合并（OMP `isolated`）。VoidCode 是 Python 运行时，无 native 隔离 PAL；此阶段只做设计评估，不进入 backlog。
@@ -31,9 +31,9 @@
 
 ## 1. 背景与动机
 
-`docs/oh-my-pi-comparison-priorities.md`（2026-08-15 调研，OMP HEAD `ad318c7`）把「task 支持 invocation-level JSON Schema output」列为真实缺口：
+`docs/oh-my-pi-comparison-priorities.md`（2026-08-15 调研，OMP HEAD `ad318c7`）曾把「task 支持 invocation-level JSON Schema output」列为真实缺口；该历史判断已由当前 runtime 实现覆盖。
 
-> P2：task 支持 invocation-level JSON Schema output —— 仍未落地（`task` 工具的 input_schema 不含 output schema），保持为真实缺口。
+> 历史调研记录：当时 `task` 工具的 input_schema 不含 output schema。当前实现已提供 invocation-level schema，并支持 bounded `yield` progress。
 
 OMP 的委派模型（依据 `docs/tools/task.md` 与 `packages/coding-agent/src/task/`）：
 
@@ -43,7 +43,7 @@ OMP 的委派模型（依据 `docs/tools/task.md` 与 `packages/coding-agent/src
 - **可复活生命周期**：进程内 registry `running | idle | parked | aborted`；success/failure 都进 `idle`，idle-TTL（默认 420s）后 `parked`（session disposed、JSONL 保留），`hub` 消息复活；isolated 完成即 teardown 不可复活；hard abort 是 `aborted` 终态。
 - **隔离执行**：`isolated: true` → 隔离 workspace（apfs/btrfs/overlayfs 等 native PAL），完成捕获 patch 或提交 branch 后 merge。
 
-voidcode 现状（已 shipped，详见 §2）是**治理更强、灵活性更弱**：`submit_result` 固定字段、固定 child presets、持久化 7 态状态机、通知去重与重启 reconcile。本设计的目标不是复制 OMP 的全部机制，而是**在 runtime-owned 治理框架内，把「结构化输出契约」和「委派形态」从固定形状升级为可声明形状**。
+voidcode 现状（已 shipped，详见 §2）是**治理更强、灵活性更弱**：固定 child presets、持久化 7 态状态机、通知去重与重启 reconcile，以及 runtime-owned bounded `yield` progress/terminal handoff。本设计的目标不是复制 OMP 的全部机制，而是在 runtime-owned 治理框架内保持可声明的结构化结果与受限进度观察。
 
 ---
 
@@ -57,17 +57,17 @@ voidcode 现状（已 shipped，详见 §2）是**治理更强、灵活性更弱
 - `keep_alive=true` 要求 `run_in_background=true`（model_validator：`"keep_alive=true requires run_in_background=true (sync delegation has no suspend/resume semantics)"`）。
 - `TaskRuntime` Protocol 只暴露：`run` / `start_background_task` / `load_background_task_result` / `cancel_background_task` / `list_background_tasks` / `session_result`。
 - sync 模式 → `run(request)` 阻塞返回结果；background 模式 → `start_background_task(request)` 返回 `BackgroundTaskState`。
-- `input_schema` **不含** output schema 字段（对比调研已确认，保持为缺口）。
+- `input_schema` 现已包含 `outputSchema` / `schemaMode`，用于声明 terminal `yield` data 的校验契约；progress section 不要求满足完整终态 schema。
 
-### 2.2 `submit_result` 与 one-shot 强校验
+### 2.2 `yield` 与 one-shot 强校验
 
-- `src/voidcode/tools/submit_result.py`：`SubmitResultArgs{summary(必填, min_length=1), completed_work, files_touched, verification, open_questions, blockers}`；返回 `ToolResult(status="ok", data={"handoff": args}, reference="child-handoff:<session_id>")`；非 child session 调用 → `ValueError("submit_result is only available to delegated child sessions")`。
-- `run_loop.py:2070`（`_finalize_step_state`）：final step 且 `parent_id is not None` 且非 `keep_alive_turn` → 最后结果必须是 `submit_result` ok，否则 `ValueError("delegated child must call submit_result before completing")` → 后台任务 `failed` / 同步委托变 tool error。
-- `keep_alive_turn` 中间 turn 跳过该检查，final step 落 `interrupted`（run_loop.py:2088-2091）。
+- 历史代码树中的 `src/voidcode/tools/submit_result.py` 与 `SubmitResultArgs{summary, completed_work, files_touched, verification, open_questions, blockers}` 仅作为旧实现证据保留；`submit_result` 不是当前 runtime 协议，也不提供兼容路径。当前 child completion tool 是 `src/voidcode/tools/yield_tool.py`：terminal success 使用非空 `summary` 与可选 `data`（`type` 省略或 `"result"`），terminal failure 使用非空 `error`（可用 `type: "error"`），其他非空 `type` string/list 搭配 `result` 或非空 `data` 是不终止 child 的 bounded progress。
+- 历史 `run_loop.py:2070` 的 `submit_result` 强制检查仅描述旧代码树行为；当前校验对应 terminal `yield` handoff。progress yield 不满足 terminal handoff 证据，不会完成 task；terminal yield 才会沿既有 `graph.response_ready` 证据链完成后台任务，错误/取消/中断仍按当前 runtime 状态机处理。
+- `keep_alive_turn` 中间 turn 可发送 progress，跳过终态 schema 校验；最终 terminal `yield` 正常完成终态校验。
 
 ### 2.3 完成判定（`src/voidcode/runtime/child_terminal.py`，单一权威）
 
-- `child_terminal_outcome`：row `completed` → completed；`failed` → failed；`running` → failed（permission-denied tail）；`interrupted` + `child_transcript_proves_completed`（`runtime.tool_completed` for `submit_result` ok + 非空 `handoff.summary`，**然后** `graph.response_ready`）→ completed；否则 `None`（resumable，不 seal 不 terminalize）。
+- `child_terminal_outcome`：row `completed` → completed；`failed` → failed；`running` → failed（permission-denied tail）；`interrupted` + `child_transcript_proves_completed`（`runtime.tool_completed` for terminal `yield` ok + 非空 `handoff.summary`，**然后** `graph.response_ready`）→ completed；progress yield 不满足终态证据且不会 terminalize；否则 `None`（resumable，不 seal 不 terminalize）。
 
 ### 2.4 结果读取面（`src/voidcode/tools/background_output.py`）
 
@@ -95,85 +95,86 @@ voidcode 现状（已 shipped，详见 §2）是**治理更强、灵活性更弱
 
 | 维度 | voidcode（shipped） | OMP（调研） | 差距与设计取向 |
 |---|---|---|---|
-| 结构化输出契约 | `submit_result` 固定字段，执行期强制 + transcript 证据链 | `outputSchema` 任意 JSON Schema，派发期声明 + 完成时对账 | Phase 1：固定字段删除，`data` 由 `outputSchema` 校验；提交点（`summary` 证据）保留 |
+| 结构化输出契约 | `yield` terminal handoff + bounded progress；执行期强制 + transcript 证据链 | `outputSchema` 任意 JSON Schema，派发期声明 + 完成时对账 | Phase 1 已支持 terminal `summary`/`data`/`error` 与非终态 progress；terminal data 由 `outputSchema` 校验 |
 | 完成判定 | row + transcript 证据（`child_terminal_outcome`） | `finalizeSubprocessOutput` 对账 raw text + yield + schema | voidcode 更严格（可修复 interrupted、可审计）；schema 校验加在 finalize 路径不改变判定 |
 | 委派形态 | 单任务（`parallel_group_id/size` 已有组语义） | `task.batch` `{context, tasks[]}` | Phase 2：batch 映射到 parallel_group，不新增并发模型 |
 | 可复活 | keep-alive `idle` + `steer`；`task(session_id=<child>)` 续跑 | registry `idle/parked` + `hub` 复活（idle-TTL 420s） | 续跑能力已等价；Phase 3 补 idle 资源回收与语义文档化 |
 | 隔离执行 | 无（对比调研标记为真实缺口） | `isolated` + patch/branch merge（native PAL） | Phase 4 远期，仅设计评估 |
 | 并发 | `default_concurrency=5` + provider/model 覆盖，持久化任务行 | session-scoped `Semaphore`，实时 resize | voidcode 更强（跨进程语义）；不迁移 |
-| 失败语义 | 缺 handoff → 确定性 `failed`；schema 无效（现无 schema） | 缺 yield → 警告不判死；schema 无效 permissive 接受 / strict 失败 | Phase 1 采用 OMP 的 permissive/strict 词汇，但**只在有 schema 时生效** |
+| 失败语义 | 缺 terminal handoff → 确定性 `failed`；terminal schema 无效按 permissive/strict 处理；progress 是非终态且有界 | 缺 yield → 警告不判死；schema 无效 permissive 接受 / strict 失败 | Phase 1 已采用 OMP 的 permissive/strict 词汇，并支持 bounded yield progress |
 
 **设计原则**：灵活性必须落在「契约声明」与「结果校验」上，不能落在「绕过治理」上。所有新 surface 继续走现有 runtime 路径（`task` 路由 → `start_background_task` → worker → finalize → 通知 → 读取）。
 
 ---
 
-## 4. Phase 1：`submit_result` payload schema 化（无兼容期）
+## 4. Phase 1：`yield` terminal handoff 与 bounded progress（已实现）
 
 ### 4.1 形状
 
-`task` 工具 `input_schema` 新增（声明消费契约）：
-
+`yield` 同时承载终态 handoff 与非终态 progress：
 ```jsonc
-{
-  "outputSchema": {            // 任意 JSON Schema（object），校验 child 提交的 data
-    "type": "object",
-    "properties": { ... },
-    "required": [...]
-  },
-  "schemaMode": "permissive"   // "permissive" | "strict"，默认 permissive
-}
-```
-
-`submit_result` 工具签名变更（**breaking change**，删除固定字段）：
-
-```jsonc
+// terminal success
 {
   "summary": "human-readable 摘要，同时是完成判定证据（非空必填）",
-  "data": { ... }              // 任意 JSON object；形状由 parent 的 outputSchema 声明
+  "data": { ... },
+  "type": "result" // 可省略
+}
+
+// terminal error
+{
+  "type": "error", // 可省略；error 本身也标识终态失败
+  "error": "human-readable failure"
+}
+
+// nonterminal progress
+{
+  "type": "progress", // 也可为任意其他非空 string 或 string[]
+  "result": "短进度文本",
+  "data": { ... }
 }
 ```
 
-- `submit_result` 固定字段（`completed_work/files_touched/verification/open_questions/blockers`）**删除**；需要这些字段的调用方在 `outputSchema` 里声明。
-- `summary` 语义不变：`child_transcript_proves_completed` 仍检查非空 `handoff.summary` + `graph.response_ready`（child_terminal.py），`_child_handoff` 仍渲染 parent 摘要，`_submit_result_terminal` 仍发射 `graph.response_ready`。**提交点证据链零改动**。
-- `data` 缺失时视为空对象；无 `outputSchema` 时 `data` 不校验。
-- 只允许 `run_in_background=true`（sync 模式结果直接返回，无校验时机问题，但为行为一致也允许——由实现决定 [推断]；建议 v1 限制 background，与 keep_alive 同风格）。
-- `outputSchema` 随 request metadata 持久化到 task 行（新列 `output_schema_json` + `schema_mode`，storage 迁移 `_SCHEMA_VERSION 11 → 12`，迁移风格与 v10→v11 一致）。
+- 仅 delegated child 可调用 `yield`；未知字段拒绝。
+- 终态成功要求非空 `summary`；`type` 省略或为 `"result"`，`data` 可选。
+- 终态错误要求非空 `error`，可用 `type: "error"`；不得与 `summary` 或 `result` 混用。
+- 非终态 progress 的 `type` 必须是除 `result`/`error` 外的非空字符串或非空字符串数组；必须提供 `result` 或非空 `data`，不得提供 `summary`。它不完成 child。
+- runtime 为 progress 分配 `ordinal` 并持久化 bounded section：每段最多 4096 字符，每个 child 最多 100 段、累计最多 65536 字符；`type` 最多 100 项且每项最多 64 字符。
+- 这些约束是显式 breaking contract 的当前形状；不恢复旧 `submit_result` 字段或兼容路径。
+
+`task` 工具仍可声明 `outputSchema` / `schemaMode`，用于终态 `data` 的结果校验；progress 是独立的有界观察面，不要求每个 section 满足完整终态 schema。
+
+`outputSchema` 随 request metadata 持久化到 task 行（新列 `output_schema_json` + `schema_mode`，storage 迁移 `_SCHEMA_VERSION 11 → 12`，迁移风格与 v10→v11 一致）。
 
 ### 4.2 校验时机（关键决策）
 
-**在 worker finalize 时校验并持久化，不在 parent 读取时惰性校验**——符合「runtime 先持久化 lifecycle truth 再让客户端消费」的既有原则（对比 `result_available` 不得早于其所依赖的真相）。
+**在 worker finalize 时校验并持久化终态 data，不在 parent 读取时惰性校验**——符合「runtime 先持久化 lifecycle truth 再让客户端消费」的既有原则。progress section 在 child `runtime.tool_completed` 时按 bounded 规则校验/编号，并由 runtime 投影给 parent。
 
-具体位置：`finalize_background_task_from_session_response`（background_tasks.py:2046）在 `child_terminal_outcome` 判定 terminal 之后、`mark_background_task_terminal` 之前，若 task 行带 `output_schema`：
+具体位置：`finalize_background_task_from_session_response` 在 terminal `yield` 的 `child_terminal_outcome` 判定之后、`mark_background_task_terminal` 之前，若 task 行带 `output_schema`：
 
-1. 取 child transcript 中最后一次成功 `submit_result` 的 `handoff`（复用 `_child_handoff`，background_tasks.py:1486），提取 `data`。
-2. 对 `handoff.data` 做 JSON Schema 校验（仓库已有 pydantic / jsonschema 依赖面，用 jsonschema 或手写校验器 [推断]）。
-3. 结果写入 task 行：`structured_output_json`（通过校验的 data）+ `schema_validation`（`{schema_source, schema_mode, valid, error}`）。
-4. 校验失败：permissive → 照常 `completed`，`structured_output` 附 validation error；strict → 视为 child 未满足契约，task 走 `failed`（error 携带校验失败详情），child row 仍按 transcript 证据 seal（两层的既有分离不变）。
+1. 取 child transcript 中最后一次成功 terminal `yield` 的 `handoff`，提取 `data`。
+2. 对 terminal `handoff.data` 做 JSON Schema 校验。
+3. 结果写入 task 行：`structured_output_json` + `schema_validation`（`{schema_source, schema_mode, valid, error}`）。
+4. 校验失败：permissive → 照常 `completed`，`structured_output` 附 validation error；strict → task 走 `failed`，child row 仍按 transcript 证据 seal。
 
-**不影响 `child_terminal_outcome`**：完成判定仍只信 transcript 证据（handoff + response_ready）；schema 校验是契约层面的附加判定，不改变「row 是否完成」的推导。`strict` 失败是 task 层终态选择，不是 child session 行状态回退。
+progress 不改变 `queued/running/idle/completed/failed/cancelled/interrupted` 状态；它通过 `runtime.background_task_progress` 以 child event sequence 去重，并进入 parent outbox 的 bounded interaction projection。
 
 ### 4.3 结果面
 
-`BackgroundTaskResult` 新增字段（可选）：
+`BackgroundTaskResult` 同时可携带 `structured_output`、`schema_validation` 与 bounded `progress` sections。`background_output` 返回这些有界字段；聚合 selector 不返回 child transcript，完整 transcript 仍走显式 session recovery。
 
-```python
-structured_output: dict[str, object] | None  # 通过校验的 data
-schema_validation: SchemaValidation | None  # {schema_source, schema_mode, valid, error}
-```
-
-`background_output` 返回 payload 增加这两项；`summary_output` 渲染逻辑不变（仍由 `_child_handoff` 提取 `summary`）。CLI `tasks output --json` / HTTP 同步暴露（与既有 delegated correlation 字段平级）。
+CLI/HTTP 的 JSON 与 SSE 可消费 progress event / projection；客户端不得把 progress 当作 terminal result，也不得把它解释为 peer bus。
 
 ### 4.4 keep-alive 交互
 
-- 中间 turn（`keep_alive_turn`，无 handoff）：**不校验**——契约只作用于最终 handoff。
-- 最终 turn（submit_result + response_ready）：正常校验。strict 失败时任务 `failed`，keep-alive 语义不受影响（child row 已 completed，续跑走 `task(session_id=<child>)` 需要重新派发，与现状 failed 一致）。
+- 中间 turn（`keep_alive_turn`，无 terminal handoff）：progress 可以发送；不做终态 schema 校验，任务保持原有 keep-alive 语义。
+- 最终 turn（terminal `yield` + `response_ready`）：正常校验；strict 失败时任务 `failed`，child row 仍按 transcript 证据封存。
 
-### 4.5 无兼容期影响面（显式 breaking change）
+### 4.5 Breaking change 影响面
 
-- `submit_result` 固定字段删除：旧调用方（模型 prompt 依赖 `completed_work` 等字段的）需在 `outputSchema` 中声明等价结构；builtin child preset prompt 与 `_child_handoff` 渲染标签同步更新。
-- 不传 `outputSchema` 的现有委托：`data` 不校验、`structured_output` 为 null，其余路径（状态机、通知、去重、CLI/HTTP 形状）不变——**证据链与生命周期语义无兼容问题，只有工具签名 breaking**。
-- `child_terminal.py`、run_loop.py:2070 强校验、keep-alive 判定、`_submit_result_terminal` **零改动**。
-- 契约测试更新：固定字段用例改写为 schema 用例；`test_background_task_tools.py` 中依赖固定字段 payload 的断言同步迁移。
+- 旧 `submit_result` 固定字段不恢复；当前 child completion protocol 是 `yield`，其 terminal `summary` / `data` 形状保持显式 breaking 语义。
+- 不传 `outputSchema` 的委托：终态 `data` 不校验；progress 仍受 bounded section 上限约束；状态机、通知、去重、CLI/HTTP 读取路径保持 runtime-owned。
+- progress notification 不是 transcript 复制、不是任意 streaming，也不是 peer-to-peer agent bus。
+
 
 ---
 
@@ -245,7 +246,7 @@ schema_validation: SchemaValidation | None  # {schema_source, schema_mode, valid
 4. 完整 transcript 永不自动复制进 parent；`resume(child_session_id)` 是唯一恢复路径。
 5. child 能力 ⊆ parent（`RuntimePolicySnapshot.delegation_policy`）；`worker` 默认无 `task` 工具。
 6. 顶层 active preset 仅 `leader`；child presets 仍由 `executable_subagent_ids()` 校验。
-7. `submit_result` 签名变更是显式 breaking（固定字段删除）；`summary` 证据语义与完成判定链（`child_transcript_proves_completed` / `_submit_result_terminal` / keep-alive 判定）保持零改动。
+7. `yield` terminal/progress 契约是当前 completion protocol；旧 `submit_result` 签名变更是显式 breaking（固定字段不恢复），terminal `summary` 证据语义与完成判定链保持不变。
 8. 失败/中断只给显式 user-request retry/continue guidance；无无限自动重试。
 
 ---
@@ -254,21 +255,22 @@ schema_validation: SchemaValidation | None  # {schema_source, schema_mode, valid
 
 Phase 1 落地后以下条件全部成立：
 
-1. `task(..., run_in_background=true, outputSchema={...})` 创建带 schema 的 task 行；child `submit_result(summary, data={...})` 后 `BackgroundTaskResult.structured_output` 为通过校验的 data。
-2. permissive 模式下 schema 无效 → task 仍 `completed`，`schema_validation.valid=false` 且带 error。
-3. strict 模式下 schema 无效 → task `failed`，error 含校验失败详情；child row 仍按 transcript 证据 seal。
-4. `submit_result` 固定字段删除后，builtin child preset prompt / `_child_handoff` 渲染标签 / 契约测试同步迁移，无遗留固定字段引用。
-5. keep-alive 中间 turn 不触发校验；最终 turn 正常校验；`summary` 证据链（非空 summary + `graph.response_ready`）行为不变。
-6. `background_output` / CLI `tasks output --json` / HTTP 暴露 `structured_output` + `schema_validation` 字段。
+1. `task(..., run_in_background=true, outputSchema={...})` 创建带 schema 的 task 行；child terminal `yield(summary, data={...})` 后 `BackgroundTaskResult.structured_output` 为通过校验的 data。
+2. permissive 模式下 terminal schema 无效 → task 仍 `completed`，`schema_validation.valid=false` 且带 error。
+3. strict 模式下 terminal schema 无效 → task `failed`，error 含校验失败详情；child row 仍按 transcript 证据 seal。
+4. 旧 `submit_result` 固定字段仅作为历史 source-tree evidence；当前 builtin child preset prompt / `_child_handoff` / 契约均使用 `yield`，无遗留兼容路径。
+5. progress yield 使用其他非空 `type` string/list，并要求 `result` 或非空 `data`；每个 child 最多 100 段、累计最多 65536 字符，按 child event sequence 去重并投影到 `runtime.background_task_progress` / parent outbox，不改变 task 状态。
+6. keep-alive 中间 turn 可发送 progress 且不触发终态 schema 校验；最终 turn 正常校验；terminal `summary` 证据链（非空 summary + `graph.response_ready`）行为不变。
+7. `background_output` / CLI `tasks output --json` / HTTP 暴露 `structured_output` + `schema_validation` 与 bounded `progress` projection。
 
 Phase 2 落地后：
 
-7. batch 调用创建 N 个独立 task 行 + 共享 `parallel_group_id`；组完成事件恰好一次。
-8. 单个 item 校验失败不影响其他 item 的独立完成（组事件聚合，非整体回滚）。
+8. batch 调用创建 N 个独立 task 行 + 共享 `parallel_group_id`；组完成事件恰好一次。
+9. 单个 item 校验失败不影响其他 item 的独立完成（组事件聚合，非整体回滚）。
 
 Phase 3 落地后：
 
-9. `idle_release_ttl_ms` 启用时 idle 任务到期发 `background_task_released`，task 行保持 `idle`，child 行保持 `interrupted`，steer 仍可续跑。
+10. `idle_release_ttl_ms` 启用时 idle 任务到期发 `background_task_released`，task 行保持 `idle`，child 行保持 `interrupted`，steer 仍可续跑。
 
 ## 10. 验证命令（维护该契约时至少运行）
 

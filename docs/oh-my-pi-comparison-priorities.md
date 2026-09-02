@@ -5,6 +5,8 @@
 > Oh My Pi：`45e12e5bb758198a920c6070e7e64cb33b21beac`，版本 `17.2.12`<br>
 > 补充调研：OMP HEAD `ad318c7572abaeebd5cf8a7a16d350ff1d32a738`（约 `17.3.3`），复核确认原始结论，并新增 reasoning-effort 缺口（该缺口现已在 VoidCode 侧关闭）
 
+
+> 本调研中的 `submit_result` 仅是早期代码/对比记录中的历史实现名；当前 runtime 不识别或接受该名称，当前 child completion protocol 为 `yield`。保留源码路径等名称仅为历史证据，不代表兼容协议；本文不宣称 incremental yield 或 peer bus 已实现。
 ## 目的与证据边界
 
 本文重新比较 VoidCode 与 [Oh My Pi](https://github.com/can1357/oh-my-pi)，重点回答三个问题：
@@ -41,7 +43,7 @@ OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优�
 | read/edit 缺少结构化输出和 stale 防护 | `read` 已返回行对象、raw content、hash 和 continuation；`edit` 已强制 `expectedHash`，并叠加 read-before-write 与 seen-range 约束 | 已解决；剩余差距转为自动 stale recovery（snapshot chain）与真实任务协议实测 |
 | 写入未进入 LSP 闭环 | edit/write 路径已能返回 formatter 和 LSP diagnostics；另有 `apply_workspace_edit` | 已有闭环基线；差距转为覆盖率、rename lifecycle 和任务成功率 |
 | context 只有确定性截断 | 已有确定性 projection 与 model-assisted 回退框架（无模型 projector 接入，实际始终回退确定性摘要） | 已落地第一版；差距转为质量评估、token/cost 数据和长会话回归 |
-| child result 主要依赖自由文本 | child 必须通过 `submit_result` 形成结构化 handoff；parent 有结果读取与组完成事件 | 已明显推进；差距转为 JSON Schema、隔离 workspace 和合并语义 |
+| child result 主要依赖自由文本 | child 必须通过 `yield` 形成结构化 handoff；parent 有结果读取与组完成事件 | 已明显推进；差距转为 JSON Schema、隔离 workspace 和合并语义 |
 | TUI 只是早期壳层 | 已有真实流式、thinking、工具卡片、question 和后台事件排序 | 仍不及 OMP，但不应继续描述为纯壳层 |
 | 最大问题是缺少机制 | 多项机制已经存在 | 最大问题变为缺少可测量的产品反馈循环 |
 
@@ -57,7 +59,7 @@ OMP 仍然显著领先，但领先方式也需要重新描述：它的核心优�
 | LSP | definitions/references/symbols/rename/code action、workspace edit、写后 diagnostics 基线 | LSP wired into every write，rename/file lifecycle 与工具展示成熟 | 能力面接近中，稳定性和覆盖率仍有差距 |
 | Shell/进程 | shell、后台进程、超时与 artifact output | PTY、持久 shell、Rust builtins、跨平台 process tree、minimizer | OMP 明显领先，尤其 Windows 与长进程体验 |
 | 上下文管理 | runtime-owned window policy、稳定 prompt prefix、continuity facts、确定性 projection（model_assisted 仅有回退框架，未接模型 projector）、恢复持久化 | compaction、handoff、checkpoint/rewind、非压缩重试策略、prompt cache 优化 | VoidCode 已有正确骨架；OMP 策略与实战迭代更丰富 |
-| 委派执行 | 固定 preset、深度/预算治理、后台任务、通知、取消、重试、结构化 handoff、并行组完成、子会话续跑（task `session_id`）、`voidcode://artifact/<id>` / `voidcode://transcript/<id>` URI | batch fan-out、动态 agent、并发 semaphore、JSON Schema output、隔离 worktree/container、patch/branch、agent/history URI、可复活 agent | VoidCode 治理骨架可靠；JSON Schema output 与隔离 workspace 仍是真实缺口 |
+| 委派执行 | 固定 preset、深度/预算治理、后台任务、通知、取消、重试、bounded yield terminal/progress handoff、并行组完成、子会话续跑（task `session_id`）、`voidcode://artifact/<id>` / `voidcode://transcript/<id>` URI | batch fan-out、动态 agent、并发 semaphore、JSON Schema output、隔离 worktree/container、patch/branch、agent/history URI、可复活 agent | VoidCode 治理骨架可靠；隔离 workspace、patch/branch 与更宽的 agent topology 仍是真实缺口 |
 | 模型与 provider | 直连适配、LiteLLM/custom provider、catalog、fallback、cache usage、错误归一化 | 60+ provider/大量模型、OAuth/订阅、角色路由、模型 quirks 和 schema/tool conversion | OMP 大幅领先；VoidCode 不应以数量追赶 |
 | 工具质量工程 | 单元、集成、fuzz、契约测试较强；已有 `voidcode stats tools` aggregate-only effectiveness projection（成功率/错误分类/重复读取/token/cache，per-model edit 效果驱动 edit schema 选择）；仍无独立 agent task benchmark | TypeScript edit benchmark、metaharness、session-stats、tool error/token/cost dashboard、read/search/edit 分析脚本 | 差距收窄（aggregate 基线已落地）；真实任务 benchmark 仍缺，但不以 benchmark 为当前优先级 |
 | 扩展 | skills、hooks、local tools、MCP、ACP、commands 均有受控边界 | Extension API 可注册 tool/command/provider/renderer/event；插件、marketplace、MCP lifecycle 完整 | OMP 产品成熟度明显更高 |
@@ -169,9 +171,9 @@ OMP 的 thinking-level 模型：`Effort` 枚举 `minimal|low|medium|high|xhigh|m
 
 ### P2：补齐隔离 child 产物闭环
 
-1. task 支持 invocation-level JSON Schema output —— 仍未落地（`task` 工具的 input_schema 不含 output schema），保持为真实缺口；
+1. ~~task 支持 invocation-level JSON Schema output~~ → 已完成，并与 terminal `yield` data 校验及 bounded progress projection 一起纳入 runtime truth；
 2. worker 支持只读或隔离 worktree —— 仍未落地，保持为真实缺口；
-3. 结果返回 patch/artifact/verification 元数据 —— 部分落地：`submit_result` 已返回结构化 `files_touched` / `verification` / `completed_work` / `blockers`，且 `voidcode://artifact/<id>` 与 `voidcode://transcript/<id>` URI 已可被 parent 消费；patch/branch 级产物与合并语义仍缺；
+3. 结果返回 patch/artifact/verification 元数据 —— 部分落地：`yield` 返回结构化结果数据，且 `voidcode://artifact/<id>` 与 `voidcode://transcript/<id>` URI 已可被 parent 消费；patch/branch 级产物与合并语义仍缺；
 4. parent 通过 runtime API 合并或拒绝，不让 child 直接绕过治理 —— 仍未落地（parent 只能读取后台任务结果），保持为真实缺口；
 5. 用真实任务验证并行执行在哪些场景真正更优 —— 仍未落地。
 

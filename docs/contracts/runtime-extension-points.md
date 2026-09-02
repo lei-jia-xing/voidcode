@@ -88,7 +88,7 @@ Sessions must contain a stored v1 runtime policy snapshot on replay and debug su
 
 ### Product delegation invariant
 
-`leader` 是唯一可作为 top-level active agent 执行的 builtin preset。`product` 是 runtime-owned `task` delegation path 上的只读 plan child preset，必须通过 `subagent_type="product"` 作为 delegated child 执行，并通过 `submit_result` 将 plan 交回 parent；它不能作为 top-level active agent，也不能作为任意 child-spawn orchestrator。runtime 在 top-level 运行前以稳定错误拒绝 `product`。
+`leader` 是唯一可作为 top-level active agent 执行的 builtin preset。`product` 是 runtime-owned `task` delegation path 上的只读 plan child preset，必须通过 `subagent_type="product"` 作为 delegated child 执行，并通过 `yield` 将 plan 交回 parent。它不能作为 top-level active agent，也不能作为任意 child-spawn orchestrator。runtime 在 top-level 运行前以稳定错误拒绝 `product`。
 
 ### v1 non-goals
 

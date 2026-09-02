@@ -7,6 +7,8 @@
 - 目标仓库：`voidcode`
 - 关联文档：`docs/contracts/background-task-delegation.md`（task 状态词汇与 surface 契约，本设计会修订它）、`docs/runtime-owned-scheduler-design.md`、`docs/mode-composition-design.md`（文档格式参照）
 
+> 文中 `submit_result` 是该 design-only 文档记录的历史完成工具名称；当前 child completion tool 统一称为 `yield`，当前运行时不再识别或接受 `submit_result`。本 design-only 文档不宣称 yield、peer bus 或其他增量协作能力已经实现。
+
 ## 结论先行
 
 **Session 层无差距（已实测，采信前序调查）**：child session 在 `completed`/`failed` 后可用 `run(child_session_id, prompt=新指令)` 重入并累积上下文，与主 agent 走完全相同的路径。keep-alive **不需要** session 层新增任何状态；差距全部在 task 层，加上 run_loop 一处最小改动。

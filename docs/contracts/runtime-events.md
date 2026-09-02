@@ -92,6 +92,10 @@ Runtime hook surface 与其事件名称的内部对应关系由
 
 它们在 `src/voidcode/runtime/events.py` 中归类为 `RuntimeEventType`（终态 / 通知类事件同时属于 `DelegatedBackgroundTaskEventType`）。CLI、HTTP、会话重放与 background-task result/output surfaces 都已经消费这些事件；`runtime.acp_delegated_lifecycle`（CoreEventType）用于 ACP 侧的 delegated observability，payload 与 background-task 事件一致。
 
+`runtime.background_task_progress` 的 payload 至少包含 `task_id`、`parent_session_id`、`child_session_id`、`status: "running"`、`progress` 与 `progress_event_sequence`。`progress` 是 child `yield` 产生的有界非终态 section，包含 `type`、runtime 分配的 `ordinal`，以及 `result` 或非空 `data`。每段最多 4096 字符，每个 child 最多 100 段、累计最多 65536 字符；不可序列化或超限内容按 runtime 的 bounded 规则拒绝/截断，不得扩展成无界 transcript 流。
+
+该 parent event 以 `task_id + child_event.sequence` 去重，使用 parent session sequence 空间，并可同时进入 runtime outbox/interaction projection。它只表示 progress 观察，不改变 queued/running/idle/completed/failed/cancelled/interrupted 状态，不替代 terminal result；客户端应通过 `background_output` 读取有界 progress/result projection。
+
 ## 未来补充 / additive 词汇表
 
 当前不再有仍保持 additive/prototype 语义的具名共享事件：`runtime.context_transform_applied` 已转为正式事件（见上文），memory 观测统一由上文 memory / context 事件表达。

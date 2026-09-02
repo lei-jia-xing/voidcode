@@ -95,7 +95,7 @@ runtime 已有的基础能力：
 - result retrieval 不会把完整 child transcript 自动复制进 parent session
 - retry 是显式 runtime operation，不能引入无限自动重试；旧 terminal task 保持不可变，retry 会创建新的 queued task handle
 - MCP 只按 runtime/session scope 管理，不声明 workspace-scoped lifecycle
-- `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product`) is allowed, and the child returns its plan to the leader via `submit_result`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
+- `product` is a delegated read-only plan subagent (child preset). Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message from runtime agent validation: `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. Delegated execution via `task` (`subagent_type=product`) is allowed, and the child returns its plan to the leader via `yield`. This state remains visible through bounded runtime policy diagnostics and delegated/task error surfaces.
 
 ## Leader-native batch dispatch
 
@@ -250,9 +250,9 @@ def steer_background_task(task_id: str, content: str) -> BackgroundTaskState: ..
 
 - 按 `task_id` 路由；child session id 由 task 行派生，steer 方无需知道 session id。
 - 校验：任务必须 `keep_alive == 1`；状态必须 `idle`（或 keep-alive 的 `interrupted`，视为断点续跑）；content 非空；`running`（turn 在飞）时拒绝——v1 无 steer 流水线。
-- 派发：`mark_background_task_steered`（`idle|interrupted → running`，写入 `steer_prompt` 列）→ 取 slot → spawn 新 worker 线程；worker 以 `task.steer_prompt` 作为本 turn prompt，`session_id=task.session_id` 重入同一 child session，metadata 打内部 `keep_alive_turn: true`（run_loop 据此跳过 one-shot submit_result 强制检查并以 `interrupted` 结束 turn）。
+- 派发：`mark_background_task_steered`（`idle|interrupted → running`，写入 `steer_prompt` 列）→ 取 slot → spawn 新 worker 线程；worker 以 `task.steer_prompt` 作为本 turn prompt，`session_id=task.session_id` 重入同一 child session，metadata 打内部 `keep_alive_turn: true`（run_loop 据此跳过 one-shot `yield` 强制检查并以 `interrupted` 结束 turn）。
 - **不走 `queue_steering`**：turn 结束后 child 行处于封印态，session 队列无法投递；task 行是唯一不受 session seal 管辖的持久化面。
-- 中间 turn 不强制 `submit_result`（run_loop gating 在内部 metadata `keep_alive_turn` 上，one-shot child 契约不变）；最终 turn 由 worker 主动 `submit_result`，transcript 有 handoff 证据 → 任务 `completed`、child row 修成 `completed`。
+- 中间 turn 不强制 `yield`（run-loop gating 在内部 metadata `keep_alive_turn` 上，one-shot child 契约不变）；最终 turn 由 worker 主动 `yield`，transcript 有 handoff 证据 → 任务 `completed`、child row 修成 `completed`。
 
 ### 事件
 
@@ -271,15 +271,24 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 
 ### 需要稳定化的事件
 
+- `runtime.background_task_progress`
 - `runtime.background_task_completed`
 - `runtime.background_task_failed`
 - `runtime.background_task_cancelled`
 - `runtime.background_task_waiting_approval`
 - `runtime.background_task_awaiting_steer`（keep-alive 任务 turn 完成、进入 idle）
 
-这五类事件已经足够覆盖 issue #139 的最小 leader-notification 需求，以及 keep-alive 委托的 leader 驱动需求。
+`runtime.background_task_progress` 表示 child 已提交一个 `yield` 非终态 progress section。它是 runtime-owned、bounded、deduplicated 的 parent notification projection，不是任意 streaming 或 peer-to-peer agent bus。child 的 `runtime.tool_completed` 事件仍是执行真相；progress 不改变 task lifecycle 状态，也不替代 terminal result 或 transcript。
+
+这些事件覆盖 issue #139 的 leader-notification 需求，以及 keep-alive 委托的 leader 驱动需求。
 
 当前 runtime 同时发出 `runtime.delegated_result_available`，用于表达 delegated/background result 已作为 runtime truth 可被 leader-facing retrieval 消费。background-task lifecycle 事件仍承载 `result_available` 与 `summary_output` 等字段。
+
+### `runtime.background_task_progress` payload
+
+至少包含 `task_id`、`parent_session_id`、`child_session_id`、`status: "running"`、`progress` 和 `progress_event_sequence`。`progress` 包含 runtime 分配的 `ordinal`、非终态 `type`，以及 child 提交的 `result` 或非空 `data`；它受每段 4096 字符、每个 child 最多 100 段、累计最多 65536 字符的上限约束。`progress_event_sequence` 是 child 事件 sequence。
+
+父 session 事件使用 `task_id + child_event.sequence` 去重；parent outbox/interaction projection 同样以该键去重。结果读取返回最多 100 段、累计最多 65536 字符的 progress projection；超限或不可序列化内容不会绕过上限。
 
 ### parent-session payload 基线
 
@@ -495,7 +504,7 @@ Delegated child execution 必须先经过 runtime-owned routing 与 tool scope e
 
 Before any child-session allocation, background-task row creation, queueing, lifecycle hook notification, or provider/tool execution side effect, delegated execution must pass the parent `RuntimePolicySnapshot.delegation_policy`. The child snapshot is derived from the parent snapshot plus the selected child manifest and can only be a subset of parent tools, skills, hooks, MCP bindings, prompt activations, and delegation rights.
 
-The product plan preset is a delegated read-only child preset at this gate. Direct `subagent_type="product"` and configured aliases that resolve to product route to the product subagent, which returns its plan to the leader via `submit_result`. Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. This contract does not add product delegation helpers beyond the existing `task` routing, and the product subagent stays read-only (no task/shell/write). Delegation allow/deny state is visible through the bounded `runtime.request_received.payload.runtime_policy` projection and through delegated/background lifecycle or explicit runtime failure payloads; clients must not infer delegation authority from prompt text.
+The product plan preset is a delegated read-only child preset at this gate. Direct `subagent_type="product"` and configured aliases that resolve to product route to the product subagent, which returns its plan to the leader via `yield`. Top-level execution of `product` (e.g. `voidcode run --agent product ...` or a top-level request/runtime-config `agent=product` without delegation) must fail before run/session side effects with the stable `ValueError` message `agent preset 'product' cannot be executed as the top-level active agent in the current runtime; executable agent presets are: leader`. This contract does not add product delegation helpers beyond the existing `task` routing, and the product subagent stays read-only (no task/shell/write). Delegated execution remains runtime-owned.
 
 ## MCP scope 与测试立场
 

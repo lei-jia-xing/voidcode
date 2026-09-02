@@ -23,13 +23,13 @@ def _response(status: str, events: tuple[EventEnvelope, ...]) -> RuntimeResponse
     )
 
 
-def test_submit_result_handoff_followed_by_response_ready_proves_completion() -> None:
+def test_yield_handoff_followed_by_response_ready_proves_completion() -> None:
     events = (
         _event(
             "runtime.tool_completed",
-            {"tool": "submit_result", "status": "ok", "handoff": {"summary": "done"}},
+            {"tool": "yield", "status": "ok", "handoff": {"summary": "done"}},
         ),
-        _event("graph.response_ready", {"source": "submit_result"}),
+        _event("graph.response_ready", {"source": "yield"}),
     )
 
     evidence = child_completion_evidence(events)
@@ -43,7 +43,7 @@ def test_handoff_without_response_ready_is_not_completion() -> None:
     events = (
         _event(
             "runtime.tool_completed",
-            {"tool": "submit_result", "status": "ok", "handoff": {"summary": "done"}},
+            {"tool": "yield", "status": "ok", "handoff": {"summary": "done"}},
         ),
     )
 
@@ -62,6 +62,6 @@ def test_interrupted_child_without_handoff_has_no_terminal_outcome() -> None:
     assert child_terminal_outcome(_response("interrupted", events)) is None
 
 
-def test_terminal_session_rows_map_directly_to_terminal_outcome() -> None:
-    assert child_terminal_outcome(_response("completed", ())) == "completed"
+def test_terminal_session_rows_require_yield_evidence() -> None:
+    assert child_terminal_outcome(_response("completed", ())) == "failed"
     assert child_terminal_outcome(_response("failed", ())) == "failed"

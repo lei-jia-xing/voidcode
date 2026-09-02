@@ -285,6 +285,7 @@ class BackgroundOutputTool:
             "handoff_summary": _background_task_handoff_summary(result=result),
             "structured_output": result.structured_output,
             "schema_validation": (None if result.schema_validation is None else result.schema_validation.as_payload()),
+            "progress": [dict(section) for section in result.progress],
             "block_timed_out": block_timed_out,
         }
         content = safe_summary or result.error or f"Background task {result.task_id}: {result.status}"
@@ -420,6 +421,7 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
             "summary": _bounded_text(summary),
             "error": _bounded_text(result.error or result.cancellation_cause),
             "structured_output": _bounded_structured_output(result.structured_output),
+            "progress": _bounded_structured_output({"sections": list(result.progress)}),
             "result_available": result.result_available,
             "approval_blocked": result.approval_blocked,
             "child_session_id": result.child_session_id,

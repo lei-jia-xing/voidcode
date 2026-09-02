@@ -322,6 +322,53 @@ def _tool_result_call_id(result: ToolResult) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _is_terminal_yield_result(result: ToolResult) -> bool:
+    if result.tool_name != "yield":
+        return False
+    if result.data.get("yield_kind") == "progress":
+        return False
+    return result.status in ("ok", "error") and isinstance(result.data.get("handoff"), Mapping)
+
+
+def _progress_payload_size(payload: Mapping[str, object]) -> int:
+    try:
+        return len(json.dumps(dict(payload), ensure_ascii=False, separators=(",", ":")))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("yield progress payload must be JSON serializable") from exc
+
+
+def _fit_numbered_progress_payload(
+    payload: dict[str, object],
+    *,
+    max_chars: int,
+) -> dict[str, object]:
+    """Compact user progress after runtime metadata is attached."""
+    if _progress_payload_size(payload) <= max_chars:
+        return payload
+    result = payload.get("result")
+    if isinstance(result, str):
+        # Keep the required human-readable field, trimming only the overflow
+        # introduced by ordinal/retained_chars metadata.
+        for length in range(len(result), 0, -1):
+            candidate = dict(payload)
+            candidate["result"] = result[: max(1, length - 1)] + "…"
+            if _progress_payload_size(candidate) <= max_chars:
+                return candidate
+    data = payload.get("data")
+    if data is not None:
+        candidate = dict(payload)
+        candidate["data"] = {"truncated": True}
+        if _progress_payload_size(candidate) <= max_chars:
+            return candidate
+    types = payload.get("type")
+    if isinstance(types, list):
+        candidate = dict(payload)
+        candidate["type"] = types[:1]
+        if _progress_payload_size(candidate) <= max_chars:
+            return candidate
+    raise ValueError(f"yield progress section must be at most {max_chars} characters after runtime metadata")
+
+
 def _context_transform_applied_payloads(
     *,
     context_metadata: Mapping[str, object],
@@ -777,6 +824,47 @@ class RuntimeRunLoopCoordinator:
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=chunk.session, event=envelope)
         return sequence
+
+    def _number_yield_progress(self, *, session: SessionState, tool_result: ToolResult) -> ToolResult:
+        if tool_result.tool_name != "yield" or tool_result.status != "ok" or tool_result.data.get("yield_kind") != "progress":
+            return tool_result
+        raw_progress = tool_result.data.get("progress")
+        if not isinstance(raw_progress, Mapping):
+            raise ValueError("yield progress payload is missing its bounded progress object")
+        # The event log is the sole ordinal/retention authority. Storage
+        # failures must propagate rather than silently restarting at ordinal 1.
+        stored = self._session_store.load_session(workspace=self._workspace, session_id=session.session.id)
+        prior_progress = [
+            event
+            for event in stored.events
+            if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "yield" and event.payload.get("yield_kind") == "progress"
+        ]
+        prior_count = len(prior_progress)
+        prior_bytes = sum(
+            _progress_payload_size(cast(Mapping[str, object], event.payload.get("progress")))
+            for event in prior_progress
+            if isinstance(event.payload.get("progress"), Mapping)
+        )
+        from ..tools.yield_tool import YIELD_PROGRESS_MAX_RETAINED_CHARS, YIELD_PROGRESS_MAX_SECTION_CHARS, YIELD_PROGRESS_MAX_SECTIONS
+
+        if prior_count >= YIELD_PROGRESS_MAX_SECTIONS:
+            raise ValueError(f"yield progress limit exceeded: at most {YIELD_PROGRESS_MAX_SECTIONS} sections")
+        raw_size = _progress_payload_size(raw_progress)
+        progress = dict(raw_progress)
+        progress["ordinal"] = prior_count + 1
+        progress["retained_chars"] = prior_bytes + raw_size
+        for _ in range(3):
+            progress = _fit_numbered_progress_payload(progress, max_chars=YIELD_PROGRESS_MAX_SECTION_CHARS)
+            final_size = _progress_payload_size(progress)
+            if prior_bytes + final_size > YIELD_PROGRESS_MAX_RETAINED_CHARS:
+                raise ValueError(f"yield progress limit exceeded: retained sections are capped at {YIELD_PROGRESS_MAX_RETAINED_CHARS} characters")
+            updated_retained = prior_bytes + final_size
+            if progress.get("retained_chars") == updated_retained:
+                break
+            progress["retained_chars"] = updated_retained
+        if _progress_payload_size(progress) > YIELD_PROGRESS_MAX_SECTION_CHARS:
+            raise ValueError(f"yield progress section must be at most {YIELD_PROGRESS_MAX_SECTION_CHARS} characters")
+        return replace(tool_result, data={**tool_result.data, "progress": progress})
 
     def _capture_interrupted_checkpoint(
         self,
@@ -1265,7 +1353,7 @@ class RuntimeRunLoopCoordinator:
             tool_result,
             data=sanitize_tool_result_data(tool_result.data),
         )
-
+        tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
         drained_chunks, session, _ = self._drain_runtime_events(
             session=session,
             start_sequence=sequence + 1,
@@ -1437,8 +1525,8 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 checkpoint_tool_result_count=checkpoint_tool_result_count,
             )
-            if tool_results and tool_results[-1].tool_name == "submit_result" and tool_results[-1].status == "ok":
-                sequence = yield from self._submit_result_terminal(
+            if tool_results and _is_terminal_yield_result(tool_results[-1]):
+                sequence = yield from self._yield_terminal(
                     session=session,
                     tool_results=tool_results,
                     sequence=sequence,
@@ -1782,7 +1870,7 @@ class RuntimeRunLoopCoordinator:
             checkpoint_tool_result_count = len(tool_results)
         return checkpoint_tool_result_count
 
-    def _submit_result_terminal(
+    def _yield_terminal(
         self,
         *,
         session: SessionState,
@@ -1790,9 +1878,20 @@ class RuntimeRunLoopCoordinator:
         sequence: int,  # noqa: ARG002 — retained for terminalization call-shape symmetry; persisted envelope owns sequence.
     ) -> Generator[RuntimeStreamChunk, None, int]:
         terminal_result = tool_results[-1]
-        terminal_output = (terminal_result.content or "").strip()
+        terminal_output = (terminal_result.content or terminal_result.error or "").strip()
         if not terminal_output:
-            raise ValueError("submit_result completed without a non-empty summary")
+            raise ValueError("yield completed without a non-empty summary")
+        if terminal_result.data.get("yield_kind") == "terminal_error":
+            failed_chunk, _ = self._persist_chunk(
+                chunk_builders.failed_chunk(
+                    session=session,
+                    sequence=sequence + 1,
+                    error=terminal_result.error or terminal_output or "delegated yield failed",
+                    payload={"kind": "delegated_yield_error", "terminal": True},
+                )
+            )
+            yield failed_chunk
+            return failed_chunk.event.sequence if failed_chunk.event is not None else sequence
         completed_session = session_with_plan_state(
             SessionState(
                 session=session.session,
@@ -1806,7 +1905,7 @@ class RuntimeRunLoopCoordinator:
             session_id=session.session.id,
             event_type="graph.response_ready",
             source="graph",
-            payload={"output_preview": terminal_output, "source": "submit_result"},
+            payload={"output_preview": terminal_output, "source": "yield"},
         )
         yield RuntimeStreamChunk(kind="event", session=completed_session, event=envelope)
         yield RuntimeStreamChunk(kind="output", session=completed_session, output=terminal_output)
@@ -2256,13 +2355,12 @@ class RuntimeRunLoopCoordinator:
         tool_results: list[ToolResult],
     ) -> Generator[RuntimeStreamChunk, None, tuple[bool, SessionState, SessionState, int, bool]]:
         is_final_step = getattr(graph_step, "is_finished", False) or getattr(graph_step, "output", None) is not None
-        # Keep-alive delegated turns (internal ``keep_alive_turn`` metadata
-        # set by the background-task worker) are intermediate turns of a
-        # resumable worker and must not be forced to submit_result; the
-        # one-shot child contract (no such metadata key) is unchanged.
+        # New delegated children must finish through the terminal ``yield``
+        # tool. Keep-alive turns are the only exception: they park as
+        # resumable ``interrupted`` sessions without a terminal yield.
         if is_final_step and session.session.parent_id is not None and session.metadata.get("keep_alive_turn") is not True:
-            if not tool_results or tool_results[-1].tool_name != "submit_result" or tool_results[-1].status != "ok":
-                raise ValueError("delegated child must call submit_result before completing")
+            if not tool_results or not _is_terminal_yield_result(tool_results[-1]):
+                raise ValueError("delegated child must call yield before completing")
         if _is_abort_requested(active_graph_request):
             yield from self._emit_interrupted_failure(
                 session=session,
@@ -2279,8 +2377,8 @@ class RuntimeRunLoopCoordinator:
         current_chunk_session = session
         if is_final_step:
             # Keep-alive turns park as ``interrupted`` (resumable child,
-            # no handoff) so the background-task worker can park the task
-            # idle awaiting steer; one-shot children keep ``completed``.
+            # no terminal yield) so the background-task worker can park the
+            # task idle awaiting steer; one-shot children complete.
             current_chunk_session = session_with_plan_state(
                 SessionState(
                     session=session.session,
@@ -3211,6 +3309,7 @@ class RuntimeRunLoopCoordinator:
             sequence=sequence,
             tool_call_id=tool_call_id,
         )
+        tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
         drained_chunks, session, _ = self._drain_runtime_events(
             session=session,
             start_sequence=sequence + 1,
@@ -3708,10 +3807,7 @@ class RuntimeRunLoopCoordinator:
                 session_id=session.session.id,
                 event_type="runtime.tool_timeout",
                 source="runtime",
-                payload={
-                    "tool": inner_name,
-                    "timeout_seconds": tool_timeout,
-                },
+                payload={"tool": inner_name, "timeout_seconds": tool_timeout},
             )
             sequence = envelope.sequence
             yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
@@ -3747,6 +3843,7 @@ class RuntimeRunLoopCoordinator:
             tool_result,
             data=sanitize_tool_result_data(tool_result.data),
         )
+        tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
 
         drained_chunks, session, _ = self._drain_runtime_events(
             session=session,

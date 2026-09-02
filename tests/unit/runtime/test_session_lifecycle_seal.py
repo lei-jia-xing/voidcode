@@ -29,6 +29,7 @@ from voidcode.runtime.config import RuntimeBackgroundTaskConfig, RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,
+    RUNTIME_BACKGROUND_TASK_PROGRESS,
     RUNTIME_BACKGROUND_TASK_WAITING_APPROVAL,
     EventEnvelope,
 )
@@ -88,7 +89,7 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
 
 
 class _SuccessGraph:
-    """Top-level runs finish immediately; delegated children call submit_result."""
+    """Top-level runs finish immediately; delegated children call yield."""
 
     def step(
         self,
@@ -99,7 +100,7 @@ class _SuccessGraph:
     ) -> _StubStep:
         _ = tool_results
         if session.session.parent_id is not None:
-            return _StubStep(tool_call=ToolCall(tool_name="submit_result", arguments={"summary": request.prompt}))
+            return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": request.prompt}))
         return _StubStep(output=request.prompt, is_finished=True)
 
 
@@ -133,6 +134,12 @@ def _seed_child_session_and_task(
         session_id=child_session_id,
         events=(
             ("runtime.request_received", "runtime", {"prompt": "child probe"}, None),
+            (
+                "runtime.tool_completed",
+                "tool",
+                {"tool": "yield", "status": "ok", "handoff": {"summary": "child done"}},
+                None,
+            ),
             ("graph.response_ready", "graph", {"summary": "child done"}, None),
         ),
     )
@@ -165,7 +172,7 @@ def _seed_child_session_and_task(
                     event_type="runtime.tool_completed",
                     source="tool",
                     payload={
-                        "tool": "submit_result",
+                        "tool": "yield",
                         "status": "ok",
                         "handoff": {"summary": "child done"},
                     },
@@ -786,6 +793,24 @@ def test_child_background_completion_cannot_mutate_sealed_parent(tmp_path: Path)
     assert len(completion_events) == 1
     assert completion_events[0].payload["parent_session_id"] == "leader-session"
     assert completion_events[0].payload["child_session_id"] == "child-race-3"
+    late_progress = store.append_session_event(
+        workspace=tmp_path,
+        session_id="leader-session",
+        event_type=RUNTIME_BACKGROUND_TASK_PROGRESS,
+        source="runtime",
+        payload={
+            "task_id": "task-race-3",
+            "parent_session_id": "leader-session",
+            "child_session_id": "child-race-3",
+            "status": "running",
+            "progress": {"ordinal": 1, "type": "progress", "result": "late"},
+            "progress_event_sequence": 1,
+        },
+        dedupe_key="background-task-progress:task-race-3:1",
+    )
+    assert late_progress is not None
+    assert late_progress.event_type == RUNTIME_BACKGROUND_TASK_PROGRESS
+
     with pytest.raises(SessionSealedError):
         store.append_session_events(
             workspace=tmp_path,
