@@ -34,5 +34,11 @@ class _RuntimeBackgroundTaskFacade:
     def retry(self, task_id: str) -> BackgroundTaskState:
         return self._supervisor.retry_background_task(task_id)
 
+    def authorize_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        self._supervisor.authorize_background_task_owner(
+            task_id,
+            parent_session_id=parent_session_id,
+        )
+
     def steer(self, task_id: str, content: str) -> BackgroundTaskState:
         return self._supervisor.steer_background_task(task_id, content)

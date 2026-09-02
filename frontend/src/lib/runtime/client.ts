@@ -5,6 +5,9 @@ import {
   BackgroundTaskOutput,
   ChildSessionContextResult,
   BackgroundTaskSummary,
+  BackgroundTaskState,
+  BackgroundTaskRetryResponse,
+  BackgroundTaskSteerResponse,
   RuntimeRequest,
   StoredSessionSummary,
   RuntimeResponse,
@@ -329,6 +332,39 @@ export class RuntimeClient {
       withShowThinking(`/api/tasks/${encodeURIComponent(taskId)}/output`),
     );
     await expectOk(res, "Failed to load background task output");
+    return res.json();
+  }
+
+  static async cancelBackgroundTask(
+    taskId: string,
+  ): Promise<BackgroundTaskState> {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+    });
+    await expectOk(res, "Failed to cancel background task");
+    return res.json();
+  }
+
+  static async retryBackgroundTask(
+    taskId: string,
+  ): Promise<BackgroundTaskRetryResponse> {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
+      method: "POST",
+    });
+    await expectOk(res, "Failed to retry background task");
+    return res.json();
+  }
+
+  static async steerBackgroundTask(
+    taskId: string,
+    prompt: string,
+  ): Promise<BackgroundTaskSteerResponse> {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/steer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    await expectOk(res, "Failed to steer background task");
     return res.json();
   }
 

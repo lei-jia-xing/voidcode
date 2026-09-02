@@ -47,12 +47,17 @@ class _PreparedMarkerChange:
     old_path: str | None = None
 
 
-def _assert_within_workspace(workspace: Path, rel_path: Path) -> None:
+def _assert_within_workspace(
+    workspace: Path,
+    rel_path: Path,
+    *,
+    allow_external_absolute: bool = True,
+) -> None:
     _ = resolve_workspace_path(
         workspace=workspace,
         raw_path=rel_path.as_posix(),
         containment_error="patch operation must affect paths inside the workspace",
-        allow_outside_workspace=rel_path.is_absolute(),
+        allow_outside_workspace=allow_external_absolute and rel_path.is_absolute(),
     )
 
 
@@ -536,51 +541,211 @@ def _apply_marker_patch(
     )
 
 
+def _decode_c_quoted_path(token: str) -> str | None:
+    if not token.startswith('"'):
+        return token if '"' not in token else None
+    if len(token) < 2 or not token.endswith('"'):
+        return None
+    raw = token[1:-1]
+    decoded: bytearray = bytearray()
+    index = 0
+    escapes = {
+        "a": b"\a",
+        "b": b"\b",
+        "f": b"\f",
+        "n": b"\n",
+        "r": b"\r",
+        "t": b"\t",
+        "v": b"\v",
+        "\\": b"\\",
+        '"': b'"',
+    }
+    while index < len(raw):
+        char = raw[index]
+        if char != "\\":
+            decoded.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(raw):
+            return None
+        escaped = raw[index]
+        if escaped in escapes:
+            decoded.extend(escapes[escaped])
+            index += 1
+            continue
+        if escaped not in "01234567":
+            return None
+        end = index + 1
+        while end < len(raw) and end < index + 3 and raw[end] in "01234567":
+            end += 1
+        decoded.append(int(raw[index:end], 8))
+        index = end
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _consume_path_token(text: str) -> tuple[str, int] | None:
+    if not text:
+        return None
+    if text.startswith('"'):
+        escaped = False
+        index = 1
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                decoded = _decode_c_quoted_path(text[: index + 1])
+                return (decoded, index + 1) if decoded is not None else None
+            index += 1
+        return None
+    index = 0
+    while index < len(text) and not text[index].isspace():
+        if text[index] == '"':
+            return None
+        index += 1
+    return (text[:index], index) if index else None
+
+
 def _strip_diff_prefix(path_text: str) -> str:
-    if path_text.startswith('"a/') and path_text.endswith('"'):
-        return path_text[3:-1]
-    if path_text.startswith('"b/') and path_text.endswith('"'):
-        return path_text[3:-1]
-    if path_text.startswith("a/") or path_text.startswith("b/"):
-        return path_text[2:]
-    return path_text
+    path = path_text.strip()
+    if path.startswith('"'):
+        decoded = _decode_c_quoted_path(path)
+        if decoded is not None:
+            path = decoded
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
 
 
 def _parse_diff_git_paths(line: str) -> tuple[str, str] | None:
-    quoted_prefix = 'diff --git "a/'
-    if line.startswith(quoted_prefix):
-        quoted_marker = '" "b/'
-        split_index = line.find(quoted_marker, len(quoted_prefix))
-        if split_index == -1 or not line.endswith('"'):
+    prefix = "diff --git "
+    if not line.startswith(prefix):
+        return None
+    remainder = line[len(prefix) :]
+    if remainder.startswith('"'):
+        first = _consume_path_token(remainder)
+        if first is None:
             return None
-        old_path = line[len(quoted_prefix) : split_index]
-        new_path = line[split_index + len(quoted_marker) : -1]
-        return old_path, new_path
-
-    plain_prefix = "diff --git a/"
-    if not line.startswith(plain_prefix):
+        old_token, index = first
+        while index < len(remainder) and remainder[index].isspace():
+            index += 1
+        second = _consume_path_token(remainder[index:])
+        if second is None:
+            return None
+        new_token, consumed = second
+        if remainder[index + consumed :].strip():
+            return None
+    else:
+        split_index = remainder.rfind(" b/")
+        if split_index <= 0:
+            return None
+        old_token = remainder[:split_index]
+        new_token = remainder[split_index + 1 :]
+        if not old_token.startswith("a/") or not new_token or '"' in old_token or '"' in new_token:
+            return None
+    if not old_token.startswith("a/") or not new_token.startswith("b/"):
         return None
+    return old_token[2:], new_token[2:]
 
-    split_index = line.rfind(" b/")
-    if split_index == -1 or split_index < len(plain_prefix):
+
+def _parse_patch_file_path(raw_value: str) -> str | None:
+    value = raw_value.strip()
+    if not value:
         return None
+    if value.startswith('"'):
+        token = _consume_path_token(value)
+        if token is None:
+            return None
+        path, consumed = token
+        remainder = value[consumed:]
+        if remainder and not remainder.startswith("\t"):
+            return None
+        return path
+    if '"' in value:
+        return None
+    return value.split("\t", 1)[0].rstrip()
 
-    old_path = line[len(plain_prefix) : split_index]
-    new_path = line[split_index + len(" b/") :]
-    return old_path, new_path
+
+def _validate_unified_patch_paths(patch_text: str, *, workspace: Path) -> None:
+    """Validate every path declaration before git sees a unified patch."""
+    declarations: list[str] = []
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            parsed = _parse_diff_git_paths(line)
+            if parsed is None:
+                raise_tool_diagnostic(
+                    message="apply_patch rejected a malformed or ambiguously quoted unified-diff path",
+                    error_kind="parse_error",
+                    reason="malformed_patch_path",
+                    retry_guidance="Use standard unquoted paths or valid C-style quoted paths in the unified diff.",
+                    details={"patch_invalid": True},
+                )
+            declarations.extend(parsed)
+            continue
+        for prefix in ("--- ", "+++ ", "rename from ", "rename to ", "copy from ", "copy to "):
+            if not line.startswith(prefix):
+                continue
+            path = _parse_patch_file_path(line[len(prefix) :])
+            if path is None:
+                raise_tool_diagnostic(
+                    message="apply_patch rejected a malformed or ambiguously quoted unified-diff path",
+                    error_kind="parse_error",
+                    reason="malformed_patch_path",
+                    retry_guidance="Use standard unquoted paths or valid C-style quoted paths in the unified diff.",
+                    details={"patch_invalid": True},
+                )
+            if path != "/dev/null":
+                declarations.append(_strip_diff_prefix(path))
+            continue
+
+    for path in declarations:
+        if not path:
+            raise_tool_diagnostic(
+                message="apply_patch rejected an empty unified-diff path",
+                error_kind="parse_error",
+                reason="malformed_patch_path",
+                retry_guidance="Provide a concrete path for every unified-diff file header.",
+                details={"patch_invalid": True},
+            )
+        try:
+            _ = resolve_workspace_path(
+                workspace=workspace,
+                raw_path=path,
+                containment_error="patch paths must be inside the workspace",
+                allow_outside_workspace=False,
+            )
+        except OSError, RuntimeError, ValueError:
+            raise_tool_diagnostic(
+                message=f"apply_patch rejected unsafe path {path!r}; patch paths must be inside the workspace",
+                error_kind="parse_error",
+                reason="unsafe_patch_path",
+                retry_guidance="Rebuild the patch using paths relative to the current workspace.",
+                details={"path": path, "patch_invalid": True},
+            )
+
+
+def _quote_git_path(prefix: str, path: str) -> str:
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{prefix}/{escaped}"'
 
 
 def _format_diff_git_line(old_path: str, new_path: str) -> str:
-    quote_paths = any(ch in path for ch in (" ", "\t") for path in (old_path, new_path))
-    old_token = f'"a/{old_path}"' if quote_paths else f"a/{old_path}"
-    new_token = f'"b/{new_path}"' if quote_paths else f"b/{new_path}"
+    quote_paths = any(ch in path for ch in (" ", "\t", '"', "\\") for path in (old_path, new_path))
+    old_token = _quote_git_path("a", old_path) if quote_paths else f"a/{old_path}"
+    new_token = _quote_git_path("b", new_path) if quote_paths else f"b/{new_path}"
     return f"diff --git {old_token} {new_token}"
 
 
 def _format_patch_marker_path(prefix: str, path: str) -> str:
     marker = f"{prefix}/{path}"
-    if " " in path or "\t" in path:
-        return f'"{marker}"'
+    if any(ch in path for ch in (" ", "\t", '"', "\\")):
+        return _quote_git_path(prefix, path)
     return marker
 
 
@@ -766,7 +931,6 @@ def _with_formatter_feedback(
     )
     if not formatter_results and not diagnostics and not lsp_diagnostics and not syntax_diagnostics:
         return result
-
     data = dict(result.data)
     if formatter_results:
         data["formatters"] = formatter_results
@@ -780,11 +944,9 @@ def _with_formatter_feedback(
         current_diagnostics = data.get("diagnostics")
         existing = current_diagnostics if isinstance(current_diagnostics, list) else []
         data["diagnostics"] = [*existing, *syntax_diagnostics]
-
     content = result.content
     if content is not None and diagnostics:
         content += f"\nFormatter warning: {diagnostics[0]['message']}"
-
     return ToolResult(
         tool_name=result.tool_name,
         status=result.status,
@@ -801,12 +963,12 @@ def _guard_changes_before_write(
 ) -> None:
     for change in changes:
         status = change.get("status")
-        if status == "A":
-            continue
         guard_path = change.get("old_path") if status == "R" else change.get("path")
         if not isinstance(guard_path, str):
             continue
-        _assert_within_workspace(workspace, Path(guard_path))
+        _assert_within_workspace(workspace, Path(guard_path), allow_external_absolute=False)
+        if status == "A":
+            continue
         enforce_read_before_write(
             tool_name=tool_name,
             workspace=workspace.resolve(),
@@ -896,6 +1058,82 @@ def _looks_like_mode_only_patch(patch_text: str) -> bool:
     return bool(blocks) and all(blocks)
 
 
+def _mode_only_expected_modes(patch_text: str) -> dict[str, int]:
+    """Return the target modes declared by each mode-only diff block."""
+    expected_modes: dict[str, int] = {}
+    current_paths: tuple[str, str] | None = None
+    for line in patch_text.splitlines():
+        if line.startswith("diff --git "):
+            current_paths = _parse_diff_git_paths(line)
+            continue
+        if current_paths is None or not line.startswith("new mode "):
+            continue
+        try:
+            mode = int(line[len("new mode ") :].strip(), 8)
+        except ValueError:
+            continue
+        expected_modes[current_paths[1]] = mode & 0o7777
+    return expected_modes
+
+
+def _capture_mode_only_state(
+    *,
+    changes: list[dict[str, object]],
+    workspace: Path,
+) -> dict[str, tuple[bool, int | None]]:
+    state: dict[str, tuple[bool, int | None]] = {}
+    for change in changes:
+        path_value = change.get("path")
+        if not isinstance(path_value, str):
+            continue
+        candidate = _resolve_patch_path(workspace, path_value)
+        try:
+            state[path_value] = (True, candidate.stat().st_mode & 0o7777)
+        except FileNotFoundError:
+            state[path_value] = (False, None)
+    return state
+
+
+def _verify_mode_only_change(
+    *,
+    changes: list[dict[str, object]],
+    expected_modes: dict[str, int],
+    before: dict[str, tuple[bool, int | None]],
+    workspace: Path,
+) -> None:
+    """Reject a mode-only success unless every declared mode changed on disk."""
+    unchanged_paths: list[str] = []
+    invalid_paths: list[str] = []
+    for change in changes:
+        path_value = change.get("path")
+        if not isinstance(path_value, str):
+            continue
+        candidate = _resolve_patch_path(workspace, path_value)
+        try:
+            after = (True, candidate.stat().st_mode & 0o7777)
+        except FileNotFoundError:
+            after = (False, None)
+        if before.get(path_value) == after:
+            unchanged_paths.append(path_value)
+        expected_mode = expected_modes.get(path_value)
+        if expected_mode is not None and after != (True, expected_mode):
+            invalid_paths.append(path_value)
+
+    if unchanged_paths or invalid_paths:
+        detail_paths = sorted(set(unchanged_paths + invalid_paths))
+        raise_tool_diagnostic(
+            message=(f"apply_patch did not make the requested mode-only filesystem change for: {', '.join(detail_paths)}."),
+            error_kind="no_op",
+            reason="mode_only_change_not_verified",
+            retry_guidance=("Confirm the current file mode and rebuild the mode-only patch against the current file state."),
+            details={
+                "affected_paths": [path_value for path_value in (change.get("path") for change in changes) if isinstance(path_value, str)],
+                "unchanged_paths": unchanged_paths,
+                "invalid_mode_paths": invalid_paths,
+            },
+        )
+
+
 def _dedupe_changes(changes: list[dict[str, object]]) -> list[dict[str, object]]:
     deduped: list[dict[str, object]] = []
     seen: set[tuple[object, ...]] = set()
@@ -967,23 +1205,23 @@ def _changes_from_patch_metadata(patch_text: str) -> list[dict[str, object]]:
             continue
 
         if line.startswith("rename from "):
-            block_old_path = line[len("rename from ") :].strip()
+            block_old_path = _parse_patch_file_path(line[len("rename from ") :])
             continue
 
         if line.startswith("rename to "):
-            block_new_path = line[len("rename to ") :].strip()
+            block_new_path = _parse_patch_file_path(line[len("rename to ") :])
             continue
 
         if line.startswith("--- "):
-            old_marker = line[4:].strip()
-            patch_old_path = None if old_marker == "/dev/null" else _strip_diff_prefix(old_marker)
+            old_marker = _parse_patch_file_path(line[4:])
+            patch_old_path = None if old_marker in {None, "/dev/null"} else _strip_diff_prefix(old_marker)
             continue
 
         if not line.startswith("+++ "):
             continue
 
-        new_marker = line[4:].strip()
-        patch_new_path = None if new_marker == "/dev/null" else _strip_diff_prefix(new_marker)
+        new_marker = _parse_patch_file_path(line[4:])
+        patch_new_path = None if new_marker in {None, "/dev/null"} else _strip_diff_prefix(new_marker)
         block_old_path = patch_old_path
         block_new_path = patch_new_path
         patch_old_path = None
@@ -1071,6 +1309,7 @@ class ApplyPatchTool:
             )
 
         normalized_patch = _normalize_patch_text(patch_text)
+        _validate_unified_patch_paths(patch_text, workspace=workspace)
         changes = _changes_from_patch(patch_text)
         if not changes and not _looks_like_mode_only_patch(patch_text):
             raise_tool_diagnostic(
@@ -1094,14 +1333,6 @@ class ApplyPatchTool:
             check = _run_git_command(["git", "apply", "--check", str(patch_path)], workspace)
             if check.returncode != 0:
                 error = check.stdout or "Patch check failed"
-                if _looks_like_mode_only_patch(patch_text):
-                    content = "\n".join(f"M {c['path']}" if c.get("status") != "R" else f"M {c['old_path']} -> {c['path']}" for c in changes)
-                    return ToolResult(
-                        tool_name=self.definition.name,
-                        status="ok",
-                        content=content,
-                        data={"changes": changes, "count": len(changes)},
-                    )
                 raise_tool_diagnostic(
                     message=_format_patch_error(error, normalized_patch),
                     error_kind="parse_error",
@@ -1131,18 +1362,13 @@ class ApplyPatchTool:
                 tool_name=self.definition.name,
             )
 
+            mode_only = _looks_like_mode_only_patch(patch_text)
+            mode_only_before = _capture_mode_only_state(changes=changes, workspace=workspace) if mode_only else {}
+
             # Apply patch
             apply = _run_git_command(["git", "apply", str(patch_path)], workspace)
             if apply.returncode != 0:
                 error = apply.stdout or "Patch apply failed"
-                if _looks_like_mode_only_patch(patch_text):
-                    content = "\n".join(f"M {c['path']}" if c.get("status") != "R" else f"M {c['old_path']} -> {c['path']}" for c in changes)
-                    return ToolResult(
-                        tool_name=self.definition.name,
-                        status="ok",
-                        content=content,
-                        data={"changes": changes, "count": len(changes)},
-                    )
                 raise_tool_diagnostic(
                     message=_format_patch_error(error, normalized_patch),
                     error_kind="parse_error",
@@ -1158,6 +1384,14 @@ class ApplyPatchTool:
                     },
                 )
 
+            if mode_only:
+                _verify_mode_only_change(
+                    changes=changes,
+                    expected_modes=_mode_only_expected_modes(patch_text),
+                    before=mode_only_before,
+                    workspace=workspace,
+                )
+
             summary_lines: list[str] = []
             for c in changes:
                 if c.get("status") == "R":
@@ -1171,10 +1405,10 @@ class ApplyPatchTool:
             for c in changes:
                 path_value = c.get("path")
                 if isinstance(path_value, str):
-                    _assert_within_workspace(workspace, Path(path_value))
+                    _assert_within_workspace(workspace, Path(path_value), allow_external_absolute=False)
                 old_path_value = c.get("old_path")
                 if isinstance(old_path_value, str):
-                    _assert_within_workspace(workspace, Path(old_path_value))
+                    _assert_within_workspace(workspace, Path(old_path_value), allow_external_absolute=False)
 
             result = ToolResult(
                 tool_name=self.definition.name,

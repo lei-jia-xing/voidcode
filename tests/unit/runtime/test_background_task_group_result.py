@@ -150,7 +150,7 @@ def test_group_rejects_parent_mismatch_duplicate_ids_and_size_mismatch(tmp_path:
     store = _seed_group(tmp_path, ("completed", "completed"), parent="owner-a")
     supervisor = _supervisor(tmp_path, store)
 
-    with pytest.raises(ValueError, match="requested parent session"):
+    with pytest.raises(ValueError, match="only its parent session"):
         supervisor.load_background_task_group_result(task_ids=("task-0", "task-1"), parent_session_id="owner-b", emit_result_read_hook=False)
     with pytest.raises(ValueError, match="duplicates"):
         supervisor.load_background_task_group_result(task_ids=("task-0", "task-0"), emit_result_read_hook=False)
@@ -162,6 +162,50 @@ def test_group_rejects_parent_mismatch_duplicate_ids_and_size_mismatch(tmp_path:
     store.mark_background_task_terminal(workspace=tmp_path, task_id="task-extra", status="completed")
     with pytest.raises(ValueError, match="size mismatch"):
         supervisor.load_background_task_group_result(parallel_group_id="size-mismatch", parent_session_id="owner-a", emit_result_read_hook=False)
+
+
+def test_task_owner_authorization_rejects_foreign_parent_without_mutation(tmp_path: Path) -> None:
+    store = _seed_group(tmp_path, ("running",), parent="owner-a")
+    supervisor = _supervisor(tmp_path, store)
+    before = store.load_background_task(workspace=tmp_path, task_id="task-0")
+
+    with pytest.raises(ValueError, match="only its parent session"):
+        supervisor.authorize_background_task_owner("task-0", parent_session_id="owner-b")
+
+    after = store.load_background_task(workspace=tmp_path, task_id="task-0")
+    assert after == before
+
+
+def test_explicit_task_ids_authorize_each_task_before_loading_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _seed_group(tmp_path, ("completed", "completed"), parent="owner-a")
+    supervisor = _supervisor(tmp_path, store)
+    calls: list[tuple[str, str]] = []
+    original_load = store.load_background_task
+
+    def record_load(*, workspace: Path, task_id: str) -> BackgroundTaskState:
+        calls.append(("load", task_id))
+        return original_load(workspace=workspace, task_id=task_id)
+
+    def record_authorize(task_id: str, *, parent_session_id: str | None) -> None:
+        calls.append(("authorize", task_id))
+        assert parent_session_id == "owner-a"
+
+    monkeypatch.setattr(store, "load_background_task", record_load)
+    monkeypatch.setattr(supervisor, "authorize_background_task_owner", record_authorize)
+
+    tasks, _group_id, _expected_count = supervisor._resolve_background_task_group(
+        task_ids=("task-0", "task-1"),
+        parallel_group_id=None,
+        parent_session_id="owner-a",
+    )
+
+    assert [task.task.id for task in tasks] == ["task-0", "task-1"]
+    assert calls == [
+        ("authorize", "task-0"),
+        ("authorize", "task-1"),
+        ("load", "task-0"),
+        ("load", "task-1"),
+    ]
 
 
 def test_group_result_summary_and_structured_output_are_bounded_and_not_transcript(

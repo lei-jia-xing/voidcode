@@ -59,6 +59,7 @@ from ..tools.background_process_logs import BackgroundProcessLogsTool
 from ..tools.background_process_send import BackgroundProcessSendTool
 from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
 from ..tools.background_process_stop import BackgroundProcessStopTool
+from ..tools.background_ps import BackgroundPsTool
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -353,6 +354,7 @@ from .task import (
     BACKGROUND_TASK_TERMINAL_STATUSES,
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
+    is_background_task_terminal,
     validate_background_task_id,
 )
 from .tool_execution import RuntimeToolExecutor
@@ -837,6 +839,7 @@ class VoidCodeRuntime(RuntimeSurface):
             steer_task_tool=SteerTaskTool(runtime=self),
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
+            background_ps_tool=BackgroundPsTool(runtime=self),
             background_process_start_tool=BackgroundProcessStartTool(runtime=self),
             background_process_logs_tool=BackgroundProcessLogsTool(runtime=self),
             background_process_stop_tool=BackgroundProcessStopTool(runtime=self),
@@ -2715,6 +2718,13 @@ class VoidCodeRuntime(RuntimeSurface):
         validated_request = self._validated_request(request)
         return self._background_task_facade.start(validated_request)
 
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        """Authorize a parent session before a tool reads or cancels its task."""
+        self._background_task_facade.authorize_owner(
+            task_id,
+            parent_session_id=parent_session_id,
+        )
+
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
         self._background_task_supervisor.reconcile_background_tasks_if_needed()
         self._background_task_supervisor.drain_queued_background_tasks()
@@ -2821,6 +2831,84 @@ class VoidCodeRuntime(RuntimeSurface):
                 parent_session_id=validated_parent_session_id,
             )
         )
+
+    def background_task_roster(self, *, parent_session_id: str) -> dict[str, object]:
+        """Return a bounded, prompt/transcript-free task projection for one parent."""
+        validated_parent_session_id = validate_session_reference_id(
+            parent_session_id,
+            field_name="parent_session_id",
+        )
+        summaries = self.list_background_tasks_by_parent_session(
+            parent_session_id=validated_parent_session_id,
+        )
+        limit = 100
+        selected = summaries[:limit]
+        tasks: list[dict[str, object]] = []
+        for summary in selected:
+            state = self._session_store.load_background_task(
+                workspace=self._workspace,
+                task_id=summary.task.id,
+            )
+            state = self._background_task_supervisor.task_with_observability(state)
+            delegation = state.request.metadata.get("delegation")
+            metadata = delegation if isinstance(delegation, dict) else state.request.metadata
+            group_id = metadata.get("parallel_group_id")
+            group_size = metadata.get("parallel_group_size")
+            if not isinstance(group_id, str) or not group_id.strip():
+                group_id = None
+            else:
+                group_id = group_id[:256]
+            if isinstance(group_size, str) and group_size.isdecimal():
+                group_size = int(group_size)
+            if not isinstance(group_size, int) or isinstance(group_size, bool):
+                group_size = None
+            duration_seconds = None
+            if state.started_at_unix_ms is not None and state.finished_at_unix_ms is not None:
+                duration_seconds = round(
+                    max(state.finished_at_unix_ms - state.started_at_unix_ms, 0) / 1000,
+                    3,
+                )
+            approval_blocked = state.approval_request_id is not None
+            task_id = state.task.id[:256]
+            child_session_id = state.session_id[:256] if state.session_id is not None else None
+            next_steps: dict[str, object] = {
+                "background_output": f'background_output(task_id="{task_id}")',
+            }
+            if child_session_id is not None:
+                next_steps["child_session"] = f"session:{child_session_id}"
+            item: dict[str, object] = {
+                "task_id": task_id,
+                "status": state.status,
+                "lifecycle_status": "waiting_approval" if approval_blocked else state.status,
+                "parent_session_id": validated_parent_session_id[:256],
+                "child_session_id": child_session_id,
+                "session_id": child_session_id,
+                "parallel_group_id": group_id,
+                "parallel_group_size": group_size,
+                "created_at": state.created_at,
+                "updated_at": state.updated_at,
+                "created_at_unix_ms": state.created_at_unix_ms,
+                "started_at_unix_ms": state.started_at_unix_ms,
+                "finished_at_unix_ms": state.finished_at_unix_ms,
+                "duration_seconds": duration_seconds,
+                "approval_blocked": approval_blocked,
+                "approval_request_id": state.approval_request_id[:256] if state.approval_request_id is not None else None,
+                "question_request_id": state.question_request_id[:256] if state.question_request_id is not None else None,
+                "result_available": state.result_available,
+                "terminal": is_background_task_terminal(state.status),
+                "next_steps": next_steps,
+            }
+            if state.observability is not None:
+                item["waiting_reason"] = state.observability.waiting_reason
+            tasks.append(item)
+        return {
+            "parent_session_id": validated_parent_session_id[:256],
+            "tasks": tasks,
+            "task_count": len(tasks),
+            "total_task_count": len(summaries),
+            "truncated": len(summaries) > limit,
+            "limit": limit,
+        }
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         return self._background_task_facade.cancel(task_id)

@@ -2855,26 +2855,31 @@ def test_runtime_requests_and_resumes_shell_exec_approval(tmp_path: Path) -> Non
     )
 
     assert resumed.session.status == "completed"
-    assert [event.event_type for event in resumed.events] == [
-        "runtime.request_received",
-        "runtime.skills_loaded",
-        "graph.loop_step",
-        "graph.model_turn",
-        "graph.tool_request_created",
-        "runtime.tool_lookup_succeeded",
-        "runtime.approval_requested",
-        "runtime.approval_resolved",
-        "runtime.tool_started",
-        "runtime.tool_progress",
-        "runtime.tool_completed",
-        "graph.loop_step",
-        "graph.response_ready",
-    ]
+    _assert_ordered_event_types(
+        [event.event_type for event in resumed.events],
+        [
+            "runtime.request_received",
+            "runtime.skills_loaded",
+            "graph.loop_step",
+            "graph.model_turn",
+            "graph.tool_request_created",
+            "runtime.tool_lookup_succeeded",
+            "runtime.approval_requested",
+            "runtime.approval_resolved",
+            "runtime.tool_started",
+            "runtime.tool_progress",
+            "runtime.tool_completed",
+            "graph.loop_step",
+            "graph.response_ready",
+        ],
+    )
     assert resumed.output == f"{tmp_path.resolve()}\n"
-    assert resumed.events[9].payload["tool"] == "shell_exec"
-    assert resumed.events[9].payload["stream"] == "stdout"
-    assert resumed.events[10].payload["command"] == command
-    assert resumed.events[10].payload["exit_code"] == 0
+    progress_event = next(event for event in resumed.events if event.event_type == "runtime.tool_progress")
+    assert progress_event.payload["tool"] == "shell_exec"
+    assert progress_event.payload["stream"] == "stdout"
+    completed_event = next(event for event in resumed.events if event.event_type == "runtime.tool_completed")
+    assert completed_event.payload["command"] == command
+    assert completed_event.payload["exit_code"] == 0
 
 
 def test_runtime_denies_shell_exec_tool_when_policy_is_deny(tmp_path: Path) -> None:
@@ -4856,6 +4861,21 @@ def test_runtime_resumes_multi_step_loop_with_approval_and_stable_replay(tmp_pat
         "tool": "write",
         "arguments": {"path": "copied.txt", "content": "copied marker"},
         "path": "copied.txt",
+        "diff_preview": {
+            "schema_version": 1,
+            "phase": "final",
+            "live_only": False,
+            "tool": "write",
+            "status": "ready",
+            "bounded": True,
+            "path": "copied.txt",
+            "diff": "--- a/copied.txt\n+++ b/copied.txt\n@@ -0,0 +1 @@\n+copied marker",
+            "additions": 1,
+            "deletions": 0,
+            "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "after_sha256": "5b575f4eaedf19f242bac1f4f85a1767f5d1961d204105ae86bf2dbfb9e9bc9d",
+            "truncated": False,
+        },
     }
 
     assert resumed.session.status == "completed"

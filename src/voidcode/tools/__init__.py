@@ -7,6 +7,7 @@ from .background_process_logs import BackgroundProcessLogsTool
 from .background_process_send import BackgroundProcessSendTool
 from .background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
 from .background_process_stop import BackgroundProcessStopTool
+from .background_ps import BackgroundPsTool
 from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolInvocation, ToolResult, ToolResultStatus
 from .edit import EditTool
 from .glob import GlobTool
@@ -44,6 +45,7 @@ from .web_search import WebSearchTool
 from .write import WriteTool
 
 __all__ = [
+    "BackgroundPsTool",
     "ApplyPatchTool",
     "ApplyWorkspaceEditTool",
     "AstGrepTool",

@@ -10,6 +10,7 @@ _TOOL_GUIDANCE_FILES = {
     "apply_patch": "apply_patch.txt",
     "background_cancel": "background_cancel.txt",
     "background_output": "background_output.txt",
+    "background_ps": "background_ps.txt",
     "background_process_logs": "background_process_logs.txt",
     "background_process_send": "background_process_send.txt",
     "background_process_start": "background_process_start.txt",

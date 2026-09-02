@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -925,6 +926,72 @@ def test_apply_patch_reports_mode_only_change_from_patch_metadata(tmp_path: Path
     assert result.data["count"] == 1
     assert result.data["changes"] == [{"path": "script.sh", "status": "M"}]
     assert result.content == "M script.sh"
+    assert target.stat().st_mode & 0o7777 == 0o755
+
+
+def test_apply_patch_mode_only_success_requires_filesystem_change(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    target = tmp_path / "script.sh"
+    target.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/script.sh b/script.sh",
+            "old mode 100644",
+            "new mode 100755",
+            "",
+        ]
+    )
+
+    def fake_git_command(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if "--check" in args:
+            return subprocess.run(
+                args,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="")
+
+    monkeypatch.setattr("voidcode.tools.apply_patch._run_git_command", fake_git_command)
+    with pytest.raises(ToolDiagnosticError, match="mode-only filesystem change") as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(
+                tool_name="apply_patch",
+                arguments={"patch": patch_text, "expectedHashes": {"script.sh": _content_hash(target)}},
+            ),
+            workspace=tmp_path,
+        )
+
+    assert exc_info.value.error_kind == "no_op"
+    assert exc_info.value.error_details["reason"] == "mode_only_change_not_verified"
+    assert target.stat().st_mode & 0o7777 == 0o644
+
+
+def test_apply_patch_mode_only_check_failure_is_not_success(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "baseline"], cwd=str(tmp_path), check=True)
+    target = tmp_path / "missing.sh"
+    patch_text = "\n".join(
+        [
+            "diff --git a/missing.sh b/missing.sh",
+            "old mode 100644",
+            "new mode 100755",
+            "",
+        ]
+    )
+
+    with pytest.raises(ToolDiagnosticError) as exc_info:
+        ApplyPatchTool().invoke(
+            ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}),
+            workspace=tmp_path,
+        )
+
+    diagnostic = exc_info.value
+    assert diagnostic.error_kind == "parse_error"
+    assert diagnostic.error_details["reason"] == "patch_apply_failed"
+    assert not target.exists()
 
 
 def test_apply_patch_reports_mode_only_change_for_path_with_spaces(tmp_path: Path) -> None:
@@ -1419,3 +1486,50 @@ def test_apply_patch_unified_diff_delete_requires_whole_file_seen(tmp_path: Path
     assert diagnostic.error_details["reason"] == "unseen_range"
     assert diagnostic.error_details["unseen_line_ranges"] == [{"start": 2, "end": 3}]
     assert target.read_text(encoding="utf-8") == "line-1\nline-2\nline-3\n"
+
+
+def test_apply_patch_rejects_unified_add_path_traversal_before_git(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    outside = tmp_path.parent / "apply-patch-traversal.txt"
+    outside.unlink(missing_ok=True)
+    patch_text = "\n".join(
+        [
+            "diff --git a/../apply-patch-traversal.txt b/../apply-patch-traversal.txt",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/../apply-patch-traversal.txt",
+            "@@ -0,0 +1 @@",
+            "+must not write",
+            "",
+        ]
+    )
+
+    with pytest.raises(ToolDiagnosticError) as exc_info:
+        ApplyPatchTool().invoke(ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}), workspace=tmp_path)
+
+    assert exc_info.value.error_kind == "parse_error"
+    assert exc_info.value.error_details["reason"] == "unsafe_patch_path"
+    assert not outside.exists()
+
+
+def test_apply_patch_rejects_malformed_quoted_metadata_path(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    source = tmp_path / "source.txt"
+    source.write_text("content\n", encoding="utf-8")
+    _commit_all(tmp_path, "baseline")
+    patch_text = "\n".join(
+        [
+            "diff --git a/source.txt b/destination.txt",
+            "similarity index 100%",
+            'rename from "source.txt',
+            "rename to destination.txt",
+            "",
+        ]
+    )
+
+    with pytest.raises(ToolDiagnosticError) as exc_info:
+        ApplyPatchTool().invoke(ToolCall(tool_name="apply_patch", arguments={"patch": patch_text}), workspace=tmp_path)
+
+    assert exc_info.value.error_details["reason"] == "malformed_patch_path"
+    assert source.exists()
+    assert not (tmp_path / "destination.txt").exists()

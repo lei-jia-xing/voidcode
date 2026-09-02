@@ -508,6 +508,26 @@ class RuntimeBackgroundTaskSupervisor:
         task = self._session_store.load_background_task(workspace=self._workspace, task_id=task_id)
         return self.task_with_observability(task)
 
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        """Verify that ``parent_session_id`` owns ``task_id`` without mutating state.
+
+        Tool-facing reads, cancellation, and steering must authorize before
+        loading any result/state or requesting a state transition. Keep this
+        check in the runtime supervisor so adapters cannot accidentally diverge
+        on the ownership policy.
+        """
+        validate_background_task_id(task_id)
+        task = self._session_store.load_background_task(
+            workspace=self._workspace,
+            task_id=task_id,
+        )
+        if parent_session_id is None or task.parent_session_id != parent_session_id:
+            raise ValueError(
+                f"background task {task_id}: only its parent session "
+                f"({task.parent_session_id or 'unknown'}) may access or cancel it "
+                f"(current session: {parent_session_id or 'unknown'})"
+            )
+
     def summary_with_observability(self, summary: StoredBackgroundTaskSummary) -> StoredBackgroundTaskSummary:
         task = self._session_store.load_background_task(
             workspace=self._workspace,
@@ -1045,6 +1065,15 @@ class RuntimeBackgroundTaskSupervisor:
             normalized_ids = tuple(validate_background_task_id(task_id) for task_id in task_ids)
             if len(set(normalized_ids)) != len(normalized_ids):
                 raise ValueError("task_ids must not contain duplicates")
+            # Authorization is a separate preflight pass so a foreign explicit
+            # id is rejected before any selected task state is loaded for
+            # validation or result projection.
+            if parent_session_id is not None:
+                for task_id in normalized_ids:
+                    self.authorize_background_task_owner(
+                        task_id,
+                        parent_session_id=parent_session_id,
+                    )
             tasks = tuple(self._session_store.load_background_task(workspace=self._workspace, task_id=task_id) for task_id in normalized_ids)
         else:
             assert parallel_group_id is not None

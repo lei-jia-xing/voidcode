@@ -30,6 +30,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "ast_grep",
         "background_cancel",
         "background_output",
+        "background_ps",
         "background_process_logs",
         "background_process_send",
         "background_process_start",
@@ -200,7 +201,7 @@ class BuiltinToolProvider:
     _question_tool: Tool | None
     _steer_task_tool: Tool | None
     _background_output_tool: Tool | None
-    _background_cancel_tool: Tool | None
+    _background_ps_tool: Tool | None
     _background_process_start_tool: Tool | None
     _background_process_logs_tool: Tool | None
     _background_process_stop_tool: Tool | None
@@ -220,6 +221,7 @@ class BuiltinToolProvider:
         steer_task_tool: Tool | None = None,
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
+        background_ps_tool: Tool | None = None,
         background_process_start_tool: Tool | None = None,
         background_process_logs_tool: Tool | None = None,
         background_process_stop_tool: Tool | None = None,
@@ -236,6 +238,7 @@ class BuiltinToolProvider:
         self._steer_task_tool = steer_task_tool
         self._background_output_tool = background_output_tool
         self._background_cancel_tool = background_cancel_tool
+        self._background_ps_tool = background_ps_tool
         self._background_process_start_tool = background_process_start_tool
         self._background_process_logs_tool = background_process_logs_tool
         self._background_process_stop_tool = background_process_stop_tool
@@ -283,6 +286,9 @@ class BuiltinToolProvider:
 
         if self._background_cancel_tool is not None:
             tools.append(self._background_cancel_tool)
+
+        if self._background_ps_tool is not None:
+            tools.append(self._background_ps_tool)
 
         if self._background_process_start_tool is not None:
             tools.append(self._background_process_start_tool)

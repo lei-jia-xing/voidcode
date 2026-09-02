@@ -46,9 +46,9 @@
 - [x] **预定义 agent 声明边界**：`src/voidcode/agent/` 现在已经具备真实的声明层与多角色 skeleton；`leader` 是唯一顶层 active preset，`advisor`、`explore`、`researcher`、`worker`、`product` 通过 runtime-owned delegation path 进入 child execution（`product` 为只读 plan subagent，由 leader 经 `task` 委托并以 `submit_result` 交回 plan）。当前仍未实现的是任意拓扑 multi-agent 协作平台。
 - [~] **技能执行**：skill discovery 与 `runtime.skills_loaded` 事件之外，仓库现在已经落地最小的 runtime skill execution model；manifest `skill_refs` 是默认选择，`force_load_skills` / delegated `load_skills` 是目标上下文的 full-body 注入。更完整的 skill context 能力绑定与产品化语义仍未完成。
 - [~] **ACP 能力面**：`acp` 已具备 runtime-managed transport / lifecycle、run / approval-resume integration 与事件基线；当前仍未进入更宽的 agent control-plane 或跨运行时协作语义。
-- [~] **当前剩余的 runtime / tooling 主线 gap**：agent preset、runtime skill execution 与 delegated child execution 已具备基础，下一轮 backlog 围绕这些能力的深化与产品化收口。
+- [~] **当前剩余的 runtime / tooling 主线 gap**：runtime-owned `background_ps`、受 parent ownership 保护的后台 task control 与 apply_patch P0 边界已落地；下一轮 backlog 围绕 process lifecycle、TUI parity、aggregate/process UX 与隔离 child 产物深化。
 - [~] **TUI 客户端**：已具备提示词输入、审批处理、流式时间线、可折叠工具块与会话管理/恢复（`SessionListModal`、`ctrl+n`/`ctrl+r`），单元级测试已覆盖；剩余为规范冒烟流程的端到端断言与 polish，当前优先级保持低于 CLI + Web 主路径。
-- [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行、审批处理、question answer、workspace 切换、runtime status、review tree / diff 与 runtime ops 路径，并具备真实 store/client 闭环验证。
+- [x] **Web 客户端集成**：已接入真实的会话列表、会话重放、流式运行、审批处理、question answer、workspace 切换、runtime status、review tree / diff、runtime ops 与 delegated child task sidebar/control 路径，并具备真实 store/client 闭环验证。
 
 ---
 

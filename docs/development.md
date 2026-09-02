@@ -148,11 +148,15 @@ mise run check
 ### 前端工作流
 
 1.  **安装依赖**：`mise run frontend:install`
-2.  **启动开发服务器**：`mise run frontend:dev` (运行在 [http://localhost:5173](http://localhost:5173))
-3.  **Lint/类型检查**：`mise run frontend:lint` 和 `mise run frontend:typecheck`
-4.  **运行组件测试**：`mise run frontend:test`
-5.  **运行 Launcher E2E**：`mise run frontend:e2e`。该路径会先构建 `frontend/dist`，再通过 `voidcode web --no-open` 启动本地 launcher，避免自动弹出额外浏览器窗口。
-6.  **运行覆盖率测试**：`mise run frontend:coverage` 或使用 `mise run check` 进行常规全面验证。
+2.  **启动运行时后端**：`VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode serve --workspace . --port 8765`（canonical local backend address `http://127.0.0.1:8765`）
+3.  **启动开发服务器**：`mise run frontend:dev` (运行在 [http://localhost:5173](http://localhost:5173)，其 `/api` 与 SSE 请求代理到上述后端)
+4.  **自定义后端地址**：后端不在默认端口时，以完整 HTTP(S) URL 设置 `VITE_BACKEND_URL`，例如 `VITE_BACKEND_URL=http://127.0.0.1:9000 mise run frontend:dev`。
+5.  **Lint/类型检查**：`mise run frontend:lint` 和 `mise run frontend:typecheck`
+6.  **运行组件测试**：`mise run frontend:test`
+7.  **运行 Launcher E2E**：`mise run frontend:e2e`。该路径会先构建 `frontend/dist`，再通过 `voidcode web --no-open` 启动本地 launcher，避免自动弹出额外浏览器窗口。
+8.  **运行覆盖率测试**：`mise run frontend:coverage` 或使用 `mise run check` 进行常规全面验证。
+
+Vite dev proxy 默认目标是 `http://127.0.0.1:8765`；`VITE_BACKEND_URL` 仅覆盖代理目标，不改变后端自身监听端口或生产 launcher 行为。
 
 仓库根目录不维护 `package.json`。根目录命令统一通过 `mise.toml` 暴露；Bun 脚本只在 `frontend/package.json` 中维护，避免出现两套前端命令入口。
 

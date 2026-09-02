@@ -80,20 +80,26 @@ frontend/
 
 1. **HTTP API / SSE** - 用于会话管理、会话重放和流式运行事件交付
 
-**后端启动与 provider 选择：** 前端不会把 API key 写入浏览器状态或请求体。首次无凭据验证使用确定性引擎：
+**后端启动与 provider 选择：** 前端不会把 API key 写入浏览器状态或请求体。首次无凭据验证使用确定性引擎。开发服务器默认把 `/api` 代理到 canonical local `voidcode serve` 地址 `http://127.0.0.1:8765`：
 
 ```bash
-VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode serve --workspace . --port 8000
+VOIDCODE_EXECUTION_ENGINE=deterministic uv run voidcode serve --workspace . --port 8765
+```
+
+如果后端使用其他地址，设置 `VITE_BACKEND_URL` 后再启动 Vite；该值必须是后端的完整 HTTP(S) URL：
+
+```bash
+VITE_BACKEND_URL=http://127.0.0.1:9000 bun run dev
 ```
 
 需要真实 provider 时只配置一个明确的 provider/model，例如：
 
 ```bash
 OPENAI_API_KEY=<your-key> VOIDCODE_MODEL=openai/gpt-4o-mini \
-  uv run voidcode serve --workspace . --port 8000
+  uv run voidcode serve --workspace . --port 8765
 ```
 
-如果需要启动完整 Web launcher，先构建前端资源，然后运行：
+如果需要启动完整 Web launcher，先构建前端资源，然后运行。launcher 是独立于 Vite dev proxy 的单一服务，因此可继续使用显式指定的 launcher 端口：
 
 ```bash
 mise run frontend:build
@@ -101,6 +107,7 @@ uv run voidcode web --workspace . --port 8000 --no-open
 ```
 
 自动化测试或脚本应使用 `--no-open`，避免 launcher 在 Playwright 或 CI 流程中额外弹出浏览器窗口。
+
 
 ## 贡献
 

@@ -12,6 +12,8 @@ from .runtime_context import require_runtime_tool_context
 
 
 class SteerTaskRuntime(Protocol):
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
+
     def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState: ...
@@ -76,6 +78,10 @@ class SteerTaskTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         context = require_runtime_tool_context(self.definition.name)
+        self._runtime.authorize_background_task_owner(
+            args.task_id,
+            parent_session_id=context.session_id,
+        )
         current_task = self._runtime.load_background_task(args.task_id)
         if current_task.parent_session_id != context.session_id:
             raise ValueError(

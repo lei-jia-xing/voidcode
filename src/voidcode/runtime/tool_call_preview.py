@@ -96,7 +96,7 @@ def _resolve_preview_path(*, workspace: Path, raw_path: object) -> tuple[Path, s
             containment_error="preview path must be inside the workspace",
             allow_outside_workspace=False,
         )
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         return _degraded(tool_name="", reason="unsafe_path", path=raw_path, phase="partial")
     return resolution.candidate, resolution.relative_path
 
@@ -112,7 +112,7 @@ def _read_snapshot(path: Path) -> tuple[str, bool] | str:
         if len(raw) > PREVIEW_SNAPSHOT_MAX_BYTES:
             return "snapshot_too_large"
         return raw.decode("utf-8"), True
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         return "snapshot_unreadable"
 
 
@@ -322,7 +322,13 @@ def _preview_multi_edit(*, workspace: Path, arguments: Mapping[str, object], pha
     )
 
 
-def _preview_patch(*, workspace: Path, arguments: Mapping[str, object], phase: Literal["partial", "final"], incomplete: bool) -> dict[str, object]:
+def _preview_patch(
+    *,
+    workspace: Path,
+    arguments: Mapping[str, object],
+    phase: Literal["partial", "final"],
+    incomplete: bool,
+) -> dict[str, object]:
     patch = arguments.get("patch")
     if not isinstance(patch, str) or not patch:
         return _degraded(tool_name="apply_patch", reason="missing_patch", phase=phase)
@@ -331,14 +337,38 @@ def _preview_patch(*, workspace: Path, arguments: Mapping[str, object], phase: L
             return _degraded(tool_name="apply_patch", reason="proposed_content_too_large", phase=phase)
     except UnicodeError:
         return _degraded(tool_name="apply_patch", reason="content_unreadable", phase=phase)
-    # Parsing the existing patch metadata is read-only and gives clients safe
-    # target identity. Applying it is intentionally left to the approved tool.
-    try:
-        from ..tools.apply_patch import _changes_from_patch
 
-        changes = _changes_from_patch(patch)
-    except Exception:
-        changes = []
+    try:
+        from ..tools.apply_patch import (
+            _changes_from_patch,
+            _looks_like_marker_patch,
+            _parse_marker_patch,
+            _validate_unified_patch_paths,
+        )
+
+        if _looks_like_marker_patch(patch):
+            changes = []
+            for hunk in _parse_marker_patch(patch):
+                if hunk.action == "add":
+                    changes.append({"path": hunk.path, "status": "A"})
+                elif hunk.action == "delete":
+                    changes.append({"path": hunk.path, "status": "D"})
+                elif hunk.move_path is not None:
+                    changes.append({"path": hunk.move_path, "old_path": hunk.path, "status": "R"})
+                else:
+                    changes.append({"path": hunk.path, "status": "M"})
+        else:
+            _validate_unified_patch_paths(patch, workspace=workspace)
+            changes = _changes_from_patch(patch)
+    except Exception as exc:
+        error_details = getattr(exc, "error_details", {})
+        reason = error_details.get("reason") if isinstance(error_details, Mapping) else None
+        if reason == "unsafe_patch_path":
+            return _degraded(tool_name="apply_patch", reason="unsafe_path", phase=phase)
+        if reason == "malformed_patch_path":
+            return _degraded(tool_name="apply_patch", reason="malformed_patch", phase=phase)
+        return _degraded(tool_name="apply_patch", reason="patch_targets_unidentified", phase=phase)
+
     output_paths = [str(item.get("path")) for item in changes if isinstance(item, Mapping) and isinstance(item.get("path"), str)]
     all_paths: list[str] = []
     for item in changes:

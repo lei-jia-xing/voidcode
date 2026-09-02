@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "./store";
 import { SessionSidebar } from "./components/SessionSidebar";
+import { ChildSessionSidebar } from "./components/ChildSessionSidebar";
 import { ChatThread } from "./components/ChatThread";
 import { Composer, type SessionContextUsage } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -178,8 +179,12 @@ function App() {
     questionError,
     answerQuestion,
     backgroundTasks,
+    backgroundTasksStatus,
+    backgroundTasksError,
     selectedBackgroundTaskOutputId,
     backgroundTaskOutput,
+    backgroundTaskOutputStatus,
+    backgroundTaskOutputError,
     loadBackgroundTasks,
     loadBackgroundTaskOutput,
     settings,
@@ -199,6 +204,11 @@ function App() {
   const [showFileTree, setShowFileTree] = useState(false);
   const [showCodeReview, setShowCodeReview] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [backgroundTaskAction, setBackgroundTaskAction] = useState<{
+    taskId: string;
+    status: "loading" | "error";
+    error: string | null;
+  } | null>(null);
   const [sessionEventError, setSessionEventError] = useState<string | null>(
     null,
   );
@@ -566,6 +576,43 @@ function App() {
     };
   }, [backgroundTaskOutput, displayedIsChildSession, selectedChildTaskSummary]);
 
+  const runBackgroundTaskAction = useCallback(
+    async (taskId: string, action: (taskId: string) => Promise<unknown>) => {
+      setBackgroundTaskAction({ taskId, status: "loading", error: null });
+      try {
+        await action(taskId);
+        await loadBackgroundTasks();
+        if (selectedBackgroundTaskOutputIdRef.current === taskId) {
+          await loadBackgroundTaskOutput(taskId);
+        }
+        setBackgroundTaskAction(null);
+      } catch (error) {
+        setBackgroundTaskAction({
+          taskId,
+          status: "error",
+          error: (error as Error).message,
+        });
+      }
+    },
+    [loadBackgroundTaskOutput, loadBackgroundTasks],
+  );
+  const cancelBackgroundTask = useCallback(
+    (taskId: string) =>
+      runBackgroundTaskAction(taskId, RuntimeClient.cancelBackgroundTask),
+    [runBackgroundTaskAction],
+  );
+  const retryBackgroundTask = useCallback(
+    (taskId: string) =>
+      runBackgroundTaskAction(taskId, RuntimeClient.retryBackgroundTask),
+    [runBackgroundTaskAction],
+  );
+  const steerBackgroundTask = useCallback(
+    (taskId: string, prompt: string) =>
+      runBackgroundTaskAction(taskId, (id) =>
+        RuntimeClient.steerBackgroundTask(id, prompt),
+      ),
+    [runBackgroundTaskAction],
+  );
   const currentSessionTitle = useMemo(() => {
     if (!currentSessionId) return null;
     if (currentSessionSummary?.prompt) {
@@ -789,7 +836,6 @@ function App() {
                 {t("common.errorWithMessage", { message: runError })}
               </div>
             )}
-
             {selectedChildContext ? (
               <>
                 <SubsessionLiveStatus
@@ -835,6 +881,29 @@ function App() {
                   onSelectSession={handleSelectSession}
                 />
               </div>
+              <ChildSessionSidebar
+                parentSessionId={childSessionParentId ?? currentSessionId}
+                tasks={backgroundTasks}
+                status={backgroundTasksStatus}
+                error={backgroundTasksError}
+                selectedTaskId={selectedBackgroundTaskOutputId}
+                taskOutput={backgroundTaskOutput}
+                taskOutputStatus={backgroundTaskOutputStatus}
+                taskOutputError={backgroundTaskOutputError}
+                onSelectParent={returnToParentSession}
+                onSelectTask={(taskId) => void loadBackgroundTaskOutput(taskId)}
+                onRefresh={() => void loadBackgroundTasks()}
+                onCancelTask={cancelBackgroundTask}
+                onRetryTask={retryBackgroundTask}
+                onSteerTask={steerBackgroundTask}
+                actionTaskId={backgroundTaskAction?.taskId ?? null}
+                actionStatus={
+                  backgroundTaskAction?.status === "loading"
+                    ? "loading"
+                    : "idle"
+                }
+                actionError={backgroundTaskAction?.error ?? null}
+              />
             </div>
 
             <TodoPanel snapshot={activeTodoSnapshot} />

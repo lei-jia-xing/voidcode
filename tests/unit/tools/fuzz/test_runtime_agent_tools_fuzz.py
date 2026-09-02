@@ -56,6 +56,9 @@ class _RecordingBackgroundOutputRuntime:
     def __init__(self) -> None:
         self.task_ids: list[str] = []
 
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        _ = task_id, parent_session_id
+
     def load_background_task_result(
         self,
         task_id: str,
@@ -110,6 +113,9 @@ class _MissingSessionBackgroundOutputRuntime(_RecordingBackgroundOutputRuntime):
 class _RecordingBackgroundCancelRuntime:
     def __init__(self) -> None:
         self.task_ids: list[str] = []
+
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        _ = task_id, parent_session_id
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         self.task_ids.append(task_id)

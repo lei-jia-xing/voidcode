@@ -19,6 +19,8 @@ from .runtime_context import current_runtime_tool_context
 
 
 class BackgroundOutputRuntime(Protocol):
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
+
     def load_background_task_result(
         self,
         task_id: str,
@@ -240,18 +242,17 @@ class BackgroundOutputTool:
 
         assert args.task_id is not None
         timeout_seconds = max(args.timeout, 0) / 1000
+        context = current_runtime_tool_context()
+        if context is not None:
+            self._runtime.authorize_background_task_owner(
+                args.task_id,
+                parent_session_id=context.session_id,
+            )
         result = self._runtime.load_background_task_result(
             args.task_id,
             emit_result_read_hook=not args.block,
         )
         block_timed_out = False
-        context = current_runtime_tool_context()
-        if context is not None and result.parent_session_id != context.session_id:
-            raise ValueError(
-                f"background_output cannot read task {result.task_id}: only its parent "
-                f"session ({result.parent_session_id or 'unknown'}) may read it "
-                f"(current session: {context.session_id})"
-            )
         if args.block and not is_background_task_terminal(result.status):
             waited = self._runtime.wait_for_background_task(args.task_id, timeout_seconds=timeout_seconds)
             block_timed_out = not is_background_task_terminal(waited.status)

@@ -59,4 +59,45 @@ describe("ChildSessionSidebar", () => {
 
     expect(screen.getByText("No child sessions yet.")).toBeInTheDocument();
   });
+
+  it("invokes runtime task controls without selecting the task", async () => {
+    const onCancelTask = vi.fn().mockResolvedValue(undefined);
+    const onRetryTask = vi.fn().mockResolvedValue(undefined);
+    const onSteerTask = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <ChildSessionSidebar
+        {...baseProps}
+        tasks={[{ ...baseProps.tasks[0], status: "running" }]}
+        onCancelTask={onCancelTask}
+        onRetryTask={onRetryTask}
+        onSteerTask={onSteerTask}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onCancelTask).toHaveBeenCalledWith("task-1");
+    expect(baseProps.onSelectTask).not.toHaveBeenCalled();
+
+    rerender(
+      <ChildSessionSidebar
+        {...baseProps}
+        tasks={[
+          {
+            ...baseProps.tasks[0],
+            status: "idle",
+            keep_alive: true,
+          },
+        ]}
+        onSteerTask={onSteerTask}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Send instruction" }),
+      {
+        target: { value: "continue checking" },
+      },
+    );
+    fireEvent.submit(screen.getByRole("textbox", { name: "Send instruction" }));
+    expect(onSteerTask).toHaveBeenCalledWith("task-1", "continue checking");
+  });
 });

@@ -255,13 +255,21 @@ def test_steer_background_task_interrupted_keep_alive_resumes_same_task(tmp_path
 class _StubSteerRuntime:
     def __init__(self, task: BackgroundTaskState) -> None:
         self._task = task
+        self.calls: list[tuple[str, str]] = []
         self.steered: list[tuple[str, str]] = []
 
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        self.calls.append(("authorize", task_id))
+        if parent_session_id != self._task.parent_session_id:
+            raise ValueError("only its parent session may steer it")
+
     def load_background_task(self, task_id: str) -> BackgroundTaskState:
+        self.calls.append(("load", task_id))
         assert task_id == self._task.task.id
         return self._task
 
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState:
+        self.calls.append(("steer", task_id))
         self.steered.append((task_id, content))
         return BackgroundTaskState(
             task=self._task.task,
@@ -303,6 +311,7 @@ def test_steer_task_tool_rejects_non_parent_session() -> None:
             )
 
     assert runtime.steered == []
+    assert runtime.calls == [("authorize", "task-keep-alive-1")]
 
 
 def test_steer_task_tool_parent_dispatches_steer() -> None:
@@ -319,6 +328,11 @@ def test_steer_task_tool_parent_dispatches_steer() -> None:
             workspace=Path("."),
         )
 
+    assert runtime.calls == [
+        ("authorize", "task-keep-alive-1"),
+        ("load", "task-keep-alive-1"),
+        ("steer", "task-keep-alive-1"),
+    ]
     assert result.status == "ok"
     assert result.data["task_id"] == "task-keep-alive-1"
     assert result.data["status"] == "running"

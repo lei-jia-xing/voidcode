@@ -2311,7 +2311,9 @@ def test_runtime_background_task_executes_through_existing_runtime_path(tmp_path
     assert resumed.session.metadata["background_task_id"] == started.task.id
     assert resumed.session.metadata["background_run"] is True
     assert resumed.output == "background hello"
-    assert completed == loaded
+    # Observability is a live projection and can differ between the waiter
+    # snapshot and a subsequent load; persisted task truth must remain equal.
+    assert replace(completed, observability=loaded.observability) == loaded
 
 
 def test_runtime_background_child_idle_emits_one_parent_reminder_per_episode(

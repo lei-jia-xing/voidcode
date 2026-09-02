@@ -30,8 +30,8 @@
 - 让后台任务继续走现有 runtime 执行路径
 - 通过 `task` 工具路由受支持的 child preset，并建立 parent / child session linkage
 - 通过 runtime events 通知 parent session
-- 通过 `load_background_task_result` / `background_output` 读取摘要或有界 child transcript
-- 通过 CLI 与 HTTP 暴露 task status / output / cancel / retry / list surfaces
+- 通过 `load_background_task_result` / `background_output` 读取摘要或有界 child transcript；通过 `background_ps` 读取当前 parent session 的最多 100 条 bounded task roster，不返回 prompt/transcript/result content
+- 通过 CLI 与 HTTP 暴露 task status / output / cancel / retry / list surfaces；`background_ps` 是 model-facing runtime tool，不替代 operator/CLI list API
 
 它支持的 async delegation 语义是收敛的：
 
@@ -512,18 +512,17 @@ MCP 当前是 runtime-managed capability，不是 workspace-scoped marketplace�
 Leader 读取结果时应遵守以下规则：
 
 - `background_output` 的 selector 必须严格互斥：单任务旧调用使用 `task_id`；聚合调用使用 `task_ids` 或 `parallel_group_id`，三者只能提供一个。`task_ids` 有界且不得重复；`parallel_group_id` 由 runtime 按持久化 group truth 解析。
-- 聚合读取使用当前 runtime tool context 的 `session_id` 作为 parent owner；runtime 必须拒绝不属于该 parent 的 task 或 group，工具/模型不得通过客户端参数绕过 lineage ownership。
+- `background_ps` 无参数，要求 active runtime tool context；runtime 使用其中的 parent `session_id` 只投影该 parent 的最多 100 条 task roster。返回 task/child/group/lifecycle/timestamp/approval/result flags 与 next-step references，不返回 prompt、transcript 或 child result content。
+- 聚合读取使用当前 runtime tool context 的 `session_id` 作为 parent owner；对于显式 `task_ids`，runtime 先逐个完成 parent ownership authorization，再加载 task state/result；`parallel_group_id` 查询本身按 parent 过滤。runtime 必须拒绝不属于该 parent 的 task 或 group，工具/模型不得通过客户端参数绕过 lineage ownership。
 - `block=true` 使用 runtime-owned Condition/lifecycle wait，不做 tight polling；`timeout` 单位为毫秒且阻塞等待至少 1000ms。超时返回当前各 task 状态并设置 `block_timed_out`，不得把任务误标为失败。
 - 聚合结果是 bounded model-facing projection：每个 task 只返回 `status`、有界 `summary`/`error`、`structured_output` 与关联状态字段；不得复制 child prompt、transcript 或 raw child session 内容。结果同时包含 group completeness、counts、expected task count 与 task ids。
-- `background_output(task_id, full_session=true)` 仍可返回 bounded child session metadata/transcript preview；该单任务兼容路径不改变聚合结果的 no-transcript 约束。
-- CLI `voidcode tasks status/output/list/cancel/retry/steer --json` 返回 machine-readable payload，并保留 readable 默认输出；结构化字段应包含 `task_id`、`parent_session_id`、`requested_child_session_id`、`child_session_id`、approval / question request id、`result_available`、`error_type` 与 `next_steps`。
 - CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / idle / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks steer <task_id> "<prompt>"`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。
 - failed/cancelled/interrupted task 可以通过 runtime 方法 `retry_background_task(task_id)`、CLI `voidcode tasks retry <task_id>` 或 HTTP `POST /api/tasks/<task_id>/retry` 显式重试。retry 必须复用旧 task 持久化的 request prompt、requested child session id、parent session id、metadata、routing 与 `allocate_session_id`，并创建新的 queued task handle；不得改写旧 terminal task。
 - idle keep-alive task 通过 `steer_background_task(task_id, prompt)`（CLI `voidcode tasks steer <task_id> "<prompt>"`、HTTP `POST /api/tasks/<task_id>/steer`、工具 `steer_task(task_id, prompt)`）派发下一 worker turn；keep-alive 的 `interrupted` 任务可视为断点续跑同样 steer。steer 只对 keep-alive 任务开放，且任务必须处于 `idle`/`interrupted`（turn 在飞时拒绝）。
 - failed/interrupted child 输出可以提示用户显式请求 retry/continue，并优先使用 runtime-owned `retry_background_task` 返回的新 task id；工具本身不得自动进入无限 retry loop。
 - repeated child failure 应升级给 leader / user，而不是继续隐藏在后台循环里。
-- `background_cancel` 对 unknown task 返回稳定 `status="unknown"` payload；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。
+- `background_cancel` 对 unknown task 返回稳定 `status="unknown"` payload；即使 model-facing runtime context 中 authorization 先发现 unknown id，也不得把 unknown 误报为权限错误；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。
 - `background_output` 的 payload 应包含 `retrieval_instruction` 与 compact `handoff_summary`，至少表达 objective、completed work、open questions、files touched、verification、blocked/error reason；未知项用空值或空列表表达，不能要求客户端推断。
 
 ## Lifecycle hooks

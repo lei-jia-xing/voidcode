@@ -1,11 +1,7 @@
 import type { ControlButtonProps } from "./ControlButton";
 
 export type ControlButtonVariant =
-  | "primary"
-  | "secondary"
-  | "ghost"
-  | "danger"
-  | "confirm";
+  "primary" | "secondary" | "ghost" | "danger" | "confirm";
 
 export function controlButtonClassName({
   variant = "secondary",

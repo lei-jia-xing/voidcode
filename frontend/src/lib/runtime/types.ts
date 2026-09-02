@@ -352,6 +352,20 @@ export interface BackgroundTaskSummary {
   created_at: number;
   updated_at: number;
   created_at_unix_ms?: number | null;
+  keep_alive?: boolean;
+  steer_prompt?: string | null;
+}
+
+export interface BackgroundTaskControlResponse {
+  task: BackgroundTaskState;
+}
+
+export interface BackgroundTaskRetryResponse extends BackgroundTaskControlResponse {
+  retry_of_task_id: string;
+}
+
+export interface BackgroundTaskSteerResponse extends BackgroundTaskControlResponse {
+  steer_prompt: string;
 }
 
 export interface BackgroundTaskState {

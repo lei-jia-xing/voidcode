@@ -361,3 +361,53 @@ def test_provider_graph_binds_workspace_preview_callback_and_sanitizes_write_eve
     assert all(isinstance(event.payload.get("diff_preview"), dict) for event in lifecycle)
     assert "+new" in lifecycle[-1].payload["diff_preview"]["diff"]
     assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_apply_patch_preview_degrades_unsafe_quoted_unified_path(tmp_path: Path) -> None:
+    patch_text = "\n".join(
+        [
+            'diff --git "a/../outside.txt" "b/../outside.txt"',
+            "new file mode 100644",
+            "--- /dev/null",
+            '+++ "b/../outside.txt"',
+            "@@ -0,0 +1 @@",
+            "+unsafe",
+            "",
+        ]
+    )
+
+    preview = build_tool_call_preview(
+        workspace=tmp_path,
+        tool_name="apply_patch",
+        arguments={"patch": patch_text},
+    )
+
+    assert preview is not None
+    assert preview["status"] == "degraded"
+    assert preview["reason"] == "unsafe_path"
+
+
+def test_apply_patch_preview_represents_structured_move(tmp_path: Path) -> None:
+    source = tmp_path / "old name.txt"
+    source.write_text("old\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: old name.txt",
+            "*** Move to: new name.txt",
+            "@@",
+            "-old",
+            "+new",
+            "*** End Patch",
+        ]
+    )
+
+    preview = build_tool_call_preview(
+        workspace=tmp_path,
+        tool_name="apply_patch",
+        arguments={"patch": patch_text},
+    )
+
+    assert preview is not None
+    assert preview["status"] == "ready"
+    assert preview["paths"] == ["new name.txt"]

@@ -33,6 +33,7 @@ _LEADER_TOOL_ALLOWLIST = (
     "todo_write",
     "background_cancel",
     "background_output",
+    "background_ps",
     "steer_task",
     "question",
     "skill",

@@ -655,6 +655,7 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "ast_grep",
         "background_cancel",
         "background_output",
+        "background_ps",
         "edit",
         "glob",
         "grep",
@@ -683,6 +684,13 @@ def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() ->
     assert "Do not guess or fabricate a background task's result" in guidance_for_tool("task")
     assert "Do not repeatedly poll this tool in a tight loop" in guidance_for_tool("background_output")
     assert "Do not read a running child transcript just to peek" in guidance_for_tool("background_output")
+
+
+def test_background_ps_guidance_preserves_runtime_scoping_and_bounded_output() -> None:
+    guidance = guidance_for_tool("background_ps")
+    assert guidance_filename_for_tool("background_ps") == "background_ps.txt"
+    assert "active parent session" in guidance
+    assert "Prompts, transcripts" in guidance
 
 
 def test_dynamic_mcp_tool_definitions_keep_server_description_without_sidecar() -> None:

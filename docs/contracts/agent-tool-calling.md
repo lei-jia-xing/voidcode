@@ -636,13 +636,23 @@ runtime 在成功的 `todo_write` 后更新 session metadata 中的 runtime todo
 - `full_session=true` 仅对单任务 selector 生效，返回 bounded child-session metadata/transcript preview；聚合 selector 始终是 no-transcript projection。`message_limit` 被限制在 1–100。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
+#### `background_ps`
+
+- 分组：delegated execution
+- 只读：是
+- 用途：读取当前 active parent session 的 bounded background-task roster；由 runtime 基于 SQLite task truth 做 parent scope，不返回 prompt、transcript 或 child result content。
+- 参数：无；调用必须发生在 active runtime tool context 中。
+- 返回：最多 100 条 task/child/group/lifecycle/timestamp/approval/result projection，以及 `truncated` / `total_task_count` 等 bounded metadata。需要读取具体结果时使用 `background_output`。
+- 详见 `src/voidcode/tools/background_ps.py` 与 `docs/contracts/background-task-delegation.md`。
+
+
 #### `steer_task`
 
 - 分组：delegated execution
 - 只读：是
 - 用途：向 keep-alive delegated worker 派发下一轮指令。
 - 参数：`task_id`、`prompt`。
-- 仅 task 的 parent session 可调用；task 必须由 `task(keep_alive=true, run_in_background=true)` 创建，并处于 `idle`（awaiting_steer）或 `interrupted`（可恢复断点）。running task 有 turn 在飞，不能 steer；不支持 pipelining。steer turn 完成后 worker 回到 idle，除非通过 `submit_result` 完成任务。
+- 仅 task 的 parent session 可调用；runtime 必须先完成 parent ownership authorization，再读取 task state 或派发 steer；task 必须由 `task(keep_alive=true, run_in_background=true)` 创建，并处于 `idle`（awaiting_steer）或 `interrupted`（可恢复断点）。running task 有 turn 在飞，不能 steer；不支持 pipelining。steer turn 完成后 worker 回到 idle，除非通过 `submit_result` 完成任务。
 - 详见 `src/voidcode/tools/steer_task.txt` 与 `docs/contracts/background-task-delegation.md`。
 
 #### `background_cancel`

@@ -372,4 +372,60 @@ describe("RuntimeClient integration contract", () => {
     expect(debug.prompt).toBe("read");
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it("calls authorized background task cancel, retry, and steer endpoints", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/cancel")) {
+          expect(init?.method).toBe("POST");
+          expect(init?.body).toBeUndefined();
+          return {
+            ok: true,
+            json: async () => ({
+              task: { id: "task/cancel", status: "cancelled" },
+            }),
+          } as Response;
+        }
+        if (url.endsWith("/retry")) {
+          expect(init?.method).toBe("POST");
+          expect(init?.body).toBeUndefined();
+          return {
+            ok: true,
+            json: async () => ({
+              retry_of_task_id: "task/retry",
+              task: { task: { id: "task-new" }, status: "queued" },
+            }),
+          } as Response;
+        }
+        if (url.endsWith("/steer")) {
+          expect(init?.method).toBe("POST");
+          expect(init?.headers).toEqual({ "Content-Type": "application/json" });
+          expect(init?.body).toBe(
+            JSON.stringify({ prompt: "continue checking" }),
+          );
+          return {
+            ok: true,
+            json: async () => ({
+              steer_prompt: "continue checking",
+              task: { task: { id: "task/steer" }, status: "running" },
+            }),
+          } as Response;
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      });
+
+    const cancelled = await RuntimeClient.cancelBackgroundTask("task/cancel");
+    const retried = await RuntimeClient.retryBackgroundTask("task/retry");
+    const steered = await RuntimeClient.steerBackgroundTask(
+      "task/steer",
+      "continue checking",
+    );
+
+    expect(cancelled.task.id).toBe("task/cancel");
+    expect(retried.task.task.id).toBe("task-new");
+    expect(steered.task.task.id).toBe("task/steer");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
 });

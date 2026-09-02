@@ -22,9 +22,13 @@ from voidcode.tools import (
     BackgroundOutputTool,
     ToolCall,
 )
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 class _StubBackgroundRuntime:
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        _ = task_id, parent_session_id
+
     def load_background_task_result(
         self,
         task_id: str,
@@ -425,6 +429,16 @@ class _UnknownCancelRuntime(_StubBackgroundRuntime):
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         assert task_id == "missing-task"
         raise ValueError("unknown background task: missing-task")
+
+
+class _UnknownAuthorizedCancelRuntime(_UnknownCancelRuntime):
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        _ = parent_session_id
+        assert task_id == "missing-task"
+        raise ValueError("unknown background task: missing-task")
+
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
+        raise AssertionError(f"unknown task should not be cancelled: {task_id}")
 
 
 def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
@@ -882,6 +896,20 @@ def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path:
     }
 
 
+def test_background_cancel_unknown_task_stays_stable_in_runtime_context(tmp_path: Path) -> None:
+    tool = BackgroundCancelTool(runtime=_UnknownAuthorizedCancelRuntime())
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="leader-session")):
+        result = tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"taskId": "missing-task"}),
+            workspace=tmp_path,
+        )
+
+    assert result.status == "ok"
+    assert result.data["task_id"] == "missing-task"
+    assert result.data["status"] == "unknown"
+    assert result.data["terminal"] is True
+
+
 def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path) -> None:
     tool = BackgroundCancelTool(runtime=_StubBackgroundRuntime())
     task_id_type_error = (
@@ -913,3 +941,41 @@ def test_background_cancel_tool_reports_task_id_validation_errors(tmp_path: Path
             ToolCall(tool_name="background_cancel", arguments={}),
             workspace=tmp_path,
         )
+
+
+class _UnauthorizedBackgroundRuntime(_StubBackgroundRuntime):
+    def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
+        _ = task_id
+        if parent_session_id != "leader-session":
+            raise ValueError("background task: only its parent session may access or cancel it")
+
+    def load_background_task_result(
+        self,
+        task_id: str,
+        *,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult:
+        raise AssertionError(f"unauthorized result load: {task_id}; emit={emit_result_read_hook}")
+
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
+        raise AssertionError(f"unauthorized cancellation: {task_id}")
+
+
+def test_background_output_rejects_foreign_parent_before_loading_result(tmp_path: Path) -> None:
+    tool = BackgroundOutputTool(runtime=_UnauthorizedBackgroundRuntime())
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="foreign-session")):
+        with pytest.raises(ValueError, match="only its parent"):
+            tool.invoke(
+                ToolCall(tool_name="background_output", arguments={"task_id": "task-1"}),
+                workspace=tmp_path,
+            )
+
+
+def test_background_cancel_rejects_foreign_parent_before_cancellation(tmp_path: Path) -> None:
+    tool = BackgroundCancelTool(runtime=_UnauthorizedBackgroundRuntime())
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="foreign-session")):
+        with pytest.raises(ValueError, match="only its parent"):
+            tool.invoke(
+                ToolCall(tool_name="background_cancel", arguments={"taskId": "task-1"}),
+                workspace=tmp_path,
+            )

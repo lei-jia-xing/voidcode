@@ -33,12 +33,12 @@
 
 ## 当前角色集
 
-- [`leader`](./leader/README.md)
-- [`worker`](./worker/README.md)
-- [`advisor`](./advisor/README.md)
-- [`explore`](./explore/README.md)
-- [`researcher`](./researcher/README.md)
-- [`product`](./product/README.md)
+- [`leader`](./leader/base.txt)
+- [`worker`](./worker/base.txt)
+- [`advisor`](./advisor/base.txt)
+- [`explore`](./explore/base.txt)
+- [`researcher`](./researcher/base.txt)
+- [`product`](./product/base.txt)
 
 当前 builtin manifest 已覆盖以下角色：
 
