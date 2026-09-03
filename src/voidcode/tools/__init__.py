@@ -3,10 +3,8 @@ from .apply_workspace_edit import ApplyWorkspaceEditTool
 from .ast_grep import AstGrepTool
 from .background_cancel import BackgroundCancelTool
 from .background_output import BackgroundOutputTool
-from .background_process_logs import BackgroundProcessLogsTool
-from .background_process_send import BackgroundProcessSendTool
-from .background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
-from .background_process_stop import BackgroundProcessStopTool
+from .background_process import BackgroundProcessTool
+from .background_process_start import BackgroundProcessManager
 from .background_ps import BackgroundPsTool
 from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolInvocation, ToolResult, ToolResultStatus
 from .edit import EditTool
@@ -52,11 +50,8 @@ __all__ = [
     "AstGrepTool",
     "BackgroundCancelTool",
     "BackgroundOutputTool",
-    "BackgroundProcessLogsTool",
     "BackgroundProcessManager",
-    "BackgroundProcessSendTool",
-    "BackgroundProcessStartTool",
-    "BackgroundProcessStopTool",
+    "BackgroundProcessTool",
     "EditTool",
     "GlobTool",
     "GrepTool",

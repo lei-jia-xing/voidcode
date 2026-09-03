@@ -1,0 +1,5 @@
+Usage:
+- Use op=start with command to launch a long-lived process, op=ps to inspect bounded owner/workspace-scoped process rows, op=logs to read retained output, op=send to write stdin, and op=stop to terminate a process.
+- Use shell_exec for one-shot commands that should finish in the current turn.
+- After op=start, use op=logs to verify readiness rather than repeatedly starting replacements.
+- Treat process_id, running, exit_code, and controllable as the source of truth. Stale rows from a prior runtime are visible in op=ps but cannot be controlled.

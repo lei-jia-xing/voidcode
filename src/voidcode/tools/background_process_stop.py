@@ -34,7 +34,7 @@ class BackgroundProcessStopTool:
         input_schema={
             "process_id": {
                 "type": "string",
-                "description": "Process id returned by background_process_start",
+                "description": "Process id returned by background_process with op=start",
             }
         },
         read_only=False,

@@ -30,11 +30,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "ast_grep",
         "background_cancel",
         "background_output",
-        "background_ps",
-        "background_process_logs",
-        "background_process_send",
-        "background_process_start",
-        "background_process_stop",
+        "background_process",
         "edit",
         "glob",
         "grep",
@@ -201,11 +197,9 @@ class BuiltinToolProvider:
     _question_tool: Tool | None
     _steer_task_tool: Tool | None
     _background_output_tool: Tool | None
+    _background_cancel_tool: Tool | None
     _background_ps_tool: Tool | None
-    _background_process_start_tool: Tool | None
-    _background_process_logs_tool: Tool | None
-    _background_process_stop_tool: Tool | None
-    _background_process_send_tool: Tool | None
+    _background_process_tool: Tool | None
 
     def __init__(
         self,
@@ -222,10 +216,7 @@ class BuiltinToolProvider:
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
         background_ps_tool: Tool | None = None,
-        background_process_start_tool: Tool | None = None,
-        background_process_logs_tool: Tool | None = None,
-        background_process_stop_tool: Tool | None = None,
-        background_process_send_tool: Tool | None = None,
+        background_process_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
         self._mcp_tools = mcp_tools
@@ -239,10 +230,7 @@ class BuiltinToolProvider:
         self._background_output_tool = background_output_tool
         self._background_cancel_tool = background_cancel_tool
         self._background_ps_tool = background_ps_tool
-        self._background_process_start_tool = background_process_start_tool
-        self._background_process_logs_tool = background_process_logs_tool
-        self._background_process_stop_tool = background_process_stop_tool
-        self._background_process_send_tool = background_process_send_tool
+        self._background_process_tool = background_process_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
         edit_tool = EditTool(hooks_config=self._hooks_config, edit_schema_resolver=self._edit_schema_resolver)
@@ -277,7 +265,6 @@ class BuiltinToolProvider:
             tools.append(self._question_tool)
         elif _QuestionTool is not None:
             tools.append(_QuestionTool())
-
         if self._steer_task_tool is not None:
             tools.append(self._steer_task_tool)
 
@@ -290,17 +277,8 @@ class BuiltinToolProvider:
         if self._background_ps_tool is not None:
             tools.append(self._background_ps_tool)
 
-        if self._background_process_start_tool is not None:
-            tools.append(self._background_process_start_tool)
-
-        if self._background_process_logs_tool is not None:
-            tools.append(self._background_process_logs_tool)
-
-        if self._background_process_stop_tool is not None:
-            tools.append(self._background_process_stop_tool)
-
-        if self._background_process_send_tool is not None:
-            tools.append(self._background_process_send_tool)
+        if self._background_process_tool is not None:
+            tools.append(self._background_process_tool)
 
         tools.extend(self._mcp_tools)
 

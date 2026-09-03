@@ -55,10 +55,8 @@ from ..provider.snapshot import (
 from ..skills import SkillRegistry, skill_registry_with_builtins
 from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
-from ..tools.background_process_logs import BackgroundProcessLogsTool
-from ..tools.background_process_send import BackgroundProcessSendTool
-from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessPersistence, BackgroundProcessStartTool
-from ..tools.background_process_stop import BackgroundProcessStopTool
+from ..tools.background_process import BackgroundProcessTool
+from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessPersistence
 from ..tools.background_ps import BackgroundPsTool
 from ..tools.contracts import (
     Tool,
@@ -843,10 +841,7 @@ class VoidCodeRuntime(RuntimeSurface):
             background_output_tool=BackgroundOutputTool(runtime=self),
             background_cancel_tool=BackgroundCancelTool(runtime=self),
             background_ps_tool=BackgroundPsTool(runtime=self),
-            background_process_start_tool=BackgroundProcessStartTool(runtime=self),
-            background_process_logs_tool=BackgroundProcessLogsTool(runtime=self),
-            background_process_stop_tool=BackgroundProcessStopTool(runtime=self),
-            background_process_send_tool=BackgroundProcessSendTool(runtime=self),
+            background_process_tool=BackgroundProcessTool(runtime=self),
         )
 
     def _edit_schema_resolver(self) -> EditSchemaResolver:
@@ -2561,7 +2556,7 @@ class VoidCodeRuntime(RuntimeSurface):
             read_only=runtime_read_only_from_metadata(session.metadata),
         )
 
-        if path_scope == "workspace" and tool.read_only and operation_class == "read":
+        if path_scope == "workspace" and operation_class == "read":
             return PermissionOutcome(
                 chunks=(
                     RuntimeStreamChunk(
@@ -2579,18 +2574,21 @@ class VoidCodeRuntime(RuntimeSurface):
                 last_sequence=sequence,
             )
 
-        pending_approval = permission.pending_approval
-        if pending_approval is None:
-            raise ValueError("non-read-only permission decisions require pending approval data")
-        if permission.decision in ("allow", "deny"):
+        if permission.decision != "ask":
+            pending = permission.pending_approval
+            if pending is None:
+                raise ValueError("non-read-only permission decisions require pending approval data")
             return self.approval_resolution_outcome(
                 session=session,
-                pending=pending_approval,
+                pending=pending,
                 decision=permission.decision,
                 sequence=sequence,
             )
 
-        pending = pending_approval
+        pending = permission.pending_approval
+        if pending is None:
+            raise ValueError("non-read-only permission decisions require pending approval data")
+
         waiting_session = session_with_plan_state(
             SessionState(
                 session=session.session,

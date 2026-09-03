@@ -262,6 +262,32 @@ class BackgroundProcessManager:
             self._refresh(state)
             return state
 
+    def list_processes(
+        self,
+        *,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+        limit: int = 64,
+    ) -> tuple[BackgroundProcessState, ...]:
+        """Return a bounded, workspace/owner-scoped process projection."""
+        if limit < 1:
+            return ()
+        normalized_workspace = workspace.resolve()
+        with self._lock:
+            if self._persistence is not None:
+                self._reconcile()
+            states: list[BackgroundProcessState] = []
+            for state in self._processes.values():
+                if state.cwd != str(normalized_workspace):
+                    continue
+                if enforce_owner and state.owner_session_id != owner_session_id:
+                    continue
+                self._refresh(state)
+                states.append(state)
+            states.sort(key=lambda state: state.process_id)
+            return tuple(states[:limit])
+
     def find_stale(
         self,
         *,
@@ -662,10 +688,10 @@ def _background_process_start_guidance(*, process_id: str, reused: bool, stale_p
     if reused:
         return (
             f"An exact-match process is already running; reuse process_id '{process_id}' "
-            "instead of calling background_process_start again for the same trimmed command "
+            "instead of calling background_process with op=start again for the same trimmed command "
             "in this workspace." + stale_note
         )
-    return f"Track this process by process_id '{process_id}'. Use this new id for logs or stop." + stale_note
+    return f"Track this process by process_id '{process_id}'. Use background_process with op=logs, send, or stop." + stale_note
 
 
 class BackgroundProcessStartTool:

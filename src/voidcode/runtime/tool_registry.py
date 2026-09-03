@@ -141,10 +141,7 @@ class ToolRegistry:
         background_output_tool: Tool | None = None,
         background_cancel_tool: Tool | None = None,
         background_ps_tool: Tool | None = None,
-        background_process_start_tool: Tool | None = None,
-        background_process_logs_tool: Tool | None = None,
-        background_process_stop_tool: Tool | None = None,
-        background_process_send_tool: Tool | None = None,
+        background_process_tool: Tool | None = None,
     ) -> ToolRegistry:
         return cls.from_tools(
             BuiltinToolProvider(
@@ -160,10 +157,7 @@ class ToolRegistry:
                 background_output_tool=background_output_tool,
                 background_cancel_tool=background_cancel_tool,
                 background_ps_tool=background_ps_tool,
-                background_process_start_tool=background_process_start_tool,
-                background_process_logs_tool=background_process_logs_tool,
-                background_process_stop_tool=background_process_stop_tool,
-                background_process_send_tool=background_process_send_tool,
+                background_process_tool=background_process_tool,
             ).provide_tools()
         )
 

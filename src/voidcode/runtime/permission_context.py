@@ -123,6 +123,9 @@ def operation_class_for_tool(
     tool_instance: Tool,
     arguments: dict[str, object] | None = None,
 ) -> OperationClass:
+    if tool_name == "background_process":
+        operation = arguments.get("op") if arguments is not None else None
+        return "read" if operation in ("ps", "logs") else "execute"
     if tool_name == "shell_exec" or isinstance(tool_instance, LocalCustomTool):
         return "execute"
     if tool_name == "ast_grep" and arguments is not None:

@@ -50,6 +50,9 @@ def test_live_builtin_registry_has_unique_metadata_and_guidance(runtime: VoidCod
     definitions = _static_definitions(runtime._base_tool_registry)
     assert definitions
     assert len({definition.name for definition in definitions}) == len(definitions)
+    names = {definition.name for definition in definitions}
+    assert "background_process" in names
+    assert not names.intersection({"background_process_start", "background_process_logs", "background_process_send", "background_process_stop"})
 
     for definition in definitions:
         assert definition.name.strip() == definition.name

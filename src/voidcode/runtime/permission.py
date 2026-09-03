@@ -98,6 +98,8 @@ def is_plan_mode_blocked(
     """
     if not read_only:
         return False
+    if operation_class == "read":
+        return False
     if not tool.read_only:
         return True
     return operation_class in ("write", "execute")
@@ -152,7 +154,7 @@ def resolve_permission(
             return PermissionOutcome(decision="ask", pending_approval=pending_approval)
         return PermissionOutcome(decision=rule_decision, pending_approval=pending_approval)
 
-    if path_scope == "workspace" and tool.read_only and operation_class in (None, "read"):
+    if path_scope == "workspace" and (operation_class == "read" or (operation_class is None and tool.read_only)):
         return PermissionOutcome(decision="allow")
 
     if path_scope == "external" and external_decision is not None:

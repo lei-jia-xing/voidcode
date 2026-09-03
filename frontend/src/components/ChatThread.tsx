@@ -752,10 +752,7 @@ function toolIcon(tool: ChatTool) {
     return <HelpCircle className={className} />;
   }
   if (
-    tool.name === "background_process_start" ||
-    tool.name === "background_process_stop" ||
-    tool.name === "background_process_logs" ||
-    tool.name === "background_process_send" ||
+    tool.name === "background_process" ||
     tool.name === "background_output" ||
     tool.name === "background_cancel" ||
     tool.name === "background_retry"
@@ -1567,12 +1564,13 @@ function BackgroundProcessToolActivity({ tool }: { tool: ChatTool }) {
     toolValue(tool.arguments?.process_id) ??
     toolValue(data?.process_id) ??
     toolValue(data?.id);
+  const operation = toolValue(tool.arguments?.op);
   const action =
-    tool.name === "background_process_start"
+    operation === "start"
       ? t("tool.process.start")
-      : tool.name === "background_process_stop"
+      : operation === "stop"
         ? t("tool.process.stop")
-        : tool.name === "background_process_send"
+        : operation === "send"
           ? t("tool.process.send")
           : t("tool.process.logs");
   const subtitle = command ?? processId ?? action;
@@ -1948,12 +1946,7 @@ function ToolActivity({
   if (tool.name === "web_search") return <WebSearchToolActivity tool={tool} />;
   if (tool.name === "lsp") return <LspToolActivity tool={tool} />;
   if (tool.name === "mcp") return <McpToolActivity tool={tool} />;
-  if (
-    tool.name === "background_process_start" ||
-    tool.name === "background_process_stop" ||
-    tool.name === "background_process_logs" ||
-    tool.name === "background_process_send"
-  )
+  if (tool.name === "background_process")
     return <BackgroundProcessToolActivity tool={tool} />;
   return <GenericToolActivity tool={tool} />;
 }
