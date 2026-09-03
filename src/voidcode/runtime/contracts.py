@@ -37,6 +37,10 @@ class UnknownSessionError(ValueError):
     """Raised when a referenced session does not exist in storage."""
 
 
+class UnknownBackgroundTaskError(ValueError):
+    """Raised when a referenced background task does not exist in storage."""
+
+
 class NoPendingQuestionError(ValueError):
     """Raised when a session has no pending question to answer."""
 

@@ -36,6 +36,16 @@ const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 // the controller out of the persisted store.
 let activeRunAbortController: AbortController | null = null;
 
+type PersistedAppState = Pick<
+  AppState,
+  | "language"
+  | "agentPreset"
+  | "providerModel"
+  | "reasoningEffort"
+  | "currentSessionId"
+  | "sessionSidebarWidth"
+  | "reviewMode"
+>;
 interface AppState {
   language: "en" | "zh-CN";
 
@@ -445,10 +455,6 @@ export const useAppStore = create<AppState>()(
           runStatus: "idle",
           runOrigin: null,
           cancelRequested: false,
-          workspaceSwitchStatus: "loading",
-          workspaceSwitchError: null,
-        });
-        set({
           workspaceSwitchStatus: "loading",
           workspaceSwitchError: null,
         });
@@ -1561,16 +1567,15 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "app-storage",
-      partialize: (state) =>
-        ({
-          language: state.language,
-          agentPreset: state.agentPreset,
-          providerModel: state.providerModel,
-          reasoningEffort: state.reasoningEffort,
-          currentSessionId: state.currentSessionId,
-          sessionSidebarWidth: state.sessionSidebarWidth,
-          reviewMode: state.reviewMode,
-        }) as unknown as AppState,
+      partialize: (state): PersistedAppState => ({
+        language: state.language,
+        agentPreset: state.agentPreset,
+        providerModel: state.providerModel,
+        reasoningEffort: state.reasoningEffort,
+        currentSessionId: state.currentSessionId,
+        sessionSidebarWidth: state.sessionSidebarWidth,
+        reviewMode: state.reviewMode,
+      }),
     },
   ),
 );

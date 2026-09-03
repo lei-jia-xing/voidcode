@@ -402,6 +402,63 @@ def test_save_interrupted_checkpoint_persists_parent_session_id(tmp_path: Path) 
 # ── 6. worker-death convergence on the drain path ──────────────────────────
 
 
+def test_reconcile_serializes_concurrent_first_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = runtime_factory(tmp_path)
+    supervisor = runtime._background_task_supervisor
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    errors: list[BaseException] = []
+
+    def reconcile_once() -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        assert release.wait(timeout=2.0)
+        supervisor.reconciled = True
+
+    monkeypatch.setattr(supervisor, "_reconcile_background_tasks_once", reconcile_once)
+
+    def invoke() -> None:
+        try:
+            supervisor.reconcile_background_tasks_if_needed()
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=invoke)
+    second = threading.Thread(target=invoke)
+    first.start()
+    assert entered.wait(timeout=2.0)
+    second.start()
+    time.sleep(0.05)
+    assert calls == 1
+    release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert supervisor.reconciled is True
+    assert supervisor._reconcile_in_progress is False
+
+
+def test_reconcile_failure_is_observable_and_not_marked_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = runtime_factory(tmp_path)
+    supervisor = runtime._background_task_supervisor
+
+    def fail_reconcile() -> None:
+        raise RuntimeError("reconcile failed")
+
+    monkeypatch.setattr(supervisor, "_reconcile_background_tasks_once", fail_reconcile)
+
+    with pytest.raises(RuntimeError, match="reconcile failed"):
+        supervisor.reconcile_background_tasks_if_needed()
+
+    assert supervisor.reconciled is False
+    assert supervisor._reconcile_in_progress is False
+
+
 def test_drain_terminalizes_running_task_without_live_worker(tmp_path: Path) -> None:
     runtime = runtime_factory(tmp_path)
     supervisor = runtime._background_task_supervisor

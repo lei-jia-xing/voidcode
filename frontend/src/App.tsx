@@ -53,7 +53,7 @@ function SubsessionTimelineHeader({
           compact
           variant="ghost"
           onClick={onReturn}
-          title="Alt+Up"
+          title={t("common.altUp")}
         >
           <MoveLeft className="h-4 w-4" />
           <span>{t("subsession.backToParent")}</span>
@@ -714,7 +714,7 @@ function App() {
                     variant="ghost"
                     onClick={returnToParentSession}
                     aria-label={t("childSessions.parent")}
-                    title="Alt+Up"
+                    title={t("common.altUp")}
                   >
                     <MoveLeft className="w-4 h-4" />
                     <span>{t("childSessions.parent")}</span>

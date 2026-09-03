@@ -8,6 +8,7 @@ import pytest
 from voidcode.runtime.contracts import (
     BackgroundTaskResult,
     RuntimeSessionResult,
+    UnknownBackgroundTaskError,
     UnknownSessionError,
 )
 from voidcode.runtime.events import RUNTIME_TOOL_COMPLETED, EventEnvelope
@@ -428,17 +429,23 @@ class _RunningCancelRuntime(_StubBackgroundRuntime):
 class _UnknownCancelRuntime(_StubBackgroundRuntime):
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         assert task_id == "missing-task"
-        raise ValueError("unknown background task: missing-task")
+        raise UnknownBackgroundTaskError("unknown background task: missing-task")
 
 
 class _UnknownAuthorizedCancelRuntime(_UnknownCancelRuntime):
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None:
         _ = parent_session_id
         assert task_id == "missing-task"
-        raise ValueError("unknown background task: missing-task")
+        raise UnknownBackgroundTaskError("unknown background task: missing-task")
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
         raise AssertionError(f"unknown task should not be cancelled: {task_id}")
+
+
+class _UnexpectedCancelRuntime(_StubBackgroundRuntime):
+    def cancel_background_task(self, task_id: str) -> BackgroundTaskState:
+        assert task_id == "missing-task"
+        raise ValueError("unknown background task: backend lookup failed")
 
 
 def test_background_output_tool_returns_task_summary(tmp_path: Path) -> None:
@@ -873,6 +880,16 @@ def test_background_cancel_tool_reports_completed_task_without_corrupting_result
     assert result.data["status"] == "completed"
     assert result.data["cancel_requested"] is False
     assert result.data["terminal"] is True
+
+
+def test_background_cancel_tool_does_not_classify_generic_value_error_as_unknown(tmp_path: Path) -> None:
+    tool = BackgroundCancelTool(runtime=_UnexpectedCancelRuntime())
+
+    with pytest.raises(ValueError, match="backend lookup failed"):
+        tool.invoke(
+            ToolCall(tool_name="background_cancel", arguments={"taskId": "missing-task"}),
+            workspace=tmp_path,
+        )
 
 
 def test_background_cancel_tool_reports_unknown_task_deterministically(tmp_path: Path) -> None:

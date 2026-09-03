@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ValidationError, field_validator
 
+from ..runtime.contracts import UnknownBackgroundTaskError
 from ..runtime.task import BackgroundTaskState, is_background_task_terminal
 from ._pydantic_args import format_validation_error
 from .contracts import ToolCall, ToolDefinition, ToolResult
@@ -76,20 +77,12 @@ class BackgroundCancelTool:
                     args.taskId,
                     parent_session_id=context.session_id,
                 )
-            except ValueError as exc:
-                # An unknown id has no task data to disclose. Preserve the
-                # stable unknown-task result while denying existing foreign ids.
-                message = str(exc)
-                if "unknown background task" not in message:
-                    raise
-                return _unknown_task_result(args.taskId, message)
+            except UnknownBackgroundTaskError as exc:
+                return _unknown_task_result(args.taskId, str(exc))
         try:
             task = self._runtime.cancel_background_task(args.taskId)
-        except ValueError as exc:
-            message = str(exc)
-            if "unknown background task" not in message:
-                raise
-            return _unknown_task_result(args.taskId, message)
+        except UnknownBackgroundTaskError as exc:
+            return _unknown_task_result(args.taskId, str(exc))
         cause = task.cancellation_cause or task.error
         if task.status == "cancelled":
             content = f"Cancelled background task {task.task.id}: {cause or 'cancelled'}"

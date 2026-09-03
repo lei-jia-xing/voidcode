@@ -179,8 +179,8 @@ export function Composer({
         return `${provider.label} / ${displayModelName(matchedModel, provider.name)}`;
       }
     }
-    return "Select model";
-  }, [availableModelGroups, selectedModel]);
+    return t("composer.selectModel");
+  }, [availableModelGroups, selectedModel, t]);
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -410,7 +410,7 @@ export function Composer({
               <div className="relative" ref={agentMenuRef}>
                 <button
                   id="composer-agent"
-                  aria-label="Agent"
+                  aria-label={t("composer.agent")}
                   type="button"
                   onClick={() => {
                     if (disabled) return;
@@ -454,7 +454,7 @@ export function Composer({
                 <div className="relative min-w-0 flex-1" ref={modelMenuRef}>
                   <button
                     id="composer-model"
-                    aria-label="Model"
+                    aria-label={t("composer.model")}
                     type="button"
                     onClick={() => {
                       if (disabled) return;
@@ -466,7 +466,7 @@ export function Composer({
                   >
                     {selectedModelAvailable
                       ? selectedModelLabel
-                      : "Select model"}
+                      : t("composer.selectModel")}
                   </button>
 
                   {showModelMenu && (
@@ -528,9 +528,9 @@ export function Composer({
               )}
               {selectedModelAvailable && supportsReasoningEffort && (
                 <label className="inline-flex items-center gap-1 text-[var(--vc-text-subtle)]">
-                  <span>Effort</span>
+                  <span>{t("composer.effort")}</span>
                   <select
-                    aria-label="Reasoning effort"
+                    aria-label={t("composer.reasoningEffort")}
                     value={effectiveReasoningEffort}
                     onChange={handleEffortSelect}
                     disabled={disabled}

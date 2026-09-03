@@ -5050,7 +5050,6 @@ def test_runtime_rejects_stale_session_schema_for_pending_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("VOIDCODE_DB_PATH", str(tmp_path / "stale-schema.sqlite3"))
-    runtime_request, runtime = _approval_runtime(tmp_path, mode="ask")
     database_path = sessions_db_path()
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -5088,9 +5087,8 @@ def test_runtime_rejects_stale_session_schema_for_pending_approval(
         connection.commit()
     finally:
         connection.close()
-
     with pytest.raises(RuntimeError, match="sqlite runtime schema mismatch"):
-        _ = runtime.run(runtime_request(prompt="write danger.txt stale approval", session_id="stale-session"))
+        _ = _approval_runtime(tmp_path, mode="ask")
 
 
 def test_runtime_replay_is_unchanged_when_resume_checkpoint_exists(tmp_path: Path) -> None:

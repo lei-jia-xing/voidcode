@@ -17,6 +17,7 @@ from .contracts import (
     RuntimeStreamChunk,
     RuntimeStreamChunkKind,
     StreamingRuntimeEntrypoint,
+    UnknownBackgroundTaskError,
 )
 from .events import (
     DelegatedExecutionPayload,
@@ -56,6 +57,7 @@ __all__ = [
     "BackgroundTaskRuntimeEntrypoint",
     "BackgroundTaskState",
     "BackgroundTaskStatus",
+    "UnknownBackgroundTaskError",
     "ActiveRunInterruptResult",
     "PendingApproval",
     "PermissionDecision",

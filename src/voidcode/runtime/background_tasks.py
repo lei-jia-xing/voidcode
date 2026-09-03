@@ -27,6 +27,7 @@ from .contracts import (
     RuntimeRequestMetadataPayload,
     RuntimeResponse,
     RuntimeSessionResult,
+    UnknownBackgroundTaskError,
     UnknownSessionError,
 )
 from .events import (
@@ -268,6 +269,7 @@ class RuntimeBackgroundTaskSupervisor:
         self._threads: dict[str, threading.Thread] = {}
         self._shutdown_requested = False
         self._reconciled = False
+        self._reconcile_in_progress = False
         self._provider_running_counts: dict[str, int] = {}
         self._model_running_counts: dict[str, int] = {}
         self._rate_limit_retries: dict[str, _BackgroundTaskRetrySnapshot] = {}
@@ -368,9 +370,9 @@ class RuntimeBackgroundTaskSupervisor:
                     status="interrupted",
                     error="runtime exited while keep-alive worker was awaiting steer",
                 )
-            except Exception as exc:
-                if "unknown background task" in str(exc):
-                    continue
+            except UnknownBackgroundTaskError:
+                continue
+            except Exception:
                 logger.exception(
                     "background task %s could not persist shutdown interruption state",
                     summary.task.id,
@@ -407,9 +409,9 @@ class RuntimeBackgroundTaskSupervisor:
                     status="interrupted",
                     error="runtime shutdown requested before delegated worker execution started",
                 )
-            except Exception as exc:
-                if "unknown background task" in str(exc):
-                    continue
+            except UnknownBackgroundTaskError:
+                continue
+            except Exception:
                 logger.exception(
                     "background task %s could not persist shutdown interruption state",
                     summary.task.id,
@@ -445,14 +447,14 @@ class RuntimeBackgroundTaskSupervisor:
                     ),
                 )
                 task = terminal_task
-            except Exception as exc:
-                if "unknown background task" in str(exc):
-                    logger.debug(
-                        "background task %s disappeared before shutdown finalization: %s",
-                        task_id,
-                        exc,
-                    )
-                    continue
+            except UnknownBackgroundTaskError as exc:
+                logger.debug(
+                    "background task %s disappeared before shutdown finalization: %s",
+                    task_id,
+                    exc,
+                )
+                continue
+            except Exception:
                 logger.exception(
                     "background task %s could not persist shutdown failure state",
                     task_id,
@@ -1458,14 +1460,14 @@ class RuntimeBackgroundTaskSupervisor:
                 status="interrupted",
                 error="runtime shutdown requested before delegated worker execution started",
             )
-        except Exception as exc:
-            if "unknown background task" in str(exc):
-                logger.debug(
-                    "background task %s disappeared before shutdown interruption: %s",
-                    task_id,
-                    exc,
-                )
-                return
+        except UnknownBackgroundTaskError as exc:
+            logger.debug(
+                "background task %s disappeared before shutdown interruption: %s",
+                task_id,
+                exc,
+            )
+            return
+        except Exception:
             logger.exception(
                 "background task %s could not persist shutdown interruption state",
                 task_id,
@@ -2833,6 +2835,31 @@ class RuntimeBackgroundTaskSupervisor:
             )
 
     def reconcile_background_tasks_if_needed(self) -> None:
+        """Run startup reconciliation once, serializing concurrent callers.
+
+        ``_reconciled`` is completion state only. A caller that arrives while
+        the first pass is active waits for that pass to finish; failures clear
+        the in-progress marker without claiming completion, so the exception
+        remains observable and a later call may retry the pass.
+        """
+        with self._queue_lock:
+            while self._reconcile_in_progress:
+                self._task_state_changed.wait()
+            if self._reconciled:
+                return
+            self._reconcile_in_progress = True
+        try:
+            self._reconcile_background_tasks_once()
+        except BaseException:
+            with self._queue_lock:
+                self._reconcile_in_progress = False
+                self._task_state_changed.notify_all()
+            raise
+        with self._queue_lock:
+            self._reconcile_in_progress = False
+            self._task_state_changed.notify_all()
+
+    def _reconcile_background_tasks_once(self) -> None:
         if self._reconciled:
             return
         task_summaries = self._session_store.list_background_tasks(workspace=self._workspace)
@@ -3237,17 +3264,17 @@ class RuntimeBackgroundTaskSupervisor:
                     status="failed",
                     error=str(exc),
                 )
+            except UnknownBackgroundTaskError as terminal_exc:
+                logger.debug(
+                    "background task %s disappeared before terminal update: %s",
+                    task_id,
+                    terminal_exc,
+                )
+                return
             except Exception as terminal_exc:
                 if self._shutdown_requested:
                     logger.debug(
                         "background task %s skipped terminal update during shutdown: %s",
-                        task_id,
-                        terminal_exc,
-                    )
-                    return
-                if "unknown background task" in str(terminal_exc):
-                    logger.debug(
-                        "background task %s disappeared before terminal update: %s",
                         task_id,
                         terminal_exc,
                     )

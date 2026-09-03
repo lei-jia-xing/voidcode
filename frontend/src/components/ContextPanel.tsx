@@ -197,7 +197,7 @@ function SegmentRow({ segment }: { segment: ProviderContextSegmentSnapshot }) {
   );
 }
 
-function DiagnosticList({
+export function DiagnosticList({
   diagnostics,
 }: {
   diagnostics: Record<string, unknown>[];
@@ -210,9 +210,19 @@ function DiagnosticList({
           const severity = String(diagnostic.severity ?? "info");
           const code = String(diagnostic.code ?? "");
           const message = String(diagnostic.message ?? "");
+          const diagnosticKey = `${code}:${message}:${severity}`;
+          const key = diagnostics.some(
+            (other, otherIndex) =>
+              otherIndex < index &&
+              String(other.severity ?? "info") === severity &&
+              String(other.code ?? "") === code &&
+              String(other.message ?? "") === message,
+          )
+            ? `${diagnosticKey}:${index}`
+            : diagnosticKey;
           return (
             <li
-              key={index}
+              key={key}
               className="rounded border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-2 text-xs"
             >
               <span className="font-mono text-[var(--vc-text-subtle)]">

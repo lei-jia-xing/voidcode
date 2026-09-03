@@ -56,6 +56,17 @@ voidcode/
 - Commit messages follow Conventional Commits as documented in `docs/coding-standards.md`.
 - Tests import from `src/` layout directly; integration coverage lives in `tests/integration/`.
 
+## CLEAN CODE / MAINTAINABILITY
+
+- Optimize for understandability, readability, and changeability. Follow the repository's standard conventions and existing contracts; prefer KISS and the Boy Scout rule, and fix root causes rather than symptoms.
+- Keep one clear responsibility per module and function, with small, explicit functions, few parameters, and no flag arguments that hide distinct behaviors. Keep side effects separate from pure computation and make them explicit.
+- Use descriptive, searchable names and named constants for domain rules. Encapsulate boundary inputs and outputs with typed contracts, dataclasses, Protocols, Literal/TypedDict shapes, and value objects instead of broad `Any` or unstructured dictionaries.
+- Preserve ownership: `runtime/` owns governance, approvals, persistence, recovery, and lifecycle; `graph/` only advances deterministic steps; `tools/` only implements tool behavior. Use dependency injection and the Law of Demeter so collaborators do not pierce those boundaries or reach through private state.
+- Isolate threading, caches, registries, SQLite/file writes, and external processes behind explicit owners and lifecycle boundaries. Keep concurrency and other side effects out of code that only models decisions or values.
+- Remove duplicate orchestration, parsing, and serialization paths; avoid over-configurable designs, dead code, and commented-out code. Keep one authoritative implementation and avoid compatibility aliases or contract drift.
+- Write tests that are readable, fast, independent, and repeatable. Test observable contracts, boundaries, errors, and state transitions rather than implementation details; preserve runtime governance and the existing typed contracts.
+- Keep refactors and changes focused and minimal. Verify the affected behavior with the narrowest meaningful check, and provide reproducible evidence for user-facing CLI/TUI/HTTP behavior when applicable.
+
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not have execution engines talk directly to UI clients; flow goes CLI/client → runtime → graph/tools.
 - Do not claim full frontend/runtime parity; the web client now has a minimal live runtime path, but it is not yet a fully productized runtime-driven app.

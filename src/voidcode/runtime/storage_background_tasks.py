@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
+    UnknownBackgroundTaskError,
 )
 from .events import (
     DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
@@ -422,7 +423,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
                 ).fetchone(),
             )
         if row is None:
-            raise ValueError(f"unknown background task: {task_id}")
+            raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
         return self._background_task_state_from_row(row)
 
     def list_background_tasks(self, *, workspace: Path) -> tuple[StoredBackgroundTaskSummary, ...]:
@@ -1237,7 +1238,7 @@ class _BackgroundTaskStorageMixin(_MixinBase):
             ).fetchone(),
         )
         if row is None:
-            raise ValueError(f"unknown background task: {task_id}")
+            raise UnknownBackgroundTaskError(f"unknown background task: {task_id}")
         return row
 
     def _next_background_task_timestamp(self, *, connection: sqlite3.Connection) -> int:

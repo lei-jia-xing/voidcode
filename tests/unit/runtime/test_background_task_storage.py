@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
+from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownBackgroundTaskError
 from voidcode.runtime.events import (
     DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
     DELEGATED_BACKGROUND_TASK_DURABILITY_FIELDS,
@@ -339,7 +339,7 @@ def test_background_task_storage_prunes_only_terminal_tasks(tmp_path: Path) -> N
         "task-running",
         "task-new",
     ]
-    with pytest.raises(ValueError, match="unknown background task: task-old"):
+    with pytest.raises(UnknownBackgroundTaskError, match="unknown background task: task-old"):
         _ = store.load_background_task(workspace=tmp_path, task_id="task-old")
 
 
@@ -484,7 +484,7 @@ def test_background_task_storage_prunes_interrupted_tasks_and_child_sessions(
     assert counts["background_tasks"] == 1
     assert counts["sessions"] == 1
     assert [task.task.id for task in store.list_background_tasks(workspace=tmp_path)] == ["task-new-completed"]
-    with pytest.raises(ValueError, match="unknown background task: task-old-interrupted"):
+    with pytest.raises(UnknownBackgroundTaskError, match="unknown background task: task-old-interrupted"):
         _ = store.load_background_task(workspace=tmp_path, task_id="task-old-interrupted")
     with pytest.raises(ValueError, match="unknown session: child-old"):
         _ = store.load_session_result(workspace=tmp_path, session_id="child-old")
