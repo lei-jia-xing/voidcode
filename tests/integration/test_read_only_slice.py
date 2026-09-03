@@ -26,7 +26,7 @@ pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 _DEFAULT_PERMISSION_METADATA = {
     "external_directory_read": {"*": "allow"},
-    "external_directory_write": {"*": "allow"},
+    "external_directory_write": {"*": "ask"},
 }
 _LEADER_HOOK_PRESET_SNAPSHOT = {
     "refs": [
@@ -3632,7 +3632,7 @@ def test_runtime_allows_external_read_by_default_without_approval(tmp_path: Path
     assert tool_completed.payload["path"] == str(outside_file.resolve())
 
 
-def test_runtime_allows_external_write_by_default_without_approval(tmp_path: Path) -> None:
+def test_runtime_requests_external_write_approval_by_default(tmp_path: Path) -> None:
     runtime_request, runtime_class = _load_runtime_types()
     permission_module = importlib.import_module("voidcode.runtime.permission")
     config_module = importlib.import_module("voidcode.runtime.config")
@@ -3660,20 +3660,19 @@ def test_runtime_allows_external_write_by_default_without_approval(tmp_path: Pat
         ),
     )
 
-    completed = runtime.run(runtime_request(prompt="external write default", session_id="external-write-default"))
-    event_types = [event.event_type for event in completed.events]
-    resolution = next(event for event in completed.events if event.event_type == "runtime.approval_resolved")
-    tool_completed = next(event for event in completed.events if event.event_type == "runtime.tool_completed")
+    waiting = runtime.run(runtime_request(prompt="external write default", session_id="external-write-default"))
+    event_types = [event.event_type for event in waiting.events]
+    approval = next(event for event in waiting.events if event.event_type == "runtime.approval_requested")
 
-    assert completed.session.status == "completed"
-    assert "runtime.approval_requested" not in event_types
-    assert resolution.payload["decision"] == "allow"
-    assert resolution.payload["path_scope"] == "external"
-    assert resolution.payload["operation_class"] == "write"
-    assert resolution.payload["matched_rule"] == "*"
-    assert resolution.payload["policy_surface"] == "external_directory_write"
-    assert tool_completed.payload["status"] == "ok"
-    assert outside_file.read_text(encoding="utf-8") == "external default write"
+    assert waiting.session.status == "waiting"
+    assert "runtime.approval_resolved" not in event_types
+    assert approval.payload["decision"] == "ask"
+    assert approval.payload["path_scope"] == "external"
+    assert approval.payload["operation_class"] == "write"
+    assert approval.payload["matched_rule"] == "*"
+    assert approval.payload["policy_surface"] == "external_directory_write"
+    assert approval.payload["canonical_path"] == str(outside_file.resolve())
+    assert outside_file.exists() is False
 
 
 def test_external_permission_unknown_user_tilde_rule_falls_back_to_later_rule(
@@ -3833,6 +3832,7 @@ def test_runtime_denies_shell_exec_when_command_rule_denies(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("command", "decision"),
     [
+        ("touch /tmp/voidcode-touch-allow", "allow"),
         ("touch /tmp/voidcode-touch-target", "ask"),
         ("cp /etc/hosts /tmp/voidcode-cp-target", "ask"),
         ("mv /tmp/voidcode-mv-source /tmp/voidcode-mv-target", "ask"),

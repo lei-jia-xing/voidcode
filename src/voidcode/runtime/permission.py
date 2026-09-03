@@ -47,7 +47,7 @@ class PatternPermissionRule:
 @dataclass(frozen=True, slots=True)
 class ExternalDirectoryPermissionConfig:
     read: ExternalDirectoryPolicy = field(default_factory=ExternalDirectoryPolicy)
-    write: ExternalDirectoryPolicy = field(default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "allow"),)))
+    write: ExternalDirectoryPolicy = field(default_factory=lambda: ExternalDirectoryPolicy(rules=(("*", "ask"),)))
     rules: tuple[PatternPermissionRule, ...] = ()
 
 
