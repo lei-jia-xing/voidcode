@@ -8,6 +8,10 @@ import type {
   ProviderSummary,
 } from "../lib/runtime/types";
 import { REASONING_EFFORT_LEVELS } from "../lib/reasoningEffort";
+import {
+  canonicalModelReference,
+  displayModelName,
+} from "../lib/providerModel";
 
 interface ComposerProps {
   disabled: boolean;
@@ -598,19 +602,6 @@ function rankSlashCommands(
         a.command.name.localeCompare(b.command.name),
     )
     .map((entry) => entry.command);
-}
-
-function displayModelName(model: string, providerName: string | null): string {
-  if (providerName && model.startsWith(`${providerName}/`)) {
-    return model.slice(providerName.length + 1);
-  }
-  return model;
-}
-
-function canonicalModelReference(providerName: string, model: string): string {
-  return model.startsWith(`${providerName}/`)
-    ? model
-    : `${providerName}/${model}`;
 }
 
 function sessionContextWindowFromMetadata(

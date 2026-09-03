@@ -22,6 +22,11 @@ import {
   RuntimeSettingsUpdate,
 } from "../lib/runtime/types";
 import { ControlButton } from "./ui";
+import {
+  canonicalModelReference,
+  displayModelName,
+  modelBelongsToProvider,
+} from "../lib/providerModel";
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -45,23 +50,6 @@ interface SettingsPanelProps {
 }
 
 type SettingsSectionKey = "general" | "provider";
-
-function canonicalModelReference(providerName: string, model: string): string {
-  return model.startsWith(`${providerName}/`)
-    ? model
-    : `${providerName}/${model}`;
-}
-
-function displayModelName(model: string, providerName: string): string {
-  return model.startsWith(`${providerName}/`)
-    ? model.slice(providerName.length + 1)
-    : model;
-}
-
-function modelBelongsToProvider(model: string, providerName: string): boolean {
-  if (!model) return false;
-  return model.startsWith(`${providerName}/`);
-}
 
 function NavItem({
   active,

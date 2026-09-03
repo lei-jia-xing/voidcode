@@ -647,17 +647,6 @@ class RuntimeTransportApp:
             await self._handle_list_commands(send)
             return True
 
-        if path == "/api/commands":
-            if method != "GET":
-                await self._json_response(
-                    send,
-                    status=405,
-                    payload={"error": "method not allowed"},
-                )
-                return True
-            await self._handle_list_commands(send)
-            return True
-
         if path == "/api/status":
             if method != "GET":
                 await self._json_response(
