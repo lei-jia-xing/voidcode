@@ -12,11 +12,13 @@ from typing import cast
 import pytest
 
 from voidcode.runtime.service import VoidCodeRuntime
+from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools import ToolCall
 from voidcode.tools.background_process_start import (
     _MAX_BACKGROUND_PROCESS_LOG_LINES,
     _terminate_background_process_group,
 )
+from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
 def test_background_process_tools_are_registered() -> None:
@@ -451,3 +453,39 @@ def test_background_process_send_fails_for_unknown_process(tmp_path: Path) -> No
             workspace=tmp_path,
         )
     runtime.__exit__(None, None, None)
+
+
+def test_background_process_reconciles_after_runtime_restart_and_rejects_other_owner(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    runtime_one = VoidCodeRuntime(
+        workspace=tmp_path,
+        session_store=SqliteSessionStore(database_path=database_path),
+    )
+    start_tool = runtime_one._base_tool_registry.resolve("background_process_start")
+    command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
+    owner_context = RuntimeToolInvocationContext(session_id="owner-a")
+    with bind_runtime_tool_context(owner_context):
+        started = start_tool.invoke(
+            ToolCall(tool_name="background_process_start", arguments={"command": command}),
+            workspace=tmp_path,
+        )
+    process_id = str(started.data["process_id"])
+    runtime_two = VoidCodeRuntime(
+        workspace=tmp_path,
+        session_store=SqliteSessionStore(database_path=database_path),
+    )
+    stop_tool = runtime_two._base_tool_registry.resolve("background_process_stop")
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="owner-b")):
+        with pytest.raises(ValueError, match="another session"):
+            stop_tool.invoke(
+                ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),
+                workspace=tmp_path,
+            )
+    with bind_runtime_tool_context(owner_context):
+        stopped = stop_tool.invoke(
+            ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),
+            workspace=tmp_path,
+        )
+    assert stopped.data["running"] is False
+    runtime_one.__exit__(None, None, None)
+    runtime_two.__exit__(None, None, None)

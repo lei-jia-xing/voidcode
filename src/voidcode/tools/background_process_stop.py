@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from ._pydantic_args import format_validation_error
 from .background_process_start import BackgroundProcessManager
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .runtime_context import current_runtime_tool_context
 
 
 class _BackgroundProcessStopArgs(BaseModel):
@@ -43,13 +44,18 @@ class BackgroundProcessStopTool:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
         try:
             args = _BackgroundProcessStopArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
-        state = self._runtime.background_process_manager.stop(args.process_id)
+        context = current_runtime_tool_context()
+        state = self._runtime.background_process_manager.stop(
+            args.process_id,
+            workspace=workspace,
+            owner_session_id=context.session_id if context is not None else None,
+            enforce_owner=context is not None,
+        )
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",

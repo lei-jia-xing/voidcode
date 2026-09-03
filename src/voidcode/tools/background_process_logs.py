@@ -9,6 +9,7 @@ from ._pydantic_args import format_validation_error
 from .background_process_start import BackgroundProcessManager
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .output import _artifact_metadata
+from .runtime_context import current_runtime_tool_context
 
 
 class _BackgroundProcessLogsArgs(BaseModel):
@@ -59,13 +60,18 @@ class BackgroundProcessLogsTool:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
         try:
             args = _BackgroundProcessLogsArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
-        state = self._runtime.background_process_manager.load(args.process_id)
+        context = current_runtime_tool_context()
+        state = self._runtime.background_process_manager.load(
+            args.process_id,
+            workspace=workspace,
+            owner_session_id=context.session_id if context is not None else None,
+            enforce_owner=context is not None,
+        )
         if state is None:
             raise ValueError(f"unknown background process: {args.process_id}")
         stdout_artifact = getattr(state, "stdout_artifact", None)

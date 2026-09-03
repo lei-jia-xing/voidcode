@@ -7,9 +7,11 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ValidationError, field_validator
 
@@ -20,6 +22,23 @@ from .runtime_context import current_runtime_tool_context
 _MAX_BACKGROUND_PROCESS_LOG_LINES = 500
 
 
+class BackgroundProcessPersistence(Protocol):
+    def register_background_process(self, **kwargs: object) -> None: ...
+
+    def load_background_process(self, *, workspace: Path, process_id: str) -> dict[str, object] | None: ...
+
+    def list_background_processes(self, *, workspace: Path) -> tuple[dict[str, object], ...]: ...
+
+    def mark_background_process_exit(
+        self,
+        *,
+        workspace: Path,
+        process_id: str,
+        status: str,
+        exit_code: int | None,
+    ) -> None: ...
+
+
 @dataclass(slots=True)
 class BackgroundProcessState:
     process_id: str
@@ -28,74 +47,254 @@ class BackgroundProcessState:
     process: subprocess.Popen[str]
     stdout_chunks: list[str]
     stderr_chunks: list[str]
+    owner_session_id: str | None = None
+    process_identity: str | None = None
+    process_group_id: int | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
     stdout_dropped_lines: int = 0
     stderr_dropped_lines: int = 0
     stdout_artifact: dict[str, object] | None = None
     stderr_artifact: dict[str, object] | None = None
+    reconciled: bool = False
+
+
+class _AttachedProcess:
+    def __init__(self, *, pid: int, process_identity: str) -> None:
+        self.pid = pid
+        self.process_identity = process_identity
+        self.stdin = None
+        self.stdout = None
+        self.stderr = None
+        self._terminated = False
+
+    def poll(self) -> int | None:
+        if self._terminated:
+            return 0
+        if _process_identity(self.pid) != self.process_identity or not _pid_running(self.pid):
+            return 0
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(str(self.pid), timeout or 0.0)
+            time.sleep(0.02)
+        return 0
+
+    def mark_terminated(self) -> None:
+        self._terminated = True
+
+
+class _DetachedProcess:
+    def __init__(self, *, pid: int, exit_code: int | None) -> None:
+        self.pid = pid
+        self._exit_code = exit_code if exit_code is not None else 0
+        self.stdin = None
+        self.stdout = None
+        self.stderr = None
+
+    def poll(self) -> int:
+        return self._exit_code
+
+    def wait(self, timeout: float | None = None) -> int:
+        _ = timeout
+        return self._exit_code
+
+
+# process and distinguishes a reused PID. Other platforms fail closed: a
+# process started by a prior runtime cannot be re-attached without a token.
+def _process_identity(pid: int) -> str | None:
+    if _is_windows():
+        return None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    marker = stat.rfind(")")
+    if marker < 0:
+        return None
+    fields = stat[marker + 2 :].split()
+    return fields[19] if len(fields) > 19 else None
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_log_tail(path: Path) -> tuple[list[str], int]:
+    lines: deque[str] = deque(maxlen=_MAX_BACKGROUND_PROCESS_LOG_LINES)
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                lines.append(line)
+                count += 1
+    except OSError:
+        return [], 0
+    return list(lines), max(0, count - len(lines))
+
+
+def _append_log_lines(state: BackgroundProcessState, *, stream_name: str, lines: list[str]) -> None:
+    chunks = state.stdout_chunks if stream_name == "stdout" else state.stderr_chunks
+    for line in lines:
+        chunks.append(line)
+        if len(chunks) > _MAX_BACKGROUND_PROCESS_LOG_LINES:
+            chunks.pop(0)
+            if stream_name == "stdout":
+                state.stdout_dropped_lines += 1
+            else:
+                state.stderr_dropped_lines += 1
 
 
 class BackgroundProcessManager:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        persistence: BackgroundProcessPersistence | None = None,
+        workspace: Path | None = None,
+    ) -> None:
         self._processes: dict[str, BackgroundProcessState] = {}
         self._lock = threading.RLock()
+        self._persistence = persistence
+        self._workspace = workspace.resolve() if workspace is not None else None
+        if self._persistence is not None and self._workspace is not None:
+            self._reconcile()
 
-    def start(self, *, command: str, workspace: Path) -> BackgroundProcessState:
-        existing = self.load_running(command=command, workspace=workspace)
-        if existing is not None:
-            return existing
-        process = subprocess.Popen(
-            command,
-            cwd=workspace,
-            shell=True,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            start_new_session=True,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        )
-        state = BackgroundProcessState(
-            process_id=f"proc-{uuid.uuid4().hex}",
-            command=command,
-            cwd=str(workspace),
-            process=process,
-            stdout_chunks=[],
-            stderr_chunks=[],
-            stdout_dropped_lines=0,
-            stderr_dropped_lines=0,
-        )
+    def start(
+        self,
+        *,
+        command: str,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+    ) -> BackgroundProcessState:
+        normalized_workspace = workspace.resolve()
         with self._lock:
-            self._processes[state.process_id] = state
-        self._start_reader(state, stream_name="stdout")
-        self._start_reader(state, stream_name="stderr")
-        return state
+            existing = self.load_running(
+                command=command,
+                workspace=normalized_workspace,
+                owner_session_id=owner_session_id,
+                enforce_owner=enforce_owner,
+            )
+            if existing is not None:
+                return existing
 
-    def load_running(self, *, command: str, workspace: Path) -> BackgroundProcessState | None:
+            process_id = f"proc-{uuid.uuid4().hex}"
+            log_dir = normalized_workspace / ".voidcode" / "background-processes"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path = log_dir / f"{process_id}.stdout.log"
+            stderr_path = log_dir / f"{process_id}.stderr.log"
+            stdout_file = stdout_path.open("a+", encoding="utf-8", errors="replace")
+            stderr_file = stderr_path.open("a+", encoding="utf-8", errors="replace")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=normalized_workspace,
+                    shell=True,
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    start_new_session=True,
+                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                )
+            except Exception:
+                stdout_file.close()
+                stderr_file.close()
+                raise
+            state = BackgroundProcessState(
+                process_id=process_id,
+                command=command,
+                cwd=str(normalized_workspace),
+                process=process,
+                stdout_chunks=[],
+                stderr_chunks=[],
+                owner_session_id=owner_session_id,
+                process_identity=_process_identity(process.pid),
+                process_group_id=None if _is_windows() else process.pid,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+            )
+            try:
+                self._register(state)
+            except Exception:
+                _terminate_background_process_group(process)
+                stdout_file.close()
+                stderr_file.close()
+                raise
+            stdout_file.close()
+            stderr_file.close()
+            self._processes[state.process_id] = state
+            self._start_reader(state, stream_name="stdout")
+            self._start_reader(state, stream_name="stderr")
+            return state
+
+    def load_running(
+        self,
+        *,
+        command: str,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+    ) -> BackgroundProcessState | None:
         normalized_command = command.strip()
-        normalized_cwd = str(workspace)
+        normalized_cwd = str(workspace.resolve())
         with self._lock:
             for state in self._processes.values():
+                self._refresh(state)
                 if state.process.poll() is not None:
                     continue
-                if state.command.strip() != normalized_command:
+                if state.command.strip() != normalized_command or state.cwd != normalized_cwd:
                     continue
-                if state.cwd != normalized_cwd:
+                if enforce_owner and state.owner_session_id != owner_session_id:
                     continue
                 return state
         return None
 
-    def load(self, process_id: str) -> BackgroundProcessState | None:
+    def load(
+        self,
+        process_id: str,
+        *,
+        workspace: Path | None = None,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+    ) -> BackgroundProcessState | None:
         with self._lock:
-            return self._processes.get(process_id)
+            state = self._processes.get(process_id)
+            if state is None and self._persistence is not None and workspace is not None:
+                self._restore_one(process_id, workspace.resolve())
+                state = self._processes.get(process_id)
+            if state is None:
+                return None
+            self._authorize(state, workspace=workspace, owner_session_id=owner_session_id, enforce_owner=enforce_owner)
+            self._refresh(state)
+            return state
 
-    def write(self, process_id: str, input_text: str) -> None:
-        """Write text to a running process's stdin (interactive input).
-
-        Raises ValueError if the process is unknown or no longer running.
-        """
-        state = self._require(process_id)
+    def write(
+        self,
+        process_id: str,
+        input_text: str,
+        *,
+        workspace: Path | None = None,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+    ) -> None:
+        state = self._require(
+            process_id,
+            workspace=workspace,
+            owner_session_id=owner_session_id,
+            enforce_owner=enforce_owner,
+        )
         if state.process.poll() is not None:
             raise ValueError(f"background process {process_id} is no longer running")
         stdin = state.process.stdin
@@ -104,10 +303,26 @@ class BackgroundProcessManager:
         stdin.write(input_text)
         stdin.flush()
 
-    def stop(self, process_id: str) -> BackgroundProcessState:
-        state = self._require(process_id)
-        if state.process.poll() is None:
+    def stop(
+        self,
+        process_id: str,
+        *,
+        workspace: Path | None = None,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+    ) -> BackgroundProcessState:
+        state = self._require(
+            process_id,
+            workspace=workspace,
+            owner_session_id=owner_session_id,
+            enforce_owner=enforce_owner,
+        )
+        if state.reconciled and _process_identity(state.process.pid) != state.process_identity:
+            self._mark_exit(state, status="stale")
+            return state
+        if state.process.poll() is None or (state.process_group_id is not None and _process_group_exists(state.process_group_id)):
             _terminate_background_process_group(state.process)
+        self._mark_exit(state)
         return state
 
     def stop_all(self) -> None:
@@ -119,36 +334,163 @@ class BackgroundProcessManager:
             except ValueError:
                 continue
 
-    def _require(self, process_id: str) -> BackgroundProcessState:
-        state = self.load(process_id)
+    def _register(self, state: BackgroundProcessState) -> None:
+        if self._persistence is None:
+            return
+        register = getattr(self._persistence, "register_background_process", None)
+        if not callable(register):
+            return
+        register(
+            workspace=Path(state.cwd),
+            process_id=state.process_id,
+            owner_session_id=state.owner_session_id,
+            command=state.command,
+            cwd=state.cwd,
+            pid=state.process.pid,
+            process_group_id=state.process_group_id,
+            process_identity=state.process_identity,
+            stdout_path=str(state.stdout_path or ""),
+            stderr_path=str(state.stderr_path or ""),
+        )
+
+    def _reconcile(self) -> None:
+        assert self._workspace is not None
+        list_processes = getattr(self._persistence, "list_background_processes", None)
+        if not callable(list_processes):
+            return
+        for record in list_processes(workspace=self._workspace):
+            self._restore_record(record)
+
+    def _restore_one(self, process_id: str, workspace: Path) -> None:
+        load_process = getattr(self._persistence, "load_background_process", None)
+        if not callable(load_process):
+            return
+        record = load_process(workspace=workspace, process_id=process_id)
+        if record is not None:
+            self._restore_record(record)
+
+    def _restore_record(self, record: Mapping[str, object]) -> None:
+        process_id = record.get("process_id")
+        if not isinstance(process_id, str) or process_id in self._processes:
+            return
+        cwd = record.get("cwd")
+        pid = record.get("pid")
+        if not isinstance(cwd, str) or not isinstance(pid, int):
+            return
+        status = record.get("status")
+        identity = record.get("process_identity")
+        process_identity = identity if isinstance(identity, str) else None
+        attached = status == "running" and process_identity is not None and _process_identity(pid) == process_identity
+        process: object
+        if attached:
+            process = cast(subprocess.Popen[str], _AttachedProcess(pid=pid, process_identity=process_identity))
+        else:
+            raw_exit_code = record.get("exit_code")
+            exit_code = raw_exit_code if isinstance(raw_exit_code, int) else None
+            process = cast(subprocess.Popen[str], _DetachedProcess(pid=pid, exit_code=exit_code))
+        owner = record.get("owner_session_id")
+        group_id = record.get("process_group_id")
+        stdout_raw = record.get("stdout_path")
+        stderr_raw = record.get("stderr_path")
+        stdout_path = Path(stdout_raw) if isinstance(stdout_raw, str) and stdout_raw else None
+        stderr_path = Path(stderr_raw) if isinstance(stderr_raw, str) and stderr_raw else None
+        stdout_chunks, stdout_dropped = _read_log_tail(stdout_path) if stdout_path is not None else ([], 0)
+        stderr_chunks, stderr_dropped = _read_log_tail(stderr_path) if stderr_path is not None else ([], 0)
+        state = BackgroundProcessState(
+            process_id=process_id,
+            command=str(record.get("command", "")),
+            cwd=cwd,
+            process=process,
+            stdout_chunks=stdout_chunks,
+            stderr_chunks=stderr_chunks,
+            owner_session_id=owner if isinstance(owner, str) else None,
+            process_identity=process_identity,
+            process_group_id=group_id if isinstance(group_id, int) else None,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            stdout_dropped_lines=stdout_dropped,
+            stderr_dropped_lines=stderr_dropped,
+            reconciled=attached,
+        )
+        self._processes[process_id] = state
+        if attached:
+            self._start_reader(state, stream_name="stdout")
+            self._start_reader(state, stream_name="stderr")
+        elif status == "running":
+            self._mark_exit(state, status="stale")
+
+    def _authorize(
+        self,
+        state: BackgroundProcessState,
+        *,
+        workspace: Path | None,
+        owner_session_id: str | None,
+        enforce_owner: bool,
+    ) -> None:
+        if workspace is not None and state.cwd != str(workspace.resolve()):
+            raise ValueError(f"background process {state.process_id} belongs to another workspace")
+        if enforce_owner and state.owner_session_id != owner_session_id:
+            raise ValueError(f"background process {state.process_id} belongs to another session")
+
+    def _require(self, process_id: str, **kwargs: object) -> BackgroundProcessState:
+        workspace = kwargs.get("workspace")
+        owner_session_id = kwargs.get("owner_session_id")
+        enforce_owner = kwargs.get("enforce_owner")
+        state = self.load(
+            process_id,
+            workspace=workspace if isinstance(workspace, Path) else None,
+            owner_session_id=owner_session_id if isinstance(owner_session_id, str) else None,
+            enforce_owner=enforce_owner is True,
+        )
         if state is None:
             raise ValueError(f"unknown background process: {process_id}")
         return state
 
+    def _refresh(self, state: BackgroundProcessState) -> None:
+        if state.process.poll() is not None and state.reconciled:
+            self._mark_exit(state)
+
+    def _mark_exit(self, state: BackgroundProcessState, *, status: str = "exited") -> None:
+        if self._persistence is None:
+            return
+        mark_exit = getattr(self._persistence, "mark_background_process_exit", None)
+        if callable(mark_exit):
+            mark_exit(
+                workspace=Path(state.cwd),
+                process_id=state.process_id,
+                status=status,
+                exit_code=state.process.poll(),
+            )
+
     @staticmethod
     def _start_reader(state: BackgroundProcessState, *, stream_name: str) -> None:
-        stream = state.process.stdout if stream_name == "stdout" else state.process.stderr
+        path = state.stdout_path if stream_name == "stdout" else state.stderr_path
+        if path is None:
+            return
 
         def _read() -> None:
-            if stream is None:
+            initial, dropped = _read_log_tail(path)
+            _append_log_lines(state, stream_name=stream_name, lines=initial)
+            if stream_name == "stdout":
+                state.stdout_dropped_lines = dropped
+            else:
+                state.stderr_dropped_lines = dropped
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as stream:
+                    stream.seek(0, 2)
+                    position = stream.tell()
+                    while state.process.poll() is None:
+                        time.sleep(0.03)
+                        stream.seek(position)
+                        lines = stream.readlines()
+                        position = stream.tell()
+                        _append_log_lines(state, stream_name=stream_name, lines=lines)
+                    stream.seek(position)
+                    _append_log_lines(state, stream_name=stream_name, lines=stream.readlines())
+            except OSError:
                 return
-            for line in stream:
-                if stream_name == "stdout":
-                    state.stdout_chunks.append(line)
-                    if len(state.stdout_chunks) > _MAX_BACKGROUND_PROCESS_LOG_LINES:
-                        state.stdout_chunks.pop(0)
-                        state.stdout_dropped_lines += 1
-                else:
-                    state.stderr_chunks.append(line)
-                    if len(state.stderr_chunks) > _MAX_BACKGROUND_PROCESS_LOG_LINES:
-                        state.stderr_chunks.pop(0)
-                        state.stderr_dropped_lines += 1
 
-        threading.Thread(
-            target=_read,
-            name=f"background-process-{stream_name}",
-            daemon=True,
-        ).start()
+        threading.Thread(target=_read, name=f"background-process-{stream_name}", daemon=True).start()
 
 
 def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
@@ -164,12 +506,10 @@ def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
             killpg(process_group_id, signal.SIGTERM)
         except ProcessLookupError:
             return
-
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
-
         if sigkill is not None and _process_group_exists(process_group_id):
             try:
                 killpg(process_group_id, sigkill)
@@ -178,8 +518,6 @@ def _terminate_background_process_group(process: subprocess.Popen[str]) -> None:
             if process.poll() is None:
                 process.wait(timeout=1)
             _wait_for_process_group_exit(process_group_id, timeout=1)
-            return
-
         return
 
     process.terminate()
@@ -296,30 +634,32 @@ class BackgroundProcessStartTool:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         runtime_context = current_runtime_tool_context()
-        if runtime_context is not None and runtime_context.abort_signal is not None:
-            if runtime_context.abort_signal.cancelled:
-                raise RuntimeToolTimeoutError("background_process_start aborted before launching process")
-
-        existing = self._runtime.background_process_manager.load_running(command=args.command, workspace=workspace)
+        if runtime_context is not None and runtime_context.abort_signal is not None and runtime_context.abort_signal.cancelled:
+            raise RuntimeToolTimeoutError("background_process_start aborted before launching process")
+        owner_session_id = runtime_context.session_id if runtime_context is not None else None
+        enforce_owner = runtime_context is not None
+        existing = self._runtime.background_process_manager.load_running(
+            command=args.command,
+            workspace=workspace,
+            owner_session_id=owner_session_id,
+            enforce_owner=enforce_owner,
+        )
         state = self._runtime.background_process_manager.start(
             command=args.command,
             workspace=workspace,
+            owner_session_id=owner_session_id,
+            enforce_owner=enforce_owner,
         )
         reused = existing is not None
         pid = state.process.pid
-        guidance = _background_process_start_guidance(
-            process_id=state.process_id,
-            reused=reused,
-        )
+        guidance = _background_process_start_guidance(process_id=state.process_id, reused=reused)
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=(
-                f"{'Reusing' if reused else 'Started'} background process "
-                f"{state.process_id} (pid={pid}) "
-                f"for command: {args.command}. "
-                f"Use background_process_logs(process_id='{state.process_id}') to inspect output. "
-                f"Guidance: {guidance}"
+                f"{'Reusing' if reused else 'Started'} background process {state.process_id} (pid={pid}) "
+                f"for command: {args.command}. Use background_process_logs(process_id='{state.process_id}') "
+                f"to inspect output. Guidance: {guidance}"
             ),
             data={
                 "process_id": state.process_id,
@@ -331,3 +671,14 @@ class BackgroundProcessStartTool:
                 "guidance": guidance,
             },
         )
+
+
+__all__ = [
+    "BackgroundProcessManager",
+    "BackgroundProcessPersistence",
+    "BackgroundProcessStartTool",
+    "BackgroundProcessState",
+    "_MAX_BACKGROUND_PROCESS_LOG_LINES",
+    "_process_group_exists",
+    "_terminate_background_process_group",
+]

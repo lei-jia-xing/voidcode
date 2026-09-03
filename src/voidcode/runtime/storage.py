@@ -28,6 +28,7 @@ from .session import (
     SessionStatus,
     StoredSessionSummary,
 )
+from .storage_background_processes import _BackgroundProcessStorageMixin
 from .storage_background_tasks import _BackgroundTaskStorageMixin
 from .storage_diagnostics import _DiagnosticsStorageMixin
 from .storage_effectiveness import _EffectivenessStorageMixin
@@ -128,7 +129,33 @@ class SessionStore(Protocol):
     def clear_pending_question(self, *, workspace: Path, session_id: str) -> None: ...
 
     def load_resume_checkpoint(self, *, workspace: Path, session_id: str) -> dict[str, object] | None: ...
+    def register_background_process(
+        self,
+        *,
+        workspace: Path,
+        process_id: str,
+        owner_session_id: str | None,
+        command: str,
+        cwd: str,
+        pid: int,
+        process_group_id: int | None,
+        process_identity: str | None,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> None: ...
 
+    def load_background_process(self, *, workspace: Path, process_id: str) -> dict[str, object] | None: ...
+
+    def list_background_processes(self, *, workspace: Path) -> tuple[dict[str, object], ...]: ...
+
+    def mark_background_process_exit(
+        self,
+        *,
+        workspace: Path,
+        process_id: str,
+        status: str,
+        exit_code: int | None,
+    ) -> None: ...
     def create_background_task(
         self,
         *,
@@ -282,6 +309,7 @@ class _SQLitePolicy:
 
 @final
 class SqliteSessionStore(
+    _BackgroundProcessStorageMixin,
     _BackgroundTaskStorageMixin,
     _SessionStorageMixin,
     _ResumeStorageMixin,
@@ -368,6 +396,22 @@ class SqliteSessionStore(
             ("schema_mode", "TEXT", 1, "'permissive'", 0),
             ("structured_output_json", "TEXT", 0, None, 0),
             ("schema_validation_json", "TEXT", 0, None, 0),
+        ),
+        "background_processes": (
+            ("process_id", "TEXT", 1, None, 2),
+            ("workspace_id", "TEXT", 1, None, 1),
+            ("owner_session_id", "TEXT", 0, None, 0),
+            ("command", "TEXT", 1, None, 0),
+            ("cwd", "TEXT", 1, None, 0),
+            ("pid", "INTEGER", 1, None, 0),
+            ("process_group_id", "INTEGER", 0, None, 0),
+            ("process_identity", "TEXT", 0, None, 0),
+            ("stdout_path", "TEXT", 1, None, 0),
+            ("stderr_path", "TEXT", 1, None, 0),
+            ("status", "TEXT", 1, None, 0),
+            ("exit_code", "INTEGER", 0, None, 0),
+            ("created_at", "INTEGER", 1, None, 0),
+            ("updated_at", "INTEGER", 1, None, 0),
         ),
         "session_notifications": (
             ("notification_id", "TEXT", 0, None, 1),
@@ -573,6 +617,27 @@ class SqliteSessionStore(
                 structured_output_json TEXT,
                 schema_validation_json TEXT,
                 PRIMARY KEY (workspace_id, task_id)
+            )
+            """
+        )
+        _ = connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS background_processes (
+                process_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                owner_session_id TEXT,
+                command TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                pid INTEGER NOT NULL,
+                process_group_id INTEGER,
+                process_identity TEXT,
+                stdout_path TEXT NOT NULL,
+                stderr_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, process_id)
             )
             """
         )

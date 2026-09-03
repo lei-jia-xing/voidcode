@@ -57,7 +57,7 @@ from ..tools.background_cancel import BackgroundCancelTool
 from ..tools.background_output import BackgroundOutputTool
 from ..tools.background_process_logs import BackgroundProcessLogsTool
 from ..tools.background_process_send import BackgroundProcessSendTool
-from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
+from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessPersistence, BackgroundProcessStartTool
 from ..tools.background_process_stop import BackgroundProcessStopTool
 from ..tools.background_ps import BackgroundPsTool
 from ..tools.contracts import (
@@ -759,7 +759,10 @@ class VoidCodeRuntime(RuntimeSurface):
             background_task_supervisor=self._background_task_supervisor,
             run_loop_coordinator=self._run_loop_coordinator,
         )
-        self._background_process_manager = BackgroundProcessManager()
+        self._background_process_manager = BackgroundProcessManager(
+            persistence=cast(BackgroundProcessPersistence, self._session_store),
+            workspace=self._workspace,
+        )
 
     def _bind_provider_catalog_collaborators(self) -> None:
         self._provider_catalog_cache = RuntimeProviderCatalogCache(

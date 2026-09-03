@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from ._pydantic_args import format_validation_error
 from .background_process_start import BackgroundProcessManager
 from .contracts import ToolCall, ToolDefinition, ToolResult
+from .runtime_context import current_runtime_tool_context
 
 
 class _BackgroundProcessSendArgs(BaseModel):
@@ -60,14 +61,20 @@ class BackgroundProcessSendTool:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        _ = workspace
         try:
             args = _BackgroundProcessSendArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         text = args.input if not args.newline else f"{args.input}\n"
-        self._runtime.background_process_manager.write(args.process_id, text)
+        context = current_runtime_tool_context()
+        self._runtime.background_process_manager.write(
+            args.process_id,
+            text,
+            workspace=workspace,
+            owner_session_id=context.session_id if context is not None else None,
+            enforce_owner=context is not None,
+        )
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
