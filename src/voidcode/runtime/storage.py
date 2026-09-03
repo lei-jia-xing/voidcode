@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from time import sleep, time
-from typing import Protocol, cast, final, runtime_checkable
+from typing import Final, Protocol, cast, final, runtime_checkable
 
 from .contracts import (
     RuntimeNotification,
@@ -44,6 +44,8 @@ from .task import (
     DelegatedReminderStopCondition,
     StoredBackgroundTaskSummary,
 )
+
+SCHEMA_VERSION: Final[int] = 14
 
 
 @runtime_checkable
@@ -320,7 +322,7 @@ class SqliteSessionStore(
     _DiagnosticsStorageMixin,
 ):
     _database_path: Path | None
-    _SCHEMA_VERSION = 14
+    _SCHEMA_VERSION = SCHEMA_VERSION
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _sqlite_policy = _SQLitePolicy()
 

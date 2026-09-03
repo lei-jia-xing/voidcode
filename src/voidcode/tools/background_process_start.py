@@ -78,7 +78,9 @@ class _DetachedProcess:
 
     def wait(self, timeout: float | None = None) -> int:
         _ = timeout
-        return self._exit_code if self._exit_code is not None else 0
+        if self._exit_code is None:
+            raise RuntimeError("detached process cannot be waited on after runtime restart")
+        return self._exit_code
 
 
 # process and distinguishes a reused PID. Other platforms fail closed: a

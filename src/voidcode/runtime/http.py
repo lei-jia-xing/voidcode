@@ -186,7 +186,7 @@ class Send(Protocol):
 
 
 class _HttpBoundaryModel(BaseModel):
-    model_config = ConfigDict(extra="ignore", validate_default=True)
+    model_config = ConfigDict(extra="forbid", validate_default=True)
 
 
 class _RunStreamRequestPayload(_HttpBoundaryModel):

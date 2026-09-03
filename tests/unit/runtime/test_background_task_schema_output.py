@@ -1,9 +1,9 @@
 """Phase 1 delegation flexibility: invocation-level outputSchema + schemaMode.
 
-Covers the finalize-time schema validation (permissive/strict), storage v13
+Covers the finalize-time schema validation (permissive/strict), storage v14
 round-trip + migration, the no-schema and keep-alive intermediate-turn guards,
 and the CLI/HTTP result surfaces. The completion evidence chain itself
-(``child_terminal.py``) is untouched; these tests only assert the schema layer
+(child_terminal.py) is untouched; these tests only assert the schema layer
 added around it.
 """
 
@@ -21,7 +21,7 @@ from voidcode.runtime import VoidCodeRuntime
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import BackgroundTaskResult
 from voidcode.runtime.http import RuntimeTransportApp
-from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -342,7 +342,7 @@ def test_keep_alive_intermediate_turn_without_handoff_is_not_validated(
     assert store.load_session_status(workspace=tmp_path, session_id=child_session_id) == "interrupted"
 
 
-# ── storage v13 round-trip + migration ──────────────────────────────────────
+# ── storage v14 round-trip + migration ──────────────────────────────────────
 
 
 def _task_with_delegation(
@@ -397,7 +397,7 @@ def test_storage_round_trips_schema_declaration_and_validation(tmp_path: Path) -
     assert loaded.schema_validation.schema_source == "invocation"
 
 
-def test_storage_fresh_database_is_v13_with_output_schema_columns(tmp_path: Path) -> None:
+def test_storage_fresh_database_is_v14_with_output_schema_columns(tmp_path: Path) -> None:
     database_path = tmp_path / "fresh.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
     # Any store operation bootstraps the canonical schema.
@@ -407,7 +407,7 @@ def test_storage_fresh_database_is_v13_with_output_schema_columns(tmp_path: Path
         columns = {row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()}
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-    assert schema_version == 13
+    assert schema_version == SCHEMA_VERSION
     assert {"output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"} <= columns
 
 
@@ -416,7 +416,7 @@ def test_storage_migrates_v11_database_with_output_schema_columns(tmp_path: Path
     store = SqliteSessionStore(database_path=database_path)
     store.create_background_task(workspace=tmp_path, task=_task_with_delegation(task_id="task-legacy", delegation=None))
 
-    # Rewind the freshly-bootstrapped (v13) database to the previous released
+    # Rewind the freshly-bootstrapped (v14) database to the previous released
     # schema (v11): drop the output-schema columns and stamp user_version = 11.
     with closing(sqlite3.connect(database_path)) as connection:
         _ = connection.execute("ALTER TABLE background_tasks DROP COLUMN output_schema_json")
@@ -427,7 +427,7 @@ def test_storage_migrates_v11_database_with_output_schema_columns(tmp_path: Path
         connection.commit()
 
     store = SqliteSessionStore(database_path=database_path)
-    # Any store operation bootstraps the schema and runs the v11 → v13 migration.
+    # Any store operation bootstraps the schema and runs the v11 → v14 migration.
     legacy = store.load_background_task(workspace=tmp_path, task_id="task-legacy")
     listed = store.list_background_tasks(workspace=tmp_path)
     with closing(sqlite3.connect(database_path)) as connection:
@@ -437,7 +437,7 @@ def test_storage_migrates_v11_database_with_output_schema_columns(tmp_path: Path
             "SELECT task_id, output_schema_json, schema_mode, structured_output_json, schema_validation_json FROM background_tasks"
         ).fetchall()
 
-    assert schema_version == 13
+    assert schema_version == SCHEMA_VERSION
     for column in ("output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"):
         assert column in columns
     # Pre-existing v11 rows are preserved and default to no schema.

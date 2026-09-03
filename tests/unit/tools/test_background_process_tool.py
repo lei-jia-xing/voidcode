@@ -16,6 +16,7 @@ from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools import ToolCall
 from voidcode.tools.background_process_start import (
     _MAX_BACKGROUND_PROCESS_LOG_LINES,
+    _DetachedProcess,
     _terminate_background_process_group,
 )
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
@@ -534,6 +535,14 @@ def _pid_is_running(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def test_detached_process_wait_rejects_unknown_exit_status() -> None:
+    process = _DetachedProcess(pid=12345, exit_code=None)
+
+    assert process.poll() is None
+    with pytest.raises(RuntimeError, match="cannot be waited on"):
+        process.wait(timeout=0.1)
 
 
 def test_restart_stale_identity_and_dead_pid_are_non_controllable(tmp_path: Path) -> None:

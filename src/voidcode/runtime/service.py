@@ -4056,71 +4056,72 @@ class VoidCodeRuntime(RuntimeSurface):
         return cast(dict[str, object], raw_payload)
 
     def _reload_runtime_config_state(self) -> None:
-        self._agent_registry = self._runtime_agent_registry()
-        self._config = load_runtime_config(self._workspace)
-        self._bind_tool_scope_resolver()
-        self._model_provider_registry = ModelProviderRegistry.with_defaults(provider_configs=self._config.providers)
-        self._bind_provider_catalog_collaborators()
-        self._provider_auth_resolver = ProviderAuthResolver(
-            providers=self._config.providers,
+        """Atomically refresh the provider/model state used by web settings.
+
+        ``update_web_settings`` is a deliberately narrow hot-reload surface:
+        it changes only global provider credentials/selection and the workspace
+        model. Agent, permission, hook, capability, and background-task config
+        remain runtime-lifetime state; reloading those collaborators while a
+        run is active would leave a partially updated control plane. Stage every
+        provider-derived object first, then publish the complete provider state
+        in one commit.
+        """
+        refreshed_config = load_runtime_config(self._workspace)
+        model = refreshed_config.model
+        if self._config.agent is not None and self._config.agent.model is not None:
+            model = self._config.agent.model
+        provider_registry = ModelProviderRegistry.with_defaults(provider_configs=refreshed_config.providers)
+        provider_catalog_cache = RuntimeProviderCatalogCache(
+            registry=provider_registry,
+            path=provider_catalog_cache_path(),
+        )
+        provider_catalog_query = RuntimeProviderCatalogQuery(registry=provider_registry)
+        provider_catalog_cache.hydrate()
+        provider_auth_resolver = ProviderAuthResolver(
+            providers=refreshed_config.providers,
             env=os.environ,
         )
-        self._bind_provider_auth_inspector()
-        initial_agent = self._config.agent
-        if initial_agent is None and self._config.execution_engine == "provider":
-            initial_agent = RuntimeAgentConfig(preset="leader")
-        if initial_agent is not None:
-            initial_agent = parse_runtime_agent_payload(
-                serialize_runtime_agent_config(initial_agent),
-                source="runtime config agent",
-                hooks=self._config.hooks,
-                agent_registry=self._agent_registry,
-            )
-            assert initial_agent is not None
-            self._validate_runtime_agent_for_execution(
-                initial_agent,
-                source="runtime config agent",
-            )
-        initial_model = initial_agent.model if initial_agent is not None and initial_agent.model is not None else self._config.model
-        initial_execution_engine = (
-            initial_agent.execution_engine
-            if initial_agent is not None and initial_agent.execution_engine is not None
-            else self._config.execution_engine
+        provider_auth_inspector = RuntimeProviderAuthInspector(
+            providers=refreshed_config.providers,
+            resolver=provider_auth_resolver,
+            env=os.environ,
         )
-        initial_provider_fallback = (
-            initial_agent.provider_fallback
-            if initial_agent is not None and initial_agent.provider_fallback is not None
-            else self._config.provider_fallback
+        provider_fallback = self._initial_effective_config.provider_fallback
+        resolved_provider_config = resolve_provider_config(
+            model,
+            provider_fallback,
+            registry=provider_registry,
         )
-        self._resolved_provider_config = resolve_provider_config(
-            initial_model,
-            initial_provider_fallback,
-            registry=self._model_provider_registry,
+        effective_config = replace(
+            self._initial_effective_config,
+            model=model,
+            providers=refreshed_config.providers,
+            resolved_provider=resolved_provider_config,
         )
-        self._provider_model = self._resolved_provider_config.active_target
-        self._provider_chain = self._resolved_provider_config.target_chain
-        self._initial_effective_config = EffectiveRuntimeConfig(
-            approval_mode=self._config.approval_mode,
-            permission=self._config.permission,
-            model=initial_model,
-            execution_engine=initial_execution_engine,
-            max_steps=self._config.max_steps,
-            tool_timeout_seconds=self._config.tool_timeout_seconds,
-            provider_fallback=initial_provider_fallback,
-            providers=self._config.providers,
-            resolved_provider=self._resolved_provider_config,
-            agent=initial_agent,
-            context_window=self._config.context_window,
-            tools=self._config.tools,
-            policy=self._config.policy,
-        )
-        self._graph_cache = {}
+        new_graph: RuntimeGraph | None
         if self._graph_override is not None:
-            self._graph = self._graph_override
-        elif self._can_build_graph_for_effective_config(self._initial_effective_config):
-            self._graph = self._build_graph_for_engine_from_config(self._initial_effective_config)
+            new_graph = self._graph_override
+        elif self._can_build_graph_for_effective_config(effective_config):
+            new_graph = self._build_graph_for_engine_from_config(effective_config, use_cache=False)
         else:
-            self._graph = None
+            new_graph = None
+
+        # Commit only after all parsing, provider resolution, and graph creation
+        # succeeded. No collaborator that owns local governance is replaced by
+        # this provider/model-only reload.
+        self._config = replace(self._config, model=model, providers=refreshed_config.providers)
+        self._model_provider_registry = provider_registry
+        self._provider_catalog_cache = provider_catalog_cache
+        self._provider_catalog_query = provider_catalog_query
+        self._provider_auth_resolver = provider_auth_resolver
+        self._provider_auth_inspector = provider_auth_inspector
+        self._run_loop_coordinator.update_provider_catalog_query(provider_catalog_query)
+        self._resolved_provider_config = resolved_provider_config
+        self._provider_model = resolved_provider_config.active_target
+        self._provider_chain = resolved_provider_config.target_chain
+        self._initial_effective_config = effective_config
+        self._graph_cache = {}
+        self._graph = new_graph
 
     @staticmethod
     def _debug_event(event: EventEnvelope | None) -> RuntimeSessionDebugEvent | None:

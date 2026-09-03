@@ -232,3 +232,19 @@ def test_group_result_summary_and_structured_output_are_bounded_and_not_transcri
     assert projected.structured_output == {"answer": "structured value"}
     assert transcript_secret not in repr(projected)
     assert "transcript" not in repr(projected).lower()
+
+
+def test_parent_status_storage_errors_are_observable_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SqliteSessionStore(database_path=tmp_path / "parent-status.sqlite3")
+    supervisor = _supervisor(tmp_path, store)
+
+    def fail_load_session_status(*, workspace: Path, session_id: str) -> str:
+        _ = workspace, session_id
+        raise RuntimeError("schema failure")
+
+    monkeypatch.setattr(store, "load_session_status", fail_load_session_status)
+    with pytest.raises(RuntimeError, match="schema failure"):
+        supervisor._parent_session_is_terminal("leader")

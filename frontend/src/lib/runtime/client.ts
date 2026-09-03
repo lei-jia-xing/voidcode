@@ -30,6 +30,16 @@ import {
 
 import { SseFrameParser, parseSseDataPayload } from "./sse-parser";
 
+export class RuntimeClientError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "RuntimeClientError";
+  }
+}
+
 async function runtimeErrorMessage(
   res: Response,
   fallback: string,
@@ -56,7 +66,10 @@ async function runtimeErrorMessage(
 
 async function expectOk(res: Response, fallback: string): Promise<void> {
   if (!res.ok) {
-    throw new Error(await runtimeErrorMessage(res, fallback));
+    throw new RuntimeClientError(
+      await runtimeErrorMessage(res, fallback),
+      res.status,
+    );
   }
 }
 

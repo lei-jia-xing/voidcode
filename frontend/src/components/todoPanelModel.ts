@@ -2,9 +2,11 @@ import type { ChatMessage } from "../lib/runtime/event-parser";
 
 type ChatTool = ChatMessage["tools"][number];
 
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
 export interface TodoPanelItem {
   content: string;
-  status: string;
+  status: TodoStatus;
 }
 
 export interface TodoPanelSnapshot {
@@ -50,10 +52,18 @@ function normalizeTodoItems(rawTodos: unknown[]): TodoPanelItem[] {
       (item): item is Record<string, unknown> =>
         Boolean(item) && typeof item === "object",
     )
-    .map((item) => ({
-      content: todoContent(item) ?? "Untitled todo",
-      status: stringValue(item.status) ?? "pending",
-    }));
+    .map((item) => {
+      const status = stringValue(item.status);
+      return {
+        content: todoContent(item) ?? "Untitled todo",
+        status:
+          status === "in_progress" ||
+          status === "completed" ||
+          status === "cancelled"
+            ? status
+            : "pending",
+      };
+    });
 }
 
 function parseTodosFromContent(
@@ -67,7 +77,7 @@ function parseTodosFromContent(
     .map((line) => itemPattern.exec(line))
     .filter((match): match is RegExpExecArray => match !== null)
     .map((match) => ({
-      status: match[1],
+      status: match[1] as TodoStatus,
       content: match[2].trim(),
     }));
 }

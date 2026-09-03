@@ -324,8 +324,8 @@ async function browseParentSession() {
   runtimeClientMocks.getChildSessionContextMock.mockImplementation(
     (sessionId: string) =>
       sessionId === "session-parent"
-        ? Promise.reject(new Error("not a delegated child"))
-        : Promise.reject(new Error("not found")),
+        ? Promise.reject({ status: 404, message: "not a delegated child" })
+        : Promise.reject({ status: 404, message: "not found" }),
   );
   runtimeClientMocks.getSessionReplayMock.mockResolvedValue(
     makeRuntimeResponse(
@@ -458,7 +458,7 @@ describe("App follow stream with delegated child sessions", () => {
       (sessionId: string) =>
         sessionId === "child-session"
           ? Promise.resolve(makeChildOutput("interrupted"))
-          : Promise.reject(new Error("not a delegated child")),
+          : Promise.reject({ status: 404, message: "not a delegated child" }),
     );
 
     await act(async () => {
@@ -513,7 +513,7 @@ describe("App follow stream with delegated child sessions", () => {
       (sessionId: string) =>
         sessionId === "child-session"
           ? childContextDeferred.promise
-          : Promise.reject(new Error("not a delegated child")),
+          : Promise.reject({ status: 404, message: "not a delegated child" }),
     );
 
     let selectPromise!: Promise<void>;

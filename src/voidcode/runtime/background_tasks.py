@@ -1203,8 +1203,9 @@ class RuntimeBackgroundTaskSupervisor:
         """True when the parent session is durably terminal (completed/failed).
 
         An unknown parent session (row gone) is treated as terminal: the task
-        is an orphan that can never be owned again. ``interrupted`` parents
-        are intentionally NOT terminal — an interrupted session may be resumed.
+        is an orphan that can never be owned again. Other storage or schema
+        failures are raised instead of being treated as a non-terminal parent;
+        this keeps queued work blocked and the failure observable.
         """
         if parent_session_id is None:
             return False
@@ -1215,9 +1216,9 @@ class RuntimeBackgroundTaskSupervisor:
             )
         except UnknownSessionError:
             return True
-        except Exception as exc:
-            logger.debug("background task parent status check failed: %s", exc)
-            return False
+        except Exception:
+            logger.error("background task parent status check failed", exc_info=True)
+            raise
         return status in {"completed", "failed"}
 
     def _drain_background_task_queue(self) -> dict[str, str]:

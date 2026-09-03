@@ -276,6 +276,10 @@ describe("useAppStore integration flow", () => {
     vi.clearAllMocks();
     localStorage.clear();
     vi.resetModules();
+    runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
+      status: 404,
+      message: "not a delegated child",
+    });
     ({ useAppStore } = await import("./store"));
     useAppStore.setState({
       language: "en",

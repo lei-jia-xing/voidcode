@@ -31,7 +31,7 @@ from .permission import (
     PermissionDecision,
 )
 from .permission_policy import permission_decision_or_none
-from .policy import serialize_runtime_policy_config
+from .policy import RuntimePolicyConfig, serialize_runtime_policy_config
 
 PERSISTED_RUNTIME_CONFIG_KEYS = frozenset(
     {
@@ -72,14 +72,14 @@ class EffectiveRuntimeConfig:
     agent: RuntimeAgentConfig | None = None
     context_window: RuntimeContextWindowConfig | None = None
     tools: RuntimeToolsConfig | None = None
-    policy: object | None = None
+    policy: RuntimePolicyConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PersistedRuntimeConfigMaterialization:
     approval_mode: PermissionDecision
     permission: ExternalDirectoryPermissionConfig
-    policy: object | None
+    policy: RuntimePolicyConfig | None
     model: str | None
     execution_engine: ExecutionEngineName
     max_steps: int | None

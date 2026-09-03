@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
+import { errorMessage } from "./lib/errorMessage";
 
 // Auto-follow the chat only when the user is within this many pixels of the
 // bottom; scrolled-up readers are never yanked back down.
@@ -464,7 +465,7 @@ function App() {
         }
       } catch (error) {
         if (!controller.signal.aborted) {
-          setSessionEventError((error as Error).message);
+          setSessionEventError(errorMessage(error));
         }
       }
     })();
@@ -590,7 +591,7 @@ function App() {
         setBackgroundTaskAction({
           taskId,
           status: "error",
-          error: (error as Error).message,
+          error: errorMessage(error),
         });
       }
     },
@@ -625,7 +626,9 @@ function App() {
       .reverse()
       .find((e) => e.event_type === "runtime.request_received");
     return buildSessionDisplayTitle(
-      latestReq?.payload?.prompt as string | undefined,
+      typeof latestReq?.payload?.prompt === "string"
+        ? latestReq.payload.prompt
+        : undefined,
       currentSessionId,
     );
   }, [currentSessionId, currentSessionSummary, currentSessionEvents]);

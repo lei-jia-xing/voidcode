@@ -9,11 +9,9 @@ import {
 // A `runtime.failed` event whose payload signals a user/run cancellation (as
 // opposed to a genuine failure). The backend emits this as the final event of
 // an interrupted run, so the transcript must not render it as a failure.
-function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
-  if (event.event_type !== "runtime.failed") {
-    return false;
-  }
-  const payload = event.payload as Record<string, unknown> | undefined;
+export function isRuntimeCancellationEvent(event: EventEnvelope): boolean {
+  if (event.event_type !== "runtime.failed") return false;
+  const payload = objectPayload(event.payload);
   return (
     payload?.cancelled === true ||
     payload?.kind === "interrupted" ||
@@ -71,7 +69,7 @@ function isGenericFailureMessage(message: string): boolean {
   );
 }
 
-function preferFailureMessage(
+export function preferFailureMessage(
   current: string | null | undefined,
   candidate: string | null,
 ): string | null | undefined {
@@ -79,16 +77,6 @@ function preferFailureMessage(
   if (!current || isGenericFailureMessage(current)) return candidate;
   if (isGenericFailureMessage(candidate)) return current;
   return candidate;
-}
-
-export interface DerivedTask {
-  id: string;
-  titleKey: string;
-  titleValues?: Record<string, string>;
-  type: "request" | "tool" | "approval" | "response" | "unknown";
-  status: "pending" | "in_progress" | "completed" | "failed" | "waiting";
-  sequence: number;
-  events: EventEnvelope[];
 }
 
 export interface ChatMessage {
@@ -929,174 +917,6 @@ function isReasoningEvent(event: EventEnvelope): boolean {
   );
 }
 
-export function deriveTasksFromEvents(events: EventEnvelope[]): DerivedTask[] {
-  const tasks: DerivedTask[] = [];
-  let currentToolTask: DerivedTask | null = null;
-  let currentRequest: DerivedTask | null = null;
-
-  for (const event of events) {
-    if (event.event_type === "runtime.request_received") {
-      if (currentToolTask && currentToolTask.status === "in_progress") {
-        currentToolTask.status = "completed";
-      }
-      currentToolTask = null;
-
-      if (currentRequest && currentRequest.status === "in_progress") {
-        currentRequest.status = "completed";
-      }
-
-      const prompt =
-        typeof event.payload?.prompt === "string"
-          ? event.payload.prompt
-          : "Unknown Request";
-      currentRequest = {
-        id: `req-${event.sequence}`,
-        titleKey: "task.request",
-        titleValues: { prompt },
-        type: "request",
-        status: "in_progress",
-        sequence: event.sequence,
-        events: [event],
-      };
-      tasks.push(currentRequest);
-    } else if (event.event_type === "graph.tool_request_created") {
-      if (currentToolTask && currentToolTask.status === "in_progress") {
-        currentToolTask.status = "completed";
-      }
-      const toolName =
-        typeof event.payload?.tool === "string"
-          ? event.payload.tool
-          : "unknown";
-      currentToolTask = {
-        id: `tool-${event.sequence}`,
-        titleKey: "task.tool",
-        titleValues: { tool: toolName },
-        type: "tool",
-        status: "in_progress",
-        sequence: event.sequence,
-        events: [event],
-      };
-      tasks.push(currentToolTask);
-    } else if (event.event_type === "runtime.tool_completed") {
-      if (currentToolTask) {
-        currentToolTask.status = "completed";
-        currentToolTask.events.push(event);
-        currentToolTask = null;
-      } else {
-        tasks.push({
-          id: `tool-done-${event.sequence}`,
-          titleKey: "task.unknown",
-          titleValues: { type: "Tool Completed (Orphaned)" },
-          type: "tool",
-          status: "completed",
-          sequence: event.sequence,
-          events: [event],
-        });
-      }
-    } else if (event.event_type === "graph.response_ready") {
-      if (currentToolTask && currentToolTask.status === "in_progress") {
-        currentToolTask.status = "completed";
-      }
-      currentToolTask = null;
-      if (currentRequest && currentRequest.status === "in_progress") {
-        currentRequest.status = "completed";
-      }
-      tasks.push({
-        id: `resp-${event.sequence}`,
-        titleKey: "task.response",
-        type: "response",
-        status: "completed",
-        sequence: event.sequence,
-        events: [event],
-      });
-    } else if (
-      event.event_type === "runtime.permission_resolved" ||
-      event.event_type === "runtime.approval_requested" ||
-      event.event_type === "runtime.approval_resolved"
-    ) {
-      if (currentToolTask) {
-        currentToolTask.events.push(event);
-        const decision = event.payload?.decision;
-        if (decision === "deny") {
-          currentToolTask.status = "failed";
-        } else if (decision === "ask") {
-          currentToolTask.status = "waiting";
-        }
-      } else {
-        const toolName =
-          typeof event.payload?.tool === "string"
-            ? event.payload.tool
-            : "unknown";
-        tasks.push({
-          id: `perm-${event.sequence}`,
-          titleKey: "task.permission",
-          titleValues: { tool: toolName },
-          type: "approval",
-          status: "completed",
-          sequence: event.sequence,
-          events: [event],
-        });
-      }
-    } else if (
-      event.event_type === "runtime.question_requested" ||
-      event.event_type === "runtime.question_answered"
-    ) {
-      const toolName =
-        typeof event.payload?.tool === "string"
-          ? event.payload.tool
-          : "unknown";
-      tasks.push({
-        id: `question-${event.sequence}`,
-        titleKey: "task.question",
-        titleValues: { tool: toolName },
-        type: "approval",
-        status:
-          event.event_type === "runtime.question_requested"
-            ? "waiting"
-            : "completed",
-        sequence: event.sequence,
-        events: [event],
-      });
-    } else {
-      if (currentToolTask) {
-        currentToolTask.events.push(event);
-      } else {
-        tasks.push({
-          id: `evt-${event.sequence}`,
-          titleKey: "task.unknown",
-          titleValues: { type: event.event_type },
-          type: "unknown",
-          status: "completed",
-          sequence: event.sequence,
-          events: [event],
-        });
-      }
-    }
-  }
-
-  return tasks;
-}
-
-export function deriveActivitiesFromEvents(events: EventEnvelope[]) {
-  return events.map((event) => {
-    let payloadStr: string;
-    try {
-      payloadStr = event.payload ? JSON.stringify(event.payload) : "";
-    } catch {
-      payloadStr = "{...}";
-    }
-
-    return {
-      id: `act-${event.sequence}`,
-      type: "log" as const,
-      message: event.event_type,
-      source: event.source,
-      timestamp: "",
-      sequence: event.sequence,
-      payloadStr,
-    };
-  });
-}
 export function deriveChatMessages(
   events: EventEnvelope[],
   currentOutput: string | null,

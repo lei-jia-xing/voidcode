@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { RuntimeClient } from "../lib/runtime/client";
+import i18n from "../i18n";
+import { errorMessage } from "../lib/errorMessage";
 import { failureMessageFromEvent } from "../lib/runtime/event-parser";
 import {
   AgentSummary,
@@ -419,14 +421,14 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             workspacesStatus: "error",
-            workspacesError: (err as Error).message,
+            workspacesError: errorMessage(err),
             workspaceSwitchStatus:
               get().workspaceSwitchStatus === "loading"
                 ? "error"
                 : get().workspaceSwitchStatus,
             workspaceSwitchError:
               get().workspaceSwitchStatus === "loading"
-                ? (err as Error).message
+                ? errorMessage(err)
                 : get().workspaceSwitchError,
           });
         }
@@ -526,7 +528,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             workspaceSwitchStatus: "error",
-            workspaceSwitchError: (err as Error).message,
+            workspaceSwitchError: errorMessage(err),
           });
         }
       },
@@ -562,7 +564,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             providersStatus: "error",
-            providersError: (err as Error).message,
+            providersError: errorMessage(err),
           });
         }
       },
@@ -587,7 +589,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             agentsStatus: "error",
-            agentsError: (err as Error).message,
+            agentsError: errorMessage(err),
           });
         }
       },
@@ -604,7 +606,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             skillsStatus: "error",
-            skillsError: (err as Error).message,
+            skillsError: errorMessage(err),
           });
         }
       },
@@ -621,7 +623,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             commandsStatus: "error",
-            commandsError: (err as Error).message,
+            commandsError: errorMessage(err),
           });
         }
       },
@@ -663,7 +665,7 @@ export const useAppStore = create<AppState>()(
             },
             providerValidationError: {
               ...state.providerValidationError,
-              [providerName]: (err as Error).message,
+              [providerName]: errorMessage(err),
             },
           }));
         }
@@ -686,14 +688,14 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             statusStatus: "error",
-            statusError: (err as Error).message,
+            statusError: errorMessage(err),
             mcpRetryStatus:
               get().mcpRetryStatus === "loading"
                 ? "error"
                 : get().mcpRetryStatus,
             mcpRetryError:
               get().mcpRetryStatus === "loading"
-                ? (err as Error).message
+                ? errorMessage(err)
                 : get().mcpRetryError,
           });
         }
@@ -713,7 +715,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             mcpRetryStatus: "error",
-            mcpRetryError: (err as Error).message,
+            mcpRetryError: errorMessage(err),
           });
         }
       },
@@ -747,7 +749,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             reviewStatus: "error",
-            reviewError: (err as Error).message,
+            reviewError: errorMessage(err),
           });
         }
       },
@@ -784,7 +786,7 @@ export const useAppStore = create<AppState>()(
           set({
             reviewDiff: null,
             reviewDiffStatus: "error",
-            reviewDiffError: (err as Error).message,
+            reviewDiffError: errorMessage(err),
           });
         }
       },
@@ -823,7 +825,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             sessionsStatus: "error",
-            sessionsError: (err as Error).message,
+            sessionsError: errorMessage(err),
           });
         }
       },
@@ -954,8 +956,19 @@ export const useAppStore = create<AppState>()(
             });
             await get().loadBackgroundTasks();
             return;
-          } catch {
-            // Fall through to plain replay when this session is not a delegated child.
+          } catch (error) {
+            const message = errorMessage(error).toLowerCase();
+            const status =
+              typeof error === "object" && error !== null && "status" in error
+                ? error.status
+                : undefined;
+            if (
+              status !== 404 ||
+              !/(child|delegated|not found)/.test(message)
+            ) {
+              throw error;
+            }
+            // A recognized missing delegated context means ordinary session replay.
           }
 
           const replay = await RuntimeClient.getSessionReplay(sessionId);
@@ -1005,7 +1018,7 @@ export const useAppStore = create<AppState>()(
               ? previousChildParentId
               : null,
             replayStatus: hasPreviousTranscript ? "error" : "idle",
-            replayError: hasPreviousTranscript ? (err as Error).message : null,
+            replayError: hasPreviousTranscript ? errorMessage(err) : null,
             replayTargetSessionId: hasPreviousTranscript ? sessionId : null,
           });
         }
@@ -1184,7 +1197,7 @@ export const useAppStore = create<AppState>()(
             get().currentSessionState?.status === "interrupted";
           set({
             runStatus: interrupted ? "idle" : "error",
-            runError: interrupted ? null : (err as Error).message,
+            runError: interrupted ? null : errorMessage(err),
             cancelRequested: false,
           });
         }
@@ -1243,7 +1256,7 @@ export const useAppStore = create<AppState>()(
         if (!requestId) {
           set({
             approvalStatus: "error",
-            approvalError: "No pending approval request found.",
+            approvalError: i18n.t("approval.noPending"),
           });
           return;
         }
@@ -1277,7 +1290,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             approvalStatus: "error",
-            approvalError: (err as Error).message,
+            approvalError: errorMessage(err),
             runStatus: "idle",
           });
           // Reload session from backend so the UI can pick up any
@@ -1322,7 +1335,7 @@ export const useAppStore = create<AppState>()(
         if (!requestId) {
           set({
             questionStatus: "error",
-            questionError: "No pending question request found.",
+            questionError: i18n.t("question.noPending"),
           });
           return;
         }
@@ -1368,7 +1381,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             questionStatus: "error",
-            questionError: (err as Error).message,
+            questionError: errorMessage(err),
           });
           try {
             const replay =
@@ -1430,7 +1443,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             backgroundTasksStatus: "error",
-            backgroundTasksError: (err as Error).message,
+            backgroundTasksError: errorMessage(err),
           });
         }
       },
@@ -1471,7 +1484,7 @@ export const useAppStore = create<AppState>()(
           set({
             backgroundTaskOutput: null,
             backgroundTaskOutputStatus: "error",
-            backgroundTaskOutputError: (err as Error).message,
+            backgroundTaskOutputError: errorMessage(err),
           });
         }
       },
@@ -1501,7 +1514,7 @@ export const useAppStore = create<AppState>()(
           set({
             sessionDebug: null,
             sessionDebugStatus: "error",
-            sessionDebugError: (err as Error).message,
+            sessionDebugError: errorMessage(err),
           });
         }
       },
@@ -1517,7 +1530,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             settingsStatus: "error",
-            settingsError: (err as Error).message,
+            settingsError: errorMessage(err),
           });
         }
       },
@@ -1541,7 +1554,7 @@ export const useAppStore = create<AppState>()(
         } catch (err) {
           set({
             settingsStatus: "error",
-            settingsError: (err as Error).message,
+            settingsError: errorMessage(err),
           });
         }
       },

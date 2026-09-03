@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from ..graph.contracts import GraphEvent, GraphRunRequest, RuntimeGraph
+from ..graph.contracts import GraphEvent, GraphRunRequest, GraphStep, RuntimeGraph
 from ..hook.config import RuntimeHookSurface
 from ..hook.typed import (
     ToolInputEvent,
@@ -35,6 +35,7 @@ from ..tools._pydantic_args import format_validation_error
 from ..tools._repair import ToolDiagnosticError
 from ..tools.contracts import (
     RuntimeToolTimeoutError,
+    Tool,
     ToolCall,
     ToolDefinition,
     ToolDiagnostics,
@@ -220,7 +221,7 @@ def _normalized_tool_result(
     *,
     tool_result: ToolResult,
     session: SessionState,
-    plan_tool_call: Any,
+    plan_tool_call: ToolCall,
     sequence: int,
     tool_call_id: str,
 ) -> tuple[ToolResult, bool, dict[str, object]]:
@@ -265,8 +266,14 @@ def _tool_completed_payload(
     tool_result: ToolResult,
     tool_call_id: str,
     sanitized_arguments: dict[str, object],
+    display_tool_name: str | None = None,
 ) -> dict[str, object]:
-    """Assemble the ``runtime.tool_completed`` payload for a delivered result."""
+    """Assemble the ``runtime.tool_completed`` payload for a delivered result.
+
+    ``display_tool_name`` preserves the native-call path's historical display
+    selection when a tool returns a result under a different name; the
+    invoke-tool path keeps the result name as its default.
+    """
     completed_payload: dict[str, object] = {
         **_tool_completed_identity_payload(session),
         **tool_result.data,
@@ -281,7 +288,7 @@ def _tool_completed_payload(
     completed_payload.setdefault("tool", tool_result.tool_name)
 
     completed_display = build_tool_display(
-        tool_result.tool_name,
+        tool_result.tool_name if display_tool_name is None else display_tool_name,
         sanitized_arguments,
         result_data=tool_result.data,
     )
@@ -528,7 +535,7 @@ def _session_without_provider_attempt(session: SessionState) -> SessionState:
 def _finalized_step_session(
     *,
     session: SessionState,
-    graph_step: Any,
+    graph_step: GraphStep,
     is_final_step: bool,
     provider_attempt: int,
 ) -> tuple[SessionState, int, SessionStatus]:
@@ -646,7 +653,7 @@ class _ResolvedToolCall:
     :class:`ToolInvocation` and observes the same progress stream.
     """
 
-    tool: Any
+    tool: Tool
     tool_call: ToolCall
     tool_call_id: str
 
@@ -714,6 +721,10 @@ class RuntimeRunLoopCoordinator:
         self._tool_input_handler_registry = tool_input_handler_registry
         self._tool_result_handler_registry = tool_result_handler_registry
         self._tool_executor = tool_executor
+
+    def update_provider_catalog_query(self, provider_catalog_query: RuntimeProviderCatalogQuery) -> None:
+        """Publish the provider catalog query used by reasoning diagnostics."""
+        self._provider_catalog_query = provider_catalog_query
 
     def _tool_call_preview(
         self,
@@ -1004,7 +1015,7 @@ class RuntimeRunLoopCoordinator:
         self,
         *,
         session: SessionState,
-        tool: Any,
+        tool: Tool,
         tool_call: ToolCall,
         tool_call_id: str | None,
     ) -> tuple[ToolCall, str, dict[str, object], SessionState]:
@@ -1379,33 +1390,13 @@ class RuntimeRunLoopCoordinator:
             yield failed_chunk
             return
 
-        completed_payload = {
-            **_tool_completed_identity_payload(session),
-            **tool_result.data,
-            "tool_call_id": tool_call_id,
-            "arguments": sanitized_arguments,
-            "status": tool_result.status,
-            "content": tool_result.content,
-            "error": tool_result.error,
-        }
-        if tool_result.diagnostics is not None:
-            completed_payload["diagnostics"] = tool_result.diagnostics.as_payload()
-        completed_payload.setdefault("tool", tool_result.tool_name)
-
-        completed_display = build_tool_display(
-            tool_call.tool_name,
-            sanitized_arguments,
-            result_data=tool_result.data,
+        completed_payload = _tool_completed_payload(
+            session=session,
+            tool_result=tool_result,
+            tool_call_id=tool_call_id,
+            sanitized_arguments=sanitized_arguments,
+            display_tool_name=tool_call.tool_name,
         )
-        completed_status = build_tool_status(
-            tool_call.tool_name,
-            tool_call_id,
-            phase="completed" if tool_result.status == "ok" else "failed",
-            status="completed" if tool_result.status == "ok" else "failed",
-            display=completed_display,
-        )
-        completed_payload["display"] = completed_display
-        completed_payload["tool_status"] = completed_status
 
         envelope = self._persist_event(
             session_id=session.session.id,
@@ -1954,7 +1945,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        graph_step: Any,
+        graph_step: GraphStep,
         reasoning_capture_state: ReasoningCaptureState,
         current_chunk_session: SessionState,
     ) -> Generator[RuntimeStreamChunk, None, int]:
@@ -1985,7 +1976,7 @@ class RuntimeRunLoopCoordinator:
         *,
         runtime: RuntimeSurface,
         session: SessionState,
-        graph_step: Any,
+        graph_step: GraphStep,
         reasoning_capture_state: ReasoningCaptureState,
     ) -> Generator[RuntimeStreamChunk]:
         reasoning_diagnostic = _reasoning_output_diagnostic(
@@ -2350,7 +2341,7 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         sequence: int,
         active_graph_request: GraphRunRequest,
-        graph_step: Any,
+        graph_step: GraphStep,
         provider_attempt: int,
         tool_results: list[ToolResult],
     ) -> Generator[RuntimeStreamChunk, None, tuple[bool, SessionState, SessionState, int, bool]]:
@@ -2774,9 +2765,9 @@ class RuntimeRunLoopCoordinator:
         sequence: int,
         tool_registry: ToolRegistry,
         tool_call: ToolCall,
-        tool: Any,
+        tool: Tool,
         is_resume: bool,
-    ) -> tuple[ToolCall, Any, ToolInputHookOutcome]:
+    ) -> tuple[ToolCall, Tool, ToolInputHookOutcome]:
         """Apply the shared typed-input gate before permission/approval.
 
         This is deliberately only the pre-execution candidate phase. The
@@ -2836,9 +2827,9 @@ class RuntimeRunLoopCoordinator:
         session: SessionState,
         sequence: int,
         tool_registry: ToolRegistry,
-        graph_step: Any,
+        graph_step: GraphStep,
         is_resume: bool = False,
-    ) -> Generator[RuntimeStreamChunk, None, tuple[Any, Any, str, int, ToolInputHookOutcome]]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[ToolCall, Tool, str, int, ToolInputHookOutcome]]:
         runtime = self._surface
         plan_tool_call = getattr(graph_step, "tool_call", None)
         if plan_tool_call is None:
@@ -2973,8 +2964,8 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        tool: Any,
-        plan_tool_call: Any,
+        tool: Tool,
+        plan_tool_call: ToolCall,
         tool_call_id: str,
         approval_resolution: tuple[PendingApproval, PermissionResolution] | None,
         active_permission_policy: PermissionPolicy,
@@ -3112,8 +3103,8 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        plan_tool_call: Any,
-        tool: Any,
+        plan_tool_call: ToolCall,
+        tool: Tool,
         tool_call_id: str,
         tool_timeout: int | None,
         tool_results: list[ToolResult],
@@ -3297,7 +3288,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        plan_tool_call: Any,
+        plan_tool_call: ToolCall,
         tool_call_id: str,
         tool_result: ToolResult,
         active_graph_request: GraphRunRequest,
@@ -3337,7 +3328,7 @@ class RuntimeRunLoopCoordinator:
         self,
         *,
         session: SessionState,
-        plan_tool_call: Any,
+        plan_tool_call: ToolCall,
         tool_result: ToolResult,
     ) -> Generator[RuntimeStreamChunk, None, bool]:
         if plan_tool_call.tool_name == QuestionTool.definition.name and tool_result.status == "ok":
@@ -3391,7 +3382,7 @@ class RuntimeRunLoopCoordinator:
         *,
         session: SessionState,
         sequence: int,
-        plan_tool_call: Any,
+        plan_tool_call: ToolCall,
         tool_call_id: str,
         sanitized_arguments: dict[str, object],
         tool_result: ToolResult,

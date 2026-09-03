@@ -15,7 +15,7 @@ from voidcode.runtime.paths import sessions_db_path, state_home
 from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
+from voidcode.runtime.storage import SCHEMA_VERSION, SessionSealedError, SqliteSessionStore
 from voidcode.runtime.task import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
@@ -632,7 +632,7 @@ def test_session_storage_bootstraps_canonical_schema_for_fresh_database(tmp_path
         "updated_at",
     ]
     assert delivery_columns == ["workspace_id", "session_id", "dedupe_key", "delivered_at"]
-    assert schema_version == 13
+    assert schema_version == SCHEMA_VERSION
     with closing(sqlite3.connect(database_path)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert "memories" not in tables
@@ -654,11 +654,11 @@ def test_session_storage_preserves_legacy_memory_tables_without_access(tmp_path:
     store.list_sessions(workspace=tmp_path)
     with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("SELECT content FROM memories WHERE memory_id = 'legacy'").fetchone() == ("must remain untouched",)
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
-def test_session_storage_fresh_database_background_tasks_carry_v12_schema_columns(tmp_path: Path) -> None:
-    database_path = tmp_path / "fresh-schema-v12.sqlite3"
+def test_session_storage_fresh_database_background_tasks_carry_v14_schema_columns(tmp_path: Path) -> None:
+    database_path = tmp_path / "fresh-schema-v14.sqlite3"
     store = SqliteSessionStore(database_path=database_path)
     store.create_background_task(
         workspace=tmp_path,
@@ -672,7 +672,7 @@ def test_session_storage_fresh_database_background_tasks_carry_v12_schema_column
         task_columns = [row[1] for row in connection.execute("PRAGMA table_info(background_tasks)").fetchall()]
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-    assert schema_version == 13
+    assert schema_version == SCHEMA_VERSION
     for column in ("output_schema_json", "schema_mode", "structured_output_json", "schema_validation_json"):
         assert column in task_columns
 
@@ -819,7 +819,7 @@ def test_session_storage_rejects_runtime_schema_version_mismatch(tmp_path: Path)
 
     with pytest.raises(
         RuntimeError,
-        match="schema version mismatch: expected 13 got 999.*future-runtime\\.sqlite3",
+        match=rf"schema version mismatch: expected {SCHEMA_VERSION} got 999.*future-runtime\.sqlite3",
     ):
         store.list_notifications(workspace=tmp_path)
 

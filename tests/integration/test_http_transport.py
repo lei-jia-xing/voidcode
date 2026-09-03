@@ -3033,6 +3033,25 @@ def test_transport_run_stream_accepts_metadata_passthrough_for_skills_and_max_st
     assert response.status == 200
 
 
+def test_transport_run_stream_rejects_unknown_request_fields() -> None:
+    create_runtime_app = _load_transport_app_factory()
+
+    class _RuntimeMustNotStart:
+        def __init__(self) -> None:
+            raise AssertionError("runtime must not be constructed for invalid payload")
+
+    app = create_runtime_app(workspace=Path("/tmp/workspace"), runtime_factory=_RuntimeMustNotStart)
+    response = _run_app(
+        app,
+        method="POST",
+        path="/api/runtime/run/stream",
+        body=json.dumps({"prompt": "transport me", "unknown": True}).encode("utf-8"),
+    )
+
+    assert response.status == 400
+    assert "unknown" in cast(str, cast(dict[str, object], response.json())["error"])
+
+
 def test_transport_serializes_additive_future_event_type_unchanged() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_stream_chunk, session_ref, session_state, event_envelope = _load_stream_types()

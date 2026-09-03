@@ -40,9 +40,7 @@ from .permission import (
     PatternPermissionRule,
     PermissionDecision,
 )
-from .policy import (
-    validate_runtime_policy_config_payload,
-)
+from .policy import RuntimePolicyConfig, validate_runtime_policy_config_payload
 
 RuntimeProviderFallbackConfig = provider_config.ProviderFallbackConfig
 RuntimeProvidersConfig = provider_config.ProviderConfigs
@@ -475,7 +473,7 @@ class RuntimeAgentConfig:
 class RuntimeConfig:
     approval_mode: PermissionDecision = "ask"
     permission: ExternalDirectoryPermissionConfig = field(default_factory=ExternalDirectoryPermissionConfig)
-    policy: object | None = None
+    policy: RuntimePolicyConfig | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName = DEFAULT_EXECUTION_ENGINE
     max_steps: int | None = DEFAULT_MAX_STEPS
@@ -501,7 +499,7 @@ class RuntimeConfig:
 class RuntimeConfigOverrides:
     approval_mode: PermissionDecision | None = None
     permission: ExternalDirectoryPermissionConfig | None = None
-    policy: object | None = None
+    policy: RuntimePolicyConfig | None = None
     model: str | None = None
     execution_engine: ExecutionEngineName | None = None
     max_steps: int | None = None
@@ -2685,7 +2683,7 @@ def parse_runtime_context_window_payload(
         raise ValueError(f"{source}: {exc}") from exc
 
 
-def parse_runtime_policy_payload(raw_policy: object, *, source: str) -> object | None:
+def parse_runtime_policy_payload(raw_policy: object, *, source: str) -> RuntimePolicyConfig | None:
     try:
         return validate_runtime_policy_config_payload(raw_policy, source=source)
     except ValueError as exc:
