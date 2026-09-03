@@ -1041,7 +1041,7 @@ class RuntimeBackgroundTaskSupervisor:
 
         Safe to call from any read/status surface (``load_background_task``,
         ``load_background_task_result``, ``list_background_tasks``, status
-        snapshots, and ``background_output``): queued work is re-attempted
+        snapshots, and ``background_task``): queued work is re-attempted
         without turning result reads into a polling loop.
         """
         self._drain_background_task_queue()
@@ -1940,7 +1940,7 @@ class RuntimeBackgroundTaskSupervisor:
             "Runtime background task completion notification: "
             f"task_id={task.task.id} status={task.status}{child}. "
             f"Summary: {summary} "
-            f'Use background_output(task_id="{task.task.id}") for the structured result; '
+            f'Use background_task(operation="output", task_id="{task.task.id}") for the structured result; '
             "wait for runtime notifications and do not poll."
         )
         try:
@@ -2114,7 +2114,7 @@ class RuntimeBackgroundTaskSupervisor:
                 f"Runtime background task progress: task_id={task.task.id} "
                 f"ordinal={progress.get('ordinal', '?')} "
                 f"type={progress.get('type', 'progress')}. "
-                f"{result_text if isinstance(result_text, str) else 'Structured progress is available via background_output.'}"
+                f"{result_text if isinstance(result_text, str) else 'Structured progress is available via background_task(operation=output).'}"
             )
             queue_progress = getattr(self._surface, "queue_progress_interaction", None)
             if callable(queue_progress):

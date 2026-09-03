@@ -1,24 +1,6 @@
-"""Unit tests for the ``steer_background_task`` surface (keep-alive Phase 3).
+"""Unit tests for the unified ``background_task`` steer operation (keep-alive Phase 3).
 
-Covers the validation contracts of ``steer_background_task`` on the runtime
-supervisor surface and the ``steer_task`` tool's parent-session check:
-
-- non keep-alive tasks cannot be steered (``ValueError``);
-- a task with a turn in flight (``running``) cannot be steered (v1 has no
-  steer pipelining);
-- empty/whitespace steer content is rejected;
-- steering an ``idle`` keep-alive task dispatches a turn: the row flips to
-  ``running`` with the ``steer_prompt`` persisted, and the turn parks back
-  ``idle`` (``steer_prompt`` cleared);
-- an ``interrupted`` keep-alive task (process-restart breakpoint) can be
-  steered on the same task id and child session (``interrupted -> running``);
-- the ``steer_task`` tool rejects callers that are not the task's parent
-  session, and dispatches for the parent.
-
-Storage-level transitions and the keep-alive columns are covered by
-``tests/unit/runtime/test_background_task_keep_alive_storage.py``; the
-full lifecycle (transcript accumulation, run-loop gating, shutdown/cancel)
-is covered by ``tests/integration/test_keep_alive_subagent.py``.
+Covers runtime supervisor lifecycle transitions and the facade's parent-session check.
 """
 
 from __future__ import annotations
@@ -38,9 +20,9 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
+from voidcode.tools.background_task import BackgroundTaskTool
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
-from voidcode.tools.steer_task import SteerTaskTool
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
@@ -337,17 +319,17 @@ def _steerable_task(*, parent_session_id: str) -> BackgroundTaskState:
     )
 
 
-def test_steer_task_tool_rejects_non_parent_session() -> None:
-    """Only the task's parent session may steer it via the steer_task tool."""
+def test_background_task_steer_rejects_non_parent_session() -> None:
+    """Only the task's parent session may steer it via the background_task facade."""
     runtime = _StubSteerRuntime(task=_steerable_task(parent_session_id="parent-1"))
-    tool = SteerTaskTool(runtime=runtime)
+    tool = BackgroundTaskTool(runtime=runtime)
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="other-session")):
         with pytest.raises(ValueError, match="only its parent"):
             tool.invoke(
                 ToolCall(
-                    tool_name="steer_task",
-                    arguments={"task_id": "task-keep-alive-1", "prompt": "continue"},
+                    tool_name="background_task",
+                    arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
                 ),
                 workspace=Path("."),
             )
@@ -356,16 +338,16 @@ def test_steer_task_tool_rejects_non_parent_session() -> None:
     assert runtime.calls == [("authorize", "task-keep-alive-1")]
 
 
-def test_steer_task_tool_parent_dispatches_steer() -> None:
-    """The task's parent session can steer it; the tool surfaces the dispatch."""
+def test_background_task_steer_parent_dispatches_steer() -> None:
+    """The task's parent session can steer it; the facade surfaces the dispatch."""
     runtime = _StubSteerRuntime(task=_steerable_task(parent_session_id="parent-1"))
-    tool = SteerTaskTool(runtime=runtime)
+    tool = BackgroundTaskTool(runtime=runtime)
 
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="parent-1")):
         result = tool.invoke(
             ToolCall(
-                tool_name="steer_task",
-                arguments={"task_id": "task-keep-alive-1", "prompt": "continue"},
+                tool_name="background_task",
+                arguments={"operation": "steer", "task_id": "task-keep-alive-1", "prompt": "continue"},
             ),
             workspace=Path("."),
         )

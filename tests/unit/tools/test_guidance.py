@@ -31,18 +31,12 @@ def test_yield_guidance_describes_terminal_child_handoff() -> None:
     assert "peer message bus" in guidance
 
 
-def test_steer_task_guidance_describes_parent_and_lifecycle_rules() -> None:
-    filename = guidance_filename_for_tool("steer_task")
-    assert filename == "steer_task.txt"
-    guidance = guidance_for_tool("steer_task")
-    assert "parent session" in guidance
-    assert "idle" in guidance
-    assert "interrupted" in guidance
-    assert "cannot be steered" in guidance
-
-
-def test_background_output_guidance_describes_three_selectors_and_wait_semantics() -> None:
-    guidance = guidance_for_tool("background_output")
+def test_background_task_guidance_describes_operations_and_lifecycle_rules() -> None:
+    filename = guidance_filename_for_tool("background_task")
+    assert filename == "background_task.txt"
+    guidance = guidance_for_tool("background_task")
+    for operation in ("output", "cancel", "ps", "steer"):
+        assert f'operation="{operation}"' in guidance
     for selector in ("task_id", "task_ids", "parallel_group_id"):
         assert selector in guidance
     assert "block=false" in guidance

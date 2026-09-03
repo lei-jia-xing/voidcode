@@ -133,7 +133,7 @@ def test_completion_summary_is_bounded_and_contains_no_child_transcript(tmp_path
         ACTIVE_SESSION_REGISTRY.unregister(workspace=tmp_path, session_id="parent-session")
 
     content = surface.messages[0][1]
-    summary = content.split("Summary: ", 1)[1].split(" Use background_output", 1)[0]
+    summary = content.split("Summary: ", 1)[1].split(" Use background_task", 1)[0]
     assert len(summary) == 1000
     assert summary.endswith("...")
     assert "child prompt" not in content

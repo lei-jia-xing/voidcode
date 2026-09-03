@@ -64,7 +64,7 @@ runtime/
 - **Tool scoping:** `_tool_registry_for_effective_config()` applies builtin registry, agent manifest allowlist, and per-request tool config.
 - **Delegated routing:** `task` tool routing validates supported child presets before `start_background_task()` creates a child session lineage.
 - **Approval path:** `_resolve_permission()` emits pending approval state; `resume()` / `resume_stream()` re-enter via `_resume_pending_approval_*` helpers.
-- **Background tasks:** `start_background_task()` persists queued state, spawns worker thread, then `_run_background_task_worker()` finalizes lifecycle hooks and notifications. `background_output` reads bounded results/full-session slices; `background_cancel` returns deterministic status payloads for unknown, running, and terminal tasks.
+- **Background tasks:** `start_background_task()` persists queued state, spawns worker threads, and finalizes lifecycle hooks and notifications. The model-facing `background_task` facade provides bounded output/roster reads plus cancel/steer controls; all truth and ownership remain runtime-owned.
 - **Provider fallback:** `_execute_graph_loop()` increments `provider_attempt`, swaps active target, and rebuilds the graph when retryable provider failures occur.
 
 ## NOTES

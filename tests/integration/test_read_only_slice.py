@@ -887,8 +887,9 @@ class _BackgroundOutputGuardrailProvider:
                     task_id = cast(str, tool_results[0].data["task_id"])
                     return provider_protocol_module.ProviderTurnResult(
                         tool_call=tool_contracts_module.ToolCall(
-                            tool_name="background_output",
+                            tool_name="background_task",
                             arguments={
+                                "operation": "output",
                                 "task_id": task_id,
                                 "block": True,
                                 "timeout": 3000,
@@ -1000,8 +1001,9 @@ class _ParentBackgroundOutputGraph:
             return _GraphStep(
                 events=(),
                 tool_call=tool_call_factory(
-                    tool_name="background_output",
+                    tool_name="background_task",
                     arguments={
+                        "operation": "output",
                         "task_id": first_data["task_id"],
                         "block": True,
                         "timeout": 3000,
@@ -1210,7 +1212,7 @@ def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuat
     }
 
 
-def test_runtime_background_subagent_e2e_collects_background_output_result(
+def test_runtime_background_subagent_e2e_collects_background_task_output_result(
     tmp_path: Path,
 ) -> None:
     runtime_request, runtime_class = _load_runtime_types()
@@ -1222,7 +1224,7 @@ def test_runtime_background_subagent_e2e_collects_background_output_result(
     response = runtime.run(runtime_request(prompt="launch background child", session_id="leader-background"))
     task_completed = [event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "task"][0]
     background_completed = [
-        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "background_output"
+        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload["tool"] == "background_task"
     ][0]
     task_id = cast(str, task_completed.payload["task_id"])
     reloaded = runtime.load_background_task(task_id)
@@ -1329,12 +1331,12 @@ def test_runtime_background_subagent_failure_guides_session_id_retry_and_escalat
         )
     )
     failed = _wait_for_background_task_status(runtime, started.task.id, {"failed"})
-    background_output_tool = importlib.import_module("voidcode.tools.background_output").BackgroundOutputTool(runtime=runtime)
+    background_task_tool = importlib.import_module("voidcode.tools.background_task").BackgroundTaskTool(runtime=runtime)
 
-    result = background_output_tool.invoke(
+    result = background_task_tool.invoke(
         tool_contracts_module.ToolCall(
-            tool_name="background_output",
-            arguments={"task_id": started.task.id, "full_session": True},
+            tool_name="background_task",
+            arguments={"operation": "output", "task_id": started.task.id, "full_session": True},
         ),
         workspace=tmp_path,
     )
@@ -2181,7 +2183,7 @@ def test_provider_child_request_excludes_parent_tool_results_and_transcript_by_d
     assert "transcript" not in child_context.metadata
 
 
-def test_provider_background_output_full_session_is_tool_result_not_hidden_context(
+def test_provider_background_task_full_session_is_tool_result_not_hidden_context(
     tmp_path: Path,
 ) -> None:
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
@@ -2216,29 +2218,29 @@ def test_provider_background_output_full_session_is_tool_result_not_hidden_conte
     response = runtime.run(runtime_request(prompt="launch and collect background", session_id="leader-bg"))
     parent_requests = [request for request in requests if not _is_delegated_child_request(request)]
     after_task_request = next(request for request in parent_requests if len(_assembled_context(request).tool_results) == 1)
-    after_background_output_request = next(request for request in parent_requests if len(_assembled_context(request).tool_results) == 2)
-    after_background_context = _assembled_context(after_background_output_request)
-    background_output_result = after_background_context.tool_results[1]
-    background_output_data = background_output_result.data
-    background_output_session = cast(dict[str, object], background_output_data["session"])
+    after_background_task_request = next(request for request in parent_requests if len(_assembled_context(request).tool_results) == 2)
+    after_background_context = _assembled_context(after_background_task_request)
+    background_task_result = after_background_context.tool_results[1]
+    background_task_data = background_task_result.data
+    background_task_session = cast(dict[str, object], background_task_data["session"])
     background_tool_segments = [
-        segment for segment in after_background_context.segments if segment.role == "tool" and segment.tool_name == "background_output"
+        segment for segment in after_background_context.segments if segment.role == "tool" and segment.tool_name == "background_task"
     ]
 
     assert response.session.status == "completed"
     assert response.output == "parent collected transcript"
     assert "child transcript sentinel" not in _request_text(after_task_request)
-    assert background_output_result.tool_name == "background_output"
-    assert background_output_session["output_available"] is True
-    assert background_output_session["full_output_preserved"] is True
-    assert "output" not in background_output_session
-    assert isinstance(background_output_session["transcript_count"], int)
-    assert background_output_session["transcript_count"] > 0
+    assert background_task_result.tool_name == "background_task"
+    assert background_task_session["output_available"] is True
+    assert background_task_session["full_output_preserved"] is True
+    assert "output" not in background_task_session
+    assert isinstance(background_task_session["transcript_count"], int)
+    assert background_task_session["transcript_count"] > 0
     assert background_tool_segments
     assert isinstance(background_tool_segments[0].content, str)
     assert "Background task result digest:" in background_tool_segments[0].content
     assert "child transcript sentinel" not in background_tool_segments[0].content
-    assert getattr(background_output_result, "reference", None) == background_output_session["full_session_reference"]
+    assert getattr(background_task_result, "reference", None) == background_task_session["full_session_reference"]
     assert all(
         "child transcript sentinel" not in segment.content
         for segment in after_background_context.segments
@@ -2266,13 +2268,13 @@ def test_provider_visible_tools_are_filtered_for_delegated_agent_presets(
                 "apply_patch",
                 "task",
                 "question",
-                "background_output",
+                "background_task",
             },
             {"read", "grep", "glob"},
         ),
         (
             "worker",
-            {"task", "question", "background_output"},
+            {"task", "question", "background_task"},
             {"read", "write", "edit", "apply_patch"},
         ),
     )

@@ -1,7 +1,0 @@
-List the current session's background-task roster.
-
-Usage:
-- Call with no arguments; the runtime scopes results to the active parent session.
-- This is an immediate, bounded status projection. It includes task and child ids, lifecycle status, group metadata, timestamps, approval/result flags, and next-step references.
-- Prompts, transcripts, and child output are never returned. Use `background_output` for an intentional bounded result read.
-- Do not infer lifecycle state from local bookkeeping or repeatedly poll this tool; use runtime completion reminders and `background_output` when a result is needed.

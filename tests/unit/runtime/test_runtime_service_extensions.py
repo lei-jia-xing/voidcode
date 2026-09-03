@@ -4241,9 +4241,9 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
                 "guidance": (
                     "Retry failed, cancelled, or interrupted delegated background tasks only when "
                     "it is the next explicit recovery step. Re-dispatch through the task tool, "
-                    "reusing the child session_id where applicable, instead of manually "
-                    "reconstructing child requests; inspect the new task id with "
-                    "background_output, and escalate repeated failures rather than looping."
+                    "reusing the child session_id where applicable, instead of manually reconstructing child "
+                    "requests; inspect the new task id with background_task(operation=output), and escalate repeated "
+                    "failures rather than looping."
                 ),
             },
             {
@@ -14887,7 +14887,7 @@ def test_runtime_agent_prompts_include_delegation_and_child_boundaries() -> None
     assert "choosing the narrowest specialist that fits (explore, advisor, worker, researcher, product)" in leader_prompt
     assert "delegate to the product agent and read the plan back through its yield handoff" in leader_prompt
     assert "a child's completion is an incremental result, not a finished deliverable" in leader_prompt
-    assert "Collect outstanding child results with background_output" in leader_prompt
+    assert "Collect outstanding child results with background_task" in leader_prompt
     assert "Never present an unrun command, unread file, or unverified change as done" in leader_prompt
 
     assert explore_prompt is not None

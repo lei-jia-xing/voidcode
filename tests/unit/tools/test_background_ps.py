@@ -7,7 +7,8 @@ import pytest
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.runtime.task import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
-from voidcode.tools import BackgroundPsTool, ToolCall
+from voidcode.tools.background_ps import BackgroundPsTool
+from voidcode.tools.contracts import ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

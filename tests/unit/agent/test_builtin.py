@@ -42,7 +42,7 @@ _PROMPT_BOUNDARY_PHRASES = {
         "Deliver complete working behavior",
         "Verify child results yourself",
         "narrowest specialist that fits",
-        "Collect outstanding child results with background_output",
+        "Collect outstanding child results with background_task",
     ),
     "worker": (
         "focused delegated executor",
@@ -114,7 +114,7 @@ def test_leader_prompt_guides_runtime_owned_background_retry() -> None:
     assert prompt is not None
     assert "background_retry" not in prompt
     assert "Delegate only through the runtime's task tool" in prompt
-    assert "Collect outstanding child results with background_output" in prompt
+    assert "Collect outstanding child results with background_task" in prompt
     assert "track the full set until every member is terminal" in prompt
 
 
@@ -210,7 +210,7 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
         assert manifest is not None
         assert write_tools.isdisjoint(manifest.tool_allowlist)
         assert "task" not in manifest.tool_allowlist
-        assert "background_output" not in manifest.tool_allowlist
+        assert "background_task" not in manifest.tool_allowlist
         assert "question" not in manifest.tool_allowlist
 
     worker = get_builtin_agent_manifest("worker")
@@ -219,13 +219,13 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     assert "task" not in worker.tool_allowlist
     assert "todo_write" in worker.tool_allowlist
     assert "mcp/*" in worker.tool_allowlist
-    assert "background_output" not in worker.tool_allowlist
+    assert "background_task" not in worker.tool_allowlist
     assert "question" not in worker.tool_allowlist
 
     researcher = get_builtin_agent_manifest("researcher")
     assert researcher is not None
     assert "todo_write" not in researcher.tool_allowlist
-    assert "background_output" not in researcher.tool_allowlist
+    assert "background_task" not in researcher.tool_allowlist
     assert "question" not in researcher.tool_allowlist
 
 
@@ -250,7 +250,7 @@ def test_builtin_leader_recovery_surface_omits_removed_retry_tool() -> None:
     assert leader is not None
     assert "background_retry" not in leader.tool_allowlist
     assert "todo_write" in leader.tool_allowlist
-    assert "background_output" in leader.tool_allowlist
+    assert "background_task" in leader.tool_allowlist
     assert "question" in leader.tool_allowlist
 
     for preset in _CALLABLE_CHILD_AGENT_PRESETS:
@@ -300,7 +300,7 @@ def test_product_prompt_and_manifest_form_a_non_interactive_planning_agent() -> 
     assert "todo_write" not in manifest.tool_allowlist
     assert "task" not in manifest.tool_allowlist
     assert "yield" in manifest.tool_allowlist
-    assert "background_output" not in manifest.tool_allowlist
+    assert "background_task" not in manifest.tool_allowlist
     assert "without user interaction" in manifest.description
     assert "product agent" in prompt
     assert "Do not ask the user questions or wait for clarification" in prompt
@@ -630,9 +630,7 @@ def test_product_manifest_excludes_all_delegation_helpers() -> None:
     assert product.mode == "subagent"
     assert {
         "task",
-        "background_output",
-        "background_retry",
-        "background_cancel",
+        "background_task",
     }.isdisjoint(product.tool_allowlist)
 
 

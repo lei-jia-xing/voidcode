@@ -28,8 +28,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "apply_patch",
         "apply_workspace_edit",
         "ast_grep",
-        "background_cancel",
-        "background_output",
+        "background_task",
         "background_process",
         "edit",
         "glob",
@@ -41,7 +40,6 @@ BUILTIN_TOOL_NAMES = frozenset(
         "question",
         "shell_exec",
         "skill",
-        "steer_task",
         "yield",
         "task",
         "task_batch",
@@ -195,10 +193,7 @@ class BuiltinToolProvider:
     _task_tool: Tool | None
     _task_batch_tool: Tool | None
     _question_tool: Tool | None
-    _steer_task_tool: Tool | None
-    _background_output_tool: Tool | None
-    _background_cancel_tool: Tool | None
-    _background_ps_tool: Tool | None
+    _background_task_tool: Tool | None
     _background_process_tool: Tool | None
 
     def __init__(
@@ -212,10 +207,7 @@ class BuiltinToolProvider:
         task_tool: Tool | None = None,
         task_batch_tool: Tool | None = None,
         question_tool: Tool | None = None,
-        steer_task_tool: Tool | None = None,
-        background_output_tool: Tool | None = None,
-        background_cancel_tool: Tool | None = None,
-        background_ps_tool: Tool | None = None,
+        background_task_tool: Tool | None = None,
         background_process_tool: Tool | None = None,
     ) -> None:
         self._lsp_tool = lsp_tool
@@ -226,10 +218,7 @@ class BuiltinToolProvider:
         self._task_batch_tool = task_batch_tool
         self._task_tool = task_tool
         self._question_tool = question_tool
-        self._steer_task_tool = steer_task_tool
-        self._background_output_tool = background_output_tool
-        self._background_cancel_tool = background_cancel_tool
-        self._background_ps_tool = background_ps_tool
+        self._background_task_tool = background_task_tool
         self._background_process_tool = background_process_tool
 
     def provide_tools(self) -> tuple[Tool, ...]:
@@ -265,18 +254,8 @@ class BuiltinToolProvider:
             tools.append(self._question_tool)
         elif _QuestionTool is not None:
             tools.append(_QuestionTool())
-        if self._steer_task_tool is not None:
-            tools.append(self._steer_task_tool)
-
-        if self._background_output_tool is not None:
-            tools.append(self._background_output_tool)
-
-        if self._background_cancel_tool is not None:
-            tools.append(self._background_cancel_tool)
-
-        if self._background_ps_tool is not None:
-            tools.append(self._background_ps_tool)
-
+        if self._background_task_tool is not None:
+            tools.append(self._background_task_tool)
         if self._background_process_tool is not None:
             tools.append(self._background_process_tool)
 

@@ -18,11 +18,9 @@ from voidcode.runtime.task import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.tools import (
-    BackgroundCancelTool,
-    BackgroundOutputTool,
-    ToolCall,
-)
+from voidcode.tools import ToolCall
+from voidcode.tools.background_cancel import BackgroundCancelTool
+from voidcode.tools.background_output import BackgroundOutputTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

@@ -207,7 +207,7 @@ class TaskTool:
                     "description": (
                         "Optional. true keeps the delegated child session alive across steer "
                         "turns: after each turn without a handoff the task parks as idle "
-                        "(awaiting_steer) and the leader resumes it with steer_task. Requires "
+                        "(awaiting_steer) and the leader resumes it with background_task(operation=steer). Requires "
                         "run_in_background=true."
                     ),
                 },
@@ -293,7 +293,7 @@ class TaskTool:
             keep_alive_guidance = (
                 " This task is keep-alive: after each turn without a terminal yield the worker "
                 "parks as idle and emits runtime.background_task_awaiting_steer; dispatch the "
-                "next instruction with steer_task(task_id=..., prompt=...) and repeat until "
+                "next instruction with background_task(operation=steer, task_id=..., prompt=...) and repeat until "
                 "the worker submits its terminal yield."
                 if args.keep_alive
                 else ""
@@ -303,17 +303,17 @@ class TaskTool:
                 content = (
                     f"Started background task {task.task.id} (status: queued; reason: {queued_reason}). "
                     "It will be dispatched when capacity is available; continue other work now and "
-                    "do not call background_output immediately unless you truly need a status check. "
-                    "Wait for a completion reminder, or use background_output(block=true) when you "
+                    "do not call background_task(operation=output) immediately unless you truly need a status check. "
+                    "Wait for a completion reminder, or use background_task(operation=output, block=true) when you "
                     "intentionally need to wait."
                     f"{keep_alive_guidance}"
                 )
             else:
                 content = (
                     f"Started background task {task.task.id}. Continue other work now; "
-                    "do not call background_output immediately unless you truly need a "
+                    "do not call background_task(operation=output) immediately unless you truly need a "
                     "status check. Wait for a completion reminder, or use "
-                    "background_output(block=true) when you intentionally need to wait."
+                    "background_task(operation=output, block=true) when you intentionally need to wait."
                     f"{keep_alive_guidance}"
                 )
             return ToolResult(

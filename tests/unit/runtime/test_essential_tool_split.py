@@ -126,7 +126,7 @@ def test_provider_path_exposes_only_essential_tools_when_enabled(tmp_path: Path)
     )
     names = set(available)
     assert names == ESSENTIAL_TOOL_NAMES, f"expected exactly the essential set, got {sorted(names)}"
-    for discoverable in ("apply_patch", "multi_edit", "web_search", "web_fetch", "ast_grep", "lsp", "background_output"):
+    for discoverable in ("apply_patch", "multi_edit", "web_search", "web_fetch", "ast_grep", "lsp", "background_task"):
         assert discoverable not in names, f"{discoverable} should be discoverable, not top-level"
 
 

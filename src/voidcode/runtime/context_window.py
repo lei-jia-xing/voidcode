@@ -656,7 +656,7 @@ def _facts_from_tool_results(
         command = result.data.get("command")
         if isinstance(command, str) and command:
             refs.append(f"command:{command}")
-        if result.tool_name in {"task", "background_output"}:
+        if result.tool_name in {"task", "background_task"}:
             task_id = result.data.get("task_id")
             child_session_id = result.data.get("child_session_id")
             summary_output = result.data.get("summary_output")

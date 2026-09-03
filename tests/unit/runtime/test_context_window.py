@@ -1026,12 +1026,12 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
             reference="session:child-session",
         ),
         ToolResult(
-            tool_name="background_output",
+            tool_name="background_task",
             status="ok",
             content="Task Result\n\nTask ID: bg_123\nSummary: child done",
             data={
                 "tool_call_id": "background-1",
-                "arguments": {"task_id": "bg_123"},
+                "arguments": {"operation": "output", "task_id": "bg_123"},
                 "task_id": "bg_123",
                 "child_session_id": "child-session",
                 "summary_output": "child done",

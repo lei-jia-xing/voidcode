@@ -21,14 +21,9 @@ from voidcode.runtime.task import (
     StoredBackgroundTaskSummary,
 )
 from voidcode.skills.models import SkillMetadata
-from voidcode.tools import (
-    BackgroundCancelTool,
-    BackgroundOutputTool,
-    QuestionTool,
-    SkillTool,
-    TaskTool,
-    ToolCall,
-)
+from voidcode.tools import QuestionTool, SkillTool, TaskTool, ToolCall
+from voidcode.tools.background_cancel import BackgroundCancelTool
+from voidcode.tools.background_output import BackgroundOutputTool
 
 CI_SETTINGS = settings(derandomize=True, database=None, deadline=None, max_examples=200)
 

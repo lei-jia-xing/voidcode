@@ -1,11 +1,9 @@
 from .apply_patch import ApplyPatchTool
 from .apply_workspace_edit import ApplyWorkspaceEditTool
 from .ast_grep import AstGrepTool
-from .background_cancel import BackgroundCancelTool
-from .background_output import BackgroundOutputTool
 from .background_process import BackgroundProcessTool
 from .background_process_start import BackgroundProcessManager
-from .background_ps import BackgroundPsTool
+from .background_task import BackgroundTaskTool
 from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolInvocation, ToolResult, ToolResultStatus
 from .edit import EditTool
 from .glob import GlobTool
@@ -34,7 +32,6 @@ from .question import QuestionTool
 from .read import ReadTool
 from .shell_exec import ShellExecTool
 from .skill import SkillTool
-from .steer_task import SteerTaskTool
 from .task import TaskTool
 from .task_batch import TaskBatchTool
 from .todo_write import TodoWriteTool
@@ -44,12 +41,10 @@ from .write import WriteTool
 from .yield_tool import YieldArgs, YieldTool
 
 __all__ = [
-    "BackgroundPsTool",
+    "BackgroundTaskTool",
     "ApplyPatchTool",
     "ApplyWorkspaceEditTool",
     "AstGrepTool",
-    "BackgroundCancelTool",
-    "BackgroundOutputTool",
     "BackgroundProcessManager",
     "BackgroundProcessTool",
     "EditTool",
@@ -64,9 +59,8 @@ __all__ = [
     "QuestionTool",
     "ShellExecTool",
     "SkillTool",
-    "SteerTaskTool",
-    "TaskBatchTool",
     "TaskTool",
+    "TaskBatchTool",
     "TodoWriteTool",
     "WebFetchTool",
     "WriteTool",

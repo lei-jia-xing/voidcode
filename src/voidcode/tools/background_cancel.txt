@@ -1,6 +1,0 @@
-Cancel one background task by id.
-
-Usage:
-- Provide `taskId` for the specific task to cancel.
-- This tool cancels one task at a time; it has no bulk-cancel mode.
-- Inspect the returned status, cancellation cause, and error fields. A running task reports a cancellation request; completed or cancelled tasks retain their terminal state; an unknown id returns a stable unknown status.

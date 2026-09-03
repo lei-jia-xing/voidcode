@@ -53,11 +53,9 @@ from ..provider.snapshot import (
     resolved_provider_snapshot,
 )
 from ..skills import SkillRegistry, skill_registry_with_builtins
-from ..tools.background_cancel import BackgroundCancelTool
-from ..tools.background_output import BackgroundOutputTool
 from ..tools.background_process import BackgroundProcessTool
 from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessPersistence
-from ..tools.background_ps import BackgroundPsTool
+from ..tools.background_task import BackgroundTaskTool
 from ..tools.contracts import (
     Tool,
     ToolCall,
@@ -74,7 +72,6 @@ from ..tools.output import (
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
-from ..tools.steer_task import SteerTaskTool
 from ..tools.task import TaskTool
 from ..tools.task_batch import TaskBatchTool
 from . import chunk_builders, skills
@@ -837,10 +834,7 @@ class VoidCodeRuntime(RuntimeSurface):
             task_batch_tool=TaskBatchTool(runtime=self),
             task_tool=TaskTool(runtime=self),
             question_tool=QuestionTool(),
-            steer_task_tool=SteerTaskTool(runtime=self),
-            background_output_tool=BackgroundOutputTool(runtime=self),
-            background_cancel_tool=BackgroundCancelTool(runtime=self),
-            background_ps_tool=BackgroundPsTool(runtime=self),
+            background_task_tool=BackgroundTaskTool(runtime=self),
             background_process_tool=BackgroundProcessTool(runtime=self),
         )
 
@@ -2873,7 +2867,7 @@ class VoidCodeRuntime(RuntimeSurface):
             task_id = state.task.id[:256]
             child_session_id = state.session_id[:256] if state.session_id is not None else None
             next_steps: dict[str, object] = {
-                "background_output": f'background_output(task_id="{task_id}")',
+                "background_task": f'background_task(operation="output", task_id="{task_id}")',
             }
             if child_session_id is not None:
                 next_steps["child_session"] = f"session:{child_session_id}"

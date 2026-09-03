@@ -33,8 +33,7 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "web_search": ("search", "Search"),
     "web_fetch": ("fetch", "Fetch"),
     "task": ("task", "Task"),
-    "background_output": ("background", "Background"),
-    "background_cancel": ("background", "Background"),
+    "background_task": ("background", "Background"),
     "skill": ("skill", "Skill"),
     "question": ("question", "Question"),
     "lsp": ("lsp", "LSP"),
@@ -254,15 +253,11 @@ def build_tool_display(
             # description is already shown as summary; keep args cleaner
             pass
 
-    elif tool_name == "background_output":
+    elif tool_name == "background_task":
+        operation = _first_primitive(arguments, "operation")
         task_id = _first_primitive(arguments, "task_id")
-        summary = task_id if task_id else title
-        args = _extract_primitive_args(arguments, "task_id")
-
-    elif tool_name == "background_cancel":
-        task_id = _first_primitive(arguments, "taskId")
-        summary = task_id if task_id else title
-        args = _extract_primitive_args(arguments, "taskId")
+        summary = task_id if task_id else operation if operation else title
+        args = _extract_primitive_args(arguments, "operation", "task_id", "prompt")
 
     elif tool_name == "skill":
         skill_name = _first_primitive(arguments, "name")

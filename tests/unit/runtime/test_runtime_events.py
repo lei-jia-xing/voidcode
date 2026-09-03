@@ -534,19 +534,17 @@ def test_shell_tool_display_bounds_copyable_command_metadata() -> None:
     assert copyable_command != raw_command
 
 
-def test_background_cancel_display_uses_camel_case_task_id_argument() -> None:
-    """Started-event display must use the canonical background_cancel argument."""
-    display = build_tool_display("background_cancel", {"taskId": "task-123"})
+def test_background_task_display_uses_operation_and_task_id() -> None:
+    display = build_tool_display("background_task", {"operation": "cancel", "task_id": "task-123"})
 
     assert display["kind"] == "background"
     assert display["title"] == "Background"
     assert display["summary"] == "task-123"
-    assert display["args"] == ["task-123"]
+    assert display["args"] == ["cancel", "task-123"]
 
 
-def test_background_output_display_keeps_snake_case_task_id_argument() -> None:
-    """background_output uses snake_case task_id and should not depend on taskId."""
-    display = build_tool_display("background_output", {"task_id": "output-task"})
+def test_background_task_output_display_includes_operation() -> None:
+    display = build_tool_display("background_task", {"operation": "output", "task_id": "output-task"})
 
     assert display["summary"] == "output-task"
-    assert display["args"] == ["output-task"]
+    assert display["args"] == ["output", "output-task"]
