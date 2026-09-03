@@ -89,7 +89,4 @@
 
 ## 相关文档
 
-- [`docs/agent-architecture.md`](../../../docs/agent-architecture.md)
-- [`docs/agent-boundary.md`](../../../docs/agent-boundary.md)
 - [`docs/contracts/agent-hook-presets.md`](../../../docs/contracts/agent-hook-presets.md)
-- [`docs/architecture.md`](../../../docs/architecture.md)

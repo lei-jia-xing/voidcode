@@ -175,9 +175,5 @@ ACP 和 agent 不是同一个维度。
 
 ## 相关文档
 
-- [`docs/architecture.md`](../../../docs/architecture.md)
-- [`docs/current-state.md`](../../../docs/current-state.md)
-- [`docs/roadmap.md`](../../../docs/roadmap.md)
-- [`docs/agent-architecture.md`](../../../docs/agent-architecture.md)
 - [`docs/contracts/runtime-config.md`](../../../docs/contracts/runtime-config.md)
 - [`docs/contracts/runtime-events.md`](../../../docs/contracts/runtime-events.md)

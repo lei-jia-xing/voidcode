@@ -157,22 +157,11 @@ Bun scripts are owned by `frontend/package.json`; the repository root intentiona
 
 Release notes are generated with `git-cliff` using [`cliff.toml`](./cliff.toml). The current GitHub release workflow keeps its `release.published` trigger and uses `git-cliff` to populate the GitHub Release body while artifact upload continues through GitHub Actions.
 
-## Documentation map
+## Documentation
 
-Start with the [`docs/README.md`](./docs/README.md) documentation map for the recommended reading order and document-status rules. The map groups the canonical architecture, current-state, development, runtime-contract, operations, and comparison records:
+Implementation behavior is defined by the source and tests. Stable runtime contracts are collected in [`docs/contracts/README.md`](./docs/contracts/README.md); contributor policy is in [`docs/coding-standards.md`](./docs/coding-standards.md).
 
-- [`docs/README.md`](./docs/README.md)
-- [`docs/architecture.md`](./docs/architecture.md)
-- [`docs/current-state.md`](./docs/current-state.md)
-- [`docs/development.md`](./docs/development.md)
-- [`docs/contracts/README.md`](./docs/contracts/README.md)
-- [`docs/mvp-demo-guide.md`](./docs/mvp-demo-guide.md)
-- [`docs/mvp-todo-plan.md`](./docs/mvp-todo-plan.md) — 历史交付清单/参考
-- [`docs/oh-my-pi-comparison-priorities.md`](./docs/oh-my-pi-comparison-priorities.md)
-
-Design and audit documents under `docs/` may be historical material; use the runtime contracts, `current-state.md`, and the comparison record as the basis for the current implementation.
-
-These internal docs are currently maintained in Chinese.
+These internal contract documents are currently maintained in Chinese.
 
 ## Contributing and community
 

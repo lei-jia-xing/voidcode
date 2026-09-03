@@ -143,7 +143,7 @@ MVP 契约应能够表示一个至少包含以下内容的运行时配置对象�
 - `permission.rules`：有序数组，每条规则可包含 `tool`、`path`、`command` 与必填 `decision`，用于 runtime-owned 的工具/路径/命令 pattern 权限匹配
 - `model`：字符串
 - `max_steps`：大于等于 1 的整数
-- `reasoning_effort`：字符串枚举，仅接受 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；`"none"` 不被接受（规范来源：`docs/reasoning-effort-decision.md`）
+- `reasoning_effort`：字符串枚举，仅接受 `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；`"none"` 不被接受（实现见 `src/voidcode/provider/reasoning_effort.py`）
 - `hooks.enabled`：布尔值；默认 `true`
 - `hooks.pre_tool`：命令数组的数组，每个命令在 workspace cwd 中执行
 - `hooks.post_tool`：命令数组的数组，每个命令在 workspace cwd 中执行

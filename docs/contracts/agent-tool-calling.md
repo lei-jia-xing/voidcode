@@ -35,7 +35,7 @@
 | `src/voidcode/runtime/service.py` | tool registry、permission、hook、event、session persistence 的 runtime truth | 本文档描述 agent-visible 调用路径；执行治理仍归 runtime |
 | `docs/contracts/approval-flow.md` | 客户端可见 approval 请求与处理语义 | 本文档只说明哪些 tool call 会进入 approval 路径以及 agent 应如何预期 |
 | `docs/contracts/runtime-events.md` | 客户端渲染的稳定事件词汇 | 本文档引用 tool lookup / permission / started / completed 等事件，不重新定义完整事件表 |
-| `docs/agent-boundary.md` 与 `src/voidcode/agent/README.md` | agent preset / role intent 与 runtime 边界 | preset 可以描述希望携带的工具组合；实际执行、审批和恢复仍由 runtime 管理 |
+| `src/voidcode/agent/README.md` | agent preset / role intent 与 runtime 边界 | preset 可以描述希望携带的工具组合；实际执行、审批和恢复仍由 runtime 管理 |
 
 ## 核心调用 envelope
 

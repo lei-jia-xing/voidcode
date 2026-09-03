@@ -12,7 +12,7 @@
 
 ## 当前代码锚点
 
-- `docs/architecture.md` 中将权限责任分配给运行时
+- `src/voidcode/runtime/service.py` 中的权限解析与事件发射是运行时实现锚点
 - 当前运行时在 `src/voidcode/runtime/service.py` 中发出 `runtime.permission_resolved`
 - 当前 payload 包含：
   - `tool`

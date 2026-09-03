@@ -32,7 +32,6 @@
 - [`agent-tool-enforcement.md`](./agent-tool-enforcement.md) — agent preset 中 tool allowlist/default tool set 如何进入 runtime enforcement
 - [`agent-hook-presets.md`](./agent-hook-presets.md) — agent preset hook refs 如何通过 builtin hook preset catalog 校验与表达角色 intent
 - [`agent-capability-bindings.md`](./agent-capability-bindings.md) — agent preset 的 tools/skills/hooks/MCP/provider binding 如何由 runtime materialize 成可重放 snapshot
-- `workflow-presets.md` 已删除，不属于当前契约集。当前执行模式是 runtime 的 `mode`（`normal` / `plan`），请以 [`docs/current-state.md`](../current-state.md) 的现状说明和 [`src/voidcode/runtime/mode.py`](../../src/voidcode/runtime/mode.py) 的实现为准。
 - [`runtime-config.md`](./runtime-config.md) — MVP 配置界面及优先级
 - [`runtime-extension-points.md`](./runtime-extension-points.md) — typed runtime extension points 与 observability events 的所有权边界
 - [`runtime-lifecycle-hooks.md`](./runtime-lifecycle-hooks.md) — richer lifecycle hook phases 的 runtime-owned 执行契约
@@ -68,7 +67,6 @@
 
 ## 所有权规则
 
-- 将模式（Schema）详情放在此处，而不是 `README.md`、`docs/roadmap.md` 或 `docs/current-state.md` 中。
-- `docs/current-state.md` 应描述现状，然后链接到此处查看契约定义。
-- `docs/roadmap.md` 应仅描述阶段/史诗任务，然后链接到此处查看契约前提条件。
+- 将模式（Schema）详情放在此处，而不是 `README.md` 或其他非契约说明中。
+- 源码实现是行为真相；这些文件只保留稳定、客户端或 runtime 边界所需的契约。
 - GitHub Issue 应指向这些文件，而不是在 Issue 正文中重复说明完整的模式。

@@ -1,7 +1,6 @@
 """Integration tests for the keep-alive subagent lifecycle (Phase 3).
 
-Covers the observable contracts of the keep-alive delegated worker
-(design doc ``docs/keep-alive-subagent-design.md`` section 4/5):
+Covers the observable contracts of the keep-alive delegated worker:
 
 - intermediate keep-alive turns park the task ``idle`` (awaiting steer)
   without the one-shot ``yield`` requirement;

@@ -170,7 +170,7 @@ def provider_supports_reasoning_effort(provider_name: str, model_name: str) -> b
 
     Returns False for providers whose LiteLLM adapters reject the OpenAI-style
     `reasoning_effort` kwarg (litellm raises `UnsupportedParamsError`) or otherwise
-    do not forward it (fail-fast per docs/reasoning-effort-decision.md: Qwen/Kimi/MiniMax).
+    do not forward it (Qwen/Kimi/MiniMax are explicitly unsupported here).
     GLM is binary (thinking.type), not reasoning_effort: True only for reasoning GLM models.
     OpenCodeGo is per-model: only `minimax-m2.5` (Anthropic adaptive thinking) and
     `minimax-m2.7` (OpenAI reasoning_effort ladder) are reasoning-capable; every other

@@ -4,8 +4,7 @@ The three runtime collaborators (``RuntimeBackgroundTaskSupervisor``,
 ``RuntimeRunLoopCoordinator``, ``RuntimeResumeCoordinator``) no longer pierce
 ``runtime._xxx`` private members. Pure data dependencies are constructor-injected
 (session store / workspace / config / peers); what remains are governance,
-config-composition, and runtime-state calls that must stay owned by the runtime
-(see ``docs/collaborator-contract-design.md`` §3 / §5 Phase 4).
+config-composition, and runtime-state calls that must stay owned by the runtime.
 
 Every method here maps 1:1 to a public method on ``VoidCodeRuntime`` (renamed
 from its private ``_xxx`` form); the bodies are unchanged.
