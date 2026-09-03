@@ -2,9 +2,74 @@ from pathlib import Path
 
 import pytest
 
+from voidcode.hook.typed import validate_tool_input_schema
 from voidcode.tools.contracts import ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 from voidcode.tools.yield_tool import YieldTool
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"summary": "Done."},
+        {"summary": "Done.", "type": "result", "data": {}},
+        {"summary": "Done.", "type": ["result"], "data": {}},
+        {"error": "child failed"},
+        {"error": "child failed", "type": "error", "data": {}},
+        {"error": "child failed", "type": ["error"], "data": {}},
+        {"type": "progress", "result": "Still working."},
+        {"type": ["progress", "checkpoint"], "data": {"step": 1}},
+        {"type": ["progress", "progress"], "result": "Still working."},
+    ],
+)
+def test_yield_schema_accepts_terminal_error_summary_and_progress_forms(arguments: dict[str, object]) -> None:
+    validate_tool_input_schema(YieldTool.definition, arguments)
+
+
+def test_yield_invokes_error_only_terminal_payload() -> None:
+    arguments = {"error": "child failed"}
+    validate_tool_input_schema(YieldTool.definition, arguments)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="child", parent_session_id="parent")):
+        result = YieldTool().invoke(ToolCall(tool_name="yield", arguments=arguments), workspace=Path("."))
+
+    assert result.status == "error"
+    assert result.error == "child failed"
+    assert result.data["yield_kind"] == "terminal_error"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"type": "error"},
+        {"type": "result"},
+        {"type": "progress"},
+        {"type": "progress", "data": {}},
+        {"type": "", "result": "still working"},
+        {"type": " ", "result": "still working"},
+        {"type": "x" * 65, "result": "still working"},
+        {"type": [], "result": "still working"},
+        {"type": ["progress", ""], "result": "still working"},
+        {"type": ["progress", " "], "result": "still working"},
+        {"type": ["x" * 65], "result": "still working"},
+        {"type": ["progress"] * 101, "result": "still working"},
+        {"type": ["progress", "result"], "result": "mixed"},
+        {"type": ["progress", "error"], "result": "mixed"},
+        {"summary": "Done.", "type": "progress", "result": "mixed"},
+        {"summary": "Done.", "error": "child failed"},
+        {"error": "child failed", "type": "progress"},
+        {"error": "child failed", "type": "progress", "result": "mixed"},
+        {"error": "child failed", "type": "result"},
+        {"error": "child failed", "result": "mixed"},
+    ],
+)
+def test_yield_schema_and_invocation_reject_mixed_or_incomplete_forms(arguments: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="input schema validation failed"):
+        validate_tool_input_schema(YieldTool.definition, arguments)
+
+    with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="child", parent_session_id="parent")):
+        with pytest.raises(ValueError, match="yield Validation error"):
+            YieldTool().invoke(ToolCall(tool_name="yield", arguments=arguments), workspace=Path("."))
 
 
 def test_yield_returns_summary_and_arbitrary_data_handoff() -> None:

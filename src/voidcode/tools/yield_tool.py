@@ -90,6 +90,8 @@ class YieldArgs(BaseModel):
         terminal_error = self.error is not None or self.type == "error" or self.type == ["error"]
         result_type = self.type is None or self.type == "result" or self.type == ["result"]
         if terminal_error:
+            if self.type not in (None, "error", ["error"]):
+                raise ValueError("error yield type must be omitted or error")
             if self.summary is not None or self.result is not None:
                 raise ValueError("error yield payload cannot include summary or result")
             if self.error is None:
@@ -143,24 +145,113 @@ class YieldTool:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "summary": {"type": "string", "minLength": 1, "description": "Required for terminal handoff."},
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": YIELD_PROGRESS_MAX_SECTION_CHARS,
+                    "pattern": r"\S",
+                    "description": "Required for terminal handoff.",
+                },
                 "data": {"type": "object", "description": "Structured terminal or progress detail."},
                 "type": {
                     "oneOf": [
-                        {"type": "string", "minLength": 1, "maxLength": YIELD_PROGRESS_MAX_TYPE_CHARS},
+                        {"type": "string", "minLength": 1, "maxLength": YIELD_PROGRESS_MAX_TYPE_CHARS, "pattern": r"\S"},
                         {
                             "type": "array",
-                            "items": {"type": "string", "minLength": 1, "maxLength": YIELD_PROGRESS_MAX_TYPE_CHARS},
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": YIELD_PROGRESS_MAX_TYPE_CHARS,
+                                "pattern": r"\S",
+                            },
                             "minItems": 1,
                             "maxItems": YIELD_PROGRESS_MAX_SECTIONS,
                         },
                     ],
-                    "description": "Optional progress type; result is terminal only when omitted or result.",
+                    "description": "Optional progress type; result and error identify terminal yields.",
                 },
-                "result": {"type": "string", "minLength": 1, "maxLength": YIELD_PROGRESS_MAX_SECTION_CHARS},
-                "error": {"type": "string", "minLength": 1, "maxLength": YIELD_PROGRESS_MAX_SECTION_CHARS},
+                "result": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": YIELD_PROGRESS_MAX_SECTION_CHARS,
+                    "pattern": r"\S",
+                },
+                "error": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": YIELD_PROGRESS_MAX_SECTION_CHARS,
+                    "pattern": r"\S",
+                },
             },
-            "anyOf": [{"required": ["summary"]}, {"required": ["type"]}],
+            "oneOf": [
+                {
+                    "required": ["summary"],
+                    "properties": {
+                        "type": {
+                            "oneOf": [
+                                {"type": "string", "pattern": r"^\s*result\s*$"},
+                                {
+                                    "type": "array",
+                                    "items": {"type": "string", "pattern": r"^\s*result\s*$"},
+                                    "minItems": 1,
+                                    "maxItems": 1,
+                                },
+                            ]
+                        }
+                    },
+                    "not": {"anyOf": [{"required": ["result"]}, {"required": ["error"]}]},
+                },
+                {
+                    "required": ["error"],
+                    "properties": {
+                        "type": {
+                            "oneOf": [
+                                {"type": "string", "pattern": r"^\s*error\s*$"},
+                                {
+                                    "type": "array",
+                                    "items": {"type": "string", "pattern": r"^\s*error\s*$"},
+                                    "minItems": 1,
+                                    "maxItems": 1,
+                                },
+                            ]
+                        }
+                    },
+                    "not": {"anyOf": [{"required": ["summary"]}, {"required": ["result"]}]},
+                },
+                {
+                    "required": ["type"],
+                    "properties": {
+                        "type": {
+                            "oneOf": [
+                                {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": YIELD_PROGRESS_MAX_TYPE_CHARS,
+                                    "pattern": r"\S",
+                                    "not": {"pattern": r"^\s*(?:result|error)\s*$"},
+                                },
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": YIELD_PROGRESS_MAX_TYPE_CHARS,
+                                        "pattern": r"\S",
+                                        "not": {"pattern": r"^\s*(?:result|error)\s*$"},
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": YIELD_PROGRESS_MAX_SECTIONS,
+                                },
+                            ]
+                        }
+                    },
+                    "not": {"anyOf": [{"required": ["summary"]}, {"required": ["error"]}]},
+                    "anyOf": [
+                        {"required": ["result"]},
+                        {"required": ["data"], "properties": {"data": {"minProperties": 1}}},
+                    ],
+                },
+            ],
         },
         read_only=True,
         replay_policy="never",
