@@ -74,6 +74,28 @@ class BackgroundProcessLogsTool:
         )
         if state is None:
             raise ValueError(f"unknown background process: {args.process_id}")
+        if state.prior_runtime:
+            message = state.reconciliation_reason or (
+                "Prior-runtime managed process was observed after restart; it was not reattached "
+                "and is externally managed/unavailable to this runtime."
+            )
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content=message,
+                error=message,
+                data={
+                    "process_id": state.process_id,
+                    "pid": state.process.pid,
+                    "status": "stale",
+                    "prior_runtime": True,
+                    "reconciliation_reason": message,
+                    "running": None,
+                    "observed_running": state.observed_running,
+                    "identity_match": state.identity_match,
+                    "controllable": False,
+                },
+            )
         stdout_artifact = getattr(state, "stdout_artifact", None)
         stderr_artifact = getattr(state, "stderr_artifact", None)
         if state.stdout_dropped_lines > 0 and stdout_artifact is None:
@@ -106,8 +128,7 @@ class BackgroundProcessLogsTool:
         if truncated and references:
             hint = (
                 f"[Background process logs truncated: use {', '.join(references)} "
-                "with read to inspect retained log tails. "
-                "Earlier dropped lines are no longer available.]"
+                "with read to inspect retained log tails. Earlier dropped lines are no longer available.]"
             )
             output = f"{output}\n\n{hint}" if output else hint
         running = state.process.poll() is None
@@ -120,6 +141,9 @@ class BackgroundProcessLogsTool:
             content=output,
             data={
                 "process_id": state.process_id,
+                "status": state.status,
+                "prior_runtime": state.prior_runtime,
+                "reconciliation_reason": state.reconciliation_reason,
                 "running": running,
                 "exit_code": exit_code,
                 "stdout": stdout,

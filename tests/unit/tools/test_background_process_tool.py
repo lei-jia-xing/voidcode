@@ -380,7 +380,8 @@ def test_terminate_background_process_group_uses_taskkill_on_windows(
 
 
 def test_runtime_exit_stops_managed_background_processes(tmp_path: Path) -> None:
-    runtime = VoidCodeRuntime(workspace=tmp_path)
+    database_path = tmp_path / "sessions.sqlite3"
+    runtime = VoidCodeRuntime(workspace=tmp_path, session_store=SqliteSessionStore(database_path=database_path))
     start_tool = runtime._base_tool_registry.resolve("background_process_start")
     command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
     started = start_tool.invoke(
@@ -393,6 +394,9 @@ def test_runtime_exit_stops_managed_background_processes(tmp_path: Path) -> None
     assert state.process.poll() is None
     runtime.__exit__(None, None, None)
     assert state.process.poll() is not None
+    persisted = SqliteSessionStore(database_path=database_path).load_background_process(workspace=tmp_path, process_id=process_id)
+    assert persisted is not None
+    assert persisted["status"] == "exited"
 
 
 def test_background_process_send_writes_stdin(tmp_path: Path) -> None:
@@ -474,7 +478,9 @@ def test_background_process_reconciles_after_runtime_restart_and_rejects_other_o
         workspace=tmp_path,
         session_store=SqliteSessionStore(database_path=database_path),
     )
+    logs_tool = runtime_two._base_tool_registry.resolve("background_process_logs")
     stop_tool = runtime_two._base_tool_registry.resolve("background_process_stop")
+    send_tool = runtime_two._base_tool_registry.resolve("background_process_send")
     with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="owner-b")):
         with pytest.raises(ValueError, match="another session"):
             stop_tool.invoke(
@@ -482,10 +488,144 @@ def test_background_process_reconciles_after_runtime_restart_and_rejects_other_o
                 workspace=tmp_path,
             )
     with bind_runtime_tool_context(owner_context):
-        stopped = stop_tool.invoke(
+        stale_logs = logs_tool.invoke(
+            ToolCall(tool_name="background_process_logs", arguments={"process_id": process_id}),
+            workspace=tmp_path,
+        )
+        stale_send = send_tool.invoke(
+            ToolCall(tool_name="background_process_send", arguments={"process_id": process_id, "input": "hello"}),
+            workspace=tmp_path,
+        )
+        stale_stop = stop_tool.invoke(
             ToolCall(tool_name="background_process_stop", arguments={"process_id": process_id}),
             workspace=tmp_path,
         )
-    assert stopped.data["running"] is False
-    runtime_one.__exit__(None, None, None)
+    assert stale_logs.status == "error"
+    assert stale_send.status == "error"
+    assert stale_stop.status == "error"
+    assert "externally managed" in str(stale_logs.error)
+    assert "externally managed" in str(stale_send.error)
+    assert "externally managed" in str(stale_stop.error)
+    assert stale_logs.data["status"] == "stale"
+    assert stale_logs.data["controllable"] is False
+    assert stale_logs.data["prior_runtime"] is True
+    assert stale_logs.data["running"] is None
+    start_two = runtime_two._base_tool_registry.resolve("background_process_start")
+    with bind_runtime_tool_context(owner_context):
+        replacement = start_two.invoke(
+            ToolCall(tool_name="background_process_start", arguments={"command": command}),
+            workspace=tmp_path,
+        )
+    assert replacement.data["reused"] is False
+    assert replacement.data["stale_process_id"] == process_id
+    assert "Do not use that stale id" in str(replacement.data["guidance"])
+    restored = runtime_two.background_process_manager.load(process_id, workspace=tmp_path)
+    assert restored is not None
+    assert restored.prior_runtime is True
     runtime_two.__exit__(None, None, None)
+    assert _pid_is_running(int(started.data["pid"]))
+    assert not _pid_is_running(int(replacement.data["pid"]))
+    runtime_one.__exit__(None, None, None)
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_restart_stale_identity_and_dead_pid_are_non_controllable(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    external = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    try:
+        store.register_background_process(
+            workspace=tmp_path,
+            process_id="proc-mismatch",
+            owner_session_id="owner-a",
+            command="external-mismatch",
+            cwd=str(tmp_path.resolve()),
+            pid=external.pid,
+            process_group_id=external.pid,
+            process_identity="not-the-current-identity",
+            stdout_path="",
+            stderr_path="",
+        )
+        dead = subprocess.Popen([sys.executable, "-c", "pass"], cwd=tmp_path)
+        dead_pid = dead.pid
+        assert dead.wait(timeout=5) == 0
+        store.register_background_process(
+            workspace=tmp_path,
+            process_id="proc-dead",
+            owner_session_id="owner-a",
+            command="external-dead",
+            cwd=str(tmp_path.resolve()),
+            pid=dead_pid,
+            process_group_id=None,
+            process_identity="dead-identity",
+            stdout_path="",
+            stderr_path="",
+        )
+        runtime = VoidCodeRuntime(workspace=tmp_path, session_store=SqliteSessionStore(database_path=database_path))
+        logs_tool = runtime._base_tool_registry.resolve("background_process_logs")
+        with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="owner-a")):
+            mismatch = logs_tool.invoke(
+                ToolCall(tool_name="background_process_logs", arguments={"process_id": "proc-mismatch"}),
+                workspace=tmp_path,
+            )
+            dead_result = logs_tool.invoke(
+                ToolCall(tool_name="background_process_logs", arguments={"process_id": "proc-dead"}),
+                workspace=tmp_path,
+            )
+        assert mismatch.status == "error"
+        assert mismatch.data["identity_match"] is False
+        assert mismatch.data["running"] is None
+        assert dead_result.status == "error"
+        assert dead_result.data["identity_match"] is False
+        assert dead_result.data["observed_running"] is False
+        runtime.__exit__(None, None, None)
+        assert external.poll() is None
+    finally:
+        external.terminate()
+        external.wait(timeout=5)
+
+
+def test_restart_does_not_kill_terminal_prior_process_group(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    store = SqliteSessionStore(database_path=database_path)
+    external = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    try:
+        store.register_background_process(
+            workspace=tmp_path,
+            process_id="proc-terminal",
+            owner_session_id="owner-a",
+            command="external-terminal",
+            cwd=str(tmp_path.resolve()),
+            pid=external.pid,
+            process_group_id=external.pid,
+            process_identity="terminal-identity",
+            stdout_path="",
+            stderr_path="",
+        )
+        store.mark_background_process_exit(
+            workspace=tmp_path,
+            process_id="proc-terminal",
+            status="exited",
+            exit_code=0,
+        )
+        runtime = VoidCodeRuntime(workspace=tmp_path, session_store=SqliteSessionStore(database_path=database_path))
+        runtime.__exit__(None, None, None)
+        assert external.poll() is None
+    finally:
+        external.terminate()
+        external.wait(timeout=5)

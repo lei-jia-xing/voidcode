@@ -36,6 +36,7 @@ class BackgroundProcessPersistence(Protocol):
         process_id: str,
         status: str,
         exit_code: int | None,
+        reconciliation_reason: str | None = None,
     ) -> None: ...
 
 
@@ -56,51 +57,28 @@ class BackgroundProcessState:
     stderr_dropped_lines: int = 0
     stdout_artifact: dict[str, object] | None = None
     stderr_artifact: dict[str, object] | None = None
+    status: str = "running"
+    prior_runtime: bool = False
+    reconciliation_reason: str | None = None
+    identity_match: bool | None = None
+    observed_running: bool | None = None
     reconciled: bool = False
-
-
-class _AttachedProcess:
-    def __init__(self, *, pid: int, process_identity: str) -> None:
-        self.pid = pid
-        self.process_identity = process_identity
-        self.stdin = None
-        self.stdout = None
-        self.stderr = None
-        self._terminated = False
-
-    def poll(self) -> int | None:
-        if self._terminated:
-            return 0
-        if _process_identity(self.pid) != self.process_identity or not _pid_running(self.pid):
-            return 0
-        return None
-
-    def wait(self, timeout: float | None = None) -> int:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        while self.poll() is None:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise subprocess.TimeoutExpired(str(self.pid), timeout or 0.0)
-            time.sleep(0.02)
-        return 0
-
-    def mark_terminated(self) -> None:
-        self._terminated = True
 
 
 class _DetachedProcess:
     def __init__(self, *, pid: int, exit_code: int | None) -> None:
         self.pid = pid
-        self._exit_code = exit_code if exit_code is not None else 0
+        self._exit_code = exit_code
         self.stdin = None
         self.stdout = None
         self.stderr = None
 
-    def poll(self) -> int:
+    def poll(self) -> int | None:
         return self._exit_code
 
     def wait(self, timeout: float | None = None) -> int:
         _ = timeout
-        return self._exit_code
+        return self._exit_code if self._exit_code is not None else 0
 
 
 # process and distinguishes a reused PID. Other platforms fail closed: a
@@ -252,6 +230,8 @@ class BackgroundProcessManager:
         with self._lock:
             for state in self._processes.values():
                 self._refresh(state)
+                if state.prior_runtime or state.status != "running":
+                    continue
                 if state.process.poll() is not None:
                     continue
                 if state.command.strip() != normalized_command or state.cwd != normalized_cwd:
@@ -280,6 +260,27 @@ class BackgroundProcessManager:
             self._refresh(state)
             return state
 
+    def find_stale(
+        self,
+        *,
+        command: str,
+        workspace: Path,
+        owner_session_id: str | None = None,
+        enforce_owner: bool = False,
+    ) -> tuple[BackgroundProcessState, ...]:
+        normalized_command = command.strip()
+        normalized_cwd = str(workspace.resolve())
+        with self._lock:
+            matches = [
+                state
+                for state in self._processes.values()
+                if state.status == "stale"
+                and state.command.strip() == normalized_command
+                and state.cwd == normalized_cwd
+                and (not enforce_owner or state.owner_session_id == owner_session_id)
+            ]
+        return tuple(matches[:16])
+
     def write(
         self,
         process_id: str,
@@ -295,6 +296,11 @@ class BackgroundProcessManager:
             owner_session_id=owner_session_id,
             enforce_owner=enforce_owner,
         )
+        if state.prior_runtime:
+            raise ValueError(
+                f"background process {process_id} is stale: it was observed after a runtime restart "
+                "and is externally managed/unavailable to this runtime"
+            )
         if state.process.poll() is not None:
             raise ValueError(f"background process {process_id} is no longer running")
         stdin = state.process.stdin
@@ -317,9 +323,11 @@ class BackgroundProcessManager:
             owner_session_id=owner_session_id,
             enforce_owner=enforce_owner,
         )
-        if state.reconciled and _process_identity(state.process.pid) != state.process_identity:
-            self._mark_exit(state, status="stale")
-            return state
+        if state.prior_runtime:
+            raise ValueError(
+                f"background process {process_id} is stale: it was observed after a runtime restart "
+                "and is externally managed/unavailable to this runtime"
+            )
         if state.process.poll() is None or (state.process_group_id is not None and _process_group_exists(state.process_group_id)):
             _terminate_background_process_group(state.process)
         self._mark_exit(state)
@@ -330,8 +338,13 @@ class BackgroundProcessManager:
             process_ids = tuple(self._processes)
         for process_id in process_ids:
             try:
+                state = self._processes.get(process_id)
+                if state is not None and state.prior_runtime:
+                    continue
                 self.stop(process_id)
-            except ValueError:
+            except Exception:
+                # A failed process/helper/persistence operation must not prevent
+                # cleanup of other processes owned by this runtime.
                 continue
 
     def _register(self, state: BackgroundProcessState) -> None:
@@ -377,25 +390,39 @@ class BackgroundProcessManager:
         pid = record.get("pid")
         if not isinstance(cwd, str) or not isinstance(pid, int):
             return
-        status = record.get("status")
+        raw_status = record.get("status")
+        status = raw_status if isinstance(raw_status, str) else "exited"
         identity = record.get("process_identity")
         process_identity = identity if isinstance(identity, str) else None
-        attached = status == "running" and process_identity is not None and _process_identity(pid) == process_identity
-        process: object
-        if attached:
-            process = cast(subprocess.Popen[str], _AttachedProcess(pid=pid, process_identity=process_identity))
-        else:
-            raw_exit_code = record.get("exit_code")
-            exit_code = raw_exit_code if isinstance(raw_exit_code, int) else None
-            process = cast(subprocess.Popen[str], _DetachedProcess(pid=pid, exit_code=exit_code))
-        owner = record.get("owner_session_id")
-        group_id = record.get("process_group_id")
+        observed_running = _pid_running(pid)
+        observed_identity = _process_identity(pid) if observed_running else None
+        identity_match: bool | None = (
+            False
+            if not observed_running
+            else None
+            if process_identity is None or observed_identity is None
+            else observed_identity == process_identity
+        )
+        raw_exit_code = record.get("exit_code")
+        exit_code = raw_exit_code if isinstance(raw_exit_code, int) else None
+        reason = record.get("reconciliation_reason")
+        reconciliation_reason = (
+            reason
+            if isinstance(reason, str)
+            else (
+                "Prior-runtime process record was observed after restart; it was not reattached "
+                "and is externally managed/unavailable to this runtime."
+            )
+        )
         stdout_raw = record.get("stdout_path")
         stderr_raw = record.get("stderr_path")
         stdout_path = Path(stdout_raw) if isinstance(stdout_raw, str) and stdout_raw else None
         stderr_path = Path(stderr_raw) if isinstance(stderr_raw, str) and stderr_raw else None
         stdout_chunks, stdout_dropped = _read_log_tail(stdout_path) if stdout_path is not None else ([], 0)
         stderr_chunks, stderr_dropped = _read_log_tail(stderr_path) if stderr_path is not None else ([], 0)
+        owner = record.get("owner_session_id")
+        group_id = record.get("process_group_id")
+        process = cast(subprocess.Popen[str], _DetachedProcess(pid=pid, exit_code=exit_code))
         state = BackgroundProcessState(
             process_id=process_id,
             command=str(record.get("command", "")),
@@ -410,14 +437,32 @@ class BackgroundProcessManager:
             stderr_path=stderr_path,
             stdout_dropped_lines=stdout_dropped,
             stderr_dropped_lines=stderr_dropped,
-            reconciled=attached,
+            status=status,
+            prior_runtime=True,
+            reconciliation_reason=reconciliation_reason,
+            identity_match=identity_match,
+            observed_running=observed_running,
+            reconciled=False,
         )
         self._processes[process_id] = state
-        if attached:
-            self._start_reader(state, stream_name="stdout")
-            self._start_reader(state, stream_name="stderr")
-        elif status == "running":
-            self._mark_exit(state, status="stale")
+        if status == "running":
+            reason = (
+                "Prior-runtime managed process was observed after restart; it was not reattached "
+                "and is externally managed/unavailable to this runtime. "
+                f"PID identity match: {identity_match if identity_match is not None else 'unknown'}."
+            )
+            state.status = "stale"
+            state.reconciliation_reason = reason
+            if self._persistence is not None:
+                mark_exit = getattr(self._persistence, "mark_background_process_exit", None)
+                if callable(mark_exit):
+                    mark_exit(
+                        workspace=Path(state.cwd),
+                        process_id=state.process_id,
+                        status="stale",
+                        exit_code=None,
+                        reconciliation_reason=reason,
+                    )
 
     def _authorize(
         self,
@@ -447,10 +492,21 @@ class BackgroundProcessManager:
         return state
 
     def _refresh(self, state: BackgroundProcessState) -> None:
-        if state.process.poll() is not None and state.reconciled:
+        if state.prior_runtime:
+            return
+        if state.process.poll() is not None:
             self._mark_exit(state)
 
-    def _mark_exit(self, state: BackgroundProcessState, *, status: str = "exited") -> None:
+    def _mark_exit(
+        self,
+        state: BackgroundProcessState,
+        *,
+        status: str = "exited",
+        reconciliation_reason: str | None = None,
+    ) -> None:
+        state.status = status
+        if reconciliation_reason is not None:
+            state.reconciliation_reason = reconciliation_reason
         if self._persistence is None:
             return
         mark_exit = getattr(self._persistence, "mark_background_process_exit", None)
@@ -460,6 +516,7 @@ class BackgroundProcessManager:
                 process_id=state.process_id,
                 status=status,
                 exit_code=state.process.poll(),
+                reconciliation_reason=reconciliation_reason,
             )
 
     @staticmethod
@@ -563,9 +620,7 @@ def _process_group_exists(process_group_id: int) -> bool:
 
 def _wait_for_process_group_exit(process_group_id: int, *, timeout: float) -> None:
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _process_group_exists(process_group_id):
-            return
+    while time.monotonic() < deadline and _process_group_exists(process_group_id):
         time.sleep(0.02)
 
 
@@ -593,33 +648,31 @@ class BackgroundProcessStartRuntime(Protocol):
     def background_process_manager(self) -> BackgroundProcessManager: ...
 
 
-def _background_process_start_guidance(*, process_id: str, reused: bool) -> str:
+def _background_process_start_guidance(*, process_id: str, reused: bool, stale_process_id: str | None = None) -> str:
+    if stale_process_id is not None:
+        stale_note = (
+            f" Prior process '{stale_process_id}' was detected after runtime restart and was not "
+            "reattached; it is externally managed/unavailable to this runtime. Do not use that "
+            "stale id for logs, send, or stop."
+        )
+    else:
+        stale_note = ""
     if reused:
         return (
             f"An exact-match process is already running; reuse process_id '{process_id}' "
             "instead of calling background_process_start again for the same trimmed command "
-            "in this workspace. Report status, continue other work, or read logs only when "
-            "a meaningful state change would affect your next decision."
+            "in this workspace." + stale_note
         )
-    return (
-        f"Track this process by process_id '{process_id}'. Do not start duplicate long-running "
-        "processes for the same trimmed command in this workspace; reuse this id for logs or stop."
-    )
+    return f"Track this process by process_id '{process_id}'. Use this new id for logs or stop." + stale_note
 
 
 class BackgroundProcessStartTool:
     definition = ToolDefinition(
         name="background_process_start",
-        description=("Start a long-running non-interactive process without blocking the current turn."),
+        description="Start a long-running non-interactive process without blocking the current turn.",
         input_schema={
-            "command": {
-                "type": "string",
-                "description": "Shell command to start as a long-running background process",
-            },
-            "description": {
-                "type": "string",
-                "description": "Human-readable description of the process (e.g. 'vite dev server')",
-            },
+            "command": {"type": "string", "description": "Shell command to start as a long-running background process"},
+            "description": {"type": "string", "description": "Human-readable description"},
         },
         read_only=False,
     )
@@ -632,42 +685,52 @@ class BackgroundProcessStartTool:
             args = _BackgroundProcessStartArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
-
         runtime_context = current_runtime_tool_context()
         if runtime_context is not None and runtime_context.abort_signal is not None and runtime_context.abort_signal.cancelled:
             raise RuntimeToolTimeoutError("background_process_start aborted before launching process")
         owner_session_id = runtime_context.session_id if runtime_context is not None else None
         enforce_owner = runtime_context is not None
-        existing = self._runtime.background_process_manager.load_running(
+        manager = self._runtime.background_process_manager
+        existing = manager.load_running(
             command=args.command,
             workspace=workspace,
             owner_session_id=owner_session_id,
             enforce_owner=enforce_owner,
         )
-        state = self._runtime.background_process_manager.start(
+        stale_matches = manager.find_stale(
+            command=args.command,
+            workspace=workspace,
+            owner_session_id=owner_session_id,
+            enforce_owner=enforce_owner,
+        )
+        state = manager.start(
             command=args.command,
             workspace=workspace,
             owner_session_id=owner_session_id,
             enforce_owner=enforce_owner,
         )
         reused = existing is not None
-        pid = state.process.pid
-        guidance = _background_process_start_guidance(process_id=state.process_id, reused=reused)
+        stale_process_id = stale_matches[0].process_id if stale_matches else None
+        guidance = _background_process_start_guidance(
+            process_id=state.process_id,
+            reused=reused,
+            stale_process_id=stale_process_id,
+        )
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
             content=(
-                f"{'Reusing' if reused else 'Started'} background process {state.process_id} (pid={pid}) "
-                f"for command: {args.command}. Use background_process_logs(process_id='{state.process_id}') "
-                f"to inspect output. Guidance: {guidance}"
+                f"{'Reusing' if reused else 'Started'} background process {state.process_id} "
+                f"(pid={state.process.pid}) for command: {args.command}. Guidance: {guidance}"
             ),
             data={
                 "process_id": state.process_id,
-                "pid": pid,
+                "pid": state.process.pid,
                 "command": args.command,
                 "cwd": state.cwd,
                 "running": state.process.poll() is None,
                 "reused": reused,
+                "stale_process_id": stale_process_id,
                 "guidance": guidance,
             },
         )

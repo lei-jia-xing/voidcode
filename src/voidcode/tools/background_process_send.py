@@ -68,7 +68,34 @@ class BackgroundProcessSendTool:
 
         text = args.input if not args.newline else f"{args.input}\n"
         context = current_runtime_tool_context()
-        self._runtime.background_process_manager.write(
+        manager = self._runtime.background_process_manager
+        state = manager.load(
+            args.process_id,
+            workspace=workspace,
+            owner_session_id=context.session_id if context is not None else None,
+            enforce_owner=context is not None,
+        )
+        if state is None:
+            raise ValueError(f"unknown background process: {args.process_id}")
+        if state.prior_runtime:
+            message = state.reconciliation_reason or ("Prior-runtime process is externally managed/unavailable to this runtime")
+            return ToolResult(
+                tool_name=self.definition.name,
+                status="error",
+                content=message,
+                error=message,
+                data={
+                    "process_id": state.process_id,
+                    "pid": state.process.pid,
+                    "status": state.status,
+                    "prior_runtime": True,
+                    "running": None,
+                    "observed_running": state.observed_running,
+                    "identity_match": state.identity_match,
+                    "controllable": False,
+                },
+            )
+        manager.write(
             args.process_id,
             text,
             workspace=workspace,
@@ -79,9 +106,5 @@ class BackgroundProcessSendTool:
             tool_name=self.definition.name,
             status="ok",
             content=f"Sent input to background process {args.process_id}.",
-            data={
-                "process_id": args.process_id,
-                "input": args.input,
-                "newline": args.newline,
-            },
+            data={"process_id": args.process_id, "input": args.input, "newline": args.newline},
         )

@@ -64,7 +64,7 @@ class _BackgroundProcessStorageMixin(_MixinBase):
                     """
                     SELECT process_id, workspace_id, owner_session_id, command, cwd, pid,
                            process_group_id, process_identity, stdout_path, stderr_path,
-                           status, exit_code, created_at, updated_at
+                           status, exit_code, reconciliation_reason, created_at, updated_at
                     FROM background_processes
                     WHERE workspace_id = ? AND process_id = ?
                     """,
@@ -81,7 +81,7 @@ class _BackgroundProcessStorageMixin(_MixinBase):
                     """
                     SELECT process_id, workspace_id, owner_session_id, command, cwd, pid,
                            process_group_id, process_identity, stdout_path, stderr_path,
-                           status, exit_code, created_at, updated_at
+                           status, exit_code, reconciliation_reason, created_at, updated_at
                     FROM background_processes
                     WHERE workspace_id = ?
                     ORDER BY created_at ASC, process_id ASC
@@ -98,16 +98,17 @@ class _BackgroundProcessStorageMixin(_MixinBase):
         process_id: str,
         status: str,
         exit_code: int | None,
+        reconciliation_reason: str | None = None,
     ) -> None:
         with self._write_connect(workspace) as connection:
             timestamp = self._next_auxiliary_timestamp(connection=connection)
             _ = connection.execute(
                 """
                 UPDATE background_processes
-                SET status = ?, exit_code = ?, updated_at = ?
+                SET status = ?, exit_code = ?, reconciliation_reason = ?, updated_at = ?
                 WHERE workspace_id = ? AND process_id = ?
                 """,
-                (status, exit_code, timestamp, str(workspace), process_id),
+                (status, exit_code, reconciliation_reason, timestamp, str(workspace), process_id),
             )
             connection.commit()
 
@@ -126,6 +127,7 @@ class _BackgroundProcessStorageMixin(_MixinBase):
             "stderr_path": cast(str, row["stderr_path"]),
             "status": cast(str, row["status"]),
             "exit_code": cast(int | None, row["exit_code"]),
+            "reconciliation_reason": cast(str | None, row["reconciliation_reason"]),
             "created_at": cast(int, row["created_at"]),
             "updated_at": cast(int, row["updated_at"]),
         }

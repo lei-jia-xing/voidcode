@@ -320,7 +320,7 @@ class SqliteSessionStore(
     _DiagnosticsStorageMixin,
 ):
     _database_path: Path | None
-    _SCHEMA_VERSION = 13
+    _SCHEMA_VERSION = 14
     _RESUME_CHECKPOINT_KINDS = frozenset({"approval_wait", "question_wait", "provider_failure_retryable", "terminal", "interrupted"})
     _sqlite_policy = _SQLitePolicy()
 
@@ -410,6 +410,7 @@ class SqliteSessionStore(
             ("stderr_path", "TEXT", 1, None, 0),
             ("status", "TEXT", 1, None, 0),
             ("exit_code", "INTEGER", 0, None, 0),
+            ("reconciliation_reason", "TEXT", 0, None, 0),
             ("created_at", "INTEGER", 1, None, 0),
             ("updated_at", "INTEGER", 1, None, 0),
         ),
@@ -635,6 +636,7 @@ class SqliteSessionStore(
                 stderr_path TEXT NOT NULL,
                 status TEXT NOT NULL,
                 exit_code INTEGER,
+                reconciliation_reason TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (workspace_id, process_id)
@@ -712,6 +714,12 @@ class SqliteSessionStore(
                 pass  # Column already exists (idempotent)
             try:
                 connection.execute("ALTER TABLE background_tasks ADD COLUMN schema_validation_json TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists (idempotent)
+        # Migration: retain the bounded reason for restart-detected processes.
+        if current_version in (6, 10, 11, 12, 13):
+            try:
+                connection.execute("ALTER TABLE background_processes ADD COLUMN reconciliation_reason TEXT")
             except sqlite3.OperationalError:
                 pass  # Column already exists (idempotent)
         # Validate the freshly-created/already-present schema before stamping the
@@ -797,7 +805,7 @@ class SqliteSessionStore(
     def _assert_existing_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         """Validate persisted ``user_version`` before schema setup."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version in {0, 6, 10, 11, 12, cls._SCHEMA_VERSION}:
+        if version in {0, 6, 10, 11, 12, 13, cls._SCHEMA_VERSION}:
             return
         cls._raise_schema_mismatch(
             database_path=database_path,
@@ -808,7 +816,7 @@ class SqliteSessionStore(
     def _assert_schema_version(cls, *, connection: sqlite3.Connection, database_path: Path) -> None:
         """Stamp ``PRAGMA user_version`` after schema validation."""
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version in {0, 6, 10, 11, 12}:
+        if version in {0, 6, 10, 11, 12, 13}:
             _ = connection.execute(f"PRAGMA user_version = {cls._SCHEMA_VERSION}")
             return
         if version != cls._SCHEMA_VERSION:
