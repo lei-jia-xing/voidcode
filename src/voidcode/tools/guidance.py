@@ -6,6 +6,7 @@ from pathlib import Path
 _GUIDANCE_DIR = Path(__file__).resolve().parent
 
 _TOOL_GUIDANCE_FILES = {
+    "apply_workspace_edit": "apply_workspace_edit.txt",
     "ast_grep": "ast_grep.txt",
     "apply_patch": "apply_patch.txt",
     "background_cancel": "background_cancel.txt",

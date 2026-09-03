@@ -1,0 +1,6 @@
+Apply validated LSP text edits atomically inside the workspace.
+
+Usage:
+- Pass a non-empty `edits` array; each edit includes a workspace-relative `path`, line/character range, `newText`, and the SHA-256 `expectedHash` from a prior read result.
+- Read every target file first and use its `data.content_hash`; stale or missing hashes reject the operation before any file changes.
+- Use this tool for coordinated range edits when preserving exact source positions matters; use `edit` or `multi_edit` for text replacements.
