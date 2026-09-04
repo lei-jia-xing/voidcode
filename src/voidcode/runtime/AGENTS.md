@@ -17,7 +17,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | Permission defaults | `permission.py` | read-only tools auto-allow; write tools create pending approvals |
 | Runtime boundary contracts | `contracts.py` | request/response/session validation, metadata rules |
 | Event envelope surface | `events.py` | runtime event names emitted to clients |
-| HTTP transport integration | `http.py` | runtime-backed transport app |
+| HTTP transport integration | `transport/http.py` | runtime-backed transport app |
 | LSP/MCP capability managers | `lsp.py`, `mcp.py` | runtime-managed lifecycle, not pure capability schema |
 | Skill runtime bridge | `skills.py` | converts pure skill metadata into runtime contexts |
 | Session state types | `session.py`, `task.py`, `background/` | session refs/status plus background task types |
@@ -35,8 +35,8 @@ runtime/
 ├── context/          # provider context assembly and projection
 ├── execution/        # graph/provider execution seams and recovery helpers
 ├── permission.py     # approval policy and PendingApproval
-├── http.py           # runtime transport app
-├── lsp.py / mcp.py   # managed capability lifecycle
+├── transport/        # HTTP transport integration
+│   └── http.py       # runtime transport app
 └── skills.py         # runtime-facing skill context bridge
 ```
 

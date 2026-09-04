@@ -40,9 +40,9 @@ from .session import SessionRef, SessionState, SessionStatus, StoredSessionSumma
 from .storage import SessionStore
 
 if TYPE_CHECKING:
-    from .http import RuntimeTransportApp, create_runtime_app
     from .service import VoidCodeRuntime
     from .tool_registry import ToolRegistry
+    from .transport.http import RuntimeTransportApp, create_runtime_app
 
 __all__ = [
     "EventEnvelope",
@@ -95,6 +95,6 @@ def __getattr__(name: str) -> Any:
         service_module = import_module(".service", __name__)
         return getattr(service_module, name)
     if name in {"RuntimeTransportApp", "create_runtime_app"}:
-        http_module = import_module(".http", __name__)
+        http_module = import_module(".transport.http", __name__)
         return getattr(http_module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

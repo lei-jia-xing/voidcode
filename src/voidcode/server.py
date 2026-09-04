@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from .runtime.config import RuntimeConfig
-from .runtime.http import create_runtime_app
+from .runtime.transport.http import create_runtime_app
 
 
 class UvicornModule(Protocol):
