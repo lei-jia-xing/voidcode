@@ -65,7 +65,7 @@ from .storage import SessionStore
 
 if TYPE_CHECKING:
     from .acp import AcpAdapter
-    from .background_tasks import RuntimeBackgroundTaskSupervisor
+    from .background.supervisor import RuntimeBackgroundTaskSupervisor
     from .mcp import McpManager
     from .permission import PermissionPolicy
     from .run_loop import RuntimeRunLoopCoordinator

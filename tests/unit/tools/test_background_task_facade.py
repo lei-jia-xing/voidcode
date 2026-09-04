@@ -5,7 +5,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
+from voidcode.runtime.background.models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
 from voidcode.runtime.permission import PermissionPolicy, resolve_permission
 from voidcode.runtime.permission_context import operation_class_for_tool

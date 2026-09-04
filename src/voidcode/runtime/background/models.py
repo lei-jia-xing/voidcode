@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .delegation_execution import SubagentExecutionContract
-from .delegation_routing import (
+from .execution import SubagentExecutionContract
+from .routing import (
     SubagentRoutingIdentity,
     subagent_routing_identity_from_metadata,
 )

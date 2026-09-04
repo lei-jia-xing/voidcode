@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 from voidcode.graph.contracts import GraphSession
-from voidcode.runtime.background_task_models import (
+from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,

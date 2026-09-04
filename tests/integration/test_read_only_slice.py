@@ -4399,7 +4399,7 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
     tmp_path: Path,
 ) -> None:
     _, runtime_class = _load_runtime_types()
-    task_module = importlib.import_module("voidcode.runtime.background_task_models")
+    task_module = importlib.import_module("voidcode.runtime.background.models")
     storage_module = importlib.import_module("voidcode.runtime.storage")
 
     first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))

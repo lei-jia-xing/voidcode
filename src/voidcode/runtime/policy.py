@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from .delegation_routing import CALLABLE_SUBAGENT_PRESETS
+from .background.routing import CALLABLE_SUBAGENT_PRESETS
 from .mode import runtime_mode_from_metadata, runtime_read_only_from_metadata
 
 POLICY_SCHEMA_VERSION = 1

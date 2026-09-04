@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.background_task_models import StoredBackgroundTaskSummary
+from voidcode.runtime.background.models import StoredBackgroundTaskSummary
 from voidcode.runtime.contracts import RuntimeNotification
 
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")

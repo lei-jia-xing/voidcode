@@ -31,7 +31,7 @@ from unittest.mock import patch
 import pytest
 
 from voidcode.graph.contracts import GraphSession
-from voidcode.runtime.background_task_models import BackgroundTaskStatus, is_background_task_terminal
+from voidcode.runtime.background.models import BackgroundTaskStatus, is_background_task_terminal
 from voidcode.tools import ToolCall
 
 from .._paths import with_src_pythonpath
@@ -1451,7 +1451,7 @@ def test_runtime_exposes_cancel_background_task(tmp_path: Path) -> None:
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
     runtime._background_task_supervisor.reconciled = True
     store = runtime._session_store
-    task_module = importlib.import_module("voidcode.runtime.background_task_models")
+    task_module = importlib.import_module("voidcode.runtime.background.models")
     store.create_background_task(
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(
@@ -1473,7 +1473,7 @@ def test_runtime_exposes_retry_background_task(tmp_path: Path) -> None:
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
     runtime._background_task_supervisor.reconciled = True
     store = runtime._session_store
-    task_module = importlib.import_module("voidcode.runtime.background_task_models")
+    task_module = importlib.import_module("voidcode.runtime.background.models")
     store.create_background_task(
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(

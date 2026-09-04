@@ -14,11 +14,14 @@ from urllib.parse import parse_qs
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .active_session import ActiveRunInterruptResult
-from .background_task_models import (
+from .background.models import (
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
     validate_background_task_id,
+)
+from .background.routing import (
+    SubagentRoutingIdentity,
 )
 from .config import RuntimeConfig
 from .contracts import (
@@ -53,9 +56,6 @@ from .contracts import (
     validate_runtime_request_metadata,
     validate_session_id,
     validate_session_reference_id,
-)
-from .delegation_routing import (
-    SubagentRoutingIdentity,
 )
 from .events import (
     DelegatedLifecycleEventPayload,

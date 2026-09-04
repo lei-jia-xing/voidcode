@@ -46,7 +46,7 @@ from ..doctor import (
     format_report_json,
 )
 from ..provider.snapshot import resolved_provider_snapshot
-from ..runtime.background_task_models import (
+from ..runtime.background.models import (
     BackgroundTaskState,
     StoredBackgroundTaskSummary,
 )

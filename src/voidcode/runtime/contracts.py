@@ -6,17 +6,17 @@ from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from . import mode as runtime_mode
-from .background_task_models import (
+from .background.execution import (
+    SubagentExecutionContract,
+)
+from .background.models import (
     BackgroundTaskObservability,
     BackgroundTaskState,
     BackgroundTaskStatus,
     SchemaValidation,
     StoredBackgroundTaskSummary,
 )
-from .delegation_execution import (
-    SubagentExecutionContract,
-)
-from .delegation_routing import (
+from .background.routing import (
     ResolvedSubagentRoute,
     SubagentRoutingIdentity,
     parse_subagent_routing_identity,

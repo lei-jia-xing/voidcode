@@ -10,29 +10,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
-from ..hook.config import RuntimeHookSurface
-from ..hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
-from ..hook.plan import hook_plan_from_session_metadata
-from ..provider.models import ResolvedProviderConfig
-from .acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
-from .active_session import ACTIVE_SESSION_REGISTRY
-from .background_task_models import (
-    BACKGROUND_TASK_TERMINAL_STATUSES,
-    BackgroundTaskConcurrencyObservability,
-    BackgroundTaskObservability,
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskRetryObservability,
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    SchemaValidation,
-    StoredBackgroundTaskSummary,
-    is_background_task_terminal,
-    validate_background_task_id,
-)
-from .child_terminal import child_completion_evidence, child_terminal_outcome, child_transcript_proves_completed
-from .config import RuntimeConfig
-from .contracts import (
+from ...hook.config import RuntimeHookSurface
+from ...hook.executor import LifecycleHookExecutionRequest, run_lifecycle_hooks
+from ...hook.plan import hook_plan_from_session_metadata
+from ...provider.models import ResolvedProviderConfig
+from ..acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
+from ..active_session import ACTIVE_SESSION_REGISTRY
+from ..config import RuntimeConfig
+from ..contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
     InternalRuntimeRequestMetadata,
@@ -44,7 +29,7 @@ from .contracts import (
     UnknownBackgroundTaskError,
     UnknownSessionError,
 )
-from .events import (
+from ..events import (
     RUNTIME_BACKGROUND_TASK_AWAITING_STEER,
     RUNTIME_BACKGROUND_TASK_CANCELLED,
     RUNTIME_BACKGROUND_TASK_COMPLETED,
@@ -59,18 +44,33 @@ from .events import (
     RUNTIME_TOOL_COMPLETED,
     EventEnvelope,
 )
-from .execution_seams import resolve_runtime_session_routing
-from .hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
-from .permission_policy import approval_request_id_from_waiting_response
-from .runtime_debug import prompt_from_events
-from .schema_validation import validate_structured_output
-from .session import SessionState, reload_persisted_session, validate_session_workspace
-from .session_metadata_helpers import waiting_reason_from_session
-from .storage import SessionEventAppender, SessionSealedError, SessionStore
+from ..execution_seams import resolve_runtime_session_routing
+from ..hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
+from ..permission_policy import approval_request_id_from_waiting_response
+from ..runtime_debug import prompt_from_events
+from ..schema_validation import validate_structured_output
+from ..session import SessionState, reload_persisted_session, validate_session_workspace
+from ..session_metadata_helpers import waiting_reason_from_session
+from ..storage import SessionEventAppender, SessionSealedError, SessionStore
+from .child_terminal import child_completion_evidence, child_terminal_outcome, child_transcript_proves_completed
+from .models import (
+    BACKGROUND_TASK_TERMINAL_STATUSES,
+    BackgroundTaskConcurrencyObservability,
+    BackgroundTaskObservability,
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskRetryObservability,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    SchemaValidation,
+    StoredBackgroundTaskSummary,
+    is_background_task_terminal,
+    validate_background_task_id,
+)
 
 if TYPE_CHECKING:
-    from .acp import AcpAdapter
-    from .runtime_surface import RuntimeSurface
+    from ..acp import AcpAdapter
+    from ..runtime_surface import RuntimeSurface
 
 logger = logging.getLogger(__name__)
 

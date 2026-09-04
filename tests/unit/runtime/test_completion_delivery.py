@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from voidcode.runtime.active_session import ACTIVE_SESSION_REGISTRY
-from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
-from voidcode.runtime.background_tasks import RuntimeBackgroundTaskSupervisor
+from voidcode.runtime.background.models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
+from voidcode.runtime.background.supervisor import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequest, RuntimeResponse
 from voidcode.runtime.interaction_queue import drain_runtime_messages, enqueue_runtime_message
 from voidcode.runtime.service import VoidCodeRuntime

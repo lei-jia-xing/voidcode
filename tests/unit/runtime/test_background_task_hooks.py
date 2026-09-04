@@ -13,12 +13,12 @@ from voidcode.hook.plan import (
     hook_plan_from_session_metadata,
     materialize_hook_plan,
 )
-from voidcode.runtime.background_task_models import (
+from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.runtime.background_tasks import RuntimeBackgroundTaskSupervisor
+from voidcode.runtime.background.supervisor import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
     RUNTIME_BACKGROUND_TASK_COMPLETED,

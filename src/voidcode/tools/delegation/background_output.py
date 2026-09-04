@@ -6,7 +6,7 @@ from typing import Protocol, cast
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from ...runtime.background_task_models import BackgroundTaskState, is_background_task_terminal
+from ...runtime.background.models import BackgroundTaskState, is_background_task_terminal
 from ...runtime.contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,

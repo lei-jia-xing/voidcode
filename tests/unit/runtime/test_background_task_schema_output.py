@@ -3,7 +3,7 @@
 Covers the finalize-time schema validation (permissive/strict), storage v14
 round-trip + migration, the no-schema and keep-alive intermediate-turn guards,
 and the CLI/HTTP result surfaces. The completion evidence chain itself
-(child_terminal.py) is untouched; these tests only assert the schema layer
+(background/child_terminal.py) is untouched; these tests only assert the schema layer
 added around it.
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from voidcode.runtime import VoidCodeRuntime
-from voidcode.runtime.background_task_models import (
+from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,

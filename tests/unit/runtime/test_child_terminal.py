@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from voidcode.runtime.child_terminal import child_completion_evidence, child_terminal_outcome
+from voidcode.runtime.background.child_terminal import child_completion_evidence, child_terminal_outcome
 from voidcode.runtime.contracts import RuntimeResponse
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.session import SessionRef, SessionState

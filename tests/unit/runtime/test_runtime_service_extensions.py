@@ -17,7 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import voidcode.runtime.background_tasks as runtime_background_tasks_module
+import voidcode.runtime.background.supervisor as runtime_background_tasks_module
 import voidcode.runtime.config_materializer as runtime_config_materializer_module
 import voidcode.runtime.provider_fallback as runtime_provider_fallback_module
 import voidcode.runtime.run_loop as runtime_run_loop_module
@@ -52,7 +52,7 @@ from voidcode.runtime.acp import (
     DisabledAcpAdapter,
     ManagedAcpAdapter,
 )
-from voidcode.runtime.background_task_models import (
+from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,

@@ -5,7 +5,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
-from ...runtime.background_process import BackgroundProcessManager
+from ...runtime.background.process import BackgroundProcessManager
 from .._pydantic_args import format_validation_error
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context

@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from ..background_task_models import (
+from ..background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,

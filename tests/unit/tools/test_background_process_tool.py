@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime.background_process import (
+from voidcode.runtime.background.process import (
     _MAX_BACKGROUND_PROCESS_LOG_LINES,
     BackgroundProcessManager,
     _DetachedProcess,
@@ -271,8 +271,8 @@ def test_terminate_background_process_group_sends_sigkill_after_leader_exits(mon
         if sig == signal.SIGKILL:
             group_exists = False
 
-    monkeypatch.setattr("voidcode.runtime.background_process.os.killpg", fake_killpg)
-    monkeypatch.setattr("voidcode.runtime.background_process._process_group_exists", lambda _: group_exists)
+    monkeypatch.setattr("voidcode.runtime.background.process.os.killpg", fake_killpg)
+    monkeypatch.setattr("voidcode.runtime.background.process._process_group_exists", lambda _: group_exists)
     _terminate_background_process_group(cast(subprocess.Popen[str], _FakeProcess()))
     assert calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
     assert waits == [1]

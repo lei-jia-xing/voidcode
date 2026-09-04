@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.background_task_models import (
+from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.runtime.background_tasks import RuntimeBackgroundTaskSupervisor
+from voidcode.runtime.background.supervisor import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.storage import SqliteSessionStore
 
 

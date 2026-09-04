@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 import voidcode.runtime.bundle as bundle_module
-from voidcode.runtime.background_task_models import (
+from voidcode.runtime.background.models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,

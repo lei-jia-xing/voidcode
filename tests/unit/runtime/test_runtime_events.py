@@ -4,8 +4,8 @@ from typing import cast
 
 import pytest
 
+from voidcode.runtime.background.routing import SubagentRoutingIdentity
 from voidcode.runtime.contracts import BackgroundTaskResult
-from voidcode.runtime.delegation_routing import SubagentRoutingIdentity
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
     GRAPH_LOOP_STEP,

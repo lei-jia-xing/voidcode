@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
+from voidcode.runtime.background.models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.storage import SqliteSessionStore
 from voidcode.tools.contracts import ToolCall

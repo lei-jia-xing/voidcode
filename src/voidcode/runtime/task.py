@@ -4,7 +4,11 @@ New code should import routing, execution, and background-task models from their
 focused modules directly. This module remains as a stable public import path.
 """
 
-from .background_task_models import (
+from .background.execution import (
+    SubagentExecutionContract,
+    SubagentExecutionCorrelation,
+)
+from .background.models import (
     BACKGROUND_TASK_TERMINAL_STATUSES,
     BackgroundTaskConcurrencyObservability,
     BackgroundTaskObservability,
@@ -21,11 +25,7 @@ from .background_task_models import (
     is_background_task_transition_allowed,
     validate_background_task_id,
 )
-from .delegation_execution import (
-    SubagentExecutionContract,
-    SubagentExecutionCorrelation,
-)
-from .delegation_routing import (
+from .background.routing import (
     CALLABLE_SUBAGENT_PRESETS,
     ResolvedSubagentRoute,
     SubagentExecutablePreset,

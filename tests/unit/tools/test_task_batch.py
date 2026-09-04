@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
+from voidcode.runtime.background.models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.tools import TaskBatchTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context

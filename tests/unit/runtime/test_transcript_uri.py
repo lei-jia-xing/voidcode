@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
+from voidcode.runtime.background.models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
     RuntimeRequest,

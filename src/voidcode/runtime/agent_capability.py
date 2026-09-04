@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import cast
 
+from .background.routing import CALLABLE_SUBAGENT_PRESETS
 from .config import RuntimeAgentConfig
-from .delegation_routing import CALLABLE_SUBAGENT_PRESETS
 from .session_metadata_helpers import parse_delegation_metadata
 from .tool_provider import BUILTIN_TOOL_NAMES
 from .tool_registry import ToolRegistry

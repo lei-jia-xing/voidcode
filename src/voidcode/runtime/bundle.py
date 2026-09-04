@@ -34,7 +34,7 @@ from typing import Final, Literal, cast, final
 
 from .. import __version__ as VOIDCODE_VERSION
 from ..tools.output import read_tool_output_artifact
-from .background_task_models import StoredBackgroundTaskSummary
+from .background.models import StoredBackgroundTaskSummary
 from .contracts import (
     RuntimeRequest,
     RuntimeResponse,

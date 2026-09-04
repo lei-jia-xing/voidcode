@@ -9,7 +9,7 @@ from pathlib import Path
 from time import sleep, time
 from typing import Final, Protocol, cast, final, runtime_checkable
 
-from ..background_task_models import (
+from ..background.models import (
     BackgroundTaskState,
     BackgroundTaskStatus,
     DelegatedReminderStopCondition,

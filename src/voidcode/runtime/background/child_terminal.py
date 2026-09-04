@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from .contracts import RuntimeResponse
-from .events import GRAPH_RESPONSE_READY, RUNTIME_TOOL_COMPLETED, EventEnvelope
+from ..contracts import RuntimeResponse
+from ..events import GRAPH_RESPONSE_READY, RUNTIME_TOOL_COMPLETED, EventEnvelope
 
 
 @dataclass(frozen=True, slots=True)

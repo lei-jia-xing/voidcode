@@ -6,7 +6,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol
 
-from ..background_task_models import (
+from ..background.models import (
     BackgroundTaskState,
     BackgroundTaskStatus,
     DelegatedReminderState,
@@ -78,7 +78,7 @@ class SessionSealedError(Exception):
 # * MCP lifecycle — service._release_mcp_session_events →
 #   envelopes_for_mcp_events (events.py / event_envelopes.py): the
 #   runtime.mcp_server_* release/stop/idle-clean/failure events.
-# * Delegated background-task lifecycle — background_tasks.py
+# * Delegated background-task lifecycle — background/supervisor.py
 #   append_session_event call sites (event_type_by_status →
 #   completed/failed/cancelled; group_completed; waiting_approval;
 #   idle_reminder; delegated_result_available), enumerated by

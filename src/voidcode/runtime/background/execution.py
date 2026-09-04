@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .delegation_routing import SubagentRoutingIdentity, subagent_routing_identity_from_metadata
+from .routing import SubagentRoutingIdentity, subagent_routing_identity_from_metadata
 
 
 @dataclass(frozen=True, slots=True)

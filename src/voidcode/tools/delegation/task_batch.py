@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from ...runtime.background_task_models import BackgroundTaskState
+from ...runtime.background.models import BackgroundTaskState
 from ...runtime.contracts import (
     RuntimeRequest,
     RuntimeRequestError,

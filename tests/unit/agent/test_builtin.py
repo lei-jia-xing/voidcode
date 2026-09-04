@@ -20,7 +20,7 @@ from voidcode.agent.builtin import validate_builtin_agent_manifests
 from voidcode.agent.models import AgentManifest, AgentMcpBindingIntent, AgentPromptMaterialization
 from voidcode.hook.presets import is_builtin_hook_preset_ref, list_builtin_hook_presets
 from voidcode.runtime import service as runtime_service_module
-from voidcode.runtime.delegation_routing import SubagentRoutingIdentity, resolve_subagent_route
+from voidcode.runtime.background.routing import SubagentRoutingIdentity, resolve_subagent_route
 
 _READ_ONLY_AGENT_PRESETS = ("advisor", "explore", "researcher", "product")
 _DELEGATED_ONLY_AGENT_PRESETS = ("worker", "advisor", "explore", "researcher", "product")

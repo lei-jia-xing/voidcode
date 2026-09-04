@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
-    from .config import RuntimeAgentConfig, RuntimeProviderFallbackConfig
+    from ..config import RuntimeAgentConfig, RuntimeProviderFallbackConfig
 
 __all__ = [
     "CALLABLE_SUBAGENT_PRESETS",
@@ -41,7 +41,7 @@ def provider_fallback_with_preferred_model(
     provider_fallback: RuntimeProviderFallbackConfig,
     preferred_model: str,
 ) -> RuntimeProviderFallbackConfig:
-    from .config import RuntimeProviderFallbackConfig
+    from ..config import RuntimeProviderFallbackConfig
 
     return RuntimeProviderFallbackConfig(
         preferred_model=preferred_model,
