@@ -53,15 +53,13 @@ from ..provider.snapshot import (
     resolved_provider_snapshot,
 )
 from ..skills import SkillRegistry, skill_registry_with_builtins
-from ..tools.background_process import BackgroundProcessTool
-from ..tools.background_process_start import BackgroundProcessManager, BackgroundProcessPersistence
-from ..tools.background_task import BackgroundTaskTool
 from ..tools.contracts import (
     Tool,
     ToolCall,
     ToolDefinition,
     ToolResult,
 )
+from ..tools.delegation import BackgroundTaskTool, TaskBatchTool, TaskTool
 from ..tools.output import (
     read_tool_output_artifact,
     search_tool_output_artifact,
@@ -69,11 +67,10 @@ from ..tools.output import (
 from ..tools.output import (
     resolve_tool_output_artifact as resolve_tool_output_artifact_metadata,
 )
+from ..tools.process import BackgroundProcessTool
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
-from ..tools.task import TaskTool
-from ..tools.task_batch import TaskBatchTool
 from . import chunk_builders, skills
 from .acp import (
     AcpAdapter,
@@ -109,6 +106,14 @@ from .agent_capability import (
     validate_agent_capability_snapshot,
 )
 from .background_facade import _RuntimeBackgroundTaskFacade
+from .background_process import BackgroundProcessManager, BackgroundProcessPersistence
+from .background_task_models import (
+    BACKGROUND_TASK_TERMINAL_STATUSES,
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+    is_background_task_terminal,
+    validate_background_task_id,
+)
 from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .bundle import (
     SessionBundle,
@@ -233,6 +238,7 @@ from .execution_seams import (
     resolve_runtime_session_routing,
     select_graph_for_effective_config,
 )
+from .graph_adapter import graph_request_for_session, graph_session_snapshot
 from .hook_preset_metadata import (
     debug_hook_preset_snapshot,
     hook_preset_event_payload_from_session_metadata,
@@ -345,13 +351,6 @@ from .skills import (
     skill_prompt_context_for_assembly,
 )
 from .storage import SessionSealedError, SessionStore, SqliteSessionStore
-from .task import (
-    BACKGROUND_TASK_TERMINAL_STATUSES,
-    BackgroundTaskState,
-    StoredBackgroundTaskSummary,
-    is_background_task_terminal,
-    validate_background_task_id,
-)
 from .tool_execution import RuntimeToolExecutor
 from .tool_materializer import RuntimeToolMaterialization, RuntimeToolMaterializer
 from .tool_provider import (
@@ -1413,6 +1412,15 @@ class VoidCodeRuntime(RuntimeSurface):
                             raise ValueError("runtime stream emitted multiple output chunks")
                         output = chunk.output
                     yield chunk
+            except GeneratorExit:
+                self._persist_interrupted_terminal_on_generator_close(
+                    request=request,
+                    abort_signal=abort_signal,
+                    final_session=final_session,
+                    events=events,
+                    run_id=run_id,
+                )
+                raise
             except Exception:
                 if final_session is not None and final_session.status == "failed":
                     final_session = disconnect_acp_for_session_state(self._acp_adapter, final_session)
@@ -1527,6 +1535,78 @@ class VoidCodeRuntime(RuntimeSurface):
         if final_session is None or final_session.status != "running":
             return False
         return not any(event.event_type == "runtime.failed" for event in events)
+
+    def _persist_interrupted_terminal_on_generator_close(
+        self,
+        *,
+        request: RuntimeRequest,
+        abort_signal: ProviderAbortSignal | None,
+        final_session: SessionState | None,
+        events: list[EventEnvelope],
+        run_id: str,
+    ) -> None:
+        """Persist cancellation when a consumer closes the stream at a yield.
+
+        ``GeneratorExit`` is a ``BaseException`` and must be re-raised by the
+        caller, so this path cannot yield the synthetic terminal chunk. Append
+        the same interrupted event directly, then refresh the checkpoint with
+        the existing durable tool-result snapshot before returning to the
+        generator's normal close semantics.
+        """
+        if not self._interrupt_requested_but_not_emitted(
+            abort_signal=abort_signal,
+            final_session=final_session,
+            events=events,
+        ):
+            return
+        assert final_session is not None
+
+        stored = self._load_stored_response(session_id=final_session.session.id)
+        if any(
+            event.event_type == "runtime.failed" and event.payload.get("kind") == "interrupted" and event.payload.get("cancelled") is True
+            for event in stored.events
+        ):
+            return
+
+        failed_chunk = chunk_builders.failed_chunk(
+            session=final_session,
+            sequence=0,
+            error="run interrupted",
+            payload=chunk_builders.user_interrupted_payload(
+                run_id=run_id_from_session_metadata(final_session.metadata) or run_id,
+                reason=cast(str | None, getattr(abort_signal, "reason", None)),
+            ),
+            status="interrupted",
+        )
+        failed_event = failed_chunk.event
+        assert failed_event is not None
+        persisted_event = self._persist_emitted_event(
+            session_id=failed_event.session_id,
+            event_type=failed_event.event_type,
+            source=failed_event.source,
+            payload=failed_event.payload,
+        )
+
+        checkpoint = self._session_store.load_resume_checkpoint(
+            workspace=self._workspace,
+            session_id=final_session.session.id,
+        )
+        raw_tool_results = checkpoint.get("tool_results", []) if isinstance(checkpoint, dict) else []
+        tool_results = (
+            tuple(cast(dict[str, object], item) for item in raw_tool_results if isinstance(item, dict)) if isinstance(raw_tool_results, list) else ()
+        )
+        self._session_store.save_interrupted_checkpoint(
+            workspace=self._workspace,
+            session_id=final_session.session.id,
+            prompt=request.prompt,
+            session_metadata=final_session.metadata,
+            tool_results=tool_results,
+            last_event_sequence=persisted_event.sequence,
+            output=None,
+            create_if_missing=False,
+            turn=final_session.turn,
+            parent_session_id=final_session.session.parent_id,
+        )
 
     def _synthesize_interrupted_terminal(
         self,
@@ -2196,32 +2276,35 @@ class VoidCodeRuntime(RuntimeSurface):
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = GraphRunRequest(
-            session=session,
-            prompt=request.prompt,
-            available_tools=self.provider_tool_definitions(tool_registry, effective_config),
-            context_window=self.prepare_provider_context_window(
+        graph_request = graph_request_for_session(
+            GraphRunRequest(
+                session=graph_session_snapshot(session),
                 prompt=request.prompt,
-                tool_results=rehydrated_tool_results,
-                session_metadata=session.metadata,
+                available_tools=self.provider_tool_definitions(tool_registry, effective_config),
+                context_window=self.prepare_provider_context_window(
+                    prompt=request.prompt,
+                    tool_results=rehydrated_tool_results,
+                    session_metadata=session.metadata,
+                    abort_signal=abort_signal,
+                ),
+                assembled_context=assembled_context,
+                metadata={
+                    **request_metadata,
+                    "agent_preset": serialize_runtime_agent_config(self.effective_runtime_config_from_metadata(session.metadata).agent),
+                    "provider_attempt": 0,
+                    "provider_stream": _coerce_bool_like(
+                        request_metadata.get("provider_stream", False),
+                        False,
+                    ),
+                    **(
+                        {"reasoning_effort": effective_config.reasoning_effort}
+                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in request_metadata
+                        else {}
+                    ),
+                },
                 abort_signal=abort_signal,
             ),
-            assembled_context=assembled_context,
-            metadata={
-                **request_metadata,
-                "agent_preset": serialize_runtime_agent_config(self.effective_runtime_config_from_metadata(session.metadata).agent),
-                "provider_attempt": 0,
-                "provider_stream": _coerce_bool_like(
-                    request_metadata.get("provider_stream", False),
-                    False,
-                ),
-                **(
-                    {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in request_metadata
-                    else {}
-                ),
-            },
-            abort_signal=abort_signal,
+            session,
         )
         tool_results: list[ToolResult] = list(rehydrated_tool_results)
         graph = self.graph_for_session_metadata(session.metadata)

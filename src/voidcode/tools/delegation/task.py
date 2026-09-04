@@ -6,7 +6,8 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from ..runtime.contracts import (
+from ...runtime.background_task_models import BackgroundTaskState, StoredBackgroundTaskSummary
+from ...runtime.contracts import (
     BackgroundTaskResult,
     RuntimeRequest,
     RuntimeResponse,
@@ -14,10 +15,9 @@ from ..runtime.contracts import (
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
-from ..runtime.task import BackgroundTaskState, StoredBackgroundTaskSummary
-from ._pydantic_args import format_validation_error
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import require_runtime_tool_context
+from .._pydantic_args import format_validation_error
+from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..runtime_context import require_runtime_tool_context
 
 
 class TaskRuntime(Protocol):

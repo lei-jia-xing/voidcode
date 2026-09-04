@@ -6,9 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.paths import sessions_db_path
-from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
-from voidcode.runtime.task import (
+from voidcode.runtime.background_task_models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
@@ -16,6 +14,8 @@ from voidcode.runtime.task import (
     is_background_task_terminal,
     is_background_task_transition_allowed,
 )
+from voidcode.runtime.paths import sessions_db_path
+from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
 
 
 def _task(

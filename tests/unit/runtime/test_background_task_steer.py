@@ -15,13 +15,13 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.task import (
+from voidcode.runtime.background_task_models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
 )
-from voidcode.tools.background_task import BackgroundTaskTool
 from voidcode.tools.contracts import ToolCall
+from voidcode.tools.delegation.background_task import BackgroundTaskTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")

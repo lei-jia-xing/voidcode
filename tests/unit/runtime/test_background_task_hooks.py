@@ -13,6 +13,11 @@ from voidcode.hook.plan import (
     hook_plan_from_session_metadata,
     materialize_hook_plan,
 )
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 from voidcode.runtime.background_tasks import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
@@ -21,11 +26,6 @@ from voidcode.runtime.events import (
 )
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-)
 
 
 def _session(store: SqliteSessionStore, workspace: Path, session_id: str, *, status: str = "running") -> None:

@@ -22,7 +22,7 @@ from .session_metadata_helpers import session_with_current_acp_metadata
 from .storage import SessionEventAppender, SessionStore
 
 if TYPE_CHECKING:
-    from .background_tasks import BackgroundTaskState
+    from .background_task_models import BackgroundTaskState
 
 logger = logging.getLogger(__name__)
 

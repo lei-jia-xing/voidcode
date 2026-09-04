@@ -24,7 +24,13 @@ from typing import cast
 
 import pytest
 
-from voidcode.graph.contracts import GraphEvent, GraphRunRequest
+from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSession
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    is_background_task_terminal,
+)
 from voidcode.runtime.config import RuntimeBackgroundTaskConfig, RuntimeConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
@@ -43,12 +49,6 @@ from voidcode.runtime.service import (
 )
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    is_background_task_terminal,
-)
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -96,10 +96,10 @@ class _SuccessGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": request.prompt}))
         return _StubStep(output=request.prompt, is_finished=True)
 
@@ -468,7 +468,7 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
             self.deltas_seen = threading.Event()
             self.release = threading.Event()
 
-        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState):
+        def stream_step(self, request: GraphRunRequest, tool_results: tuple, *, session: GraphSession):
             _ = request, tool_results
             for index in range(3):
                 yield GraphEvent(
@@ -487,7 +487,7 @@ def test_cancel_mid_provider_stream_drops_remaining_deltas(tmp_path: Path) -> No
                 )
             yield _StubStep(output="done", is_finished=True)
 
-        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: SessionState) -> _StubStep:
+        def step(self, request: GraphRunRequest, tool_results: tuple, *, session: GraphSession) -> _StubStep:
             raise AssertionError("streaming graph must not call step")
 
     graph = _StreamingGraph()
@@ -627,7 +627,7 @@ def test_steer_queued_while_run_active_is_accepted(tmp_path: Path) -> None:
             request: GraphRunRequest,
             tool_results: tuple[object, ...],
             *,
-            session: SessionState,
+            session: GraphSession,
         ) -> _StubStep:
             _ = request, tool_results, session
             return _StubStep(output="done", is_finished=True)
@@ -665,7 +665,7 @@ def test_follow_up_queued_during_active_run_survives_outer_snapshot_and_is_consu
             request: GraphRunRequest,
             tool_results: tuple[object, ...],
             *,
-            session: SessionState,
+            session: GraphSession,
         ) -> _StubStep:
             _ = tool_results, session
             self.prompts.append(request.prompt)

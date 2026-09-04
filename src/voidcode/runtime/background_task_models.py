@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Literal
+
+from .delegation_execution import SubagentExecutionContract
+from .delegation_routing import (
+    SubagentRoutingIdentity,
+    subagent_routing_identity_from_metadata,
+)
+
+type BackgroundTaskStatus = Literal[
+    "queued",
+    "running",
+    "idle",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+]
+type DelegatedReminderStopCondition = Literal[
+    "result_read",
+    "explicit_retry",
+    "cancellation",
+    "terminal_status",
+    "already_sent_for_idle_episode",
+]
+
+BACKGROUND_TASK_TERMINAL_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled", "interrupted"})
+_BACKGROUND_TASK_ALLOWED_TRANSITIONS: dict[BackgroundTaskStatus, frozenset[BackgroundTaskStatus]] = {
+    "queued": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
+    "running": frozenset({"completed", "failed", "cancelled", "interrupted", "idle"}),
+    "idle": frozenset({"running", "completed", "failed", "cancelled", "interrupted"}),
+    "completed": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+    "interrupted": frozenset({"completed", "failed", "cancelled", "running", "idle"}),
+}
+
+
+def is_background_task_terminal(status: BackgroundTaskStatus) -> bool:
+    return status in BACKGROUND_TASK_TERMINAL_STATUSES
+
+
+def is_background_task_transition_allowed(
+    *,
+    current_status: BackgroundTaskStatus,
+    next_status: BackgroundTaskStatus,
+) -> bool:
+    if current_status == next_status:
+        return True
+    return next_status in _BACKGROUND_TASK_ALLOWED_TRANSITIONS[current_status]
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskRef:
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskRequestSnapshot:
+    prompt: str
+    session_id: str | None = None
+    parent_session_id: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+    allocate_session_id: bool = False
+
+    @property
+    def routing_identity(self) -> SubagentRoutingIdentity | None:
+        return subagent_routing_identity_from_metadata(self.metadata)
+
+    @property
+    def subagent_execution(self) -> SubagentExecutionContract:
+        return SubagentExecutionContract.from_snapshot(
+            parent_session_id=self.parent_session_id,
+            requested_child_session_id=self.session_id,
+            child_session_id=None,
+            delegated_task_id=None,
+            metadata=self.metadata,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskConcurrencyObservability:
+    provider: str
+    model: str
+    limit: int
+    limit_source: str
+    running_provider: int
+    running_model: int
+    running_total: int
+    active_worker_slots: int
+    queued_provider: int
+    queued_model: int
+    queued_total: int
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "limit": self.limit,
+            "limit_source": self.limit_source,
+            "running_provider": self.running_provider,
+            "running_model": self.running_model,
+            "running_total": self.running_total,
+            "active_worker_slots": self.active_worker_slots,
+            "queued_provider": self.queued_provider,
+            "queued_model": self.queued_model,
+            "queued_total": self.queued_total,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskRetryObservability:
+    retry_count: int
+    max_retries: int
+    backoff_seconds: float
+    next_retry_at: int | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+            "backoff_seconds": self.backoff_seconds,
+            "next_retry_at": self.next_retry_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskObservability:
+    waiting_reason: str
+    terminal_reason: str | None = None
+    queue_position: int | None = None
+    concurrency: BackgroundTaskConcurrencyObservability | None = None
+    retry: BackgroundTaskRetryObservability | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "waiting_reason": self.waiting_reason,
+            "terminal_reason": self.terminal_reason,
+            "queue_position": self.queue_position,
+            "concurrency": (None if self.concurrency is None else self.concurrency.as_payload()),
+            "retry": None if self.retry is None else self.retry.as_payload(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DelegatedReminderState:
+    task_id: str
+    parent_session_id: str | None = None
+    child_session_id: str | None = None
+    idle_episode_id: str | None = None
+    idle_detected_at_unix_ms: int | None = None
+    reminder_sent_at_unix_ms: int | None = None
+    stopped_at_unix_ms: int | None = None
+    stop_condition: DelegatedReminderStopCondition | None = None
+
+    @property
+    def eligible(self) -> bool:
+        return self.idle_episode_id is not None and self.stop_condition is None and self.reminder_sent_at_unix_ms is None
+
+    @property
+    def already_sent_for_idle_episode(self) -> bool:
+        return self.reminder_sent_at_unix_ms is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaValidation:
+    """Runtime truth for validating a child's terminal ``yield`` data."""
+
+    schema_source: str | None = None
+    schema_mode: Literal["permissive", "strict"] = "permissive"
+    valid: bool = False
+    error: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "schema_source": self.schema_source,
+            "schema_mode": self.schema_mode,
+            "valid": self.valid,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskState:
+    task: BackgroundTaskRef
+    status: BackgroundTaskStatus = "queued"
+    request: BackgroundTaskRequestSnapshot = field(default_factory=lambda: BackgroundTaskRequestSnapshot(prompt=""))
+    session_id: str | None = None
+    approval_request_id: str | None = None
+    question_request_id: str | None = None
+    cancellation_cause: str | None = None
+    result_available: bool = False
+    error: str | None = None
+    created_at: int = 0
+    updated_at: int = 0
+    started_at: int | None = None
+    finished_at: int | None = None
+    created_at_unix_ms: int | None = None
+    started_at_unix_ms: int | None = None
+    finished_at_unix_ms: int | None = None
+    cancel_requested_at: int | None = None
+    delegated_reminder: DelegatedReminderState | None = None
+    observability: BackgroundTaskObservability | None = None
+    keep_alive: bool = False
+    steer_prompt: str | None = None
+    output_schema: dict[str, object] | None = None
+    schema_mode: Literal["permissive", "strict"] = "permissive"
+    structured_output: dict[str, object] | None = None
+    schema_validation: SchemaValidation | None = None
+
+    @property
+    def parent_session_id(self) -> str | None:
+        return self.request.parent_session_id
+
+    @property
+    def child_session_id(self) -> str | None:
+        return self.session_id
+
+    @property
+    def routing_identity(self) -> SubagentRoutingIdentity | None:
+        return self.request.routing_identity
+
+    @property
+    def subagent_execution(self) -> SubagentExecutionContract:
+        return SubagentExecutionContract.from_snapshot(
+            parent_session_id=self.parent_session_id,
+            requested_child_session_id=self.request.session_id,
+            child_session_id=self.session_id,
+            delegated_task_id=self.task.id,
+            metadata=self.request.metadata,
+            approval_request_id=self.approval_request_id,
+            question_request_id=self.question_request_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StoredBackgroundTaskSummary:
+    task: BackgroundTaskRef
+    status: BackgroundTaskStatus
+    prompt: str
+    session_id: str | None
+    error: str | None
+    created_at: int
+    updated_at: int
+    created_at_unix_ms: int | None = None
+    observability: BackgroundTaskObservability | None = None
+    keep_alive: bool = False
+    steer_prompt: str | None = None
+    output_schema: dict[str, object] | None = None
+    schema_mode: Literal["permissive", "strict"] = "permissive"
+
+
+def validate_background_task_id(task_id: str) -> str:
+    if not task_id:
+        raise ValueError("task_id must be a non-empty string")
+    if "/" in task_id:
+        raise ValueError("task_id must not contain '/'")
+    return task_id

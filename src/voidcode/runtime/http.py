@@ -14,6 +14,12 @@ from urllib.parse import parse_qs
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .active_session import ActiveRunInterruptResult
+from .background_task_models import (
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+    validate_background_task_id,
+)
 from .config import RuntimeConfig
 from .contracts import (
     AgentSummary,
@@ -48,6 +54,9 @@ from .contracts import (
     validate_session_id,
     validate_session_reference_id,
 )
+from .delegation_routing import (
+    SubagentRoutingIdentity,
+)
 from .events import (
     DelegatedLifecycleEventPayload,
     EventEnvelope,
@@ -59,13 +68,6 @@ from .serialization import serialize_revert_marker, serialize_session_debug_snap
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
 from .storage_shared import SessionSealedError
-from .task import (
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    StoredBackgroundTaskSummary,
-    SubagentRoutingIdentity,
-    validate_background_task_id,
-)
 from .workspace import SingleWorkspaceRuntimeCoordinator, WorkspaceOpenError
 
 logger = logging.getLogger(__name__)

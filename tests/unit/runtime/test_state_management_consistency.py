@@ -27,6 +27,13 @@ from typing import Any
 
 import pytest
 
+from voidcode.graph.contracts import GraphSession
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    is_background_task_terminal,
+)
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import (
@@ -38,12 +45,6 @@ from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.service import SessionState, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    is_background_task_terminal,
-)
 from voidcode.tools.contracts import ToolCall
 
 
@@ -80,11 +81,11 @@ class _BlockingTaskGraph:
         request: Any,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> Any:
         _ = tool_results
         self.prompts_seen.append(request.prompt)
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             if not self.started.is_set():
                 self.started.set()
                 assert self.release.wait(timeout=5)
@@ -551,10 +552,10 @@ class _YieldChildGraph:
         request: Any,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> Any:
         _ = request, tool_results
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(
                 output=None,
                 is_finished=False,

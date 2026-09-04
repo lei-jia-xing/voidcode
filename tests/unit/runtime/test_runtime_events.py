@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 
 from voidcode.runtime.contracts import BackgroundTaskResult
+from voidcode.runtime.delegation_routing import SubagentRoutingIdentity
 from voidcode.runtime.events import (
     EMITTED_EVENT_TYPES,
     GRAPH_LOOP_STEP,
@@ -57,7 +58,6 @@ from voidcode.runtime.events import (
     redact_reasoning_payload,
     runtime_reasoning_part_payload,
 )
-from voidcode.runtime.task import SubagentRoutingIdentity
 from voidcode.runtime.tool_display import build_tool_display
 
 

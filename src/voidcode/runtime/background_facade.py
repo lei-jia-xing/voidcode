@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import final
 
+from .background_task_models import BackgroundTaskState
 from .background_tasks import RuntimeBackgroundTaskSupervisor
 from .contracts import RuntimeRequest
-from .task import BackgroundTaskState
 
 
 @final

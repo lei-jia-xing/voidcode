@@ -9,6 +9,12 @@ from pathlib import Path
 from time import sleep, time
 from typing import Final, Protocol, cast, final, runtime_checkable
 
+from .background_task_models import (
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    DelegatedReminderStopCondition,
+    StoredBackgroundTaskSummary,
+)
 from .contracts import (
     RuntimeNotification,
     RuntimeRequest,
@@ -38,12 +44,6 @@ from .storage_revert import _RevertStorageMixin
 from .storage_sessions import _SessionStorageMixin
 from .storage_shared import SessionSealedError as SessionSealedError
 from .storage_todos import _TodoStorageMixin
-from .task import (
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    DelegatedReminderStopCondition,
-    StoredBackgroundTaskSummary,
-)
 
 SCHEMA_VERSION: Final[int] = 14
 

@@ -433,6 +433,42 @@ describe("useAppStore integration flow", () => {
     });
   });
 
+  it("refreshes only the explicitly requested mutation surfaces", async () => {
+    const sessionId = "session-refresh";
+    useAppStore.setState({ currentSessionId: sessionId });
+    runtimeClientMocks.getStatusMock.mockResolvedValue(emptyStatusSnapshot);
+    runtimeClientMocks.getReviewMock.mockResolvedValue({
+      root: "/workspace",
+      git: { state: "clean" },
+      changed_files: [],
+      tree: [],
+    });
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
+    runtimeClientMocks.listBackgroundTasksMock.mockResolvedValue([]);
+
+    await useAppStore.getState().refreshAfterMutation({
+      sessions: true,
+      status: true,
+      review: true,
+    });
+
+    expect(runtimeClientMocks.listSessionsMock).toHaveBeenCalledTimes(1);
+    expect(runtimeClientMocks.getStatusMock).toHaveBeenCalledTimes(1);
+    expect(runtimeClientMocks.getReviewMock).toHaveBeenCalledTimes(1);
+    expect(runtimeClientMocks.listBackgroundTasksMock).not.toHaveBeenCalled();
+    expect(runtimeClientMocks.getSessionDebugMock).not.toHaveBeenCalled();
+
+    await useAppStore.getState().refreshAfterMutation({
+      backgroundTasks: true,
+      debug: true,
+      sessionId,
+    });
+
+    expect(runtimeClientMocks.listBackgroundTasksMock).toHaveBeenCalledTimes(1);
+    expect(runtimeClientMocks.getSessionDebugMock).toHaveBeenCalledWith(
+      sessionId,
+    );
+  });
   it("handles run -> waiting approval -> allow -> replay through the real store", async () => {
     const sessionId = "session-1";
     const requestId = "approval-1";

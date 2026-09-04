@@ -160,6 +160,9 @@ interface AppState {
   loadBackgroundTasks: () => Promise<void>;
   loadBackgroundTaskOutput: (taskId: string | null) => Promise<void>;
   loadSessionDebug: (sessionId?: string | null) => Promise<void>;
+  refreshAfterMutation: (
+    options?: RefreshAfterMutationOptions,
+  ) => Promise<void>;
   loadSettings: () => Promise<void>;
   updateSettings: (settings: RuntimeSettingsUpdate) => Promise<void>;
 }
@@ -331,9 +334,39 @@ function selectedModelMetadata(
   return metadata[modelName] ?? metadata[normalized];
 }
 
+type RefreshAfterMutationOptions = {
+  sessions?: boolean;
+  status?: boolean;
+  review?: boolean;
+  backgroundTasks?: boolean;
+  debug?: boolean;
+  sessionId?: string | null;
+};
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
+      refreshAfterMutation: async ({
+        sessions = false,
+        status = false,
+        review = false,
+        backgroundTasks = false,
+        debug = false,
+        sessionId,
+      } = {}) => {
+        const refreshes: Promise<void>[] = [];
+        if (sessions) refreshes.push(get().loadSessions());
+        if (status) refreshes.push(get().loadStatus());
+        if (review) refreshes.push(get().loadReview());
+        if (backgroundTasks) refreshes.push(get().loadBackgroundTasks());
+        if (debug) {
+          const targetSessionId = sessionId ?? get().currentSessionId;
+          if (targetSessionId) {
+            refreshes.push(get().loadSessionDebug(targetSessionId));
+          }
+        }
+        await Promise.all(refreshes);
+      },
       language: "en",
       agentPreset: "leader",
       providerModel: "deepseek/deepseek-v4-pro",
@@ -1180,16 +1213,14 @@ export const useAppStore = create<AppState>()(
               : null,
             cancelRequested: false,
           });
-          const currentSessionId = get().currentSessionId;
-          await Promise.all([
-            get().loadSessions(),
-            get().loadStatus(),
-            get().loadReview(),
-            get().loadBackgroundTasks(),
-            currentSessionId
-              ? get().loadSessionDebug(currentSessionId)
-              : Promise.resolve(),
-          ]);
+          await get().refreshAfterMutation({
+            sessions: true,
+            status: true,
+            review: true,
+            backgroundTasks: true,
+            debug: true,
+            sessionId: get().currentSessionId,
+          });
         } catch (err) {
           if (get().replayRequestId !== nextReplayRequestId) return;
           // A torn-down stream during a user interrupt surfaces as an
@@ -1246,7 +1277,6 @@ export const useAppStore = create<AppState>()(
           replayStatus,
           runStatus,
           approvalStatus,
-          loadSessions,
         } = get();
 
         if (
@@ -1287,11 +1317,11 @@ export const useAppStore = create<AppState>()(
             approvalStatus: "success",
             approvalError: null,
           });
-          await Promise.all([
-            loadSessions(),
-            get().loadStatus(),
-            get().loadReview(),
-          ]);
+          await get().refreshAfterMutation({
+            sessions: true,
+            status: true,
+            review: true,
+          });
           set({ approvalStatus: "idle" });
         } catch (err) {
           set({
@@ -1317,7 +1347,7 @@ export const useAppStore = create<AppState>()(
           } catch {
             // Preserve the last runtime-owned snapshot when replay is unavailable.
           }
-          await loadSessions();
+          await get().refreshAfterMutation({ sessions: true });
         }
       },
 
@@ -1377,13 +1407,14 @@ export const useAppStore = create<AppState>()(
             questionStatus: "idle",
             questionError: null,
           });
-          await Promise.all([
-            get().loadSessions(),
-            get().loadStatus(),
-            get().loadReview(),
-            get().loadBackgroundTasks(),
-            get().loadSessionDebug(response.session.session.id),
-          ]);
+          await get().refreshAfterMutation({
+            sessions: true,
+            status: true,
+            review: true,
+            backgroundTasks: true,
+            debug: true,
+            sessionId: response.session.session.id,
+          });
         } catch (err) {
           set({
             questionStatus: "error",
@@ -1405,12 +1436,12 @@ export const useAppStore = create<AppState>()(
           } catch {
             // Preserve the last runtime-owned snapshot when replay is unavailable.
           }
-          await Promise.all([
-            get().loadSessions(),
-            get().loadStatus(),
-            get().loadReview(),
-            get().loadBackgroundTasks(),
-          ]);
+          await get().refreshAfterMutation({
+            sessions: true,
+            status: true,
+            review: true,
+            backgroundTasks: true,
+          });
         }
       },
 

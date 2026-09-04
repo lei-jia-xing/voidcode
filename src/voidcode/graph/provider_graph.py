@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
@@ -18,11 +18,39 @@ from ..provider.protocol import (
     StreamableTurnProvider,
     TurnProvider,
 )
-from ..runtime.events import GRAPH_LOOP_STEP, GRAPH_MODEL_TURN, GRAPH_RESPONSE_READY
-from ..runtime.session import SessionState
-from ..runtime.session_metadata_helpers import runtime_state_run_id
 from ..tools.contracts import ToolCall, ToolResult
-from .contracts import GraphEvent, GraphRunRequest, GraphStreamItem, ToolCallPreviewBuilder
+from .contracts import (
+    GRAPH_LOOP_STEP,
+    GRAPH_MODEL_TURN,
+    GRAPH_PROVIDER_STREAM,
+    GRAPH_RESPONSE_READY,
+    GRAPH_TOOL_CALL_DELTA,
+    GRAPH_TOOL_CALL_END,
+    GRAPH_TOOL_CALL_START,
+    GraphEvent,
+    GraphRunRequest,
+    GraphSession,
+    GraphStreamItem,
+    ToolCallPreviewBuilder,
+)
+
+
+def _run_id_from_graph_metadata(
+    request_metadata: Mapping[str, object],
+    session_metadata: Mapping[str, object],
+) -> str | None:
+    """Resolve run correlation without importing runtime-owned metadata helpers."""
+    for metadata in (request_metadata, session_metadata):
+        run_id = metadata.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    runtime_state = session_metadata.get("runtime_state")
+    if isinstance(runtime_state, Mapping):
+        run_id = runtime_state.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            return run_id
+    return None
+
 
 _PREVIEW_ARGUMENT_MAX_CHARS = 64 * 1024
 
@@ -98,7 +126,7 @@ class ProviderGraph:
         request: GraphRunRequest,
         tool_results: tuple[ToolResult, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> Iterator[GraphStreamItem]:
         """Native graph streaming surface; yields events before the final step."""
         events: queue.Queue[GraphEvent] = queue.Queue()
@@ -133,15 +161,15 @@ class ProviderGraph:
         request: GraphRunRequest,
         tool_results: tuple[ToolResult, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> ProviderStep:
         _ = session
         current_turn = len(tool_results) + 1
         if self._max_steps is not None and current_turn > self._max_steps:
             raise ValueError(f"graph exceeded max steps: {self._max_steps}")
 
-        session_id = request.session.session.id
-        run_id = self._run_id_from_metadata(request.session.metadata)
+        session_id = request.session.session_id
+        run_id = _run_id_from_graph_metadata(request.metadata, session.metadata)
         pending_step = self._consume_pending_tool_call(
             session_id=session_id,
             run_id=run_id,
@@ -666,11 +694,6 @@ class ProviderGraph:
         self._pending_tool_calls_min_tool_result_count = None
 
     @staticmethod
-    def _run_id_from_metadata(metadata: dict[str, object]) -> str | None:
-        run_id = runtime_state_run_id(metadata)
-        return run_id if run_id else None
-
-    @staticmethod
     def _is_approval_resume(metadata: dict[str, object]) -> bool:
         return metadata.get("resume_kind") == "approval"
 
@@ -738,12 +761,12 @@ class ProviderGraph:
         if stream_event.usage is not None:
             payload["usage"] = stream_event.usage.metadata_payload()
         lifecycle_event_types = {
-            "tool_call_start": "graph.tool_call_start",
-            "tool_call_delta": "graph.tool_call_delta",
-            "tool_call_end": "graph.tool_call_end",
+            "tool_call_start": GRAPH_TOOL_CALL_START,
+            "tool_call_delta": GRAPH_TOOL_CALL_DELTA,
+            "tool_call_end": GRAPH_TOOL_CALL_END,
         }
-        event_type = lifecycle_event_types.get(stream_event.kind, "graph.provider_stream")
-        return GraphEvent(event_type=event_type, source="graph", payload=payload)
+        event_type = lifecycle_event_types.get(stream_event.kind, GRAPH_PROVIDER_STREAM)
+        return GraphEvent(event_type=event_type, payload=payload)
 
     @staticmethod
     def _graph_event(event_type: str, payload: dict[str, object]) -> GraphEvent:

@@ -9,16 +9,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 from voidcode.runtime.background_tasks import RuntimeBackgroundTaskSupervisor
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse
 from voidcode.runtime.events import RUNTIME_BACKGROUND_TASK_GROUP_COMPLETED
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-)
 
 
 def _parent(store: SqliteSessionStore, workspace: Path, session_id: str) -> None:

@@ -5,15 +5,17 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequest, RuntimeResponse
-from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.task import (
+from voidcode.runtime.background_task_models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
+)
+from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeRequest, RuntimeResponse
+from voidcode.runtime.delegation_routing import (
     SubagentRoutingIdentity,
     resolve_subagent_route,
 )
+from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.tools import TaskTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 

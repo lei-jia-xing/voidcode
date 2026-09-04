@@ -7,6 +7,12 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+)
 from voidcode.runtime.contracts import (
     BackgroundTaskResult,
     RuntimeRequest,
@@ -14,16 +20,10 @@ from voidcode.runtime.contracts import (
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    StoredBackgroundTaskSummary,
-)
 from voidcode.skills.models import SkillMetadata
 from voidcode.tools import QuestionTool, SkillTool, TaskTool, ToolCall
-from voidcode.tools.background_cancel import BackgroundCancelTool
-from voidcode.tools.background_output import BackgroundOutputTool
+from voidcode.tools.delegation.background_cancel import BackgroundCancelTool
+from voidcode.tools.delegation.background_output import BackgroundOutputTool
 
 CI_SETTINGS = settings(derandomize=True, database=None, deadline=None, max_examples=200)
 

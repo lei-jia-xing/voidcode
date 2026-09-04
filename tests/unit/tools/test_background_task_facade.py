@@ -5,11 +5,11 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.runtime.contracts import BackgroundTaskResult, RuntimeSessionResult
 from voidcode.runtime.permission import PermissionPolicy, resolve_permission
 from voidcode.runtime.permission_context import operation_class_for_tool
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.task import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.tools import BackgroundTaskTool, ToolCall
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
@@ -117,10 +117,14 @@ def test_background_task_schema_is_strictly_discriminated() -> None:
 def test_full_session_schema_matches_model_validation() -> None:
     schema = BackgroundTaskTool.definition.input_schema
     validator = jsonschema.Draft202012Validator(schema)
-    valid = {"operation": "output", "task_id": "task-1", "full_session": True}
+    valid = {"operation": "output", "task_id": "task-1", "full_session": True, "timeout": 1000}
     invalid = {"operation": "output", "task_ids": ["task-1"], "full_session": True}
+    invalid_timeout = {"operation": "output", "task_id": "task-1", "block": True, "timeout": 999}
     assert list(validator.iter_errors(valid)) == []
     assert list(validator.iter_errors(invalid))
+    assert list(validator.iter_errors(invalid_timeout))
+    result = _invoke(_Runtime(), valid)
+    assert result.data["session"]["session_id"] == "child"  # type: ignore[index]
 
 
 def test_background_task_output_uses_unified_model_name_and_operation_guidance() -> None:

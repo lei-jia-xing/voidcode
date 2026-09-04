@@ -7,7 +7,7 @@ from voidcode.runtime.contracts import (
     runtime_subagent_routing_from_metadata,
     validate_runtime_subagent_routing_metadata,
 )
-from voidcode.runtime.task import subagent_routing_identity_from_metadata
+from voidcode.runtime.delegation_routing import subagent_routing_identity_from_metadata
 
 
 def test_request_and_task_metadata_share_delegation_identity_parser() -> None:

@@ -30,6 +30,7 @@ from .contracts import (
 from .event_envelopes import resequence_event
 from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope
 from .execution_seams import select_graph_for_effective_config
+from .graph_adapter import graph_request_for_session, graph_session_snapshot
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     hook_execution_policy_from_metadata,
@@ -453,32 +454,35 @@ class RuntimeResumeCoordinator:
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = GraphRunRequest(
-            session=session,
-            prompt=prompt,
-            available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
-            context_window=runtime.prepare_provider_context_window(
+        graph_request = graph_request_for_session(
+            GraphRunRequest(
+                session=graph_session_snapshot(session),
                 prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
+                available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
+                context_window=runtime.prepare_provider_context_window(
+                    prompt=prompt,
+                    tool_results=tuple(tool_results),
+                    session_metadata=session.metadata,
+                ),
+                assembled_context=assembled_context,
+                metadata={
+                    **session.metadata,
+                    "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                    "resume": True,
+                    "runtime_resume": True,
+                    "approval_request_id": pending.request_id,
+                    "provider_attempt": (
+                        session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
+                    ),
+                    **(
+                        {"reasoning_effort": effective_config.reasoning_effort}
+                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
+                        else {}
+                    ),
+                },
+                abort_signal=abort_signal,
             ),
-            assembled_context=assembled_context,
-            metadata={
-                **session.metadata,
-                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
-                "resume": True,
-                "runtime_resume": True,
-                "approval_request_id": pending.request_id,
-                "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
-                ),
-                **(
-                    {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
-                    else {}
-                ),
-            },
-            abort_signal=abort_signal,
+            session,
         )
         graph = runtime.graph_for_session_metadata(session.metadata)
         output: str | None = None
@@ -765,30 +769,33 @@ class RuntimeResumeCoordinator:
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = GraphRunRequest(
-            session=session,
-            prompt=prompt,
-            available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
-            context_window=runtime.prepare_provider_context_window(
+        graph_request = graph_request_for_session(
+            GraphRunRequest(
+                session=graph_session_snapshot(session),
                 prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
+                available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
+                context_window=runtime.prepare_provider_context_window(
+                    prompt=prompt,
+                    tool_results=tuple(tool_results),
+                    session_metadata=session.metadata,
+                ),
+                assembled_context=assembled_context,
+                metadata={
+                    **session.metadata,
+                    "agent_preset": serialize_runtime_agent_config(effective_config.agent),
+                    "runtime_resume": True,
+                    "provider_attempt": (
+                        session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
+                    ),
+                    **(
+                        {"reasoning_effort": effective_config.reasoning_effort}
+                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
+                        else {}
+                    ),
+                },
+                abort_signal=abort_signal,
             ),
-            assembled_context=assembled_context,
-            metadata={
-                **session.metadata,
-                "agent_preset": serialize_runtime_agent_config(effective_config.agent),
-                "runtime_resume": True,
-                "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
-                ),
-                **(
-                    {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
-                    else {}
-                ),
-            },
-            abort_signal=abort_signal,
+            session,
         )
         provider_attempt = provider_attempt_from_metadata(graph_request.metadata)
         graph = runtime.graph_for_session_metadata(session.metadata)
@@ -1415,32 +1422,35 @@ class RuntimeResumeCoordinator:
             session,
             dict(assembled_context.metadata),
         )
-        graph_request = GraphRunRequest(
-            session=session,
-            prompt=prompt,
-            available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
-            context_window=runtime.prepare_provider_context_window(
+        graph_request = graph_request_for_session(
+            GraphRunRequest(
+                session=graph_session_snapshot(session),
                 prompt=prompt,
-                tool_results=tuple(tool_results),
-                session_metadata=session.metadata,
+                available_tools=runtime.provider_tool_definitions(tool_registry, effective_config),
+                context_window=runtime.prepare_provider_context_window(
+                    prompt=prompt,
+                    tool_results=tuple(tool_results),
+                    session_metadata=session.metadata,
+                ),
+                assembled_context=assembled_context,
+                metadata={
+                    **session.metadata,
+                    **({"resume_kind": resume_kind} if resume_kind is not None else {}),
+                    "runtime_resume": True,
+                    "provider_attempt": (
+                        session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
+                    ),
+                    "provider_stream": True,
+                    **({"provider_failure_resume": True} if provider_failure_resume else {}),
+                    **(
+                        {"reasoning_effort": effective_config.reasoning_effort}
+                        if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
+                        else {}
+                    ),
+                },
+                abort_signal=abort_signal,
             ),
-            assembled_context=assembled_context,
-            metadata={
-                **session.metadata,
-                **({"resume_kind": resume_kind} if resume_kind is not None else {}),
-                "runtime_resume": True,
-                "provider_attempt": (
-                    session.metadata.get("provider_attempt", 0) if isinstance(session.metadata.get("provider_attempt", 0), int) else 0
-                ),
-                "provider_stream": True,
-                **({"provider_failure_resume": True} if provider_failure_resume else {}),
-                **(
-                    {"reasoning_effort": effective_config.reasoning_effort}
-                    if effective_config.reasoning_effort is not None and "reasoning_effort" not in session.metadata
-                    else {}
-                ),
-            },
-            abort_signal=abort_signal,
+            session,
         )
         graph = runtime.graph_for_session_metadata(session.metadata)
         if provider_failure_resume:

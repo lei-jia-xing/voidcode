@@ -10,15 +10,16 @@ from typing import cast
 
 import pytest
 
-from voidcode.runtime.service import VoidCodeRuntime
-from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.tools import ToolCall
-from voidcode.tools.background_process import _MAX_BACKGROUND_PROCESS_ROWS
-from voidcode.tools.background_process_start import (
+from voidcode.runtime.background_process import (
     _MAX_BACKGROUND_PROCESS_LOG_LINES,
+    BackgroundProcessManager,
     _DetachedProcess,
     _terminate_background_process_group,
 )
+from voidcode.runtime.service import VoidCodeRuntime
+from voidcode.runtime.storage import SqliteSessionStore
+from voidcode.tools import ToolCall
+from voidcode.tools.process.background_process import _MAX_BACKGROUND_PROCESS_ROWS
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 
@@ -192,6 +193,50 @@ def test_background_process_stale_rows_are_visible_but_not_controllable(tmp_path
         external.wait(timeout=5)
 
 
+def test_background_process_reconcile_rejects_external_log_paths(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions.sqlite3"
+    external_log = tmp_path.parent / "outside-background-process.log"
+    external_log.write_text("do-not-leak\n", encoding="utf-8")
+    store = SqliteSessionStore(database_path=database_path)
+    store.register_background_process(
+        workspace=tmp_path,
+        process_id="proc-malicious-path",
+        owner_session_id="owner-a",
+        command="external",
+        cwd=str(tmp_path.resolve()),
+        pid=99999999,
+        process_group_id=99999999,
+        process_identity="not-current",
+        stdout_path=str(external_log),
+        stderr_path=str(external_log),
+    )
+
+    manager = BackgroundProcessManager(
+        persistence=SqliteSessionStore(database_path=database_path),
+        workspace=tmp_path,
+    )
+    state = manager.load("proc-malicious-path", workspace=tmp_path)
+    assert state is not None
+    assert state.stdout_path is None
+    assert state.stderr_path is None
+    assert state.stdout_chunks == []
+    assert state.stderr_chunks == []
+
+    runtime = VoidCodeRuntime(
+        workspace=tmp_path,
+        session_store=SqliteSessionStore(database_path=database_path),
+    )
+    try:
+        tool = runtime._base_tool_registry.resolve("background_process")
+        with bind_runtime_tool_context(RuntimeToolInvocationContext(session_id="owner-a")):
+            result = _call(tool, "logs", tmp_path, process_id="proc-malicious-path")
+        assert result.status == "error"
+        assert "do-not-leak" not in (result.content or "")
+        assert "do-not-leak" not in str(result.data)
+    finally:
+        runtime.__exit__(None, None, None)
+
+
 def test_runtime_exit_stops_managed_background_processes(tmp_path: Path) -> None:
     database_path = tmp_path / "sessions.sqlite3"
     runtime = VoidCodeRuntime(workspace=tmp_path, session_store=SqliteSessionStore(database_path=database_path))
@@ -226,8 +271,8 @@ def test_terminate_background_process_group_sends_sigkill_after_leader_exits(mon
         if sig == signal.SIGKILL:
             group_exists = False
 
-    monkeypatch.setattr("voidcode.tools.background_process_start.os.killpg", fake_killpg)
-    monkeypatch.setattr("voidcode.tools.background_process_start._process_group_exists", lambda _: group_exists)
+    monkeypatch.setattr("voidcode.runtime.background_process.os.killpg", fake_killpg)
+    monkeypatch.setattr("voidcode.runtime.background_process._process_group_exists", lambda _: group_exists)
     _terminate_background_process_group(cast(subprocess.Popen[str], _FakeProcess()))
     assert calls == [(4321, signal.SIGTERM), (4321, signal.SIGKILL)]
     assert waits == [1]

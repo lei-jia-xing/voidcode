@@ -4,6 +4,14 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from .active_session import ActiveRunInterruptResult
+from .background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    StoredBackgroundTaskSummary,
+    validate_background_task_id,
+)
 from .contracts import (
     BackgroundTaskResult,
     BackgroundTaskRuntimeEntrypoint,
@@ -30,14 +38,6 @@ from .events import (
 from .permission import PendingApproval, PermissionDecision, PermissionPolicy, PermissionResolution
 from .session import SessionRef, SessionState, SessionStatus, StoredSessionSummary
 from .storage import SessionStore
-from .task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    StoredBackgroundTaskSummary,
-    validate_background_task_id,
-)
 
 if TYPE_CHECKING:
     from .http import RuntimeTransportApp, create_runtime_app

@@ -13,16 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-from pydantic import BaseModel, ValidationError, field_validator
-
-from ._pydantic_args import format_validation_error
-from .contracts import RuntimeToolTimeoutError, ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
-
 _MAX_BACKGROUND_PROCESS_LOG_LINES = 500
 
 
 class BackgroundProcessPersistence(Protocol):
+    """Persistence boundary used by the runtime-owned process manager."""
+
     def register_background_process(self, **kwargs: object) -> None: ...
 
     def load_background_process(self, *, workspace: Path, process_id: str) -> dict[str, object] | None: ...
@@ -83,8 +79,8 @@ class _DetachedProcess:
         return self._exit_code
 
 
-# process and distinguishes a reused PID. Other platforms fail closed: a
-# process started by a prior runtime cannot be re-attached without a token.
+# Process identity is read from Linux procfs and distinguishes a reused PID. Other
+# platforms fail closed: a process started by a prior runtime cannot be re-attached.
 def _process_identity(pid: int) -> str | None:
     if _is_windows():
         return None
@@ -122,6 +118,32 @@ def _read_log_tail(path: Path) -> tuple[list[str], int]:
     return list(lines), max(0, count - len(lines))
 
 
+def _safe_restored_log_path(raw_path: object, *, workspace: Path) -> Path | None:
+    """Return a restored log path only when it is inside the canonical log root.
+
+    Persisted paths are untrusted restart metadata: a corrupt or tampered row
+    must not turn reconciliation into an arbitrary file read. ``resolve`` also
+    collapses symlinks, so a path that appears under the root but points outside
+    it is rejected.
+    """
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    workspace_root = workspace.resolve()
+    root = (workspace_root / ".voidcode" / "background-processes").resolve()
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    try:
+        # The canonical log root itself must remain under the workspace (for
+        # example, reject a malicious .voidcode symlink to /var/tmp).
+        root.relative_to(workspace_root)
+        resolved = candidate.resolve()
+        resolved.relative_to(root)
+    except OSError, RuntimeError, ValueError:
+        return None
+    return resolved
+
+
 def _append_log_lines(state: BackgroundProcessState, *, stream_name: str, lines: list[str]) -> None:
     chunks = state.stdout_chunks if stream_name == "stdout" else state.stderr_chunks
     for line in lines:
@@ -135,6 +157,8 @@ def _append_log_lines(state: BackgroundProcessState, *, stream_name: str, lines:
 
 
 class BackgroundProcessManager:
+    """Own subprocess lifecycle, durable records, and restart reconciliation."""
+
     def __init__(
         self,
         *,
@@ -400,7 +424,7 @@ class BackgroundProcessManager:
         if not callable(list_processes):
             return
         for record in list_processes(workspace=self._workspace):
-            self._restore_record(record)
+            self._restore_record(record, workspace=self._workspace)
 
     def _restore_one(self, process_id: str, workspace: Path) -> None:
         load_process = getattr(self._persistence, "load_background_process", None)
@@ -408,9 +432,9 @@ class BackgroundProcessManager:
             return
         record = load_process(workspace=workspace, process_id=process_id)
         if record is not None:
-            self._restore_record(record)
+            self._restore_record(record, workspace=workspace)
 
-    def _restore_record(self, record: Mapping[str, object]) -> None:
+    def _restore_record(self, record: Mapping[str, object], *, workspace: Path | None = None) -> None:
         process_id = record.get("process_id")
         if not isinstance(process_id, str) or process_id in self._processes:
             return
@@ -442,10 +466,9 @@ class BackgroundProcessManager:
                 "and is externally managed/unavailable to this runtime."
             )
         )
-        stdout_raw = record.get("stdout_path")
-        stderr_raw = record.get("stderr_path")
-        stdout_path = Path(stdout_raw) if isinstance(stdout_raw, str) and stdout_raw else None
-        stderr_path = Path(stderr_raw) if isinstance(stderr_raw, str) and stderr_raw else None
+        restored_workspace = workspace.resolve() if workspace is not None else None
+        stdout_path = _safe_restored_log_path(record.get("stdout_path"), workspace=restored_workspace) if restored_workspace is not None else None
+        stderr_path = _safe_restored_log_path(record.get("stderr_path"), workspace=restored_workspace) if restored_workspace is not None else None
         stdout_chunks, stdout_dropped = _read_log_tail(stdout_path) if stdout_path is not None else ([], 0)
         stderr_chunks, stderr_dropped = _read_log_tail(stderr_path) if stderr_path is not None else ([], 0)
         owner = record.get("owner_session_id")
@@ -652,123 +675,11 @@ def _wait_for_process_group_exit(process_group_id: int, *, timeout: float) -> No
         time.sleep(0.02)
 
 
-class _BackgroundProcessStartArgs(BaseModel):
-    command: str
-    description: str | None = None
-
-    @field_validator("command", mode="after")
-    @classmethod
-    def _validate_command(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("command must not be empty")
-        return value
-
-    @field_validator("description", mode="after")
-    @classmethod
-    def _validate_description(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("description must not be empty when provided")
-        return value
-
-
-class BackgroundProcessStartRuntime(Protocol):
-    @property
-    def background_process_manager(self) -> BackgroundProcessManager: ...
-
-
-def _background_process_start_guidance(*, process_id: str, reused: bool, stale_process_id: str | None = None) -> str:
-    if stale_process_id is not None:
-        stale_note = (
-            f" Prior process '{stale_process_id}' was detected after runtime restart and was not "
-            "reattached; it is externally managed/unavailable to this runtime. Do not use that "
-            "stale id for logs, send, or stop."
-        )
-    else:
-        stale_note = ""
-    if reused:
-        return (
-            f"An exact-match process is already running; reuse process_id '{process_id}' "
-            "instead of calling background_process with op=start again for the same trimmed command "
-            "in this workspace." + stale_note
-        )
-    return f"Track this process by process_id '{process_id}'. Use background_process with op=logs, send, or stop." + stale_note
-
-
-class BackgroundProcessStartTool:
-    definition = ToolDefinition(
-        name="background_process_start",
-        description="Start a long-running non-interactive process without blocking the current turn.",
-        input_schema={
-            "command": {"type": "string", "description": "Shell command to start as a long-running background process"},
-            "description": {"type": "string", "description": "Human-readable description"},
-        },
-        read_only=False,
-    )
-
-    def __init__(self, *, runtime: BackgroundProcessStartRuntime) -> None:
-        self._runtime = runtime
-
-    def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
-        try:
-            args = _BackgroundProcessStartArgs.model_validate(call.arguments)
-        except ValidationError as exc:
-            raise ValueError(format_validation_error(self.definition.name, exc)) from exc
-        runtime_context = current_runtime_tool_context()
-        if runtime_context is not None and runtime_context.abort_signal is not None and runtime_context.abort_signal.cancelled:
-            raise RuntimeToolTimeoutError("background_process_start aborted before launching process")
-        owner_session_id = runtime_context.session_id if runtime_context is not None else None
-        enforce_owner = runtime_context is not None
-        manager = self._runtime.background_process_manager
-        existing = manager.load_running(
-            command=args.command,
-            workspace=workspace,
-            owner_session_id=owner_session_id,
-            enforce_owner=enforce_owner,
-        )
-        stale_matches = manager.find_stale(
-            command=args.command,
-            workspace=workspace,
-            owner_session_id=owner_session_id,
-            enforce_owner=enforce_owner,
-        )
-        state = manager.start(
-            command=args.command,
-            workspace=workspace,
-            owner_session_id=owner_session_id,
-            enforce_owner=enforce_owner,
-        )
-        reused = existing is not None
-        stale_process_id = stale_matches[0].process_id if stale_matches else None
-        guidance = _background_process_start_guidance(
-            process_id=state.process_id,
-            reused=reused,
-            stale_process_id=stale_process_id,
-        )
-        return ToolResult(
-            tool_name=self.definition.name,
-            status="ok",
-            content=(
-                f"{'Reusing' if reused else 'Started'} background process {state.process_id} "
-                f"(pid={state.process.pid}) for command: {args.command}. Guidance: {guidance}"
-            ),
-            data={
-                "process_id": state.process_id,
-                "pid": state.process.pid,
-                "command": args.command,
-                "cwd": state.cwd,
-                "running": state.process.poll() is None,
-                "reused": reused,
-                "stale_process_id": stale_process_id,
-                "guidance": guidance,
-            },
-        )
-
-
 __all__ = [
     "BackgroundProcessManager",
     "BackgroundProcessPersistence",
-    "BackgroundProcessStartTool",
     "BackgroundProcessState",
+    "_DetachedProcess",
     "_MAX_BACKGROUND_PROCESS_LOG_LINES",
     "_process_group_exists",
     "_terminate_background_process_group",

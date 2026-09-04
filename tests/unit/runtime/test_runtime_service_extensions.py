@@ -29,6 +29,7 @@ from voidcode.agent import (
     list_builtin_agent_manifests,
     render_agent_prompt,
 )
+from voidcode.graph.contracts import GraphSession
 from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.provider.auth import ProviderAuthAuthorizeRequest
 from voidcode.provider.config import (
@@ -50,6 +51,13 @@ from voidcode.runtime.acp import (
     AcpRuntimeEvent,
     DisabledAcpAdapter,
     ManagedAcpAdapter,
+)
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+    is_background_task_terminal,
 )
 from voidcode.runtime.config import (
     RUNTIME_CONFIG_FILE_NAME,
@@ -165,13 +173,6 @@ from voidcode.runtime.session_metadata_helpers import (
     session_with_context_window_payload_metadata,
 )
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    StoredBackgroundTaskSummary,
-    is_background_task_terminal,
-)
 from voidcode.security.shell_policy import extract_shell_path_candidates
 from voidcode.skills import SkillRegistry
 from voidcode.tools import ToolCall
@@ -590,7 +591,7 @@ class _StubGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = session
         if not tool_results:
@@ -606,7 +607,7 @@ class _SkillCapturingStubGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results, session
         type(self).last_request = request
@@ -621,7 +622,7 @@ class _SkillAwareStubGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results, session
         type(self).last_request = request
@@ -651,13 +652,13 @@ class _ApprovalThenCaptureSkillGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = session
         type(self).last_request = request
         if not tool_results:
             return _StubStep(tool_call=ToolCall(tool_name="write", arguments={"path": "alpha.txt", "content": "1"}))
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
@@ -668,7 +669,7 @@ class _GithubWorkflowWriteGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -690,7 +691,7 @@ class _ExternalWriteGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -713,7 +714,7 @@ class _BlockingApprovalResumeGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -730,7 +731,7 @@ class _DivergentApprovalReplayGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, tool_results, session
         return _StubStep(
@@ -747,7 +748,7 @@ class _AbortSignalApprovalGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -818,7 +819,7 @@ class _QuestionThenDoneGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -840,7 +841,7 @@ class _QuestionThenDoneGraph:
                     },
                 )
             )
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
@@ -851,7 +852,7 @@ class _MalformedQuestionThenDoneGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -865,7 +866,7 @@ class _QuestionThenApprovalGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -894,7 +895,7 @@ class _QuestionThenApprovalGraph:
                     arguments={"path": "alpha.txt", "content": "1"},
                 )
             )
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(tool_call=ToolCall(tool_name="yield", arguments={"summary": "done"}))
         return _StubStep(output="done", is_finished=True)
 
@@ -905,7 +906,7 @@ class _TwoQuestionThenDoneGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -945,7 +946,7 @@ class _UnknownToolGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, tool_results, session
         return _StubStep(tool_call=ToolCall(tool_name="missing_tool", arguments={}))
@@ -957,7 +958,7 @@ class _McpToolGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -971,7 +972,7 @@ class _TwoApprovalThenDoneGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if len(tool_results) == 0:
@@ -997,7 +998,7 @@ class _TwoRulePathGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if len(tool_results) == 0:
@@ -1023,7 +1024,7 @@ class _FailingProviderGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, tool_results, session
         raise ValueError("provider context window exceeded")
@@ -1651,10 +1652,10 @@ class _BackgroundTaskSuccessGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(
                 tool_call=ToolCall(
                     tool_name="yield",
@@ -1670,7 +1671,7 @@ class _BackgroundTaskApprovalGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if tool_results:
@@ -1694,7 +1695,7 @@ class _BlockingBackgroundTaskGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results, session
         self.prompts_seen.append(request.prompt)
@@ -1714,7 +1715,7 @@ class _RateLimitThenSuccessGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results, session
         self.attempts += 1
@@ -1984,7 +1985,7 @@ class _TaskToolGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -2008,10 +2009,10 @@ class _AdvisorTaskToolGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _StubStep(output="advisor child done", is_finished=True)
         if not tool_results:
             return _StubStep(
@@ -2036,9 +2037,9 @@ class _ParentSkillThenSyncTaskGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
-        if session.session.parent_id is not None:
+        if session.metadata.get("parent_session_id") is not None:
             type(self).child_system_segments = tuple(segment.content for segment in request.assembled_context.segments if segment.role == "system")
             return _StubStep(
                 tool_call=ToolCall(
@@ -2069,7 +2070,7 @@ class _NestedDelegationGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -2093,7 +2094,7 @@ class _BackgroundTaskFailureGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, tool_results, session
         raise RuntimeError("background boom")
@@ -2105,7 +2106,7 @@ class _ParentSuccessBackgroundTaskFailureGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = tool_results, session
         if request.prompt == "parent":
@@ -5316,7 +5317,7 @@ class _BlockingFinalAnswerGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = session
         if not tool_results:
@@ -5535,6 +5536,53 @@ def test_runtime_abort_abnormal_termination_synthesizes_interrupted_terminal(
         session_id=session_id,
     )
     assert stored.session.status == "interrupted"
+
+
+def test_runtime_generator_close_persists_interrupted_terminal(
+    tmp_path: Path,
+) -> None:
+    """Closing an aborted run_stream generator persists its terminal event."""
+    runtime = VoidCodeRuntime(workspace=tmp_path, graph=_BackgroundTaskSuccessGraph())
+    session_id = "generator-close-interrupt"
+
+    stream = runtime.run_stream(
+        RuntimeRequest(prompt="close me", session_id=session_id),
+    )
+    try:
+        first_chunk = next(stream)
+        assert first_chunk.session.status == "running"
+
+        interrupted = runtime.cancel_session(
+            session_id,
+            reason="client disconnected",
+        )
+        assert interrupted.interrupted is True
+
+        # The consumer closes before the run loop reaches its normal abort
+        # checkpoint; this must execute run_with_persistence's GeneratorExit
+        # handler rather than the helper in isolation.
+        stream.close()
+
+        stored = runtime._session_store.load_session(
+            workspace=tmp_path,
+            session_id=session_id,
+        )
+        assert stored.session.status == "interrupted"
+        assert len(stored.events) == 2
+        event = stored.events[-1]
+        assert event.event_type == "runtime.failed"
+        assert event.payload["kind"] == "interrupted"
+        assert event.payload["cancelled"] is True
+        assert event.payload["run_id"] == interrupted.run_id
+        assert event.payload["reason"] == "client disconnected"
+        checkpoint = runtime._session_store.load_resume_checkpoint(
+            workspace=tmp_path,
+            session_id=session_id,
+        )
+        assert checkpoint["prompt"] == "close me"
+        assert checkpoint["last_event_sequence"] == event.sequence
+    finally:
+        runtime.__exit__(None, None, None)
 
 
 def test_runtime_provider_error_with_abort_stays_failed(tmp_path: Path) -> None:
@@ -12446,7 +12494,7 @@ class _MultiStepStubGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -12462,7 +12510,7 @@ class _TaggedWriteGraph:
         request: GraphRunRequest,
         tool_results: tuple[object, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> _StubStep:
         _ = request, session
         if not tool_results:
@@ -13465,7 +13513,7 @@ def test_runtime_execute_graph_loop_reuses_initial_context_window_on_first_itera
             request: GraphRunRequest,
             tool_results: tuple[object, ...],
             *,
-            session: SessionState,
+            session: GraphSession,
         ) -> _StubStep:
             _ = request, tool_results, session
             return _StubStep(output="done", is_finished=True)
@@ -13543,7 +13591,7 @@ def test_runtime_execute_graph_loop_recomputes_stale_initial_context_window(
             request: GraphRunRequest,
             tool_results: tuple[object, ...],
             *,
-            session: SessionState,
+            session: GraphSession,
         ) -> _StubStep:
             _ = tool_results, session
             context_window = cast(RuntimeContextWindow, request.context_window)

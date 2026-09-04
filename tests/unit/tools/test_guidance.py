@@ -33,7 +33,7 @@ def test_yield_guidance_describes_terminal_child_handoff() -> None:
 
 def test_background_task_guidance_describes_operations_and_lifecycle_rules() -> None:
     filename = guidance_filename_for_tool("background_task")
-    assert filename == "background_task.txt"
+    assert filename == "delegation/background_task.txt"
     guidance = guidance_for_tool("background_task")
     for operation in ("output", "cancel", "ps", "steer"):
         assert f'operation="{operation}"' in guidance

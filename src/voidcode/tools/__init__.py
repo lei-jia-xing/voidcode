@@ -1,10 +1,8 @@
 from .apply_patch import ApplyPatchTool
 from .apply_workspace_edit import ApplyWorkspaceEditTool
 from .ast_grep import AstGrepTool
-from .background_process import BackgroundProcessTool
-from .background_process_start import BackgroundProcessManager
-from .background_task import BackgroundTaskTool
 from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolInvocation, ToolResult, ToolResultStatus
+from .delegation import BackgroundTaskTool, TaskBatchTool, TaskTool
 from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
@@ -28,12 +26,11 @@ from .output import (
     strip_redaction_sentinels,
     tool_output_artifact_temp_root,
 )
+from .process import BackgroundProcessTool
 from .question import QuestionTool
 from .read import ReadTool
 from .shell_exec import ShellExecTool
 from .skill import SkillTool
-from .task import TaskTool
-from .task_batch import TaskBatchTool
 from .todo_write import TodoWriteTool
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
@@ -45,7 +42,6 @@ __all__ = [
     "ApplyPatchTool",
     "ApplyWorkspaceEditTool",
     "AstGrepTool",
-    "BackgroundProcessManager",
     "BackgroundProcessTool",
     "EditTool",
     "GlobTool",

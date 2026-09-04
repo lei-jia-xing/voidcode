@@ -92,6 +92,7 @@ from .execution_seams import (
     fallback_graph_for_provider_error,
     select_graph_for_effective_config,
 )
+from .graph_adapter import graph_request_for_session, graph_session_snapshot
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     hook_execution_policy_from_metadata,
@@ -599,15 +600,18 @@ def _graph_request_without_provider_attempt(
     *,
     session: SessionState,
 ) -> GraphRunRequest:
-    return GraphRunRequest(
-        session=session,
-        prompt=request.prompt,
-        available_tools=request.available_tools,
-        context_window=request.context_window,
-        assembled_context=request.assembled_context,
-        metadata=_metadata_without_provider_attempt(request.metadata),
-        abort_signal=request.abort_signal,
-        tool_call_preview=request.tool_call_preview,
+    return graph_request_for_session(
+        GraphRunRequest(
+            session=graph_session_snapshot(session),
+            prompt=request.prompt,
+            available_tools=request.available_tools,
+            context_window=request.context_window,
+            assembled_context=request.assembled_context,
+            metadata=_metadata_without_provider_attempt(request.metadata),
+            abort_signal=request.abort_signal,
+            tool_call_preview=request.tool_call_preview,
+        ),
+        session,
     )
 
 
@@ -1574,15 +1578,18 @@ class RuntimeRunLoopCoordinator:
                 context_window=context_window,
                 session=session,
             )
-            active_graph_request = GraphRunRequest(
-                session=session,
-                prompt=current_prompt,
-                available_tools=current_available_tools,
-                context_window=context_window,
-                assembled_context=assembled_context,
-                metadata=current_metadata,
-                abort_signal=current_abort_signal,
-                tool_call_preview=self._tool_call_preview,
+            active_graph_request = graph_request_for_session(
+                GraphRunRequest(
+                    session=graph_session_snapshot(session),
+                    prompt=current_prompt,
+                    available_tools=current_available_tools,
+                    context_window=context_window,
+                    assembled_context=assembled_context,
+                    metadata=current_metadata,
+                    abort_signal=current_abort_signal,
+                    tool_call_preview=self._tool_call_preview,
+                ),
+                session,
             )
             effective_runtime_config = runtime.effective_runtime_config_from_metadata(session.metadata)
             session, sequence, terminated = yield from self._emit_turn_context_events(
@@ -2391,6 +2398,7 @@ class RuntimeRunLoopCoordinator:
         reasoning_capture_state: ReasoningCaptureState,
         graph: RuntimeGraph,
     ) -> Generator[RuntimeStreamChunk, None, tuple[Any | None, int, list[str]]]:
+        graph_request = graph_request_for_session(active_graph_request, session)
         streamed_reasoning_texts: list[str] = []
         if _is_abort_requested(active_graph_request):
             yield from self._emit_interrupted_failure(
@@ -2449,7 +2457,7 @@ class RuntimeRunLoopCoordinator:
                 return GraphEvent(event_type=event.event_type, source=event.source, payload=payload)
 
             stream_request = replace(
-                active_graph_request,
+                graph_request,
                 tool_call_preview=lambda tool_name, fragments, parsed: build_partial_tool_call_preview(
                     workspace=self._workspace,
                     tool_name=tool_name,
@@ -2460,7 +2468,7 @@ class RuntimeRunLoopCoordinator:
             for streamed_item in stream_step(
                 stream_request,
                 tuple(tool_results),
-                session=session,
+                session=graph_request.session,
             ):
                 if _is_abort_requested(active_graph_request):
                     # Terminal-seal guard for provider deltas: once this
@@ -2513,9 +2521,9 @@ class RuntimeRunLoopCoordinator:
                 raise RuntimeError("graph stream ended without a terminal step")
         else:
             graph_step = cast(Any, graph).step(
-                active_graph_request,
+                graph_request,
                 tool_results=tuple(tool_results),
-                session=session,
+                session=graph_request.session,
             )
             # Non-streaming turns (background children) carry the turn's
             # reasoning on the step; aggregate it like the streamed deltas
@@ -2637,15 +2645,18 @@ class RuntimeRunLoopCoordinator:
                         "provider_retry_attempt": provider_retry_attempt,
                     },
                 )
-                active_graph_request = GraphRunRequest(
-                    session=session,
-                    prompt=current_prompt,
-                    available_tools=current_available_tools,
-                    context_window=context_window,
-                    assembled_context=active_graph_request.assembled_context,
-                    metadata=retry_metadata,
-                    abort_signal=current_abort_signal,
-                    tool_call_preview=self._tool_call_preview,
+                active_graph_request = graph_request_for_session(
+                    GraphRunRequest(
+                        session=graph_session_snapshot(session),
+                        prompt=current_prompt,
+                        available_tools=current_available_tools,
+                        context_window=context_window,
+                        assembled_context=active_graph_request.assembled_context,
+                        metadata=retry_metadata,
+                        abort_signal=current_abort_signal,
+                        tool_call_preview=self._tool_call_preview,
+                    ),
+                    session,
                 )
                 return {
                     "action": "retry",
@@ -2699,15 +2710,18 @@ class RuntimeRunLoopCoordinator:
                     },
                 )
                 graph = fallback_selection.graph
-                active_graph_request = GraphRunRequest(
-                    session=session,
-                    prompt=fallback_prompt,
-                    available_tools=fallback_available_tools,
-                    context_window=fallback_context_window,
-                    assembled_context=fallback_assembled_context,
-                    metadata=fallback_metadata,
-                    abort_signal=fallback_abort_signal,
-                    tool_call_preview=self._tool_call_preview,
+                active_graph_request = graph_request_for_session(
+                    GraphRunRequest(
+                        prompt=fallback_prompt,
+                        session=graph_session_snapshot(session),
+                        available_tools=fallback_available_tools,
+                        context_window=fallback_context_window,
+                        assembled_context=fallback_assembled_context,
+                        metadata=fallback_metadata,
+                        abort_signal=fallback_abort_signal,
+                        tool_call_preview=self._tool_call_preview,
+                    ),
+                    session,
                 )
                 return {
                     "action": "fallback",

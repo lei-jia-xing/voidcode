@@ -628,46 +628,28 @@ runtime 在成功的 `todo_write` 后更新 session metadata 中的 runtime todo
 - 非终态进度：`type` 为除 `result`/`error` 外的非空字符串或非空字符串数组；必须提供 `result` 或非空 `data`，不得提供 `summary`。每次调用提交一个 bounded progress section，不完成 child。
 - runtime 为 progress section 分配单调 `ordinal`，每段最多 4096 字符、累计最多 100 段/65536 字符，`type` 最多 100 项且每项最多 64 字符；超限按确定性错误/截断规则处理。
 - progress 先作为 child 的 `runtime.tool_completed` truth，再以 `runtime.background_task_progress` 的有界、去重 projection 投递 parent；它不是 peer bus，也不替代 terminal result 或 transcript。
-- parent 通过 runtime events/outbox、`background_output`（单任务可读 bounded progress；聚合仍不返回 transcript）消费；完整 child history 仍走显式 transcript/session recovery。
+- parent 通过 runtime events/outbox、`background_task(operation="output")`（单任务可读 bounded progress；聚合仍不返回 transcript）消费；完整 child history 仍走显式 transcript/session recovery。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
-#### `background_output`
+#### `background_task`
 
 - 分组：delegated execution
-- 只读：是
-- 用途：读取后台任务状态，并可选择读取子 session 的 bounded 结果投影。
-- selector 必须严格三选一：`task_id`（单任务）、`task_ids`（显式聚合，1–100 个且不得重复）或 `parallel_group_id`（runtime-owned 聚合组）。聚合读取使用当前 runtime tool context 的 parent session owner。
-- `block=false` 立即返回当前快照；`block=true` 通过 runtime lifecycle wait 等待一次。`timeout` 仅用于阻塞等待，单位为毫秒且至少 1000ms；超时返回当前状态并标记 `block_timed_out`，不得把任务误标为失败。
+- 权限分类按 `operation` 区分：`output` / `ps` 为 `read`（只读）；`cancel` 为 `execute`；`steer` 为 `write`。后两者会修改 runtime-owned task state，必须经过对应的 execute/write governance；plan/read-only runtime mode 拒绝 `cancel` 与 `steer`，不能把整个 facade 视为只读。
+- 用途：通过统一 facade 管理 runtime-owned 后台任务；`operation` 必须是 `output`、`ps`、`cancel` 或 `steer`。
+- `operation="output"` 要求 selector 严格三选一：`task_id`（单任务）、`task_ids`（显式聚合，1–100 个且不得重复）或 `parallel_group_id`（runtime-owned 聚合组）。聚合读取使用当前 runtime tool context 的 parent session owner。
+- `operation="output"` 的 `block=false` 立即返回当前快照；`block=true` 通过 runtime lifecycle wait 等待一次。`timeout` 仅用于阻塞等待，单位为毫秒且至少 1000ms；超时返回当前状态并标记 `block_timed_out`，不得把任务误标为失败。
 - `full_session=true` 仅对单任务 selector 生效，返回 bounded child-session metadata/transcript preview；聚合 selector 始终是 no-transcript projection。`message_limit` 被限制在 1–100。
+- `operation="ps"` 无额外参数，读取当前 active parent session 的 bounded background-task roster，不返回 prompt、transcript 或 child result content。
+- `operation="cancel"` 接受一个 `task_id`；unknown、running、completed/cancelled 等状态返回确定性的单任务 status payload。
+- `operation="steer"` 接受 `task_id`、`prompt`，向 parent-owned keep-alive delegated worker 派发下一轮指令。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
-#### `background_ps`
+#### `background_process`
 
-- 分组：delegated execution
-- 只读：是
-- 用途：读取当前 active parent session 的 bounded background-task roster；由 runtime 基于 SQLite task truth 做 parent scope，不返回 prompt、transcript 或 child result content。
-- 参数：无；调用必须发生在 active runtime tool context 中。
-- 返回：最多 100 条 task/child/group/lifecycle/timestamp/approval/result projection，以及 `truncated` / `total_task_count` 等 bounded metadata。需要读取具体结果时使用 `background_output`。
-- 详见 `src/voidcode/tools/background_ps.py` 与 `docs/contracts/background-task-delegation.md`。
-
-
-#### `steer_task`
-
-- 分组：delegated execution
-- 只读：是
-- 用途：向 keep-alive delegated worker 派发下一轮指令。
-- 参数：`task_id`、`prompt`。
-- 仅 task 的 parent session 可调用；runtime 必须先完成 parent ownership authorization，再读取 task state 或派发 steer；task 必须由 `task(keep_alive=true, run_in_background=true)` 创建，并处于 `idle`（awaiting_steer）或 `interrupted`（可恢复断点）。running task 有 turn 在飞，不能 steer；不支持 pipelining。steer turn 完成后 worker 回到 idle，除非通过 `yield` 完成任务。
-- 详见 `src/voidcode/tools/steer_task.txt` 与 `docs/contracts/background-task-delegation.md`。
-
-#### `background_cancel`
-
-- 分组：delegated execution
-- 只读：是
-- 用途：按单个 `taskId` 取消后台任务；不提供 bulk cancel。
-- 参数：`taskId`。
-- unknown、running、completed/cancelled 等状态返回确定性的单任务 status payload。
-- 详见 `docs/contracts/background-task-delegation.md`。
+- 分组：background process control
+- 只读：否（`op` 取决于具体操作）
+- 用途：通过统一 facade 控制 runtime-owned long-lived processes；`op` 支持 `start`、`ps`、`logs`、`send`、`stop`。
+- 详见 `src/voidcode/tools/process/background_process.py` 与 `docs/contracts/background-task-delegation.md`。
 
 ### 结构化代码搜索与代码智能工具
 

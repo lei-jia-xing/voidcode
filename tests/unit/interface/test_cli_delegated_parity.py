@@ -30,7 +30,8 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.task import BackgroundTaskStatus, is_background_task_terminal
+from voidcode.graph.contracts import GraphSession
+from voidcode.runtime.background_task_models import BackgroundTaskStatus, is_background_task_terminal
 from voidcode.tools import ToolCall
 
 from .._paths import with_src_pythonpath
@@ -82,9 +83,9 @@ class _DelegatedHandoffGraph:
     def __init__(self) -> None:
         self._delegate = importlib.import_module("voidcode.graph.deterministic_graph").DeterministicGraph()
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
         step = self._delegate.step(request, tool_results, session=session)
-        if step.is_finished and cast(Any, session).session.parent_id is not None:
+        if step.is_finished and session.metadata.get("parent_session_id") is not None:
             tool_call = ToolCall(
                 tool_name="yield",
                 arguments={"summary": step.output or "Delegated task completed."},
@@ -1450,7 +1451,7 @@ def test_runtime_exposes_cancel_background_task(tmp_path: Path) -> None:
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
     runtime._background_task_supervisor.reconciled = True
     store = runtime._session_store
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
     store.create_background_task(
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(
@@ -1472,7 +1473,7 @@ def test_runtime_exposes_retry_background_task(tmp_path: Path) -> None:
     runtime = runtime_module.VoidCodeRuntime(workspace=tmp_path)
     runtime._background_task_supervisor.reconciled = True
     store = runtime._session_store
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
     store.create_background_task(
         workspace=tmp_path,
         task=task_module.BackgroundTaskState(

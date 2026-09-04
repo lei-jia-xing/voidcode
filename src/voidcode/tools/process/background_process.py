@@ -5,13 +5,14 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
-from ._pydantic_args import format_validation_error
+from ...runtime.background_process import BackgroundProcessManager
+from .._pydantic_args import format_validation_error
+from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..runtime_context import current_runtime_tool_context
 from .background_process_logs import BackgroundProcessLogsTool
 from .background_process_send import BackgroundProcessSendTool
-from .background_process_start import BackgroundProcessManager, BackgroundProcessStartTool
+from .background_process_start import BackgroundProcessStartTool
 from .background_process_stop import BackgroundProcessStopTool
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
 
 _MAX_BACKGROUND_PROCESS_ROWS = 64
 

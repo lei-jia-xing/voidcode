@@ -11,7 +11,7 @@ from typing import Literal
 
 import jsonschema
 
-from .task import SchemaValidation
+from .background_task_models import SchemaValidation
 
 _SCHEMA_SOURCE_INVOCATION = "invocation"
 

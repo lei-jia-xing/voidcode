@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from voidcode.runtime.background_task_models import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
 from voidcode.runtime.contracts import (
     RuntimeRequest,
@@ -24,7 +25,6 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.service import ToolRegistry, VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.task import BackgroundTaskRef, BackgroundTaskRequestSnapshot, BackgroundTaskState
 from voidcode.tools import ReadTool, ToolCall, YieldTool
 
 

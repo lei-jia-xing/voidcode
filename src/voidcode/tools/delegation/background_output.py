@@ -6,16 +6,16 @@ from typing import Protocol, cast
 
 from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
-from ..runtime.contracts import (
+from ...runtime.background_task_models import BackgroundTaskState, is_background_task_terminal
+from ...runtime.contracts import (
     BackgroundTaskGroupResult,
     BackgroundTaskResult,
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from ..runtime.task import BackgroundTaskState, is_background_task_terminal
-from ._pydantic_args import format_validation_error
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
+from .._pydantic_args import format_validation_error
+from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..runtime_context import current_runtime_tool_context
 
 
 class BackgroundOutputRuntime(Protocol):

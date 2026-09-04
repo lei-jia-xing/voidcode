@@ -30,7 +30,8 @@ from typing import Any, Protocol, cast
 
 import pytest
 
-from voidcode.runtime.task import BackgroundTaskStatus, is_background_task_terminal
+from voidcode.graph.contracts import GraphSession
+from voidcode.runtime.background_task_models import BackgroundTaskStatus, is_background_task_terminal
 
 pytestmark = pytest.mark.usefixtures("_force_deterministic_engine_default")
 
@@ -197,10 +198,9 @@ class _DelegatedHandoffGraph:
         graph_module = importlib.import_module("voidcode.graph.deterministic_graph")
         self._delegate = delegate or graph_module.DeterministicGraph()
 
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
         step = cast(Any, self._delegate).step(request, tool_results, session=session)
-        session_ref = cast(Any, session).session
-        if step.is_finished and session_ref.parent_id is not None:
+        if step.is_finished and session.metadata.get("parent_session_id") is not None:
             contracts_module = importlib.import_module("voidcode.tools.contracts")
             summary = step.output if isinstance(step.output, str) and step.output.strip() else "Delegated task completed."
             return type(
@@ -530,7 +530,7 @@ def test_http_notifications_surface_approval_blocked_for_child_session(tmp_path:
 
 def test_http_background_task_create_returns_task_identity_and_routing() -> None:
     create_runtime_app = _load_transport_app_factory()
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
 
     class StubRuntime:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
@@ -602,7 +602,7 @@ def test_http_background_task_create_returns_task_identity_and_routing() -> None
 
 def test_http_background_task_status_endpoint_returns_runtime_state() -> None:
     create_runtime_app = _load_transport_app_factory()
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
 
     class StubRuntime:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
@@ -646,7 +646,7 @@ def test_http_background_task_status_endpoint_returns_runtime_state() -> None:
 
 def test_http_background_task_cancel_endpoint_returns_cancelled_state() -> None:
     create_runtime_app = _load_transport_app_factory()
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
 
     class StubRuntime:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:
@@ -693,7 +693,7 @@ def test_http_background_task_cancel_endpoint_returns_cancelled_state() -> None:
 
 def test_http_background_task_list_endpoints_expose_global_and_parent_scoped_views() -> None:
     create_runtime_app = _load_transport_app_factory()
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
 
     all_tasks = (
         task_module.StoredBackgroundTaskSummary(
@@ -770,7 +770,7 @@ def test_http_background_task_list_endpoints_expose_global_and_parent_scoped_vie
 def test_http_background_task_output_endpoint_surfaces_runtime_truth_and_fallback() -> None:
     create_runtime_app = _load_transport_app_factory()
     runtime_module = importlib.import_module("voidcode.runtime")
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
 
     class StubRuntime:
         def run_stream(self, request: RuntimeRequestLike) -> Iterator[StreamChunkLike]:

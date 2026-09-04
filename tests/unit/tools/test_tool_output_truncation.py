@@ -132,6 +132,8 @@ def test_tool_output_artifact_reference_metadata_is_bounded_and_safe(tmp_path: P
     assert "artifact-line-10" not in capped.content
     assert capped.reference == f"voidcode://artifact/{capped.data['artifact_id']}"
     assert "read(path=" in capped.content
+    assert 'background_task(operation="output", full_session=true)' not in capped.content
+    assert capped.data["retry_guidance"] == f'Read the full output with read(path="{capped.reference}").'
     raw_artifact = capped.data["artifact"]
     assert isinstance(raw_artifact, dict)
     artifact = cast(dict[str, object], raw_artifact)
@@ -384,6 +386,7 @@ def test_cap_tool_result_output_caps_large_errors(tmp_path: Path) -> None:
     diagnostics = cast(list[dict[str, object]], capped.data["diagnostics"])
     assert diagnostics[-1]["reason"] == "tool_error_truncated"
     retry_guidance = cast(str, diagnostics[-1]["retry_guidance"])
+    assert 'background_task(operation="output", full_session=true)' not in retry_guidance
     assert "full error" in retry_guidance
     assert isinstance(capped.reference, str)
     normalization = cast(dict[str, object], capped.data["normalization"])

@@ -5,11 +5,11 @@ from typing import Protocol
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from ..runtime.contracts import UnknownBackgroundTaskError
-from ..runtime.task import BackgroundTaskState, is_background_task_terminal
-from ._pydantic_args import format_validation_error
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
+from ...runtime.background_task_models import BackgroundTaskState, is_background_task_terminal
+from ...runtime.contracts import UnknownBackgroundTaskError
+from .._pydantic_args import format_validation_error
+from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..runtime_context import current_runtime_tool_context
 
 
 class BackgroundCancelRuntime(Protocol):

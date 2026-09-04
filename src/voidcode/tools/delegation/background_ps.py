@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import current_runtime_tool_context
+from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..runtime_context import current_runtime_tool_context
 
 
 class BackgroundPsRuntime(Protocol):

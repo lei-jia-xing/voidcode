@@ -7,6 +7,11 @@ from typing import cast
 import pytest
 
 import voidcode.runtime.bundle as bundle_module
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 from voidcode.runtime.bundle import (
     SESSION_BUNDLE_REDACTED_PLACEHOLDER,
     SESSION_BUNDLE_SCHEMA_NAME,
@@ -23,11 +28,6 @@ from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.service import VoidCodeRuntime
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SessionSealedError, SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-)
 from voidcode.tools import ToolResult, cap_tool_result_output
 
 

@@ -20,6 +20,7 @@ from unittest.mock import ANY, patch
 
 import pytest
 
+from voidcode.graph.contracts import GraphSession
 from voidcode.runtime.paths import sessions_db_path
 
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
@@ -966,10 +967,9 @@ def _write_demo_skill(skill_dir: Path, *, content: str) -> None:
 
 
 class _ParentBackgroundOutputGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
         _ = request
-        session_ref = cast(SessionLike, session).session
-        if getattr(session_ref, "parent_id", None) is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _GraphStep(
                 events=(),
                 tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
@@ -1021,16 +1021,15 @@ class _ParentBackgroundOutputGraph:
 
 
 class _FailingBackgroundChildGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
         _ = request, tool_results
-        session_ref = cast(SessionLike, session).session
-        if getattr(session_ref, "parent_id", None) is not None:
+        if session.metadata.get("parent_session_id") is not None:
             raise RuntimeError("delegated child failed twice")
         return _GraphStep(events=(), tool_call=None, output="leader ready", is_finished=True)
 
 
 class _McpEchoGraph:
-    def step(self, request: object, tool_results: tuple[object, ...], *, session: object) -> object:
+    def step(self, request: object, tool_results: tuple[object, ...], *, session: GraphSession) -> object:
         _ = request, session
         if not tool_results:
             return _GraphStep(
@@ -1043,8 +1042,7 @@ class _McpEchoGraph:
                     arguments={"text": "delegated mcp"},
                 ),
             )
-        session_ref = cast(SessionLike, session).session
-        if getattr(session_ref, "parent_id", None) is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _GraphStep(
                 events=(),
                 tool_call=cast(ToolCallFactory, importlib.import_module("voidcode.tools.contracts").ToolCall)(
@@ -1331,7 +1329,7 @@ def test_runtime_background_subagent_failure_guides_session_id_retry_and_escalat
         )
     )
     failed = _wait_for_background_task_status(runtime, started.task.id, {"failed"})
-    background_task_tool = importlib.import_module("voidcode.tools.background_task").BackgroundTaskTool(runtime=runtime)
+    background_task_tool = importlib.import_module("voidcode.tools.delegation.background_task").BackgroundTaskTool(runtime=runtime)
 
     result = background_task_tool.invoke(
         tool_contracts_module.ToolCall(
@@ -4401,7 +4399,7 @@ def test_runtime_background_task_cancel_reconciles_orphaned_task_from_fresh_runt
     tmp_path: Path,
 ) -> None:
     _, runtime_class = _load_runtime_types()
-    task_module = importlib.import_module("voidcode.runtime.task")
+    task_module = importlib.import_module("voidcode.runtime.background_task_models")
     storage_module = importlib.import_module("voidcode.runtime.storage")
 
     first_runtime = cast(RuntimeRunner, cast(object, runtime_class(workspace=tmp_path)))

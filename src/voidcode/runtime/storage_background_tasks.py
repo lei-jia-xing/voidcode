@@ -5,18 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from .contracts import (
-    RuntimeRequest,
-    RuntimeResponse,
-    UnknownBackgroundTaskError,
-)
-from .events import (
-    DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
-    RUNTIME_APPROVAL_REQUESTED,
-    RUNTIME_QUESTION_REQUESTED,
-)
-from .session import normalize_persisted_session_metadata
-from .task import (
+from .background_task_models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
@@ -29,6 +18,17 @@ from .task import (
     is_background_task_transition_allowed,
     validate_background_task_id,
 )
+from .contracts import (
+    RuntimeRequest,
+    RuntimeResponse,
+    UnknownBackgroundTaskError,
+)
+from .events import (
+    DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
+    RUNTIME_APPROVAL_REQUESTED,
+    RUNTIME_QUESTION_REQUESTED,
+)
+from .session import normalize_persisted_session_metadata
 
 if TYPE_CHECKING:
     from .storage_shared import _StorageMixinBase

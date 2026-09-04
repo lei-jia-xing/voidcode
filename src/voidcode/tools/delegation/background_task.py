@@ -6,11 +6,11 @@ from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
-from ._pydantic_args import format_validation_error
+from .._pydantic_args import format_validation_error
+from ..contracts import ToolCall, ToolDefinition, ToolResult
 from .background_cancel import BackgroundCancelRuntime, BackgroundCancelTool
 from .background_output import BackgroundOutputRuntime, BackgroundOutputTool
 from .background_ps import BackgroundPsRuntime, BackgroundPsTool
-from .contracts import ToolCall, ToolDefinition, ToolResult
 from .steer_task import SteerTaskRuntime, SteerTaskTool
 
 
@@ -136,6 +136,11 @@ _OUTPUT_PROPERTIES: dict[str, object] = {
     "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 100, "uniqueItems": True},
     "parallel_group_id": {"type": "string", "minLength": 1},
     "block": {"type": "boolean"},
+    "timeout": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Milliseconds for block=true only; block=true requires at least 1000ms. Ignored for non-blocking reads.",
+    },
     "full_session": {
         "type": "boolean",
         "description": "Include bounded child-session metadata and transcript preview; only true with a single task_id.",
@@ -186,7 +191,11 @@ class BackgroundTaskTool:
                         {
                             "if": {"required": ["full_session"], "properties": {"full_session": {"const": True}}},
                             "then": {"required": ["task_id"]},
-                        }
+                        },
+                        {
+                            "if": {"required": ["block"], "properties": {"block": {"const": True}}},
+                            "then": {"properties": {"timeout": {"type": "integer", "minimum": 1000}}},
+                        },
                     ],
                 },
                 {

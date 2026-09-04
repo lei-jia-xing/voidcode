@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from voidcode.graph.contracts import GraphEvent, GraphRunRequest
+from voidcode.graph.contracts import GraphEvent, GraphRunRequest, GraphSessionSnapshot
 from voidcode.graph.provider_graph import ProviderGraph
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
@@ -39,7 +39,7 @@ def _session_and_request(runtime: VoidCodeRuntime, *, session_id: str) -> tuple[
     tool_registry = runtime.tool_registry_for_effective_config(runtime.effective_runtime_config())
     context_window = runtime.prepare_provider_context_window(prompt=prompt, tool_results=(), session_metadata=session.metadata)
     request = GraphRunRequest(
-        session=session,
+        session=GraphSessionSnapshot(session_id=session.session.id),
         prompt=prompt,
         available_tools=tool_registry.definitions(),
         context_window=context_window,
@@ -342,7 +342,7 @@ def test_provider_graph_binds_workspace_preview_callback_and_sanitizes_write_eve
     items = list(
         graph.stream_step(
             request=GraphRunRequest(
-                session=session,
+                session=GraphSessionSnapshot(session_id=session.session.id),
                 prompt=request.prompt,
                 assembled_context=request.assembled_context,
                 available_tools=request.available_tools,
@@ -351,7 +351,7 @@ def test_provider_graph_binds_workspace_preview_callback_and_sanitizes_write_eve
                 tool_call_preview=preview_callback,
             ),
             tool_results=(),
-            session=session,
+            session=GraphSessionSnapshot(session_id=session.session.id),
         )
     )
     lifecycle = [item for item in items if isinstance(item, GraphEvent) and item.event_type.startswith("graph.tool_call_")]

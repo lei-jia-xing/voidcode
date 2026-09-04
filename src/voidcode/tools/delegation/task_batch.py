@@ -7,16 +7,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from ..runtime.contracts import (
+from ...runtime.background_task_models import BackgroundTaskState
+from ...runtime.contracts import (
     RuntimeRequest,
     RuntimeRequestError,
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
-from ..runtime.task import BackgroundTaskState
-from ._pydantic_args import format_validation_error
-from .contracts import ToolCall, ToolDefinition, ToolResult
-from .runtime_context import require_runtime_tool_context
+from .._pydantic_args import format_validation_error
+from ..contracts import ToolCall, ToolDefinition, ToolResult
+from ..runtime_context import require_runtime_tool_context
 
 _MAX_BATCH_SIZE = 100
 

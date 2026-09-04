@@ -4,15 +4,41 @@ from dataclasses import dataclass
 from typing import cast
 
 from ..command.resolver import resolve_tool_instruction
-from ..runtime.context_window import normalize_read_output
-from ..runtime.events import (
+from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
+from .contracts import (
     GRAPH_LOOP_STEP,
     GRAPH_MODEL_TURN,
     GRAPH_RESPONSE_READY,
+    GraphEvent,
+    GraphLoopState,
+    GraphRunRequest,
+    GraphSession,
 )
-from ..runtime.session import SessionState
-from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
-from .contracts import GraphEvent, GraphLoopState, GraphRunRequest
+
+
+def _normalize_read_output(content: str | None) -> str | None:
+    if not content:
+        return content
+    stripped = content.strip()
+    if not (stripped.startswith("<path>") and "<content>" in stripped and "</content>" in stripped):
+        return content
+    body_start = stripped.find("<content>") + len("<content>")
+    body_end = stripped.rfind("</content>")
+    lines: list[str] = []
+    for raw_line in stripped[body_start:body_end].strip().splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("("):
+            if line.startswith("(Showing lines ") or line.startswith("(Output capped at "):
+                lines.append(line)
+            continue
+        if ": " in raw_line:
+            _, text = raw_line.split(": ", 1)
+            lines.append(text)
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +72,7 @@ class DeterministicGraph:
         request: GraphRunRequest,
         tool_results: tuple[ToolResult, ...],
         *,
-        session: SessionState,
+        session: GraphSession,
     ) -> DeterministicReadOnlyStep:
         state = self._initial_state(
             request=request,
@@ -93,7 +119,7 @@ class DeterministicGraph:
         *,
         request: GraphRunRequest,
         tool_results: tuple[ToolResult, ...],
-        session: SessionState,
+        session: GraphSession,
     ) -> GraphLoopState:
         _ = session
         state: GraphLoopState = {
@@ -181,10 +207,10 @@ class DeterministicGraph:
                 ),
                 self._graph_event(
                     GRAPH_RESPONSE_READY,
-                    {"output_preview": normalize_read_output(last_result.content) or ""},
+                    {"output_preview": _normalize_read_output(last_result.content) or ""},
                 ),
             ],
-            "output": normalize_read_output(last_result.content) or "",
+            "output": _normalize_read_output(last_result.content) or "",
         }
 
     def _select_tool_call(

@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 
 from voidcode.runtime.contracts import BackgroundTaskGroupResult, BackgroundTaskResult
-from voidcode.tools.background_output import BackgroundOutputTool
 from voidcode.tools.contracts import ToolCall
+from voidcode.tools.delegation.background_output import BackgroundOutputTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

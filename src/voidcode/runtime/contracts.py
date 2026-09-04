@@ -6,6 +6,22 @@ from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
 from ..provider.reasoning_effort import normalize_reasoning_effort
 from . import mode as runtime_mode
+from .background_task_models import (
+    BackgroundTaskObservability,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    SchemaValidation,
+    StoredBackgroundTaskSummary,
+)
+from .delegation_execution import (
+    SubagentExecutionContract,
+)
+from .delegation_routing import (
+    ResolvedSubagentRoute,
+    SubagentRoutingIdentity,
+    parse_subagent_routing_identity,
+    resolve_subagent_route,
+)
 from .events import (
     DelegatedExecutionPayload,
     DelegatedLifecycleEventPayload,
@@ -15,18 +31,6 @@ from .events import (
 )
 from .question import QuestionResponse
 from .session import SessionRef, SessionState
-from .task import (
-    BackgroundTaskObservability,
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    ResolvedSubagentRoute,
-    SchemaValidation,
-    StoredBackgroundTaskSummary,
-    SubagentExecutionContract,
-    SubagentRoutingIdentity,
-    parse_subagent_routing_identity,
-    resolve_subagent_route,
-)
 
 
 class RuntimeRequestError(ValueError):

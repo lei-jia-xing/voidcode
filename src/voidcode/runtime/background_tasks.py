@@ -16,6 +16,20 @@ from ..hook.plan import hook_plan_from_session_metadata
 from ..provider.models import ResolvedProviderConfig
 from .acp import append_parent_acp_delegated_lifecycle_event, publish_delegated_acp_event
 from .active_session import ACTIVE_SESSION_REGISTRY
+from .background_task_models import (
+    BACKGROUND_TASK_TERMINAL_STATUSES,
+    BackgroundTaskConcurrencyObservability,
+    BackgroundTaskObservability,
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskRetryObservability,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    SchemaValidation,
+    StoredBackgroundTaskSummary,
+    is_background_task_terminal,
+    validate_background_task_id,
+)
 from .child_terminal import child_completion_evidence, child_terminal_outcome, child_transcript_proves_completed
 from .config import RuntimeConfig
 from .contracts import (
@@ -53,20 +67,6 @@ from .schema_validation import validate_structured_output
 from .session import SessionState, reload_persisted_session, validate_session_workspace
 from .session_metadata_helpers import waiting_reason_from_session
 from .storage import SessionEventAppender, SessionSealedError, SessionStore
-from .task import (
-    BACKGROUND_TASK_TERMINAL_STATUSES,
-    BackgroundTaskConcurrencyObservability,
-    BackgroundTaskObservability,
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskRetryObservability,
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    SchemaValidation,
-    StoredBackgroundTaskSummary,
-    is_background_task_terminal,
-    validate_background_task_id,
-)
 
 if TYPE_CHECKING:
     from .acp import AcpAdapter

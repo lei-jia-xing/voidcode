@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from voidcode.graph import GraphRunRequest
+from voidcode.graph.contracts import GraphSessionSnapshot
 from voidcode.graph.deterministic_graph import DeterministicGraph
 from voidcode.runtime.context_window import RuntimeAssembledContext, RuntimeContextSegment
-from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 
@@ -18,7 +18,7 @@ def _request(prompt: str) -> GraphRunRequest:
         metadata={},
     )
     return GraphRunRequest(
-        session=SessionState(session=SessionRef(id="graph-session"), status="running", turn=1),
+        session=GraphSessionSnapshot(session_id="graph-session"),
         prompt=prompt,
         assembled_context=assembled,
         available_tools=(

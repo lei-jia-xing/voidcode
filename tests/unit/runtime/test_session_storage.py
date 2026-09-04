@@ -9,6 +9,11 @@ from typing import Any, cast
 
 import pytest
 
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownSessionError
 from voidcode.runtime.events import EventEnvelope
 from voidcode.runtime.paths import sessions_db_path, state_home
@@ -16,11 +21,6 @@ from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SCHEMA_VERSION, SessionSealedError, SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-)
 
 
 def _private_attr(instance: object, name: str) -> Any:

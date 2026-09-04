@@ -457,9 +457,7 @@ def test_runtime_caps_large_tool_output_before_feedback(tmp_path: Path) -> None:
     assert payload["artifact_missing"] is False
     diagnostics = payload["diagnostics"]
     assert isinstance(diagnostics, list)
-    assert diagnostics[-1]["retry_guidance"] == (
-        f'Read the full output with read(path="voidcode://artifact/{payload["artifact_id"]}"), or use background_output with full_session=true.'
-    )
+    assert diagnostics[-1]["retry_guidance"] == (f'Read the full output with read(path="voidcode://artifact/{payload["artifact_id"]}").')
     assert diagnostics[-1]["reason"] == "tool_output_truncated"
     assert isinstance(payload["artifact_id"], str)
     artifact = payload["artifact"]

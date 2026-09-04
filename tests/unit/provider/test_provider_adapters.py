@@ -43,7 +43,7 @@ from voidcode.provider.protocol import (
     TurnProvider,
 )
 from voidcode.tools.contracts import ToolDefinition, ToolResult
-from voidcode.tools.task import TaskTool
+from voidcode.tools.delegation.task import TaskTool
 
 
 @dataclass(frozen=True, slots=True)

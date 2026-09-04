@@ -6,6 +6,13 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol
 
+from .background_task_models import (
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    DelegatedReminderState,
+    DelegatedReminderStopCondition,
+    StoredBackgroundTaskSummary,
+)
 from .contracts import (
     RuntimeNotification,
     RuntimeRequest,
@@ -38,13 +45,6 @@ from .question import PendingQuestion
 from .session import (
     SESSION_STORAGE_SEAL_STATUSES,
     SessionStatus,
-)
-from .task import (
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    DelegatedReminderState,
-    DelegatedReminderStopCondition,
-    StoredBackgroundTaskSummary,
 )
 
 

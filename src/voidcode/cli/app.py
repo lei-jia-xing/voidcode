@@ -46,6 +46,10 @@ from ..doctor import (
     format_report_json,
 )
 from ..provider.snapshot import resolved_provider_snapshot
+from ..runtime.background_task_models import (
+    BackgroundTaskState,
+    StoredBackgroundTaskSummary,
+)
 from ..runtime.bundle import (
     SessionBundleError,
     SessionBundleFormat,
@@ -87,10 +91,6 @@ from ..runtime.service import VoidCodeRuntime
 from ..runtime.session import SessionState, StoredSessionSummary
 from ..runtime.session_metadata_helpers import runtime_state_run_id
 from ..runtime.storage import SqliteSessionStore
-from ..runtime.task import (
-    BackgroundTaskState,
-    StoredBackgroundTaskSummary,
-)
 from ..server import serve, web
 from .handler_args import (
     AcpArgs,

@@ -816,6 +816,39 @@ describe("ChatThread", () => {
     expect(screen.getByText("Done")).toBeInTheDocument();
     expect(screen.queryByText(/do not show this/)).not.toBeInTheDocument();
   });
+  it("uses the activity icon for the unified background task facade", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "msg-background-task",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "background-task-1",
+                name: "background_task",
+                status: "completed",
+                arguments: { operation: "ps" },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+
+    const row = screen
+      .getByText("background_task")
+      .closest('[data-tool-row="background_task"]');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector("svg.lucide-activity")).not.toBeNull();
+    expect(row?.querySelector("svg.lucide-wrench")).toBeNull();
+  });
 
   it("preserves legitimate tool tags while removing standalone internal tool blocks", () => {
     render(

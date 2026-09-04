@@ -482,13 +482,7 @@ def cap_tool_result_output(
         )
         preview = _preview_text(result.error, max_lines=max_lines, max_bytes=max_bytes)
         reference = f"{_ARTIFACT_REFERENCE_PREFIX}{artifact['artifact_id']}"
-        hint = (
-            "\n\n[Tool error truncated: "
-            f"artifact_id={artifact['artifact_id']}. "
-            f'Read the full error with read(path="{reference}"), or use '
-            "background_output with full_session=true, or artifact retrieval by "
-            "artifact_id or tool_call_id.]"
-        )
+        hint = f'\n\n[Tool error truncated: artifact_id={artifact["artifact_id"]}. Read the full error with read(path="{reference}").]'
         return replace(
             result,
             error=f"{preview}{hint}",
@@ -510,10 +504,10 @@ def cap_tool_result_output(
                         "severity": "warning",
                         "reason": "tool_error_truncated",
                         "message": "Tool error was truncated before being sent to the model.",
-                        "retry_guidance": (f'Read the full error with read(path="{reference}"), or use background_output with full_session=true.'),
+                        "retry_guidance": f'Read the full error with read(path="{reference}").',
                     },
                 ),
-                "retry_guidance": (f'Read the full error with read(path="{reference}"), or use background_output with full_session=true.'),
+                "retry_guidance": f'Read the full error with read(path="{reference}").',
                 "artifact": artifact,
                 "artifact_id": artifact["artifact_id"],
                 "artifact_status": "available",
@@ -551,9 +545,7 @@ def cap_tool_result_output(
         "\n\n[Tool output truncated: "
         f"omitted {omitted_bytes} bytes and {omitted_lines} lines. "
         f"artifact_id={artifact['artifact_id']}. "
-        f'Read the full output with read(path="{reference}"), or use '
-        "background_output with full_session=true, or artifact retrieval by "
-        "artifact_id or tool_call_id.]"
+        f'Read the full output with read(path="{reference}").]'
     )
 
     return replace(
@@ -577,10 +569,10 @@ def cap_tool_result_output(
                     "severity": "warning",
                     "reason": "tool_output_truncated",
                     "message": "Tool output was truncated before being sent to the model.",
-                    "retry_guidance": (f'Read the full output with read(path="{reference}"), or use background_output with full_session=true.'),
+                    "retry_guidance": f'Read the full output with read(path="{reference}").',
                 },
             ),
-            "retry_guidance": (f'Read the full output with read(path="{reference}"), or use background_output with full_session=true.'),
+            "retry_guidance": f'Read the full output with read(path="{reference}").',
             "artifact": artifact,
             "artifact_id": artifact["artifact_id"],
             "artifact_status": "available",

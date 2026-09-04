@@ -32,6 +32,8 @@ from typing import Protocol, cast
 
 import pytest
 
+from voidcode.graph.contracts import GraphSession
+
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
@@ -210,11 +212,10 @@ class _KeepAliveChildGraph:
         request: object,
         tool_results: tuple[object, ...],
         *,
-        session: object,
+        session: GraphSession,
     ) -> _GraphStep:
-        session_ref = cast(SessionLike, session).session
         prompt = _assembled_context(request).prompt
-        if getattr(session_ref, "parent_id", None) is None:
+        if session.metadata.get("parent_session_id") is None:
             if not tool_results:
                 return _GraphStep(
                     tool_call=_tool_call(
@@ -273,11 +274,10 @@ class _ImmediateFinishGraph:
         request: object,
         tool_results: tuple[object, ...],
         *,
-        session: object,
+        session: GraphSession,
     ) -> _GraphStep:
         _ = request, tool_results
-        session_ref = cast(SessionLike, session).session
-        if getattr(session_ref, "parent_id", None) is not None:
+        if session.metadata.get("parent_session_id") is not None:
             return _GraphStep(output="child done without handoff", is_finished=True)
         return _GraphStep(output="leader done", is_finished=True)
 

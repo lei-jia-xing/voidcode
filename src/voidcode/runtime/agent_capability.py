@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import cast
 
 from .config import RuntimeAgentConfig
+from .delegation_routing import CALLABLE_SUBAGENT_PRESETS
 from .session_metadata_helpers import parse_delegation_metadata
-from .task import CALLABLE_SUBAGENT_PRESETS
 from .tool_provider import BUILTIN_TOOL_NAMES
 from .tool_registry import ToolRegistry
 

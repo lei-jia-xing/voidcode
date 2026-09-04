@@ -7,6 +7,14 @@ from typing import cast
 
 import pytest
 
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+    BackgroundTaskStatus,
+    DelegatedReminderState,
+    validate_background_task_id,
+)
 from voidcode.runtime.contracts import RuntimeRequest, RuntimeResponse, UnknownBackgroundTaskError
 from voidcode.runtime.events import (
     DELEGATED_BACKGROUND_TASK_CORRELATION_FIELDS,
@@ -20,14 +28,6 @@ from voidcode.runtime.permission import PendingApproval
 from voidcode.runtime.question import PendingQuestion, PendingQuestionOption, PendingQuestionPrompt
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.storage import SqliteSessionStore
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-    BackgroundTaskStatus,
-    DelegatedReminderState,
-    validate_background_task_id,
-)
 
 
 def _task(*, task_id: str = "task-1", prompt: str = "read sample.txt") -> BackgroundTaskState:

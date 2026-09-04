@@ -685,7 +685,7 @@ def test_background_related_guidance_includes_no_poll_and_no_peek_contracts() ->
 
 def test_background_task_guidance_preserves_runtime_scoping_and_bounded_output() -> None:
     guidance = guidance_for_tool("background_task")
-    assert guidance_filename_for_tool("background_task") == "background_task.txt"
+    assert guidance_filename_for_tool("background_task") == "delegation/background_task.txt"
     assert "active parent session" in guidance
     assert "Prompts, transcripts" in guidance
 

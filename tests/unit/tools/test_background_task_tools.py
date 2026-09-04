@@ -5,6 +5,11 @@ from typing import cast
 
 import pytest
 
+from voidcode.runtime.background_task_models import (
+    BackgroundTaskRef,
+    BackgroundTaskRequestSnapshot,
+    BackgroundTaskState,
+)
 from voidcode.runtime.contracts import (
     BackgroundTaskResult,
     RuntimeSessionResult,
@@ -13,14 +18,9 @@ from voidcode.runtime.contracts import (
 )
 from voidcode.runtime.events import RUNTIME_TOOL_COMPLETED, EventEnvelope
 from voidcode.runtime.session import SessionRef, SessionState
-from voidcode.runtime.task import (
-    BackgroundTaskRef,
-    BackgroundTaskRequestSnapshot,
-    BackgroundTaskState,
-)
 from voidcode.tools import ToolCall
-from voidcode.tools.background_cancel import BackgroundCancelTool
-from voidcode.tools.background_output import BackgroundOutputTool
+from voidcode.tools.delegation.background_cancel import BackgroundCancelTool
+from voidcode.tools.delegation.background_output import BackgroundOutputTool
 from voidcode.tools.runtime_context import RuntimeToolInvocationContext, bind_runtime_tool_context
 
 

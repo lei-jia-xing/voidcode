@@ -752,6 +752,7 @@ function toolIcon(tool: ChatTool) {
     return <HelpCircle className={className} />;
   }
   if (
+    tool.name === "background_task" ||
     tool.name === "background_process" ||
     tool.name === "background_output" ||
     tool.name === "background_cancel" ||

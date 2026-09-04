@@ -34,6 +34,7 @@ from typing import Final, Literal, cast, final
 
 from .. import __version__ as VOIDCODE_VERSION
 from ..tools.output import read_tool_output_artifact
+from .background_task_models import StoredBackgroundTaskSummary
 from .contracts import (
     RuntimeRequest,
     RuntimeResponse,
@@ -44,7 +45,6 @@ from .contracts import (
 from .events import EventEnvelope, EventSource
 from .session import SessionRef, SessionState, SessionStatus, session_metadata_for_persistence
 from .storage import SessionStore
-from .task import StoredBackgroundTaskSummary
 
 SESSION_BUNDLE_SCHEMA_NAME: Final[str] = "voidcode.session.bundle.v1"
 SESSION_BUNDLE_SCHEMA_VERSION: Final[int] = 1

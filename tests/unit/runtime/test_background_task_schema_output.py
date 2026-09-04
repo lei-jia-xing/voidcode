@@ -18,16 +18,16 @@ from pathlib import Path
 import pytest
 
 from voidcode.runtime import VoidCodeRuntime
-from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
-from voidcode.runtime.contracts import BackgroundTaskResult
-from voidcode.runtime.http import RuntimeTransportApp
-from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
-from voidcode.runtime.task import (
+from voidcode.runtime.background_task_models import (
     BackgroundTaskRef,
     BackgroundTaskRequestSnapshot,
     BackgroundTaskState,
     SchemaValidation,
 )
+from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
+from voidcode.runtime.contracts import BackgroundTaskResult
+from voidcode.runtime.http import RuntimeTransportApp
+from voidcode.runtime.storage import SCHEMA_VERSION, SqliteSessionStore
 
 DECLARED_SCHEMA: dict[str, object] = {
     "type": "object",
