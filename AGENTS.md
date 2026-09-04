@@ -29,7 +29,7 @@ voidcode/
 | Runtime orchestration boundary | `src/voidcode/runtime/service.py` | CLI calls runtime, not graph directly |
 | Runtime implementation work | `src/voidcode/runtime/AGENTS.md` | read before touching runtime control-plane code |
 | Delegated/background task contract | `docs/contracts/background-task-delegation.md` | runtime-owned subagent routing, result retrieval, retry/cancel notes |
-| Session persistence | `src/voidcode/runtime/storage.py` | SQLite-backed local session store |
+| Session persistence | `src/voidcode/runtime/storage/` | SQLite-backed local session store |
 | Runtime contracts | `src/voidcode/runtime/contracts.py` | request/response boundary types |
 | Portable session bundles | `src/voidcode/runtime/bundle.py` | schema-versioned import/export artifact with redaction defaults |
 | Graph planning/finalization | `src/voidcode/graph/deterministic_graph.py` | current deterministic slice |

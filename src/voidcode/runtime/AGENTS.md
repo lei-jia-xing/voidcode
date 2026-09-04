@@ -13,7 +13,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | Public runtime exports | `__init__.py` | lazy-loads `VoidCodeRuntime` and `ToolRegistry` via `__getattr__` |
 | Main control plane | `service.py` | runtime graph loop, tool execution, approvals, resume, background tasks |
 | Runtime config loading | `config.py` | merges env, user, repo-local, and request overrides |
-| Session persistence | `storage.py` | SQLite schema, notifications, pending approval, background task state |
+| Session persistence | `storage/` | SQLite schema, notifications, pending approval, background task state |
 | Permission defaults | `permission.py` | read-only tools auto-allow; write tools create pending approvals |
 | Runtime boundary contracts | `contracts.py` | request/response/session validation, metadata rules |
 | Event envelope surface | `events.py` | runtime event names emitted to clients |
@@ -28,7 +28,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 runtime/
 ├── service.py        # VoidCodeRuntime + ToolRegistry
 ├── config.py         # effective runtime config resolution
-├── storage.py        # SQLite-backed session/task store
+├── storage/          # SQLite-backed session/task store and storage mixins
 ├── permission.py     # approval policy and PendingApproval
 ├── http.py           # runtime transport app
 ├── lsp.py / mcp.py   # managed capability lifecycle

@@ -6,20 +6,20 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol
 
-from .background_task_models import (
+from ..background_task_models import (
     BackgroundTaskState,
     BackgroundTaskStatus,
     DelegatedReminderState,
     DelegatedReminderStopCondition,
     StoredBackgroundTaskSummary,
 )
-from .contracts import (
+from ..contracts import (
     RuntimeNotification,
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionRevertMarker,
 )
-from .events import (
+from ..events import (
     DELEGATED_BACKGROUND_TASK_EVENT_TYPES,
     RUNTIME_ACP_CONNECTED,
     RUNTIME_ACP_DELEGATED_LIFECYCLE,
@@ -35,14 +35,14 @@ from .events import (
     EventEnvelope,
     EventSource,
 )
-from .permission import (
+from ..permission import (
     OperationClass,
     PathScope,
     PendingApproval,
     PermissionDecision,
 )
-from .question import PendingQuestion
-from .session import (
+from ..question import PendingQuestion
+from ..session import (
     SESSION_STORAGE_SEAL_STATUSES,
     SessionStatus,
 )

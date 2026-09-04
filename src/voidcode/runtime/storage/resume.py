@@ -6,27 +6,27 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from .contracts import (
+from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
     UnknownSessionError,
 )
-from .events import EventEnvelope
-from .permission import PendingApproval
-from .question import (
+from ..events import EventEnvelope
+from ..permission import PendingApproval
+from ..question import (
     PendingQuestion,
     PendingQuestionOption,
     PendingQuestionPrompt,
 )
-from .session import session_metadata_for_persistence
-from .storage_shared import (
+from ..session import session_metadata_for_persistence
+from .shared import (
     _pending_operation_class,
     _pending_path_scope,
     _pending_permission_decision,
 )
 
 if TYPE_CHECKING:
-    from .storage_shared import _StorageMixinBase
+    from .shared import _StorageMixinBase
 
     _MixinBase = _StorageMixinBase
 else:

@@ -6,7 +6,7 @@ from time import sleep, time
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from .storage_shared import _StorageMixinBase
+    from .shared import _StorageMixinBase
 
     _MixinBase = _StorageMixinBase
 else:

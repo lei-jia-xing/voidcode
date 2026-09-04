@@ -67,7 +67,7 @@ from .question import QuestionResponse
 from .serialization import serialize_revert_marker, serialize_session_debug_snapshot
 from .service import VoidCodeRuntime
 from .session import SessionRef, SessionState, StoredSessionSummary
-from .storage_shared import SessionSealedError
+from .storage.shared import SessionSealedError
 from .workspace import SingleWorkspaceRuntimeCoordinator, WorkspaceOpenError
 
 logger = logging.getLogger(__name__)

@@ -6,17 +6,17 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, cast
 
-from .contracts import (
+from ..contracts import (
     RuntimeRequest,
     RuntimeResponse,
     RuntimeSessionResult,
     UnknownSessionError,
 )
-from .events import (
+from ..events import (
     EventEnvelope,
     EventSource,
 )
-from .session import (
+from ..session import (
     SessionRef,
     SessionState,
     SessionStatus,
@@ -24,10 +24,10 @@ from .session import (
     normalize_persisted_session_metadata,
     session_metadata_for_persistence,
 )
-from .storage_shared import _assert_terminal_session_events_allowed
+from .shared import _assert_terminal_session_events_allowed
 
 if TYPE_CHECKING:
-    from .storage_shared import _StorageMixinBase
+    from .shared import _StorageMixinBase
 
     _MixinBase = _StorageMixinBase
 else:
