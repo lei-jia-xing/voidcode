@@ -14,7 +14,7 @@ from voidcode.hook.typed import (
     tool_input_rewrite_metadata,
     validate_tool_input_schema,
 )
-from voidcode.runtime.context_window import ToolResultView
+from voidcode.runtime.context.window import ToolResultView
 from voidcode.tools.contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolResult
 
 

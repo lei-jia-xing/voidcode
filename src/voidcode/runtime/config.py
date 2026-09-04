@@ -33,7 +33,7 @@ from ..lsp import derive_workspace_lsp_defaults, has_builtin_lsp_server_preset
 from ..mcp.builtin import get_builtin_mcp_descriptor, list_builtin_mcp_descriptors
 from ..provider import config as provider_config
 from ..provider.reasoning_effort import normalize_reasoning_effort
-from .context_transforms import validate_runtime_context_transform_refs
+from .context.transforms import validate_runtime_context_transform_refs
 from .permission import (
     ExternalDirectoryPermissionConfig,
     ExternalDirectoryPolicy,

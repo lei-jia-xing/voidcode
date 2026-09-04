@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from voidcode.runtime.context_rules import runtime_file_rule_contexts
+from voidcode.runtime.context.rules import runtime_file_rule_contexts
 from voidcode.tools.contracts import ToolResult
 
 

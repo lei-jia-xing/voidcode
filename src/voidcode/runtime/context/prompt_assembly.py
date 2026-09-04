@@ -19,7 +19,7 @@ from voidcode.agent.prompt_sections import (
     prompt_activation_guidance_block,
 )
 
-from .context_transforms import RuntimeContextTransformResult
+from .transforms import RuntimeContextTransformResult
 
 _PROMPT_FRAGMENT_PREVIEW_CHARS = 240
 _SECRET_TEXT_PATTERNS = (
@@ -305,7 +305,7 @@ def _state_value(state: object, key: str) -> object | None:
         return value
     # 延迟导入：session_metadata_helpers → context_window → prompt_assembly
     # 构成导入环，模块级反向导入不可行。读取统一走 helpers accessor（唯一入口）。
-    from .session_metadata_helpers import runtime_state_value
+    from ..session_metadata_helpers import runtime_state_value
 
     return runtime_state_value(metadata, key)
 

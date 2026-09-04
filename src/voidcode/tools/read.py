@@ -12,8 +12,8 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from ..runtime.context_rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
-from ..runtime.context_rules import read_rule_uri
+from ..runtime.context.rules import RULE_URI_PREFIX as _RULE_URI_PREFIX
+from ..runtime.context.rules import read_rule_uri
 from ..runtime.contracts import validate_session_id
 from ..security.path_policy import resolve_workspace_path as resolve_workspace_path_policy
 from ._pydantic_args import format_validation_error

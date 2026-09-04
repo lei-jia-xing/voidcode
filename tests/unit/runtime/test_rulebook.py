@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from voidcode.runtime.context_rules import (
+from voidcode.runtime.context.rules import (
     build_rule_catalog,
     read_rule_uri,
     rulebook_prompt_context,
     rulebook_snapshot_from_payload,
     rulebook_snapshot_payload,
 )
-from voidcode.runtime.context_transforms import RuntimeContextTransformRequest, RuntimeFileRulesTransformProvider
+from voidcode.runtime.context.transforms import RuntimeContextTransformRequest, RuntimeFileRulesTransformProvider
 from voidcode.tools import ReadTool, ToolCall
 
 

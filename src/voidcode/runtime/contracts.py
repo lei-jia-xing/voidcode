@@ -128,8 +128,8 @@ class TodosStateMetadata(TypedDict, total=False):
 
 
 class ContextProjectionMetadata(TypedDict, total=False):
-    # 结构由 context_window.py ContextProjection.metadata_payload 定义
-    # （context_window.py:121-）；深度校验委托 owner，P1 只做 depth-1。
+    # 结构由 context/window.py ContextProjection.metadata_payload 定义
+    # （context/window.py:121-）；深度校验委托 owner，P1 只做 depth-1。
     version: int
     projection_id: str | None
     source_event_sequence: int

@@ -82,7 +82,7 @@ def resolve_mode(
     definition = MODE_DEFINITIONS[mode]
     transform_refs = definition.transform_refs
     if transform_refs:
-        from .context_transforms import validate_runtime_context_transform_refs
+        from .context.transforms import validate_runtime_context_transform_refs
 
         transform_refs = validate_runtime_context_transform_refs(
             transform_refs,

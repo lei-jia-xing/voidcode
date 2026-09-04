@@ -54,7 +54,7 @@ from ..tools.question import QuestionTool
 from ..tools.runtime_context import RuntimeToolInvocationContext
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
-from .context_window import (
+from .context.window import (
     ContextProjection,
     RuntimeContextSegment,
     RuntimeContextWindow,

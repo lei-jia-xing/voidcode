@@ -9,7 +9,7 @@ from voidcode.graph.provider_graph import ProviderGraph
 from voidcode.provider.protocol import ProviderErrorKind
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
-from voidcode.runtime.context_window import (
+from voidcode.runtime.context.window import (
     ContextProjection,
     RuntimeAssembledContext,
     RuntimeContextSegment,

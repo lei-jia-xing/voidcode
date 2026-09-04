@@ -1553,7 +1553,7 @@ def test_provider_context_live_persisted_replay_and_debug_parity_for_read(
 ) -> None:
     contracts_module = importlib.import_module("voidcode.runtime.contracts")
     config_module = importlib.import_module("voidcode.runtime.config")
-    context_window_module = importlib.import_module("voidcode.runtime.context_window")
+    context_window_module = importlib.import_module("voidcode.runtime.context.window")
     model_provider_module = importlib.import_module("voidcode.provider.registry")
     model_catalog_module = importlib.import_module("voidcode.provider.model_catalog")
     permission_module = importlib.import_module("voidcode.runtime.permission")

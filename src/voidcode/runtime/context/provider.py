@@ -5,16 +5,15 @@ import re
 from collections import defaultdict
 from typing import Literal, cast
 
-from ..provider.model_catalog import ToolFeedbackMode
-from ..tools.contracts import ToolResult
-from ..tools.output import (
+from ...provider.model_catalog import ToolFeedbackMode
+from ...tools.contracts import ToolResult
+from ...tools.output import (
     redacted_argument_keys_for_tool,
     sanitize_tool_arguments,
     sanitize_tool_result_data,
     strip_redaction_sentinels,
 )
-from .context_window import RuntimeAssembledContext, RuntimeContextSegment, ToolResultView
-from .contracts import (
+from ..contracts import (
     RuntimeProviderContextDiagnostic,
     RuntimeProviderContextDiagnosticPolicyAction,
     RuntimeProviderContextDiagnosticPolicyMode,
@@ -23,6 +22,7 @@ from .contracts import (
     RuntimeProviderContextSnapshot,
     RuntimeProviderMessageSnapshot,
 )
+from .window import RuntimeAssembledContext, RuntimeContextSegment, ToolResultView
 
 _MAX_DEBUG_CONTENT_CHARS = 2_000
 _OVERSIZED_TOOL_FEEDBACK_CHARS = 8_000

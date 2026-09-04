@@ -5,7 +5,7 @@ import pytest
 from voidcode.graph import GraphRunRequest
 from voidcode.graph.contracts import GraphSessionSnapshot
 from voidcode.graph.deterministic_graph import DeterministicGraph
-from voidcode.runtime.context_window import RuntimeAssembledContext, RuntimeContextSegment
+from voidcode.runtime.context.window import RuntimeAssembledContext, RuntimeContextSegment
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 
 

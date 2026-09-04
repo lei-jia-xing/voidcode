@@ -215,7 +215,7 @@ def session_metadata_for_persistence(
 
     Boundary: this applies safety bounds (secret scrubbing, string-length caps,
     dict/list depth limits) — NOT context compaction. Context window projection
-    is owned by ``context_window.py``. The bounds here prevent unbounded metadata
+    is owned by ``context/window.py``. The bounds here prevent unbounded metadata
     bloat in the sessions row.
     """
 

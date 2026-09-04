@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from ..provider.models import ResolvedProviderConfig
-from .config import RuntimeContextWindowConfig
-from .context_window import ContextWindowPolicy
+from ...provider.models import ResolvedProviderConfig
+from ..config import RuntimeContextWindowConfig
+from .window import ContextWindowPolicy
 
 
 def context_window_config_from_policy(

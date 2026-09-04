@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from .context_window import (
+from .context.window import (
     ContextProjection,
     RuntimeContextWindow,
     continuity_state_from_metadata_payload,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .session_metadata_helpers import parse_runtime_state_metadata
+from ..session_metadata_helpers import parse_runtime_state_metadata
 
 # Recoverable runtime context keys are a subset of the persisted runtime_state
 # key-set (RUNTIME_STATE_METADATA_KEYS, contracts.py): context projection

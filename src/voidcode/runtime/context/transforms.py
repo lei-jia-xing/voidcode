@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from ..tools.contracts import ToolResult
-from .context_rules import (
+from ...tools.contracts import ToolResult
+from .rules import (
     RuleCatalog,
     build_rule_catalog,
     rulebook_prompt_context,
@@ -15,7 +15,7 @@ from .context_rules import (
 )
 
 if TYPE_CHECKING:
-    from .context_window import ToolResultView
+    from .window import ToolResultView
 
 type RuntimeContextTransformProviderId = str
 type RuntimeContextTransformFailurePolicy = Literal["ignore", "warn", "block"]

@@ -6,14 +6,14 @@ import pytest
 
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
-from voidcode.runtime.context_window import (
+from voidcode.runtime.context.provider import inspect_provider_context
+from voidcode.runtime.context.window import (
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
     RuntimeContextWindow,
     assemble_provider_context,
 )
-from voidcode.runtime.provider_context import inspect_provider_context
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderTurnRequest,

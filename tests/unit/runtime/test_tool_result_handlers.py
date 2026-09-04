@@ -11,7 +11,7 @@ from voidcode.hook.typed import (
     ToolResultHandlerRegistry,
 )
 from voidcode.runtime.config import RuntimeConfig, RuntimeMcpConfig
-from voidcode.runtime.context_window import ToolResultView
+from voidcode.runtime.context.window import ToolResultView
 from voidcode.runtime.contracts import RuntimeRequest
 from voidcode.runtime.permission import PermissionPolicy
 from voidcode.runtime.service import VoidCodeRuntime

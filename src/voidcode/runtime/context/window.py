@@ -7,20 +7,20 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
-from ..agent.prompt_sections import dynamic_boundary_marker
-from ..tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
-from .context_projection import project_summary
-from .context_transforms import (
-    RuntimeContextTransformResult,
-    build_provider_context_transform_result,
-)
+from ...agent.prompt_sections import dynamic_boundary_marker
+from ...tools.contracts import ToolDiagnostics, ToolResult, ToolResultStatus
+from ..todos import render_provider_todo_state
+from .projection import project_summary
 from .prompt_assembly import (
     PromptAssemblyPlan,
     PromptAssemblySection,
     build_prompt_assembly_plan,
     prompt_activation_decision,
 )
-from .todos import render_provider_todo_state
+from .transforms import (
+    RuntimeContextTransformResult,
+    build_provider_context_transform_result,
+)
 
 
 def _empty_tool_limits() -> dict[str, int]:
@@ -578,7 +578,7 @@ def _previous_continuity_state(
 ) -> ContextProjection | None:
     # 延迟导入：session_metadata_helpers 在模块级导入本模块（context_window），
     # 模块级反向导入会构成环。解析统一走 helpers parse/accessor（唯一入口）。
-    from .session_metadata_helpers import (
+    from ..session_metadata_helpers import (
         parse_runtime_state_metadata,
         runtime_state_context_projection,
         runtime_state_context_projection_summary,
@@ -1213,7 +1213,7 @@ def _artifact_reference_segments(
 def _pending_state_segment(session_metadata: Mapping[str, object]) -> RuntimeContextSegment | None:
     # 延迟导入：session_metadata_helpers 在模块级导入本模块（context_window），
     # 模块级反向导入会构成环。解析统一走 helpers parse（唯一入口）。
-    from .session_metadata_helpers import parse_plan_state_metadata
+    from ..session_metadata_helpers import parse_plan_state_metadata
 
     raw_plan_state = session_metadata.get("plan_state")
     if raw_plan_state is None:

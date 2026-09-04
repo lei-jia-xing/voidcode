@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from voidcode.runtime.context_continuity import verified_checkpoint_session_metadata
+from voidcode.runtime.context.continuity import verified_checkpoint_session_metadata
 
 
 def test_verified_checkpoint_session_metadata_recovers_continuity_only_delta() -> None:

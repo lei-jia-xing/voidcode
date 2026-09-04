@@ -3,7 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 
 from voidcode.agent.prompt_sections import dynamic_boundary_marker
-from voidcode.runtime.prompt_assembly import PromptAssemblySection, build_prompt_assembly_plan
+from voidcode.runtime.context.prompt_assembly import PromptAssemblySection, build_prompt_assembly_plan
 
 
 def compute_stable_prefix_hash(rendered_messages: list[str], boundary_marker: str) -> str:

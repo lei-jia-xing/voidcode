@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from ..runtime.context_window import ToolResultView, normalize_read_output
+from ..runtime.context.window import ToolResultView, normalize_read_output
 from ..tools.contracts import ToolCall, ToolDefinition, ToolResult
 from .model_catalog import ProviderModelMetadata
 

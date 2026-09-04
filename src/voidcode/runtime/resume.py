@@ -19,7 +19,7 @@ from .acp import (
     finalize_run_acp,
 )
 from .config import RuntimeConfig, serialize_runtime_agent_config
-from .context_continuity import verified_checkpoint_session_metadata
+from .context.continuity import verified_checkpoint_session_metadata
 from .contracts import (
     NoPendingQuestionError,
     RuntimeRequest,

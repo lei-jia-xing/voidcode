@@ -21,6 +21,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | LSP/MCP capability managers | `lsp.py`, `mcp.py` | runtime-managed lifecycle, not pure capability schema |
 | Skill runtime bridge | `skills.py` | converts pure skill metadata into runtime contexts |
 | Session state types | `session.py`, `task.py`, `background/` | session refs/status plus background task types |
+| Context assembly | `context/` | provider context projection, transformations, rules, and continuity |
 | Background task contract | `../../docs/contracts/background-task-delegation.md` | parent/child linkage, result output, retry/cancel semantics |
 
 ## STRUCTURE
@@ -30,6 +31,7 @@ runtime/
 ├── config.py         # effective runtime config resolution
 ├── storage/          # SQLite-backed session/task store and storage mixins
 ├── background/       # task/process execution, routing, and child completion
+├── context/          # provider context assembly and projection
 ├── permission.py     # approval policy and PendingApproval
 ├── http.py           # runtime transport app
 ├── lsp.py / mcp.py   # managed capability lifecycle
@@ -48,8 +50,8 @@ runtime/
 
 ## HOTSPOTS
 - `service.py` is the central monolith. Read the surrounding methods before changing `_build_graph_for_engine_from_config`, `_tool_registry_for_effective_config`, `_execute_graph_loop`, `start_background_task`, or resume helpers.
-- `config.py` is dense because it resolves many nested config sections. Prefer extending existing parse/serialize helpers over inventing a parallel path.
 - `storage/` owns schema evolution and terminal-state bookkeeping. Runtime SQLite persistence is user-global at the XDG state path resolved by `runtime/paths.py`, via `sessions_db_path()` for sessions and `provider_catalog_cache_path()` for the provider model catalog cache. The canonical runtime schema uses `workspace_id` columns and SQLite `PRAGMA user_version`; schema/version mismatch handling is fail-fast and does not migrate old schemas unless a task explicitly requires migration support.
+- `context/` owns provider-facing context assembly and projection. Keep runtime governance, persistence, and provider transport outside this package.
 
 ## ANTI-PATTERNS
 - Do not move product governance into `graph/`; runtime chooses and configures graphs.

@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from voidcode.runtime.context_transforms import (
+from voidcode.runtime.context.provider import inspect_provider_context
+from voidcode.runtime.context.transforms import (
     HookPresetGuidanceTransformProvider,
     RuntimeContextTransformInjection,
     RuntimeContextTransformRegistry,
@@ -17,7 +18,7 @@ from voidcode.runtime.context_transforms import (
     RuntimeContextTransformResult,
     RuntimeFileRulesTransformProvider,
 )
-from voidcode.runtime.context_window import (
+from voidcode.runtime.context.window import (
     ContextProjection,
     ContextWindowPolicy,
     DroppedToolResultDiagnostic,
@@ -34,11 +35,10 @@ from voidcode.runtime.context_window import (
     prepare_provider_context,
     project_tool_results_for_context_window,
 )
-from voidcode.runtime.context_window_policy import (
+from voidcode.runtime.context.window_policy import (
     context_window_config_from_policy,
     context_window_policy_from_config,
 )
-from voidcode.runtime.provider_context import inspect_provider_context
 from voidcode.tools.contracts import ToolResult
 
 

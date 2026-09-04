@@ -22,7 +22,7 @@ from ..skills.registry import SkillRegistry
 from ..tools.contracts import Tool, ToolCall, ToolDefinition, ToolResult
 from .config import RuntimeAgentConfig
 from .config_materializer import EffectiveRuntimeConfig
-from .context_window import (
+from .context.window import (
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,

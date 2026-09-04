@@ -11,14 +11,14 @@ from voidcode.agent.prompt_sections import (
     search_agent_contract_block,
 )
 from voidcode.agent.prompts import render_builtin_prompt_profile
-from voidcode.runtime.context_transforms import (
-    RuntimeContextTransformInjection,
-    RuntimeContextTransformResult,
-)
-from voidcode.runtime.prompt_assembly import (
+from voidcode.runtime.context.prompt_assembly import (
     PromptAssemblySection,
     build_prompt_assembly_plan,
     prompt_activation_decision,
+)
+from voidcode.runtime.context.transforms import (
+    RuntimeContextTransformInjection,
+    RuntimeContextTransformResult,
 )
 
 BUILTIN_PROMPT_PROFILES = (
@@ -335,7 +335,7 @@ def test_prompt_fragments_expose_stable_order_layers_and_bounded_redacted_previe
 
 
 def test_prompt_stack_metadata_is_attached_to_assembled_context_without_raw_prompt() -> None:
-    from voidcode.runtime.context_window import assemble_provider_context
+    from voidcode.runtime.context.window import assemble_provider_context
 
     assembled = assemble_provider_context(
         prompt="Please use access_token=very-secret-token-value " + ("z" * 280),
@@ -521,7 +521,7 @@ def test_git_dynamic_state_is_cached_per_workspace_within_session(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    from voidcode.runtime import prompt_assembly as prompt_assembly_module
+    from voidcode.runtime.context import prompt_assembly as prompt_assembly_module
 
     prompt_assembly_module._reset_git_state_cache()
     calls: list[tuple[str, ...]] = []
@@ -547,7 +547,7 @@ def test_assemble_provider_context_replayed_history_ends_with_current_user_promp
     """Replayed prior-run history (including tool call/result pairs) is placed
     before the current prompt; the current prompt is the last user message and
     prior-run tool results are never re-appended after it."""
-    from voidcode.runtime.context_window import (
+    from voidcode.runtime.context.window import (
         RuntimeContextSegment,
         assemble_provider_context,
     )
@@ -608,7 +608,7 @@ def test_assemble_provider_context_replayed_history_ends_with_current_user_promp
 def test_assemble_provider_context_current_run_tool_results_still_follow_prompt() -> None:
     """Current-run (non-replayed) tool results keep the standard agent-loop
     placement after the user prompt, unchanged from pre-fix behavior."""
-    from voidcode.runtime.context_window import assemble_provider_context
+    from voidcode.runtime.context.window import assemble_provider_context
     from voidcode.tools.contracts import ToolResult
 
     current_run_result = ToolResult(

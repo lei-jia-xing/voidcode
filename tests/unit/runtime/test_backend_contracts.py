@@ -165,7 +165,7 @@ def test_tool_result_diagnostics_is_bounded_redacted_and_json_safe() -> None:
 
 
 def test_provider_tool_feedback_includes_typed_diagnostics() -> None:
-    from voidcode.runtime.provider_context import _tool_result_payload_json
+    from voidcode.runtime.context.provider import _tool_result_payload_json
 
     tools = _tools_module()
     result = tools.ToolResult(

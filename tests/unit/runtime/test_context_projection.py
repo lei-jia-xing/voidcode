@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from voidcode.runtime.context_projection import project_summary
+from voidcode.runtime.context.projection import project_summary
 
 
 def test_deterministic_projection_does_not_call_projector() -> None:

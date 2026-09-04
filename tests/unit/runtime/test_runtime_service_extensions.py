@@ -80,12 +80,12 @@ from voidcode.runtime.config import (
     serialize_runtime_agent_config,
     serialize_runtime_background_task_config,
 )
-from voidcode.runtime.context_transforms import (
+from voidcode.runtime.context.transforms import (
     HookPresetGuidanceTransformProvider,
     RuntimeContextTransformRegistry,
     RuntimeFileRulesTransformProvider,
 )
-from voidcode.runtime.context_window import (
+from voidcode.runtime.context.window import (
     ContextProjection,
     ContextWindowPolicy,
     RuntimeContextWindow,

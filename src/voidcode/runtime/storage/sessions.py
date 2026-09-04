@@ -61,7 +61,7 @@ class _SessionStorageMixin(_MixinBase):
           the highest sequence in ``response.events``.
         - Metadata is bounded for safety via ``session_metadata_for_persistence``
           (secret scrubbing, length limits) — that is a safety bound, not
-          context compaction. Context projection lives in ``context_window.py``.
+          context compaction. Context projection lives in ``context/window.py``.
         - When ``seal_terminal_status`` is False the row is written as
           ``interrupted`` instead of the terminal status: a newer run on the
           same session is still active, so the terminal seal must not clobber
@@ -217,7 +217,7 @@ class _SessionStorageMixin(_MixinBase):
         write ``session_events`` rows. The event log is persisted incrementally
         by the run loop via ``append_session_events``; this method only seals
         the terminal state and never regresses ``last_event_sequence``.
-        Context assembly lives in ``context_window.py``.
+        Context assembly lives in ``context/window.py``.
 
         ``seal_terminal_status=False`` writes the row as ``interrupted`` instead
         of the terminal status, so an older-finishing run cannot re-seal a
@@ -320,7 +320,7 @@ class _SessionStorageMixin(_MixinBase):
 
         Boundary: no compaction, no merging, no truncation. Events are append-only
         truth. Context projection (what the model sees) is handled exclusively by
-        ``context_window.py``. This method and ``append_session_events`` are the
+        ``context/window.py``. This method and ``append_session_events`` are the
         only writers of ``session_events`` rows.
         """
         with self._write_connect(workspace) as connection:
@@ -742,7 +742,7 @@ class _SessionStorageMixin(_MixinBase):
         """Return ALL persisted events for a session, unfiltered except for revert markers.
 
         Boundary: storage returns every event — no compaction, no truncation, no
-        context-window projection. The caller (or context_window.py) decides what
+          context-window projection. The caller (or ``context/window.py``) decides what
         subset to present to the model.
         """
         return self._load_session_response(

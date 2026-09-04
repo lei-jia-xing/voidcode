@@ -151,14 +151,15 @@ from .config_materializer import (
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
-from .context_rules import build_rule_catalog, rulebook_snapshot_from_payload, rulebook_snapshot_payload
-from .context_transforms import (
+from .context.provider import inspect_provider_context
+from .context.rules import build_rule_catalog, rulebook_snapshot_from_payload, rulebook_snapshot_payload
+from .context.transforms import (
     RuntimeContextTransformRegistry,
     build_provider_context_transform_result,
     default_runtime_context_transform_registry,
     validate_runtime_context_transform_refs,
 )
-from .context_window import (
+from .context.window import (
     ContextWindowPolicy,
     RuntimeAssembledContext,
     RuntimeContextSegment,
@@ -167,7 +168,7 @@ from .context_window import (
     assemble_provider_context,
     prepare_provider_context,
 )
-from .context_window_policy import (
+from .context.window_policy import (
     context_window_config_from_policy,
     context_window_policy_from_config,
 )
@@ -275,7 +276,6 @@ from .policy import (
 )
 from .provider_catalog_cache import RuntimeProviderCatalogCache
 from .provider_catalog_query import RuntimeProviderCatalogQuery
-from .provider_context import inspect_provider_context
 from .provider_execution_metadata import (
     provider_attempt_from_metadata,
     run_id_from_session_metadata,
