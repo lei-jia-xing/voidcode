@@ -87,12 +87,26 @@ from .events import (
     runtime_reasoning_part_from_provider_stream,
     runtime_reasoning_part_payload,
 )
-from .execution_seams import (
+from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution.provider_execution_metadata import (
+    provider_attempt_from_metadata,
+    provider_retry_attempt_from_metadata,
+    run_id_from_session_metadata,
+    session_with_provider_usage_metadata,
+)
+from .execution.provider_fallback import (
+    ProviderFallbackDecision,
+    ProviderTerminalDecision,
+    ProviderTransientRetryDecision,
+    decide_provider_error_policy,
+    provider_transient_retry_config,
+)
+from .execution.seams import (
     RuntimeGraphSelection,
     fallback_graph_for_provider_error,
     select_graph_for_effective_config,
 )
-from .graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution.tool_replay import ToolExecutionIntent
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     hook_execution_policy_from_metadata,
@@ -100,19 +114,6 @@ from .hook_runtime import (
     run_tool_hooks_for_session,
 )
 from .permission import PendingApproval, PermissionPolicy, PermissionResolution
-from .provider_execution_metadata import (
-    provider_attempt_from_metadata,
-    provider_retry_attempt_from_metadata,
-    run_id_from_session_metadata,
-    session_with_provider_usage_metadata,
-)
-from .provider_fallback import (
-    ProviderFallbackDecision,
-    ProviderTerminalDecision,
-    ProviderTransientRetryDecision,
-    decide_provider_error_policy,
-    provider_transient_retry_config,
-)
 from .question import PendingQuestion
 from .session import SessionState, SessionStatus
 from .session_metadata_helpers import (
@@ -139,7 +140,6 @@ from .storage import SessionStore
 from .tool_call_preview import PREVIEW_SNAPSHOT_MAX_BYTES, WRITE_PREVIEW_TOOLS, build_partial_tool_call_preview, build_tool_call_preview
 from .tool_display import build_tool_display, build_tool_status
 from .tool_execution import RuntimeToolExecutor
-from .tool_replay import ToolExecutionIntent
 from .tool_scope import tool_policy_error
 
 if TYPE_CHECKING:
@@ -150,7 +150,7 @@ if TYPE_CHECKING:
     from .runtime_surface import RuntimeSurface
     from .tool_registry import ToolRegistry
 
-from . import chunk_builders
+from .execution import chunk_builders
 
 logger = logging.getLogger(__name__)
 

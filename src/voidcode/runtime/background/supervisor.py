@@ -44,7 +44,7 @@ from ..events import (
     RUNTIME_TOOL_COMPLETED,
     EventEnvelope,
 )
-from ..execution_seams import resolve_runtime_session_routing
+from ..execution.seams import resolve_runtime_session_routing
 from ..hook_runtime import HOOK_RECURSION_ENV_VAR, hook_execution_policy_from_metadata
 from ..permission_policy import approval_request_id_from_waiting_response
 from ..runtime_debug import prompt_from_events

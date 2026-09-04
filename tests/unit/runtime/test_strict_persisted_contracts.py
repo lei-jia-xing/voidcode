@@ -12,7 +12,7 @@ from voidcode.runtime.config_materializer import (
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
-from voidcode.runtime.provider_execution_metadata import (
+from voidcode.runtime.execution.provider_execution_metadata import (
     provider_attempt_from_metadata,
     provider_retry_attempt_from_metadata,
     session_with_provider_usage_metadata,

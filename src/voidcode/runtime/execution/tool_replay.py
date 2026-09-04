@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ..tools.contracts import ToolCall, ToolDefinition, ToolReplayPolicy
-from ..tools.output import sanitize_tool_arguments
+from ...tools.contracts import ToolCall, ToolDefinition, ToolReplayPolicy
+from ...tools.output import sanitize_tool_arguments
 
 type ToolIntentStatus = Literal["pending", "completed", "interrupted"]
 type ToolRecoveryAction = Literal["replay", "interrupted", "none"]

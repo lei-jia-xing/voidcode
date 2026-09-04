@@ -71,7 +71,7 @@ from ..tools.process import BackgroundProcessTool
 from ..tools.question import QuestionTool
 from ..tools.runtime_context import current_runtime_tool_context
 from ..tools.skill import SkillTool
-from . import chunk_builders, skills
+from . import skills
 from .acp import (
     AcpAdapter,
     AcpAdapterState,
@@ -233,13 +233,19 @@ from .events import (
     EventSource,
     runtime_policy_observability_payload,
 )
-from .execution_seams import (
+from .execution import chunk_builders
+from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution.provider_execution_metadata import (
+    provider_attempt_from_metadata,
+    run_id_from_session_metadata,
+)
+from .execution.seams import (
     cache_key_for_effective_config,
     provider_model_required_message,
     resolve_runtime_session_routing,
     select_graph_for_effective_config,
 )
-from .graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution.tool_replay import ToolExecutionIntent, recovery_action
 from .hook_preset_metadata import (
     debug_hook_preset_snapshot,
     hook_preset_event_payload_from_session_metadata,
@@ -276,10 +282,6 @@ from .policy import (
 )
 from .provider_catalog_cache import RuntimeProviderCatalogCache
 from .provider_catalog_query import RuntimeProviderCatalogQuery
-from .provider_execution_metadata import (
-    provider_attempt_from_metadata,
-    run_id_from_session_metadata,
-)
 from .provider_inspection import (
     ProviderReadinessFacts,
     ProviderSummaryProjector,
@@ -361,7 +363,6 @@ from .tool_registry import (
     ToolRegistry,
     agent_required_tool_patterns,
 )
-from .tool_replay import ToolExecutionIntent, recovery_action
 from .tool_scope import RuntimeToolScopeResolver
 
 if TYPE_CHECKING:

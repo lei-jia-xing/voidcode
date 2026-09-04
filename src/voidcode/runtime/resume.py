@@ -11,7 +11,6 @@ from ..provider.protocol import ProviderAbortSignal
 from ..tools.contracts import ToolCall, ToolDiagnostics, ToolResult, ToolResultStatus
 from ..tools.output import sanitize_tool_result_data
 from ..tools.question import QuestionTool
-from . import chunk_builders
 from .acp import (
     disconnect_acp_for_session_state,
     emit_acp_events,
@@ -29,8 +28,10 @@ from .contracts import (
 )
 from .event_envelopes import resequence_event
 from .events import RUNTIME_QUESTION_ANSWERED, RUNTIME_SKILLS_BINDING_MISMATCH, EventEnvelope
-from .execution_seams import select_graph_for_effective_config
-from .graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution import chunk_builders
+from .execution.graph_adapter import graph_request_for_session, graph_session_snapshot
+from .execution.provider_execution_metadata import provider_attempt_from_metadata
+from .execution.seams import select_graph_for_effective_config
 from .hook_runtime import (
     HOOK_RECURSION_ENV_VAR,
     hook_execution_policy_from_metadata,
@@ -42,7 +43,6 @@ from .permission_policy import (
     permission_policy_for_session,
     request_event_and_resolution_state,
 )
-from .provider_execution_metadata import provider_attempt_from_metadata
 from .provider_metadata import validate_reasoning_effort_capability
 from .question import PendingQuestion, QuestionResponse
 from .session import (

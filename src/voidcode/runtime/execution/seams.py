@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from ..graph.contracts import RuntimeGraph
-from ..graph.deterministic_graph import DeterministicGraph
-from ..graph.provider_graph import ProviderGraph
-from ..provider.errors import ProviderExecutionError
-from ..provider.models import ResolvedProviderChain, ResolvedProviderModel
-from .config import (
+from ...graph.contracts import RuntimeGraph
+from ...graph.deterministic_graph import DeterministicGraph
+from ...graph.provider_graph import ProviderGraph
+from ...provider.errors import ProviderExecutionError
+from ...provider.models import ResolvedProviderChain, ResolvedProviderModel
+from ..config import (
     DEFAULT_MAX_STEPS,
     MAX_STEPS_UNLIMITED_SENTINEL,
     ExecutionEngineName,
@@ -17,8 +17,8 @@ from .config import (
 )
 
 if TYPE_CHECKING:
-    from .config_materializer import EffectiveRuntimeConfig
-    from .contracts import RuntimeRequest
+    from ..config_materializer import EffectiveRuntimeConfig
+    from ..contracts import RuntimeRequest
 
 
 @dataclass(frozen=True, slots=True)

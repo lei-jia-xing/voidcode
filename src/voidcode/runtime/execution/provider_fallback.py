@@ -4,9 +4,9 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
-from ..provider.config import DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG, ProviderTransientRetryConfig
-from ..provider.errors import ProviderExecutionError
-from .config import RuntimeProvidersConfig
+from ...provider.config import DEFAULT_PROVIDER_TRANSIENT_RETRY_CONFIG, ProviderTransientRetryConfig
+from ...provider.errors import ProviderExecutionError
+from ..config import RuntimeProvidersConfig
 
 PROVIDER_TRANSIENT_RETRYABLE_KINDS = frozenset({"rate_limit", "transient_failure"})
 PROVIDER_FALLBACK_ELIGIBLE_KINDS = frozenset(

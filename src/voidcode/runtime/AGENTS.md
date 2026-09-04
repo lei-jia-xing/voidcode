@@ -22,6 +22,7 @@ Runtime control plane for execution, persistence, approvals, hooks, capability m
 | Skill runtime bridge | `skills.py` | converts pure skill metadata into runtime contexts |
 | Session state types | `session.py`, `task.py`, `background/` | session refs/status plus background task types |
 | Context assembly | `context/` | provider context projection, transformations, rules, and continuity |
+| Execution support | `execution/` | graph adapters, provider fallback, chunk builders, and recovery metadata |
 | Background task contract | `../../docs/contracts/background-task-delegation.md` | parent/child linkage, result output, retry/cancel semantics |
 
 ## STRUCTURE
@@ -32,6 +33,7 @@ runtime/
 ├── storage/          # SQLite-backed session/task store and storage mixins
 ├── background/       # task/process execution, routing, and child completion
 ├── context/          # provider context assembly and projection
+├── execution/        # graph/provider execution seams and recovery helpers
 ├── permission.py     # approval policy and PendingApproval
 ├── http.py           # runtime transport app
 ├── lsp.py / mcp.py   # managed capability lifecycle
@@ -52,6 +54,7 @@ runtime/
 - `service.py` is the central monolith. Read the surrounding methods before changing `_build_graph_for_engine_from_config`, `_tool_registry_for_effective_config`, `_execute_graph_loop`, `start_background_task`, or resume helpers.
 - `storage/` owns schema evolution and terminal-state bookkeeping. Runtime SQLite persistence is user-global at the XDG state path resolved by `runtime/paths.py`, via `sessions_db_path()` for sessions and `provider_catalog_cache_path()` for the provider model catalog cache. The canonical runtime schema uses `workspace_id` columns and SQLite `PRAGMA user_version`; schema/version mismatch handling is fail-fast and does not migrate old schemas unless a task explicitly requires migration support.
 - `context/` owns provider-facing context assembly and projection. Keep runtime governance, persistence, and provider transport outside this package.
+- `execution/` owns runtime-to-graph/provider seams and recovery helpers. It must not become a second runtime orchestration boundary.
 
 ## ANTI-PATTERNS
 - Do not move product governance into `graph/`; runtime chooses and configures graphs.

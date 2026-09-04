@@ -19,7 +19,7 @@ import pytest
 
 import voidcode.runtime.background.supervisor as runtime_background_tasks_module
 import voidcode.runtime.config_materializer as runtime_config_materializer_module
-import voidcode.runtime.provider_fallback as runtime_provider_fallback_module
+import voidcode.runtime.execution.provider_fallback as runtime_provider_fallback_module
 import voidcode.runtime.run_loop as runtime_run_loop_module
 import voidcode.runtime.service as runtime_service_module
 from voidcode.acp import AcpRequestEnvelope, AcpResponseEnvelope
@@ -114,7 +114,14 @@ from voidcode.runtime.events import (
     RUNTIME_TURN_PROGRESS,
     EventEnvelope,
 )
-from voidcode.runtime.execution_seams import (
+from voidcode.runtime.execution.provider_fallback import (
+    ProviderFallbackDecision,
+    ProviderTerminalDecision,
+    ProviderTransientRetryDecision,
+    decide_provider_error_policy,
+    provider_transient_retry_config,
+)
+from voidcode.runtime.execution.seams import (
     fallback_graph_for_provider_error,
     select_graph_for_effective_config,
 )
@@ -139,13 +146,6 @@ from voidcode.runtime.permission import (
 from voidcode.runtime.permission_context import RuntimePermissionContextResolver
 from voidcode.runtime.permission_path_helpers import extract_paths_from_patch
 from voidcode.runtime.policy import RuntimePolicyConfig, RuntimePolicyToolPolicyConfig
-from voidcode.runtime.provider_fallback import (
-    ProviderFallbackDecision,
-    ProviderTerminalDecision,
-    ProviderTransientRetryDecision,
-    decide_provider_error_policy,
-    provider_transient_retry_config,
-)
 from voidcode.runtime.provider_protocol import (
     ProviderExecutionError,
     ProviderStreamEvent,

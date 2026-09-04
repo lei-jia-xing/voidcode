@@ -11,7 +11,7 @@ from voidcode.runtime.contracts import (
     RUNTIME_STATE_METADATA_KEYS,
     SKILL_SNAPSHOT_METADATA_KEYS,
 )
-from voidcode.runtime.provider_execution_metadata import run_id_from_session_metadata
+from voidcode.runtime.execution.provider_execution_metadata import run_id_from_session_metadata
 from voidcode.runtime.session import SessionRef, SessionState
 from voidcode.runtime.session_metadata_helpers import (
     parse_delegation_metadata,
