@@ -79,6 +79,8 @@ type RuntimeEventType = Literal[
     "runtime.turn_progress",
     "runtime.stuck_detected",
     "runtime.tool_input_processed",
+    "runtime.tool_timeout",
+    "runtime.provider_context_policy",
 ]
 type DelegatedBackgroundTaskEventType = Literal[
     "runtime.background_task_progress",
@@ -203,6 +205,8 @@ RUNTIME_REASONING_DIAGNOSTIC: Final[RuntimeEventType] = "runtime.reasoning_diagn
 RUNTIME_TURN_PROGRESS: Final[RuntimeEventType] = "runtime.turn_progress"
 RUNTIME_STUCK_DETECTED: Final[RuntimeEventType] = "runtime.stuck_detected"
 RUNTIME_TOOL_INPUT_PROCESSED: Final[RuntimeEventType] = "runtime.tool_input_processed"
+RUNTIME_TOOL_TIMEOUT: Final[RuntimeEventType] = "runtime.tool_timeout"
+RUNTIME_PROVIDER_CONTEXT_POLICY: Final[RuntimeEventType] = "runtime.provider_context_policy"
 
 REASONING_PREVIEW_LIMIT_CHARS: Final[int] = 240
 # Upper bound for the aggregated reasoning text persisted per streamed turn.
@@ -285,6 +289,8 @@ RUNTIME_EVENT_TYPES: Final[tuple[RuntimeEventType, ...]] = (
     RUNTIME_TURN_PROGRESS,
     RUNTIME_STUCK_DETECTED,
     RUNTIME_TOOL_INPUT_PROCESSED,
+    RUNTIME_TOOL_TIMEOUT,
+    RUNTIME_PROVIDER_CONTEXT_POLICY,
 )
 
 

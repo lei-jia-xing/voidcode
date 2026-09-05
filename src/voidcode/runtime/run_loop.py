@@ -73,6 +73,7 @@ from .events import (
     REASONING_PERSISTED_LIMIT_CHARS,
     RUNTIME_CONTEXT_COMPACTED,
     RUNTIME_CONTEXT_TRANSFORM_APPLIED,
+    RUNTIME_PROVIDER_CONTEXT_POLICY,
     RUNTIME_PROVIDER_FALLBACK,
     RUNTIME_PROVIDER_TRANSIENT_RETRY,
     RUNTIME_QUESTION_REQUESTED,
@@ -82,6 +83,7 @@ from .events import (
     RUNTIME_TOOL_INPUT_PROCESSED,
     RUNTIME_TOOL_PROGRESS,
     RUNTIME_TOOL_STARTED,
+    RUNTIME_TOOL_TIMEOUT,
     EventEnvelope,
     EventSource,
     runtime_reasoning_part_from_provider_stream,
@@ -1252,7 +1254,7 @@ class RuntimeRunLoopCoordinator:
                     partial_timeout_error = capped_partial.error
                 envelope = self._persist_event(
                     session_id=session.session.id,
-                    event_type="runtime.tool_timeout",
+                    event_type=RUNTIME_TOOL_TIMEOUT,
                     source="runtime",
                     payload={
                         "tool": tool_call.tool_name,
@@ -2279,7 +2281,7 @@ class RuntimeRunLoopCoordinator:
             if provider_context_policy_decision.action == "warn":
                 envelope = self._persist_event(
                     session_id=session.session.id,
-                    event_type="runtime.provider_context_policy",
+                    event_type=RUNTIME_PROVIDER_CONTEXT_POLICY,
                     source="runtime",
                     payload={
                         "mode": provider_context_policy_decision.mode,
@@ -3190,7 +3192,7 @@ class RuntimeRunLoopCoordinator:
                     partial_timeout_error = capped_partial.error
                 envelope = self._persist_event(
                     session_id=session.session.id,
-                    event_type="runtime.tool_timeout",
+                    event_type=RUNTIME_TOOL_TIMEOUT,
                     source="runtime",
                     payload={
                         "tool": plan_tool_call.tool_name,
@@ -3810,7 +3812,7 @@ class RuntimeRunLoopCoordinator:
         except RuntimeToolTimeoutError:
             envelope = self._persist_event(
                 session_id=session.session.id,
-                event_type="runtime.tool_timeout",
+                event_type=RUNTIME_TOOL_TIMEOUT,
                 source="runtime",
                 payload={"tool": inner_name, "timeout_seconds": tool_timeout},
             )
