@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from ...tools.contracts import ToolResult
 from .rules import (
@@ -382,3 +383,50 @@ def validate_runtime_context_transform_refs(
             allowed = ", ".join(sorted(valid_refs))
             raise ValueError(f"{field_path} references unknown context transform provider: {ref}; valid providers are: {allowed}")
     return refs
+
+
+def context_transform_applied_payloads(
+    *,
+    context_metadata: Mapping[str, object],
+    tool_result_count: int,
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    """Build event payloads and fingerprints from provider transform metadata."""
+    raw_transforms = context_metadata.get("context_transforms")
+    if not isinstance(raw_transforms, Mapping):
+        return ()
+    transforms = cast(Mapping[str, object], raw_transforms)
+    raw_applied = transforms.get("applied")
+    if not isinstance(raw_applied, list):
+        return ()
+    raw_failure_policy = transforms.get("failure_policy")
+    failure_policy = raw_failure_policy if isinstance(raw_failure_policy, str) else "warn"
+    payloads: list[tuple[str, dict[str, object]]] = []
+    for raw_trace in raw_applied:
+        if not isinstance(raw_trace, Mapping):
+            continue
+        trace = cast(Mapping[str, object], raw_trace)
+        provider_id = trace.get("provider_id")
+        if provider_id == "hook_preset_guidance":
+            continue
+        if not isinstance(provider_id, str) or not provider_id:
+            continue
+        payload: dict[str, object] = {
+            "provider_id": provider_id,
+            "failure_policy": failure_policy,
+            "tool_result_count": tool_result_count,
+        }
+        for key in (
+            "status",
+            "priority",
+            "execution_index",
+            "injection_count",
+            "provider_order",
+            "sources",
+            "diagnostics",
+        ):
+            value = trace.get(key)
+            if value is not None:
+                payload[key] = value
+        fingerprint_payload = {key: value for key, value in payload.items() if key != "tool_result_count"}
+        payloads.append((json.dumps(fingerprint_payload, sort_keys=True), payload))
+    return tuple(payloads)

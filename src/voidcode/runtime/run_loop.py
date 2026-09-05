@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import Generator, Iterator, Mapping
@@ -54,6 +53,7 @@ from ..tools.runtime_context import RuntimeToolInvocationContext
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
 from .context.continuity import replayed_conversation_segments_from_segments
+from .context.transforms import context_transform_applied_payloads
 from .context.window import (
     ContextProjection,
     RuntimeContextSegment,
@@ -224,45 +224,11 @@ def _context_transform_applied_payloads(
     context_metadata: Mapping[str, object],
     tool_result_count: int,
 ) -> tuple[tuple[str, dict[str, object]], ...]:
-    raw_transforms = context_metadata.get("context_transforms")
-    if not isinstance(raw_transforms, Mapping):
-        return ()
-    transforms = cast(Mapping[str, object], raw_transforms)
-    raw_applied = transforms.get("applied")
-    if not isinstance(raw_applied, list):
-        return ()
-    raw_failure_policy = transforms.get("failure_policy")
-    failure_policy = raw_failure_policy if isinstance(raw_failure_policy, str) else "warn"
-    payloads: list[tuple[str, dict[str, object]]] = []
-    for raw_trace in raw_applied:
-        if not isinstance(raw_trace, Mapping):
-            continue
-        trace = cast(Mapping[str, object], raw_trace)
-        provider_id = trace.get("provider_id")
-        if provider_id == "hook_preset_guidance":
-            continue
-        if not isinstance(provider_id, str) or not provider_id:
-            continue
-        payload: dict[str, object] = {
-            "provider_id": provider_id,
-            "failure_policy": failure_policy,
-            "tool_result_count": tool_result_count,
-        }
-        for key in (
-            "status",
-            "priority",
-            "execution_index",
-            "injection_count",
-            "provider_order",
-            "sources",
-            "diagnostics",
-        ):
-            value = trace.get(key)
-            if value is not None:
-                payload[key] = value
-        fingerprint_payload = {key: value for key, value in payload.items() if key != "tool_result_count"}
-        payloads.append((json.dumps(fingerprint_payload, sort_keys=True), payload))
-    return tuple(payloads)
+    """Preserve the historical private entry point for runtime callers."""
+    return context_transform_applied_payloads(
+        context_metadata=context_metadata,
+        tool_result_count=tool_result_count,
+    )
 
 
 def _unseen_context_transform_payloads(
@@ -1977,7 +1943,7 @@ class RuntimeRunLoopCoordinator:
             session,
             context_window_payload,
         )
-        context_transform_payloads = _context_transform_applied_payloads(
+        context_transform_payloads = context_transform_applied_payloads(
             context_metadata=assembled_context.metadata,
             tool_result_count=len(context_window.tool_results),
         )
