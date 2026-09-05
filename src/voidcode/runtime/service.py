@@ -151,6 +151,7 @@ from .config_materializer import (
     parse_persisted_runtime_config,
     serialize_runtime_config_core,
 )
+from .context.continuity import replayed_conversation_segments_from_events
 from .context.provider import inspect_provider_context
 from .context.rules import build_rule_catalog, rulebook_snapshot_from_payload, rulebook_snapshot_payload
 from .context.transforms import (
@@ -5062,115 +5063,21 @@ class VoidCodeRuntime(RuntimeSurface):
         stored_parent_session_id = stored.session.session.parent_id
         if parent_session_id is not None and stored_parent_session_id != parent_session_id:
             return ()
-
-        # Rebuild the prior conversation as faithful, chronologically ordered
-        # history: each user prompt, the tool calls/results the assistant
-        # performed in response, and the run's final assistant output. The
-        # current request's prompt is appended by the assembler after this
-        # history, so the provider message list ends with the new user message
-        # instead of trailing tool messages from a previous run.
-        current_request_sequence: int | None = None
+        replay_events = stored.events
         if current_prompt is not None:
             matching_requests = [
                 event.sequence
-                for event in stored.events
+                for event in replay_events
                 if event.event_type == "runtime.request_received" and event.payload.get("prompt") == current_prompt
             ]
             current_request_sequence = matching_requests[-1] if matching_requests else None
-        segments: list[RuntimeContextSegment] = []
-        tool_index = 0
-        for event in stored.events:
-            if current_request_sequence is not None and event.sequence >= current_request_sequence:
-                break
-            if event.event_type == "runtime.request_received":
-                prompt = event.payload.get("prompt")
-                if not isinstance(prompt, str) or not prompt.strip():
-                    continue
-                segments.append(
-                    RuntimeContextSegment(
-                        role="user",
-                        content=prompt,
-                        metadata={
-                            "source": "replayed_conversation",
-                            "tier": "recent",
-                            "kind": "prior_user_prompt",
-                            "sequence": event.sequence,
-                        },
-                    )
-                )
-                continue
-            if event.event_type != "runtime.tool_completed":
-                continue
-            payload = event.payload
-            tool_name = payload.get("tool")
-            if not isinstance(tool_name, str) or not tool_name:
-                continue
-            # Mirror ``_eligible_rehydrated_tool_results`` so the replayed
-            # history and the rehydrated tool-result pool stay consistent.
-            if tool_name not in {"read", "grep", "glob", "ast_grep"}:
-                if tool_name != "shell_exec":
-                    continue
-                command = payload.get("command")
-                if not isinstance(command, str) or not command.strip():
-                    continue
-            tool_index += 1
-            raw_tool_call_id = payload.get("tool_call_id")
-            tool_call_id = (
-                raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_replayed_tool_{tool_index}"
-            )
-            raw_arguments = payload.get("arguments")
-            tool_arguments = cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
-            error_value = payload.get("error")
-            is_error = error_value is not None
-            raw_content = payload.get("content")
-            content = str(raw_content) if raw_content is not None and not is_error else ""
-            segments.append(
-                RuntimeContextSegment(
-                    role="assistant",
-                    content=None,
-                    tool_call_id=tool_call_id,
-                    tool_name=tool_name,
-                    tool_arguments=tool_arguments,
-                    metadata={
-                        "source": "replayed_conversation",
-                        "tier": "recent",
-                        "kind": "prior_tool_call",
-                    },
-                )
-            )
-            segments.append(
-                RuntimeContextSegment(
-                    role="tool",
-                    content=content,
-                    tool_call_id=tool_call_id,
-                    tool_name=tool_name,
-                    metadata={
-                        "source": "replayed_conversation",
-                        "tier": "recent",
-                        "kind": "prior_tool_result",
-                        "status": "error" if is_error else "ok",
-                        "error": str(error_value) if is_error else None,
-                        "data": provider_visible_tool_result_data(payload),
-                        "truncated": payload.get("truncated") is True,
-                        "partial": payload.get("partial") is True,
-                        "reference": (payload.get("reference") if isinstance(payload.get("reference"), str) else None),
-                    },
-                )
-            )
-        if isinstance(stored.output, str) and stored.output.strip():
-            segments.append(
-                RuntimeContextSegment(
-                    role="assistant",
-                    content=stored.output,
-                    metadata={
-                        "source": "replayed_conversation",
-                        "tier": "recent",
-                        "kind": "prior_assistant_output",
-                    },
-                )
-            )
-
-        return tuple(segments)
+            if current_request_sequence is not None:
+                replay_events = tuple(event for event in replay_events if event.sequence < current_request_sequence)
+        return replayed_conversation_segments_from_events(
+            replay_events,
+            output=stored.output,
+            provider_visible_tool_result_data=provider_visible_tool_result_data,
+        )
 
     @staticmethod
     def _next_sequence_for_existing_session(

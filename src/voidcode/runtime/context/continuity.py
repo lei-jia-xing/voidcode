@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
+from ..events import EventEnvelope
 from ..session_metadata_helpers import parse_runtime_state_metadata
+from .window import RuntimeContextSegment
 
 # Recoverable runtime context keys are a subset of the persisted runtime_state
 # key-set (RUNTIME_STATE_METADATA_KEYS, contracts.py): context projection
@@ -18,6 +23,112 @@ _RECOVERABLE_TOP_LEVEL_CONTEXT_KEYS = frozenset({"context_window"})
 # mismatch) and must not be lost — it is preserved from the stored row and
 # delivered on the next run after the resolution seals the session.
 _INTERACTION_QUEUE_METADATA_KEYS = frozenset({"pending_messages"})
+
+
+def replayed_conversation_segments_from_events(
+    events: tuple[EventEnvelope, ...],
+    *,
+    output: object | None,
+    provider_visible_tool_result_data: Callable[[dict[str, object]], dict[str, object]],
+) -> tuple[RuntimeContextSegment, ...]:
+    """Build replayable provider-context segments from bounded runtime events.
+
+    This is deliberately a pure projection of the supplied event log and
+    output. Session loading, parent ownership, current-prompt boundaries, and
+    provider-visible result sanitization remain runtime-owned; the latter is
+    supplied as a callback so this leaf module does not depend on
+    ``runtime_debug``.
+    """
+    segments: list[RuntimeContextSegment] = []
+    tool_index = 0
+    for event in events:
+        if event.event_type == "runtime.request_received":
+            prompt = event.payload.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip():
+                continue
+            segments.append(
+                RuntimeContextSegment(
+                    role="user",
+                    content=prompt,
+                    metadata={
+                        "source": "replayed_conversation",
+                        "tier": "recent",
+                        "kind": "prior_user_prompt",
+                        "sequence": event.sequence,
+                    },
+                )
+            )
+            continue
+        if event.event_type != "runtime.tool_completed":
+            continue
+        payload = event.payload
+        tool_name = payload.get("tool")
+        if not isinstance(tool_name, str) or not tool_name:
+            continue
+        # Keep replayed history aligned with the eligible rehydrated result
+        # pool: only read-only inspection tools and shell commands with a
+        # persisted command are safe to place back into provider context.
+        if tool_name not in {"read", "grep", "glob", "ast_grep"}:
+            if tool_name != "shell_exec":
+                continue
+            command = payload.get("command")
+            if not isinstance(command, str) or not command.strip():
+                continue
+        tool_index += 1
+        raw_tool_call_id = payload.get("tool_call_id")
+        tool_call_id = raw_tool_call_id if isinstance(raw_tool_call_id, str) and raw_tool_call_id.strip() else f"voidcode_replayed_tool_{tool_index}"
+        raw_arguments = payload.get("arguments")
+        tool_arguments = cast(dict[str, object], raw_arguments) if isinstance(raw_arguments, dict) else {}
+        error_value = payload.get("error")
+        is_error = error_value is not None
+        raw_content = payload.get("content")
+        content = str(raw_content) if raw_content is not None and not is_error else ""
+        segments.append(
+            RuntimeContextSegment(
+                role="assistant",
+                content=None,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                metadata={
+                    "source": "replayed_conversation",
+                    "tier": "recent",
+                    "kind": "prior_tool_call",
+                },
+            )
+        )
+        segments.append(
+            RuntimeContextSegment(
+                role="tool",
+                content=content,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                metadata={
+                    "source": "replayed_conversation",
+                    "tier": "recent",
+                    "kind": "prior_tool_result",
+                    "status": "error" if is_error else "ok",
+                    "error": str(error_value) if is_error else None,
+                    "data": provider_visible_tool_result_data(payload),
+                    "truncated": payload.get("truncated") is True,
+                    "partial": payload.get("partial") is True,
+                    "reference": (payload.get("reference") if isinstance(payload.get("reference"), str) else None),
+                },
+            )
+        )
+    if isinstance(output, str) and output.strip():
+        segments.append(
+            RuntimeContextSegment(
+                role="assistant",
+                content=output,
+                metadata={
+                    "source": "replayed_conversation",
+                    "tier": "recent",
+                    "kind": "prior_assistant_output",
+                },
+            )
+        )
+    return tuple(segments)
 
 
 def verified_checkpoint_session_metadata(
