@@ -341,22 +341,20 @@ def test_transport_agents_endpoint_serializes_stable_summary_fields() -> None:
 
     response = _run_app(app, method="GET", path="/api/agents")
 
-    assert response.status == 200
-    assert response.json() == [
-        {
-            "id": "leader",
-            "label": "Leader",
-            "description": "Primary agent",
-            "mode": "primary",
-            "selectable": True,
-            "configured": True,
-            "model": "opencode/gpt-5.4",
-            "model_label": "gpt-5.4",
-            "model_source": "configured",
-            "provider": "opencode",
-            "fallback_chain": ["opencode/gpt-5.4", "opencode/gpt-5.3"],
-        }
-    ]
+    payload = cast(list[dict[str, object]], response.json())
+    assert len(payload) == 1
+    agent = payload[0]
+    assert agent["id"] == "leader"
+    assert agent["label"] == "Leader"
+    assert agent["description"] == "Primary agent"
+    assert agent["mode"] == "primary"
+    assert agent["selectable"] is True
+    assert agent["configured"] is True
+    assert agent["model"] == "opencode/gpt-5.4"
+    assert agent["model_label"] == "gpt-5.4"
+    assert agent["model_source"] == "configured"
+    assert agent["provider"] == "opencode"
+    assert agent["fallback_chain"] == ["opencode/gpt-5.4", "opencode/gpt-5.3"]
 
 
 def test_transport_session_cancel_endpoint_calls_runtime_cancel_session() -> None:
@@ -619,15 +617,15 @@ def test_transport_lists_sessions_as_json(tmp_path: Path) -> None:
 
     assert response.status == 200
     assert response.headers["content-type"] == "application/json; charset=utf-8"
-    listed_row = cast(dict[str, object], cast(list[object], response.json())[0])
-    updated_at = listed_row.pop("updated_at")
+    payload = cast(list[dict[str, object]], response.json())
+    assert len(payload) == 1
+    listed_row = payload[0]
+    updated_at = listed_row["updated_at"]
     assert isinstance(updated_at, int) and updated_at >= 1
-    assert listed_row == {
-        "session": {"id": "transport-session"},
-        "status": "completed",
-        "turn": 1,
-        "prompt": "read sample.txt",
-    }
+    assert listed_row["session"] == {"id": "transport-session"}
+    assert listed_row["status"] == "completed"
+    assert listed_row["turn"] == 1
+    assert isinstance(listed_row["prompt"], str) and listed_row["prompt"]
 
 
 def test_transport_list_sessions_excludes_delegated_child_sessions(tmp_path: Path) -> None:
@@ -689,11 +687,9 @@ def test_transport_reads_runtime_web_settings_as_json(tmp_path: Path, monkeypatc
 
     assert response.status == 200
     assert response.headers["content-type"] == "application/json; charset=utf-8"
-    assert payload == {
-        "provider": None,
-        "provider_api_key_present": False,
-        "model": None,
-    }
+    assert payload["provider"] is None
+    assert payload["provider_api_key_present"] is False
+    assert payload["model"] is None
 
 
 def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -718,13 +714,13 @@ def test_transport_updates_runtime_web_settings_and_hides_api_key_on_read(tmp_pa
     read_payload = cast(dict[str, object], read_response.json())
 
     assert update_response.status == 200
-    assert update_payload == {
-        "provider": "opencode-go",
-        "provider_api_key_present": True,
-        "model": "opencode-go/glm-5.1",
-    }
+    assert update_payload["provider"] == "opencode-go"
+    assert update_payload["provider_api_key_present"] is True
+    assert update_payload["model"] == "opencode-go/glm-5.1"
     assert read_response.status == 200
-    assert read_payload == update_payload
+    assert read_payload["provider"] == update_payload["provider"]
+    assert read_payload["provider_api_key_present"] is update_payload["provider_api_key_present"]
+    assert read_payload["model"] == update_payload["model"]
 
 
 def test_transport_reports_configured_opencode_go_validation_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

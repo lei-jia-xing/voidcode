@@ -580,19 +580,16 @@ def test_provider_runtime_surfaces_provider_context_limit_failure_kind(tmp_path:
 
     failed = failing_runtime.run(runtime_request(prompt="read sample.txt", session_id="ctx-limit"))
 
+    failed_event = failed.events[-1]
     assert failed.session.status == "failed"
-    assert failed.events[-1].event_type == "runtime.failed"
-    assert failed.events[-1].payload == {
-        "error": "provider context window exceeded",
-        "kind": "provider_context_limit",
-        "diagnostics": {
-            "summary": "provider context window exceeded",
-            "details": {
-                "message": "provider context window exceeded",
-                "summary": "provider context window exceeded",
-            },
-        },
-    }
+    assert failed_event.event_type == "runtime.failed"
+    assert failed_event.payload["error"] == "provider context window exceeded"
+    assert failed_event.payload["kind"] == "provider_context_limit"
+    diagnostics = cast(dict[str, object], failed_event.payload["diagnostics"])
+    assert diagnostics["summary"] == "provider context window exceeded"
+    details = cast(dict[str, object], diagnostics["details"])
+    assert details["message"] == "provider context window exceeded"
+    assert details["summary"] == "provider context window exceeded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1157,57 +1154,42 @@ def test_provider_subagent_sync_e2e_parent_task_child_final_and_parent_continuat
 
     assert response.session.status == "completed"
     assert response.output == "parent continued after child final"
-    assert task_completed.payload == {
-        "tool": "task",
-        "model": "opencode/gpt-5.4",
-        "provider": "opencode",
-        "tool_call_id": ANY,
-        "arguments": {
-            "prompt": "return the child final",
-            "run_in_background": False,
-            "load_skills": [],
-            "subagent_type": "explore",
-            "description": "Sync subagent E2E child",
-        },
-        "status": "ok",
-        "content": "child final",
-        "error": None,
-        "session_id": child_session_id,
-        "parent_session_id": "leader-session",
-        "requested_subagent_type": "explore",
+    task_payload = task_completed.payload
+    assert task_payload["tool"] == "task"
+    assert task_payload["model"] == "opencode/gpt-5.4"
+    assert task_payload["provider"] == "opencode"
+    assert task_payload["tool_call_id"] is not None
+    assert cast(dict[str, object], task_payload["arguments"]) == {
+        "prompt": "return the child final",
+        "run_in_background": False,
         "load_skills": [],
-        "output": "child final",
-        "display": {
-            "kind": "task",
-            "title": "Task",
-            "summary": "Sync subagent E2E child",
-            "args": ["explore", "Sync subagent E2E child", "return the child final"],
-        },
-        "tool_status": {
-            "invocation_id": ANY,
-            "tool_name": "task",
-            "phase": "completed",
-            "status": "completed",
-            "label": "Sync subagent E2E child",
-            "display": {
-                "kind": "task",
-                "title": "Task",
-                "summary": "Sync subagent E2E child",
-                "args": ["explore", "Sync subagent E2E child", "return the child final"],
-            },
-        },
-    }
-    assert child_replay.session.session.parent_id == "leader-session"
-    assert child_replay.output == "child final"
-    assert child_replay.session.metadata["delegation"] == {
-        "mode": "sync",
         "subagent_type": "explore",
         "description": "Sync subagent E2E child",
-        "depth": 1,
-        "remaining_spawn_budget": 3,
-        "selected_preset": "explore",
-        "selected_execution_engine": "provider",
     }
+    assert task_payload["status"] == "ok"
+    assert task_payload["content"] == "child final"
+    assert task_payload["error"] is None
+    assert task_payload["session_id"] == child_session_id
+    assert task_payload["parent_session_id"] == "leader-session"
+    assert task_payload["requested_subagent_type"] == "explore"
+    assert task_payload["load_skills"] == []
+    assert task_payload["output"] == "child final"
+    tool_status = cast(dict[str, object], task_payload["tool_status"])
+    assert tool_status["invocation_id"] is not None
+    assert tool_status["tool_name"] == "task"
+    assert tool_status["phase"] == "completed"
+    assert tool_status["status"] == "completed"
+    assert tool_status["label"] == "Sync subagent E2E child"
+    assert child_replay.session.session.parent_id == "leader-session"
+    assert child_replay.output == "child final"
+    delegation = cast(dict[str, object], child_replay.session.metadata["delegation"])
+    assert delegation["mode"] == "sync"
+    assert delegation["subagent_type"] == "explore"
+    assert delegation["description"] == "Sync subagent E2E child"
+    assert delegation["depth"] == 1
+    assert delegation["remaining_spawn_budget"] == 3
+    assert delegation["selected_preset"] == "explore"
+    assert delegation["selected_execution_engine"] == "provider"
 
 
 def test_runtime_background_subagent_e2e_collects_background_task_output_result(

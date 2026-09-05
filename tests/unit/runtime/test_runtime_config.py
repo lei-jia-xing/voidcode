@@ -79,6 +79,10 @@ def _write_agent_manifest(path: Path, frontmatter: str, body: str = "Custom prom
     path.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
 
 
+def _write_runtime_config(workspace: Path, payload: object) -> None:
+    runtime_config_path(workspace).write_text(json.dumps(payload), encoding="utf-8")
+
+
 DEFAULT_FORMATTER_PRESETS = default_formatter_presets()
 PRETTIER_ROOT_MARKERS = DEFAULT_FORMATTER_PRESETS["typescript"].root_markers
 
@@ -97,19 +101,17 @@ def test_runtime_config_defaults_to_ask_without_file_or_env(tmp_path: Path) -> N
 
 
 def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "permission": {
-                    "external_directory_read": {
-                        "~/.config/voidcode/skills/**": "allow",
-                        "*": "ask",
-                    },
-                    "external_directory_write": {"*": "ask"},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "permission": {
+                "external_directory_read": {
+                    "~/.config/voidcode/skills/**": "allow",
+                    "*": "ask",
+                },
+                "external_directory_write": {"*": "ask"},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -122,10 +124,7 @@ def test_runtime_config_loads_external_directory_permission_rules(tmp_path: Path
 
 
 def test_runtime_config_defaults_missing_external_write_rule_to_ask(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"permission": {"external_directory_read": {"~/.config/voidcode/skills/**": "allow"}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"permission": {"external_directory_read": {"~/.config/voidcode/skills/**": "allow"}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -135,10 +134,7 @@ def test_runtime_config_defaults_missing_external_write_rule_to_ask(tmp_path: Pa
 
 @pytest.mark.parametrize("decision", ["allow", "ask", "deny"])
 def test_runtime_config_preserves_explicit_external_write_decision(tmp_path: Path, decision: str) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"permission": {"external_directory_write": {"*": decision}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"permission": {"external_directory_write": {"*": decision}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -146,19 +142,17 @@ def test_runtime_config_preserves_explicit_external_write_decision(tmp_path: Pat
 
 
 def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "permission": {
-                    "rules": [
-                        {"tool": "read", "path": "src/**", "decision": "allow"},
-                        {"tool": "write", "path": ".github/**", "decision": "ask"},
-                        {"tool": "shell_exec", "command": "rm -rf *", "decision": "deny"},
-                    ]
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "permission": {
+                "rules": [
+                    {"tool": "read", "path": "src/**", "decision": "allow"},
+                    {"tool": "write", "path": ".github/**", "decision": "ask"},
+                    {"tool": "shell_exec", "command": "rm -rf *", "decision": "deny"},
+                ]
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -171,10 +165,7 @@ def test_runtime_config_loads_pattern_permission_rules(tmp_path: Path) -> None:
 
 
 def test_runtime_config_rejects_invalid_pattern_permission_rule(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"permission": {"rules": [{"tool": "shell_exec"}]}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"permission": {"rules": [{"tool": "shell_exec"}]}})
 
     with pytest.raises(ValueError, match=r"permission.rules\[0\].decision"):
         _ = load_runtime_config(tmp_path, env={})
@@ -435,10 +426,7 @@ def test_runtime_config_treats_empty_reasoning_effort_environment_as_unset(
 def test_runtime_config_prefers_repo_file_reasoning_effort_over_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"reasoning_effort": "low"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"reasoning_effort": "low"})
 
     config = load_runtime_config(tmp_path, env={REASONING_EFFORT_ENV_VAR: "high"})
 
@@ -448,10 +436,7 @@ def test_runtime_config_prefers_repo_file_reasoning_effort_over_environment(
 def test_runtime_config_prefers_explicit_reasoning_effort_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"reasoning_effort": "low"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"reasoning_effort": "low"})
 
     config = load_runtime_config(
         tmp_path,
@@ -463,10 +448,7 @@ def test_runtime_config_prefers_explicit_reasoning_effort_over_repo_file_and_env
 
 
 def test_runtime_config_rejects_empty_reasoning_effort_in_repo_file(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"reasoning_effort": ""}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"reasoning_effort": ""})
 
     with pytest.raises(
         ValueError,
@@ -480,10 +462,7 @@ def test_runtime_config_rejects_non_canonical_reasoning_effort_in_repo_file(
     tmp_path: Path,
     invalid_value: object,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"reasoning_effort": invalid_value}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"reasoning_effort": invalid_value})
 
     with pytest.raises(
         ValueError,
@@ -519,10 +498,7 @@ def test_runtime_config_accepts_canonical_reasoning_effort_in_repo_file(
     tmp_path: Path,
     valid_value: str,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"reasoning_effort": valid_value}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"reasoning_effort": valid_value})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -540,10 +516,7 @@ def test_runtime_config_accepts_canonical_reasoning_effort_environment(
 
 
 def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"approval_mode": "allow", "model": "opencode/gpt-5.4", "hooks": {"enabled": True}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"approval_mode": "allow", "model": "opencode/gpt-5.4", "hooks": {"enabled": True}})
 
     config = load_runtime_config(tmp_path, env={APPROVAL_MODE_ENV_VAR: "deny"})
 
@@ -553,31 +526,29 @@ def test_runtime_config_prefers_repo_file_over_environment(tmp_path: Path) -> No
 
 
 def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "pre_tool": [["python", "scripts/pre_tool.py"]],
-                    "post_tool": [["python", "scripts/post_tool.py"]],
-                    "on_session_start": [["python", "scripts/session_start.py"]],
-                    "on_session_end": [["python", "scripts/session_end.py"]],
-                    "on_session_idle": [["python", "scripts/session_idle.py"]],
-                    "on_background_task_registered": [["python", "scripts/task_registered.py"]],
-                    "on_background_task_started": [["python", "scripts/task_started.py"]],
-                    "on_background_task_progress": [["python", "scripts/task_progress.py"]],
-                    "on_background_task_completed": [["python", "scripts/task_completed.py"]],
-                    "on_background_task_failed": [["python", "scripts/task_failed.py"]],
-                    "on_background_task_cancelled": [["python", "scripts/task_cancelled.py"]],
-                    "on_background_task_notification_enqueued": [["python", "scripts/task_notify.py"]],
-                    "on_background_task_result_read": [["python", "scripts/task_result_read.py"]],
-                    "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
-                    "on_turn_progress": [["python", "scripts/turn_progress.py"]],
-                    "on_stuck_detected": [["python", "scripts/stuck_detected.py"]],
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "pre_tool": [["python", "scripts/pre_tool.py"]],
+                "post_tool": [["python", "scripts/post_tool.py"]],
+                "on_session_start": [["python", "scripts/session_start.py"]],
+                "on_session_end": [["python", "scripts/session_end.py"]],
+                "on_session_idle": [["python", "scripts/session_idle.py"]],
+                "on_background_task_registered": [["python", "scripts/task_registered.py"]],
+                "on_background_task_started": [["python", "scripts/task_started.py"]],
+                "on_background_task_progress": [["python", "scripts/task_progress.py"]],
+                "on_background_task_completed": [["python", "scripts/task_completed.py"]],
+                "on_background_task_failed": [["python", "scripts/task_failed.py"]],
+                "on_background_task_cancelled": [["python", "scripts/task_cancelled.py"]],
+                "on_background_task_notification_enqueued": [["python", "scripts/task_notify.py"]],
+                "on_background_task_result_read": [["python", "scripts/task_result_read.py"]],
+                "on_delegated_result_available": [["python", "scripts/delegated_result.py"]],
+                "on_turn_progress": [["python", "scripts/turn_progress.py"]],
+                "on_stuck_detected": [["python", "scripts/stuck_detected.py"]],
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -606,10 +577,7 @@ def test_runtime_config_parses_async_lifecycle_hook_surfaces(tmp_path: Path) -> 
 def test_runtime_config_prefers_explicit_model_override_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"model": "repo/model"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"model": "repo/model"})
 
     config = load_runtime_config(
         tmp_path,
@@ -621,10 +589,7 @@ def test_runtime_config_prefers_explicit_model_override_over_repo_file_and_envir
 
 
 def test_runtime_config_prefers_repo_file_model_over_environment(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"model": "repo/model"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"model": "repo/model"})
 
     config = load_runtime_config(tmp_path, env={MODEL_ENV_VAR: "env/model"})
 
@@ -632,20 +597,14 @@ def test_runtime_config_prefers_repo_file_model_over_environment(tmp_path: Path)
 
 
 def test_runtime_config_rejects_repo_file_execution_engine(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"execution_engine": "deterministic"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"execution_engine": "deterministic"})
 
     with pytest.raises(ValueError, match="runtime config field 'execution_engine' is not supported"):
         _ = load_runtime_config(tmp_path, env={EXECUTION_ENGINE_ENV_VAR: "provider"})
 
 
 def test_runtime_config_prefers_repo_file_max_steps_over_environment(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"max_steps": 4}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"max_steps": 4})
 
     config = load_runtime_config(tmp_path, env={MAX_STEPS_ENV_VAR: "7"})
 
@@ -653,10 +612,7 @@ def test_runtime_config_prefers_repo_file_max_steps_over_environment(tmp_path: P
 
 
 def test_runtime_config_prefers_repo_file_tool_timeout_over_environment(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"tool_timeout_seconds": 4}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"tool_timeout_seconds": 4})
 
     config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
 
@@ -666,10 +622,7 @@ def test_runtime_config_prefers_repo_file_tool_timeout_over_environment(tmp_path
 def test_runtime_config_treats_null_repo_file_tool_timeout_as_explicit_override(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"tool_timeout_seconds": None}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"tool_timeout_seconds": None})
 
     config = load_runtime_config(tmp_path, env={TOOL_TIMEOUT_ENV_VAR: "7"})
 
@@ -691,10 +644,7 @@ def test_runtime_config_explicit_execution_engine_still_overrides_environment(
 def test_runtime_config_prefers_explicit_max_steps_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"max_steps": 4}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"max_steps": 4})
 
     config = load_runtime_config(
         tmp_path,
@@ -708,10 +658,7 @@ def test_runtime_config_prefers_explicit_max_steps_over_repo_file_and_environmen
 def test_runtime_config_prefers_explicit_tool_timeout_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"tool_timeout_seconds": 4}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"tool_timeout_seconds": 4})
 
     config = load_runtime_config(
         tmp_path,
@@ -723,76 +670,74 @@ def test_runtime_config_prefers_explicit_tool_timeout_over_repo_file_and_environ
 
 
 def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "max_steps": 6,
-                "tools": {
-                    "builtin": {"enabled": True},
-                    "local": {"enabled": True, "path": ".voidcode/tools"},
+    _write_runtime_config(
+        tmp_path,
+        {
+            "max_steps": 6,
+            "tools": {
+                "builtin": {"enabled": True},
+                "local": {"enabled": True, "path": ".voidcode/tools"},
+            },
+            "skills": {
+                "enabled": True,
+                "paths": [".voidcode/skills"],
+            },
+            "lsp": {
+                "enabled": False,
+                "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+            },
+            "model": "opencode/gpt-5.4",
+            "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
+            "providers": {
+                "openai": {
+                    "api_key": "openai-inline-key",
+                    "base_url": "https://api.openai.test/v1",
+                    "organization": "org_123",
+                    "project": "proj_123",
+                    "timeout_seconds": 30,
                 },
-                "skills": {
-                    "enabled": True,
-                    "paths": [".voidcode/skills"],
+                "anthropic": {
+                    "api_key": "anthropic-inline-key",
+                    "base_url": "https://api.anthropic.test",
+                    "version": "2023-06-01",
+                    "beta_headers": ["prompt-caching-2024-07-31"],
+                    "timeout_seconds": 45,
                 },
-                "lsp": {
-                    "enabled": False,
-                    "servers": {"pyright": {"command": ["pyright-langserver", "--stdio"]}},
+                "google": {
+                    "auth": {
+                        "method": "api_key",
+                        "api_key": "google-inline-key",
+                    },
+                    "base_url": "https://generativelanguage.googleapis.com",
+                    "project": "project-123",
+                    "region": "us-central1",
+                    "timeout_seconds": 20,
                 },
-                "model": "opencode/gpt-5.4",
-                "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
-                "providers": {
-                    "openai": {
-                        "api_key": "openai-inline-key",
-                        "base_url": "https://api.openai.test/v1",
-                        "organization": "org_123",
-                        "project": "proj_123",
-                        "timeout_seconds": 30,
+                "copilot": {
+                    "auth": {
+                        "method": "token",
+                        "token": "copilot-inline-token",
                     },
-                    "anthropic": {
-                        "api_key": "anthropic-inline-key",
-                        "base_url": "https://api.anthropic.test",
-                        "version": "2023-06-01",
-                        "beta_headers": ["prompt-caching-2024-07-31"],
-                        "timeout_seconds": 45,
-                    },
-                    "google": {
-                        "auth": {
-                            "method": "api_key",
-                            "api_key": "google-inline-key",
-                        },
-                        "base_url": "https://generativelanguage.googleapis.com",
-                        "project": "project-123",
-                        "region": "us-central1",
-                        "timeout_seconds": 20,
-                    },
-                    "copilot": {
-                        "auth": {
-                            "method": "token",
-                            "token": "copilot-inline-token",
-                        },
-                        "base_url": "https://api.githubcopilot.test",
-                        "timeout_seconds": 15,
-                    },
-                    "litellm": {
-                        "api_key": "litellm-inline-key",
-                        "base_url": "http://127.0.0.1:4000",
-                        "auth_scheme": "token",
-                        "auth_header": "X-LiteLLM-Key",
-                        "timeout_seconds": 10,
-                        "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
-                    },
-                    "custom": {
-                        "llama-local": {
-                            "base_url": "http://localhost:11434/v1",
-                            "auth_scheme": "none",
-                            "model_map": {"coder": "ollama/qwen2.5-coder:latest"},
-                        }
-                    },
+                    "base_url": "https://api.githubcopilot.test",
+                    "timeout_seconds": 15,
                 },
-            }
-        ),
-        encoding="utf-8",
+                "litellm": {
+                    "api_key": "litellm-inline-key",
+                    "base_url": "http://127.0.0.1:4000",
+                    "auth_scheme": "token",
+                    "auth_header": "X-LiteLLM-Key",
+                    "timeout_seconds": 10,
+                    "model_map": {"gpt-4o": "openrouter/openai/gpt-4o"},
+                },
+                "custom": {
+                    "llama-local": {
+                        "base_url": "http://localhost:11434/v1",
+                        "auth_scheme": "none",
+                        "model_map": {"coder": "ollama/qwen2.5-coder:latest"},
+                    }
+                },
+            },
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -861,19 +806,17 @@ def test_runtime_config_parses_extension_domains(tmp_path: Path) -> None:
 
 
 def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "providers": {
-                    "openai": {},
-                    "anthropic": {},
-                    "google": {"auth": {"method": "api_key"}},
-                    "copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
-                    "litellm": {},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "providers": {
+                "openai": {},
+                "anthropic": {},
+                "google": {"auth": {"method": "api_key"}},
+                "copilot": {"auth": {"method": "token", "token_env_var": "COPILOT_TOKEN"}},
+                "litellm": {},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(
@@ -900,23 +843,21 @@ def test_runtime_config_providers_use_environment_secrets_when_omitted(tmp_path:
 
 
 def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "providers": {
-                    "openai": {"api_key": "openai-repo-key"},
-                    "anthropic": {"api_key": "anthropic-repo-key"},
-                    "google": {
-                        "auth": {"method": "api_key", "api_key": "google-repo-key"},
-                    },
-                    "copilot": {
-                        "auth": {"method": "token", "token": "copilot-repo-token"},
-                    },
-                    "litellm": {"api_key": "litellm-repo-key"},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "providers": {
+                "openai": {"api_key": "openai-repo-key"},
+                "anthropic": {"api_key": "anthropic-repo-key"},
+                "google": {
+                    "auth": {"method": "api_key", "api_key": "google-repo-key"},
+                },
+                "copilot": {
+                    "auth": {"method": "token", "token": "copilot-repo-token"},
+                },
+                "litellm": {"api_key": "litellm-repo-key"},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(
@@ -944,10 +885,7 @@ def test_runtime_config_providers_prefer_repo_config_over_environment(tmp_path: 
 def test_runtime_config_accepts_builtin_lsp_server_by_name_without_explicit_command(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"lsp": {"enabled": True, "servers": {"pyright": {}}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"lsp": {"enabled": True, "servers": {"pyright": {}}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -958,10 +896,7 @@ def test_runtime_config_accepts_builtin_lsp_server_by_name_without_explicit_comm
 
 
 def test_runtime_config_accepts_extended_builtin_lsp_catalog_entries(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"lsp": {"enabled": True, "servers": {"clangd": {}, "yamlls": {}}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"lsp": {"enabled": True, "servers": {"clangd": {}, "yamlls": {}}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -977,24 +912,22 @@ def test_runtime_config_accepts_extended_builtin_lsp_catalog_entries(tmp_path: P
 def test_runtime_config_accepts_lsp_preset_aliases(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "lsp": {
-                    "enabled": True,
-                    "servers": {
-                        "python": {
-                            "preset": "pyright",
-                            "extensions": [".pyw"],
-                            "root_markers": ["requirements-dev.txt"],
-                            "settings": {"python": {"analysis": {"typeCheckingMode": "strict"}}},
-                            "init_options": {"diagnostics": {"enable": True}},
-                        }
-                    },
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "lsp": {
+                "enabled": True,
+                "servers": {
+                    "python": {
+                        "preset": "pyright",
+                        "extensions": [".pyw"],
+                        "root_markers": ["requirements-dev.txt"],
+                        "settings": {"python": {"analysis": {"typeCheckingMode": "strict"}}},
+                        "init_options": {"diagnostics": {"enable": True}},
+                    }
+                },
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1046,10 +979,7 @@ def test_runtime_config_derives_typescript_lsp_defaults_when_workspace_matches(t
 
 
 def test_runtime_config_keeps_explicit_repo_lsp_config_over_derived_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"lsp": {"enabled": False, "servers": {"pyright": {}}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"lsp": {"enabled": False, "servers": {"pyright": {}}}})
 
     def _derive_defaults(_workspace: Path) -> dict[str, RuntimeLspServerConfig]:
         return {"tsserver": RuntimeLspServerConfig()}
@@ -1125,10 +1055,7 @@ def test_runtime_config_derives_java_lsp_defaults_when_workspace_matches(tmp_pat
 
 
 def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"model": "opencode/gpt-5.4"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"model": "opencode/gpt-5.4"})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1137,20 +1064,18 @@ def test_runtime_config_accepts_provider_execution_engine(tmp_path: Path) -> Non
 
 
 def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agent": {
-                    "preset": "leader",
-                    "model": "opencode/gpt-5.4",
-                    "tools": {"builtin": {"enabled": True}},
-                    "skills": {"enabled": True, "paths": [".voidcode/skills"]},
-                    "mcp_binding": {"profile": "docs", "servers": ["context7", "github"]},
-                    "fallback_models": ["custom/demo"],
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "agent": {
+                "preset": "leader",
+                "model": "opencode/gpt-5.4",
+                "tools": {"builtin": {"enabled": True}},
+                "skills": {"enabled": True, "paths": [".voidcode/skills"]},
+                "mcp_binding": {"profile": "docs", "servers": ["context7", "github"]},
+                "fallback_models": ["custom/demo"],
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1175,10 +1100,7 @@ def test_runtime_config_parses_agent_preset_from_repo_file(tmp_path: Path) -> No
 def test_runtime_config_rejects_agent_preset_alias_maps(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agent": {"leader": {"model": "opencode/gpt-5.4"}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"agent": {"leader": {"model": "opencode/gpt-5.4"}}})
 
     with pytest.raises(
         ValueError,
@@ -1213,10 +1135,7 @@ def test_runtime_config_resolves_custom_primary_manifest(tmp_path: Path) -> None
         ),
         body="Plan locally from markdown.",
     )
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agent": {"preset": "local-planner"}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"agent": {"preset": "local-planner"}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1263,10 +1182,7 @@ def test_runtime_config_allows_agents_key_for_discovered_custom_manifest(tmp_pat
         ),
         body="Review from markdown.",
     )
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"local-reviewer": {"model": "opencode/reviewer"}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"agents": {"local-reviewer": {"model": "opencode/reviewer"}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1298,10 +1214,7 @@ def test_runtime_config_applies_manifest_fallback_models_to_configured_agent_mod
         ),
         body="Review from markdown.",
     )
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"local-reviewer": {"model": "opencode/reviewer"}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"agents": {"local-reviewer": {"model": "opencode/reviewer"}}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1575,16 +1488,14 @@ def test_runtime_agent_payload_rejects_unknown_context_transform_reference() -> 
 
 
 def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agents": {
-                    "leader": {"model": "opencode/gpt-5.4"},
-                    "worker": {"model": "anthropic/claude-3-5-sonnet"},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "agents": {
+                "leader": {"model": "opencode/gpt-5.4"},
+                "worker": {"model": "anthropic/claude-3-5-sonnet"},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1606,18 +1517,16 @@ def test_runtime_config_parses_agents_map_with_builtin_keys(tmp_path: Path) -> N
 
 
 def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agents": {
-                    "worker": {
-                        "model": "opencode/gpt-5.4",
-                        "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
-                    }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "agents": {
+                "worker": {
+                    "model": "opencode/gpt-5.4",
+                    "fallback_models": ["opencode/gpt-5.3", "custom/demo"],
                 }
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1637,10 +1546,7 @@ def test_runtime_config_parses_agents_fallback_models_shorthand(tmp_path: Path) 
 
 
 def test_runtime_config_rejects_agents_fallback_models_without_model(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"agents": {"worker": {"fallback_models": ["opencode/gpt-5.3"]}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"agents": {"worker": {"fallback_models": ["opencode/gpt-5.3"]}}})
 
     with pytest.raises(
         ValueError,
@@ -1650,19 +1556,17 @@ def test_runtime_config_rejects_agents_fallback_models_without_model(tmp_path: P
 
 
 def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agents": {
-                    "my_helper": {
-                        "preset": "advisor",
-                        "model": "anthropic/claude-3-5-sonnet",
-                    },
-                    "code-finder": {"preset": "explore"},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "agents": {
+                "my_helper": {
+                    "preset": "advisor",
+                    "model": "anthropic/claude-3-5-sonnet",
+                },
+                "code-finder": {"preset": "explore"},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1684,18 +1588,16 @@ def test_runtime_config_parses_agents_map_with_custom_keys(tmp_path: Path) -> No
 def test_runtime_config_parses_agent_references_against_hook_preset_catalog(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agent": {
-                    "preset": "leader",
-                    "prompt_ref": "researcher",
-                    "prompt_source": "builtin",
-                    "hook_refs": ["role_reminder"],
-                },
-            }
-        ),
-        encoding="utf-8",
+    _write_runtime_config(
+        tmp_path,
+        {
+            "agent": {
+                "preset": "leader",
+                "prompt_ref": "researcher",
+                "prompt_source": "builtin",
+                "hook_refs": ["role_reminder"],
+            },
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1711,16 +1613,14 @@ def test_runtime_config_parses_agent_references_against_hook_preset_catalog(
 
 
 def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "agent": {
-                    "preset": "leader",
-                    "context_transform_refs": ["runtime_file_rules"],
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "agent": {
+                "preset": "leader",
+                "context_transform_refs": ["runtime_file_rules"],
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1734,15 +1634,13 @@ def test_runtime_config_parses_agent_context_transform_refs(tmp_path: Path) -> N
 
 
 def test_runtime_config_rejects_removed_categories_field(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "categories": {
-                    "quick": {"model": "openai/gpt-4o-mini"},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "categories": {
+                "quick": {"model": "openai/gpt-4o-mini"},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     with pytest.raises(ValueError, match="categories"):
@@ -1750,10 +1648,7 @@ def test_runtime_config_rejects_removed_categories_field(tmp_path: Path) -> None
 
 
 def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"max_steps": 7}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"max_steps": 7})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1761,17 +1656,15 @@ def test_runtime_config_parses_repo_local_max_steps(tmp_path: Path) -> None:
 
 
 def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "pre_tool": [["python", "scripts/pre.py"]],
-                    "post_tool": [["python", "scripts/post.py"]],
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "pre_tool": [["python", "scripts/pre.py"]],
+                "post_tool": [["python", "scripts/post.py"]],
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1786,15 +1679,13 @@ def test_runtime_config_parses_minimal_hook_commands(tmp_path: Path) -> None:
 def test_runtime_config_defaults_hooks_enabled_when_block_present_without_flag(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "pre_tool": [["python", "scripts/pre.py"]],
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "pre_tool": [["python", "scripts/pre.py"]],
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1806,10 +1697,7 @@ def test_runtime_config_defaults_hooks_enabled_when_block_present_without_flag(
 
 
 def test_runtime_config_parses_hook_timeout_seconds(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"hooks": {"enabled": True, "timeout_seconds": 12.5}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"hooks": {"enabled": True, "timeout_seconds": 12.5}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -1817,19 +1705,17 @@ def test_runtime_config_parses_hook_timeout_seconds(tmp_path: Path) -> None:
 
 
 def test_runtime_config_parses_formatter_preset_hooks(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "formatter_presets": {
-                        "python": {"command": ["ruff", "format"]},
-                        "typescript": {"command": ["prettier", "--write"]},
-                    },
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "formatter_presets": {
+                    "python": {"command": ["ruff", "format"]},
+                    "typescript": {"command": ["prettier", "--write"]},
+                },
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1848,15 +1734,13 @@ def test_runtime_hooks_config_defaults_formatter_presets_to_common_language_buil
 def test_runtime_config_keeps_builtin_formatter_presets_when_hooks_formatter_presets_missing(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1865,18 +1749,16 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_hooks_formatter_pre
 
 
 def test_runtime_config_overrides_builtin_formatter_preset_with_user_value(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "formatter_presets": {
-                        "python": {"command": ["uvx", "ruff", "format"]},
-                    },
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "formatter_presets": {
+                    "python": {"command": ["uvx", "ruff", "format"]},
+                },
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1899,22 +1781,20 @@ def test_runtime_config_overrides_builtin_formatter_preset_with_user_value(tmp_p
 def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_preset(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "formatter_presets": {
-                        "php": {
-                            "command": ["php-cs-fixer", "fix"],
-                            "extensions": [".php"],
-                            "root_markers": ["composer.json", ".php-cs-fixer.php"],
-                        },
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "formatter_presets": {
+                    "php": {
+                        "command": ["php-cs-fixer", "fix"],
+                        "extensions": [".php"],
+                        "root_markers": ["composer.json", ".php-cs-fixer.php"],
                     },
-                }
+                },
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1933,21 +1813,19 @@ def test_runtime_config_keeps_builtin_formatter_presets_when_adding_custom_user_
 
 
 def test_runtime_config_merges_partial_builtin_formatter_override(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "formatter_presets": {
-                        "typescript": {
-                            "extensions": [".ts", ".tsx", ".vue"],
-                            "cwd_policy": "workspace",
-                        },
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "formatter_presets": {
+                    "typescript": {
+                        "extensions": [".ts", ".tsx", ".vue"],
+                        "cwd_policy": "workspace",
                     },
-                }
+                },
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1974,14 +1852,12 @@ def test_runtime_config_merges_partial_builtin_formatter_override(tmp_path: Path
 def test_runtime_config_formatter_preserves_hooks_enabled_when_formatter_enabled_omitted(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {"enabled": True},
-                "formatter": {"languages": {"python": {"command": ["uvx", "ruff", "format"]}}},
-            }
-        ),
-        encoding="utf-8",
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {"enabled": True},
+            "formatter": {"languages": {"python": {"command": ["uvx", "ruff", "format"]}}},
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -1994,23 +1870,21 @@ def test_runtime_config_formatter_preserves_hooks_enabled_when_formatter_enabled
 def test_runtime_config_formatter_preserves_hooks_formatter_presets_when_languages_omitted(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "enabled": True,
-                    "formatter_presets": {
-                        "php": {
-                            "command": ["php-cs-fixer", "fix"],
-                            "extensions": [".php"],
-                            "root_markers": ["composer.json", ".php-cs-fixer.php"],
-                        }
-                    },
+    _write_runtime_config(
+        tmp_path,
+        {
+            "hooks": {
+                "enabled": True,
+                "formatter_presets": {
+                    "php": {
+                        "command": ["php-cs-fixer", "fix"],
+                        "extensions": [".php"],
+                        "root_markers": ["composer.json", ".php-cs-fixer.php"],
+                    }
                 },
-                "formatter": {"enabled": True},
-            }
-        ),
-        encoding="utf-8",
+            },
+            "formatter": {"enabled": True},
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -2027,10 +1901,7 @@ def test_runtime_config_formatter_preserves_hooks_formatter_presets_when_languag
 def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"approval_mode": "deny"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"approval_mode": "deny"})
 
     config = load_runtime_config(
         tmp_path,
@@ -2043,10 +1914,7 @@ def test_runtime_config_prefers_explicit_override_over_repo_file_and_environment
 
 def test_runtime_config_formatter_enabled_maps_to_format_on_write_only(tmp_path: Path) -> None:
     """formatter.enabled=false disables format-on-write but leaves other hooks running."""
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"formatter": {"enabled": False}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"formatter": {"enabled": False}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -2056,10 +1924,7 @@ def test_runtime_config_formatter_enabled_maps_to_format_on_write_only(tmp_path:
 
 
 def test_runtime_config_formatter_format_on_write_is_opt_in(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"formatter": {"format_on_write": True}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"formatter": {"format_on_write": True}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -2071,10 +1936,7 @@ def test_runtime_config_formatter_format_on_write_is_opt_in(tmp_path: Path) -> N
 def test_runtime_config_formatter_format_on_write_false_overrides_enabled_alias(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"formatter": {"enabled": True, "format_on_write": False}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"formatter": {"enabled": True, "format_on_write": False}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -2084,10 +1946,7 @@ def test_runtime_config_formatter_format_on_write_false_overrides_enabled_alias(
 
 
 def test_runtime_config_hooks_disabled_still_gates_everything(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"hooks": {"enabled": False}, "formatter": {"format_on_write": True}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"hooks": {"enabled": False}, "formatter": {"format_on_write": True}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -2097,10 +1956,7 @@ def test_runtime_config_hooks_disabled_still_gates_everything(tmp_path: Path) ->
 
 
 def test_runtime_config_lsp_diagnostics_on_write_is_opt_in(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"lsp": {"enabled": True, "diagnostics_on_write": True}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"lsp": {"enabled": True, "diagnostics_on_write": True}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -2109,10 +1965,7 @@ def test_runtime_config_lsp_diagnostics_on_write_is_opt_in(tmp_path: Path) -> No
 
 
 def test_runtime_config_lsp_diagnostics_on_write_defaults_off(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"lsp": {"enabled": True}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"lsp": {"enabled": True}})
 
     config = load_runtime_config(tmp_path, env={})
 
@@ -2179,20 +2032,14 @@ def test_runtime_config_rejects_invalid_repo_local_payload(tmp_path: Path) -> No
 
 
 def test_runtime_config_rejects_invalid_repo_local_approval_mode(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"approval_mode": "maybe"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"approval_mode": "maybe"})
 
     with pytest.raises(ValueError, match="approval_mode"):
         _ = load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"execution_engine": "agent"}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"execution_engine": "agent"})
 
     with pytest.raises(ValueError, match="execution_engine"):
         _ = load_runtime_config(tmp_path, env={})
@@ -2246,17 +2093,14 @@ def test_runtime_config_rejects_invalid_repo_local_execution_engine(tmp_path: Pa
     ],
 )
 def test_runtime_config_rejects_invalid_max_steps(tmp_path: Path, payload: dict[str, object], match: str) -> None:
-    runtime_config_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
+    _write_runtime_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
 
 
 def test_runtime_config_repo_local_max_steps_zero_means_unlimited(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"max_steps": 0}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"max_steps": 0})
     config = load_runtime_config(tmp_path, env={})
     assert config.max_steps == MAX_STEPS_UNLIMITED_SENTINEL
 
@@ -2608,7 +2452,7 @@ def test_runtime_config_rejects_invalid_extension_domain_shapes(
     payload: dict[str, object],
     match: str,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
+    _write_runtime_config(tmp_path, payload)
 
     with pytest.raises(ValueError, match=match):
         _ = load_runtime_config(tmp_path, env={})
@@ -2682,18 +2526,16 @@ def test_load_runtime_config_resolves_tui_preferences_from_workspace_over_global
         ),
         encoding="utf-8",
     )
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "tui": {
-                    "preferences": {
-                        "theme": {"name": "tokyo-night"},
-                        "reading": {"wrap": True},
-                    }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "tui": {
+                "preferences": {
+                    "theme": {"name": "tokyo-night"},
+                    "reading": {"wrap": True},
                 }
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -2752,17 +2594,15 @@ def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets
         json.dumps({"tui": {"leader_key": "ctrl+space"}}),
         encoding="utf-8",
     )
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "tui": {
-                    "preferences": {
-                        "reading": {"wrap": False},
-                    }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "tui": {
+                "preferences": {
+                    "reading": {"wrap": False},
                 }
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -2777,17 +2617,15 @@ def test_load_runtime_config_inherits_global_leader_key_when_workspace_only_sets
 
 def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "tui": {
-                    "preferences": {
-                        "theme": {"name": "unknown-theme", "mode": "dark"},
-                    }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "tui": {
+                "preferences": {
+                    "theme": {"name": "unknown-theme", "mode": "dark"},
                 }
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -2799,15 +2637,13 @@ def test_load_runtime_config_preserves_invalid_theme_name_and_defers_resolution(
 
 def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "model": "opencode/gpt-5.4",
-                "approval_mode": "ask",
-                "tui": {"leader_key": "alt+x"},
-            }
-        ),
-        encoding="utf-8",
+    _write_runtime_config(
+        tmp_path,
+        {
+            "model": "opencode/gpt-5.4",
+            "approval_mode": "ask",
+            "tui": {"leader_key": "alt+x"},
+        },
     )
 
     save_workspace_tui_preferences(
@@ -2829,16 +2665,14 @@ def test_save_workspace_tui_preferences_preserves_unrelated_runtime_config_field
 
 def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "tui": {
-                    "leader_key": "ctrl+space",
-                    "keymap": {"n": "session_new"},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "tui": {
+                "leader_key": "ctrl+space",
+                "keymap": {"n": "session_new"},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     save_workspace_tui_preferences(
@@ -2860,17 +2694,15 @@ def test_save_workspace_tui_preferences_preserves_tui_leader_key_and_keymap(tmp_
 
 def test_save_workspace_tui_preferences_writes_only_local_override_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "global-config"))
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "tui": {
-                    "preferences": {
-                        "reading": {"sidebar_collapsed": True},
-                    }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "tui": {
+                "preferences": {
+                    "reading": {"sidebar_collapsed": True},
                 }
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     save_workspace_tui_preferences(
@@ -3110,10 +2942,7 @@ def test_runtime_config_uses_opencode_go_environment_credentials_without_provide
 def test_runtime_config_repo_provider_overrides_environment_provider_credentials(
     tmp_path: Path,
 ) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps({"providers": {"opencode-go": {"api_key": "repo-key"}}}),
-        encoding="utf-8",
-    )
+    _write_runtime_config(tmp_path, {"providers": {"opencode-go": {"api_key": "repo-key"}}})
 
     config = load_runtime_config(
         tmp_path,
@@ -3163,20 +2992,18 @@ def test_runtime_config_resume_prefers_persisted_session_values_over_fresh_defau
 
 
 def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "policy": {
-                    "enabled": True,
-                    "version": "v1",
-                    "tool_policy": {"default": "runtime_default"},
-                    "delegation_policy": {"default": "runtime_default", "deny": ["product"]},
-                    "hook_policy": {"allowed_event_scopes": ["pre_tool", "post_tool"]},
-                    "prompt_activation": {"enabled": True},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "policy": {
+                "enabled": True,
+                "version": "v1",
+                "tool_policy": {"default": "runtime_default"},
+                "delegation_policy": {"default": "runtime_default", "deny": ["product"]},
+                "hook_policy": {"allowed_event_scopes": ["pre_tool", "post_tool"]},
+                "prompt_activation": {"enabled": True},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})
@@ -3190,16 +3017,14 @@ def test_runtime_config_parses_policy_config_contract(tmp_path: Path) -> None:
 
 
 def test_runtime_config_policy_allows_product_delegation(tmp_path: Path) -> None:
-    runtime_config_path(tmp_path).write_text(
-        json.dumps(
-            {
-                "policy": {
-                    "version": "v1",
-                    "delegation_policy": {"allow": ["product"]},
-                }
+    _write_runtime_config(
+        tmp_path,
+        {
+            "policy": {
+                "version": "v1",
+                "delegation_policy": {"allow": ["product"]},
             }
-        ),
-        encoding="utf-8",
+        },
     )
 
     config = load_runtime_config(tmp_path, env={})

@@ -308,6 +308,10 @@ def _delegated_request(prompt: str, *, parent_session_id: str = "leader-session"
     )
 
 
+def _provider_runtime_config() -> RuntimeConfig:
+    return RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4")
+
+
 pytestmark = pytest.mark.usefixtures("force_deterministic_engine_default")
 
 
@@ -4165,7 +4169,7 @@ def test_runtime_materializes_leader_hook_preset_guidance_into_provider_context(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
     )
 
     response = runtime.run(RuntimeRequest(prompt="hello", session_id="hook-guidance"))
@@ -4307,7 +4311,7 @@ def test_runtime_materializes_plan_mode_guidance_into_provider_context_and_metad
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
     )
 
     response = runtime.run(
@@ -4353,7 +4357,7 @@ def test_runtime_rejects_invalid_mode_before_provider_execution(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
 
@@ -4383,7 +4387,7 @@ def test_runtime_rejects_removed_workflow_preset_before_provider_execution(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
 
@@ -4666,7 +4670,7 @@ def test_runtime_write_allows_empty_content_and_returns_success_payload(
     created_providers: list[_EmptyWriteThenResultAwareTurnProvider] = []
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=ModelProviderRegistry(
             providers={
                 "opencode": _EmptyWriteThenResultAwareModelProvider(
@@ -4699,7 +4703,7 @@ def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: P
     created_providers: list[_InvalidRegexGrepThenResultAwareTurnProvider] = []
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=ModelProviderRegistry(
             providers={
                 "opencode": _InvalidRegexGrepThenResultAwareModelProvider(
@@ -4740,7 +4744,7 @@ def test_runtime_todo_write_duplicate_snapshot_is_marked_unchanged(tmp_path: Pat
     created_providers: list[_DuplicateTodoThenResultAwareTurnProvider] = []
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=ModelProviderRegistry(
             providers={
                 "opencode": _DuplicateTodoThenResultAwareModelProvider(
@@ -5961,7 +5965,7 @@ def test_second_run_on_same_session_provider_messages_end_with_new_user_prompt(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
     first_run = runtime.run(RuntimeRequest(prompt="explore the repo", session_id="second-run-messages"))
@@ -7247,7 +7251,7 @@ def test_runtime_product_child_projects_only_yield_handoff_to_parent(tmp_path: P
         _ = setup_runtime.run(RuntimeRequest(prompt="leader", session_id="product-parent"))
         runtime = VoidCodeRuntime(
             workspace=root,
-            config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+            config=_provider_runtime_config(),
             model_provider_registry=registry,
         )
         started = runtime.start_background_task(
@@ -11773,7 +11777,7 @@ def test_runtime_rejects_client_supplied_workflow_metadata_on_fresh_request(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
     )
 
     with pytest.raises(
@@ -11852,7 +11856,7 @@ def test_runtime_request_context_transform_refs_reject_unknown_provider(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_SkillCapturingStubGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
     )
 
     with pytest.raises(
@@ -12086,7 +12090,7 @@ def test_runtime_background_product_delegation_starts_child_session(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-delegation-parent"))
 
@@ -12108,7 +12112,7 @@ def test_runtime_imported_product_selected_preset_starts_child_session(
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         graph=_BackgroundTaskSuccessGraph(),
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
     )
     _ = runtime.run(RuntimeRequest(prompt="leader", session_id="product-import-parent"))
 
@@ -15185,7 +15189,7 @@ def test_runtime_plan_command_keeps_leader_active_and_sets_plan_mode(tmp_path: P
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
 
@@ -16082,7 +16086,7 @@ def test_runtime_delegated_child_schema_matches_raw_allowlist_guard(tmp_path: Pa
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
 
@@ -18867,7 +18871,7 @@ def test_runtime_failed_event_preserves_provider_error_details(tmp_path: Path) -
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
 
@@ -18896,7 +18900,7 @@ def test_runtime_provider_stream_cancelled_maps_to_interrupted_without_fallback(
     )
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
-        config=RuntimeConfig(execution_engine="provider", model="opencode/gpt-5.4"),
+        config=_provider_runtime_config(),
         model_provider_registry=registry,
     )
 
