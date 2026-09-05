@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import cast
 
 from ..events import EventEnvelope
@@ -129,6 +129,40 @@ def replayed_conversation_segments_from_events(
             )
         )
     return tuple(segments)
+
+
+def replayed_conversation_segments_from_segments(
+    segments: Iterable[object],
+) -> tuple[RuntimeContextSegment, ...]:
+    """Retain provider-context segments belonging to replayed conversation history.
+
+    This is a pure projection of supplied context segments. Runtime request
+    boundaries and orchestration remain outside this context module.
+    """
+    replayed: list[RuntimeContextSegment] = []
+    for segment in segments:
+        metadata = getattr(segment, "metadata", None)
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("source") != "replayed_conversation":
+            continue
+        content = getattr(segment, "content", None)
+        if content is not None and not isinstance(content, str):
+            continue
+        role = getattr(segment, "role", None)
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+        replayed.append(
+            RuntimeContextSegment(
+                role=role,
+                content=content,
+                tool_call_id=getattr(segment, "tool_call_id", None),
+                tool_name=getattr(segment, "tool_name", None),
+                tool_arguments=getattr(segment, "tool_arguments", None),
+                metadata=dict(cast(dict[str, object], metadata)),
+            )
+        )
+    return tuple(replayed)
 
 
 def verified_checkpoint_session_metadata(

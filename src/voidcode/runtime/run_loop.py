@@ -53,6 +53,7 @@ from ..tools.question import QuestionTool
 from ..tools.runtime_context import RuntimeToolInvocationContext
 from .config import RuntimeConfig
 from .config_materializer import EffectiveRuntimeConfig
+from .context.continuity import replayed_conversation_segments_from_segments
 from .context.window import (
     ContextProjection,
     RuntimeContextSegment,
@@ -332,30 +333,7 @@ def _replayed_conversation_segments(
 ) -> tuple[RuntimeContextSegment, ...]:
     assembled_context = request.assembled_context
     segments = getattr(assembled_context, "segments", ())
-    replayed: list[RuntimeContextSegment] = []
-    for segment in segments:
-        metadata = getattr(segment, "metadata", None)
-        if not isinstance(metadata, dict):
-            continue
-        if metadata.get("source") != "replayed_conversation":
-            continue
-        content = getattr(segment, "content", None)
-        if content is not None and not isinstance(content, str):
-            continue
-        role = getattr(segment, "role", None)
-        if role not in {"system", "user", "assistant", "tool"}:
-            continue
-        replayed.append(
-            RuntimeContextSegment(
-                role=role,
-                content=content,
-                tool_call_id=getattr(segment, "tool_call_id", None),
-                tool_name=getattr(segment, "tool_name", None),
-                tool_arguments=getattr(segment, "tool_arguments", None),
-                metadata=dict(cast(dict[str, object], metadata)),
-            )
-        )
-    return tuple(replayed)
+    return replayed_conversation_segments_from_segments(segments)
 
 
 def _graph_request_without_provider_attempt(
