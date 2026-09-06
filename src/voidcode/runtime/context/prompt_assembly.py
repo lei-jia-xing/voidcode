@@ -3,7 +3,6 @@ from __future__ import annotations
 import platform
 import re
 import subprocess
-import sys
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -185,7 +184,6 @@ def build_env_card_sections(session_runtime_state: object) -> tuple[str, str]:
     model_identity = _model_identity(session_runtime_state)
     stable_lines = [
         f"Platform: {platform.system()}",
-        f"Python: {sys.version_info.major}.{sys.version_info.minor}",
         f"Model: {model_identity}",
     ]
     if workspace_root is not None:
