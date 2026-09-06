@@ -1682,6 +1682,17 @@ def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     assert ack_payload["id"] == notification_id
     assert ack_payload["status"] == "acknowledged"
     assert ack_payload["acknowledged_at"] is not None
+    assert set(ack_payload) == {
+        "id",
+        "session",
+        "kind",
+        "status",
+        "summary",
+        "event_sequence",
+        "created_at",
+        "acknowledged_at",
+        "payload",
+    }
 
     restarted_app = create_runtime_app(
         workspace=tmp_path,
@@ -1703,6 +1714,33 @@ def test_transport_lists_and_acknowledges_notifications(tmp_path: Path) -> None:
     assert restarted_notifications[0]["kind"] == "approval_blocked"
     assert restarted_notifications[0]["status"] == "acknowledged"
     assert restarted_notifications[0]["acknowledged_at"] == ack_payload["acknowledged_at"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected_status", "expected_error"),
+    (
+        ("POST", "/api/notifications", 405, "method not allowed"),
+        ("GET", "/api/notifications/missing-notification/ack", 405, "method not allowed"),
+        ("POST", "/api/notifications/missing-notification/ack", 404, "unknown notification: missing-notification"),
+    ),
+)
+def test_transport_notification_routes_enforce_methods_and_workspace_ownership(
+    tmp_path: Path,
+    method: str,
+    path: str,
+    expected_status: int,
+    expected_error: str,
+) -> None:
+    """Notification reads and writes stay within the active workspace boundary."""
+    create_runtime_app = _load_transport_app_factory()
+    response = _run_app(
+        create_runtime_app(workspace=tmp_path),
+        method=method,
+        path=path,
+    )
+
+    assert response.status == expected_status
+    assert response.json() == {"error": expected_error}
 
 
 def test_transport_round_trips_parent_session_lineage(tmp_path: Path) -> None:

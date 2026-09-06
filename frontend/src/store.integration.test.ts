@@ -7,6 +7,7 @@ import type {
   EventEnvelope,
   QuestionAnswer,
   ReviewFileDiff,
+  RuntimeNotification,
   RuntimeResponse,
   RuntimeSessionDebugSnapshot,
   RuntimeStatusSnapshot,
@@ -176,8 +177,13 @@ const runtimeClientMocks = vi.hoisted(() => ({
       () => Promise<{ provider: string; configured: boolean; models: [] }>
     >(),
   listAgentsMock: vi.fn<() => Promise<[]>>(),
+  listSkillsMock: vi.fn<() => Promise<[]>>(),
   listCommandsMock: vi.fn<() => Promise<[]>>(),
   listSessionsMock: vi.fn<() => Promise<StoredSessionSummary[]>>(),
+  listNotificationsMock: vi.fn<() => Promise<RuntimeNotification[]>>(),
+  ackNotificationMock:
+    vi.fn<(notificationId: string) => Promise<RuntimeNotification>>(),
+  resumeSessionMock: vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
   getSessionReplayMock:
     vi.fn<(sessionId: string) => Promise<RuntimeResponse>>(),
   getStatusMock: vi.fn<() => Promise<RuntimeStatusSnapshot>>(),
@@ -247,8 +253,12 @@ vi.mock("./lib/runtime/client", () => ({
     listProviders: runtimeClientMocks.listProvidersMock,
     listProviderModels: runtimeClientMocks.listProviderModelsMock,
     listAgents: runtimeClientMocks.listAgentsMock,
+    listSkills: runtimeClientMocks.listSkillsMock,
     listCommands: runtimeClientMocks.listCommandsMock,
     listSessions: runtimeClientMocks.listSessionsMock,
+    listNotifications: runtimeClientMocks.listNotificationsMock,
+    ackNotification: runtimeClientMocks.ackNotificationMock,
+    resumeSession: runtimeClientMocks.resumeSessionMock,
     getSessionReplay: runtimeClientMocks.getSessionReplayMock,
     getStatus: runtimeClientMocks.getStatusMock,
     retryMcpConnections: runtimeClientMocks.retryMcpConnectionsMock,
@@ -276,6 +286,8 @@ describe("useAppStore integration flow", () => {
     vi.clearAllMocks();
     localStorage.clear();
     vi.resetModules();
+    runtimeClientMocks.listNotificationsMock.mockResolvedValue([]);
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([]);
     runtimeClientMocks.getChildSessionContextMock.mockRejectedValue({
       status: 404,
       message: "not a delegated child",
@@ -1256,6 +1268,126 @@ describe("useAppStore integration flow", () => {
     state = useAppStore.getState();
     expect(state.currentSessionId).toBeNull();
     expect(state.replayError).toBeNull();
+  });
+
+  it("resumes interrupted sessions with the authoritative transcript, not replay", async () => {
+    const sessionId = "resume-session";
+    const previousEvent = makeEvent(
+      1,
+      "runtime.request_received",
+      {
+        prompt: "continue",
+      },
+      "runtime",
+      sessionId,
+    );
+    const resumedEvent = makeEvent(
+      2,
+      "graph.response_ready",
+      {
+        output: "continued",
+      },
+      "graph",
+      sessionId,
+    );
+    const response = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [previousEvent, resumedEvent],
+      "continued",
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "interrupted", "continue"),
+    ]);
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: makeSessionState(sessionId, "interrupted"),
+      currentSessionEvents: [previousEvent],
+      currentSessionOutput: null,
+      replayStatus: "success",
+      runStatus: "idle",
+    });
+    runtimeClientMocks.resumeSessionMock.mockResolvedValue(response);
+
+    await useAppStore.getState().resumeSession();
+
+    const state = useAppStore.getState();
+    expect(runtimeClientMocks.resumeSessionMock).toHaveBeenCalledWith(
+      sessionId,
+    );
+    expect(runtimeClientMocks.getSessionReplayMock).not.toHaveBeenCalled();
+    expect(state.currentSessionState?.status).toBe("completed");
+    expect(state.currentSessionEvents).toEqual(response.events);
+    expect(state.currentSessionOutput).toBe("continued");
+  });
+
+  it("keeps completed sessions replay-only and preserves events on resume errors", async () => {
+    const sessionId = "sealed-session";
+    const event = makeEvent(
+      1,
+      "runtime.request_received",
+      { prompt: "sealed" },
+      "runtime",
+      sessionId,
+    );
+    useAppStore.setState({
+      currentSessionId: sessionId,
+      currentSessionState: makeSessionState(sessionId, "completed"),
+      currentSessionEvents: [event],
+      currentSessionOutput: "sealed output",
+      replayStatus: "success",
+      runStatus: "idle",
+    });
+
+    await useAppStore.getState().resumeSession();
+    expect(runtimeClientMocks.resumeSessionMock).not.toHaveBeenCalled();
+
+    useAppStore.setState({
+      currentSessionState: makeSessionState(sessionId, "interrupted"),
+      currentSessionEvents: [event],
+      currentSessionOutput: "before resume",
+      resumeStatus: "idle",
+    });
+    runtimeClientMocks.resumeSessionMock.mockRejectedValueOnce(
+      new Error("resume unavailable"),
+    );
+
+    await useAppStore.getState().resumeSession();
+
+    const state = useAppStore.getState();
+    expect(state.resumeStatus).toBe("error");
+    expect(state.currentSessionEvents).toEqual([event]);
+    expect(state.currentSessionOutput).toBe("before resume");
+  });
+
+  it("ignores delayed old-workspace responses after a newer switch", async () => {
+    const staleSessions = createDeferred<StoredSessionSummary[]>();
+    const oldSession = makeStoredSessionSummary(
+      "old-workspace-session",
+      "completed",
+      "old workspace",
+    );
+    const newSession = makeStoredSessionSummary(
+      "new-workspace-session",
+      "completed",
+      "new workspace",
+    );
+    runtimeClientMocks.listSessionsMock
+      .mockImplementationOnce(() => staleSessions.promise)
+      .mockResolvedValueOnce([newSession]);
+
+    const oldSwitch = useAppStore.getState().switchWorkspace("/old");
+    await Promise.resolve();
+    const newSwitch = useAppStore.getState().switchWorkspace("/new");
+    await newSwitch;
+
+    staleSessions.resolve([oldSession]);
+    await oldSwitch;
+
+    const state = useAppStore.getState();
+    expect(state.sessions).toEqual([newSession]);
+    expect(state.sessions).not.toContainEqual(oldSession);
+    expect(state.workspaceSwitchStatus).toBe("success");
   });
 
   it("reloads runtime ops data after switching workspaces", async () => {

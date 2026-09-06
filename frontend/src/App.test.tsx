@@ -162,6 +162,42 @@ describe("App", () => {
     });
   });
 
+  it("renders runtime notification empty and error states without inventing entries", () => {
+    const workspaceStore = {
+      ...mockStore,
+      workspaces: {
+        current: {
+          path: "/workspace",
+          label: "workspace",
+          available: true,
+          current: true,
+          last_opened_at: 1,
+        },
+        recent: [],
+        candidates: [],
+      },
+      notifications: [],
+      notificationsStatus: "success",
+      notificationsError: null,
+    };
+    const storeMock = useAppStore as unknown as {
+      mockReturnValue: (value: unknown) => void;
+    };
+    storeMock.mockReturnValue(workspaceStore);
+
+    const { rerender } = render(<App />);
+    expect(screen.getByText("No notifications.")).toBeInTheDocument();
+    expect(screen.queryByText("Acknowledge")).not.toBeInTheDocument();
+
+    storeMock.mockReturnValue({
+      ...workspaceStore,
+      notificationsStatus: "error",
+      notificationsError: "notification load failed",
+    });
+    rerender(<App />);
+    expect(screen.getByText("notification load failed")).toBeInTheDocument();
+  });
+
   it("loads runtime-owned settings on startup", () => {
     render(<App />);
 

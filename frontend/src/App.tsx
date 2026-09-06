@@ -162,6 +162,14 @@ function App() {
     currentSessionOutput,
     currentSessionState,
     loadSessions,
+    loadNotifications = undefined,
+    notifications = [],
+    notificationsStatus = "idle",
+    notificationsError = null,
+    ackNotification = undefined,
+    resumeSession = undefined,
+    resumeStatus = "idle",
+    resumeError = null,
     sessionsStatus,
     sessionsError,
     selectSession,
@@ -245,6 +253,14 @@ function App() {
         event.event_type === "runtime.approval_requested" ||
         event.event_type === "runtime.question_requested",
     );
+  const pendingNotifications = notifications.filter(
+    (notification) => notification.status === "unread",
+  );
+  const currentSessionResumable =
+    currentSessionState?.status === "interrupted" ||
+    (currentSessionState?.status === "failed" &&
+      sessionDebug?.resumable === true);
+  const isResumeLoading = resumeStatus === "loading";
   const isWaitingQuestion =
     currentSessionState?.status === "waiting" &&
     latestWaitingEvent?.event_type === "runtime.question_requested";
@@ -479,6 +495,7 @@ function App() {
     loadBackgroundTasks,
     selectSession,
   ]);
+
   useEffect(() => {
     if (showContext && currentSessionId) {
       void loadSessionDebug(currentSessionId);
@@ -494,12 +511,14 @@ function App() {
     void loadSettings?.();
     void loadStatus?.();
     void loadBackgroundTasks?.();
+    void loadNotifications?.();
   }, [
     loadAgents,
     loadSkills,
     loadCommands,
     loadProviders,
     loadBackgroundTasks,
+    loadNotifications,
     loadSettings,
     loadStatus,
     loadWorkspaces,
@@ -800,6 +819,86 @@ function App() {
                 <div className="vc-model-working-bar" />
               </output>
             )}
+            {(notificationsStatus !== "idle" ||
+              pendingNotifications.length > 0) && (
+              <section
+                aria-label={t("runtimeOps.notifications")}
+                className="flex-shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2"
+              >
+                <div className="mx-auto flex max-w-[var(--vc-chat-content-width)] flex-col gap-2 text-xs">
+                  {notificationsStatus === "loading" ? (
+                    <p className="text-[var(--vc-text-muted)]">
+                      {t("runtimeOps.loading")}
+                    </p>
+                  ) : null}
+                  {notificationsError ? (
+                    <p className="text-[var(--vc-danger-text)]">
+                      {notificationsError}
+                    </p>
+                  ) : null}
+                  {notificationsStatus === "success" &&
+                  pendingNotifications.length === 0 ? (
+                    <p className="text-[var(--vc-text-muted)]">
+                      {t("runtimeOps.noNotifications")}
+                    </p>
+                  ) : null}
+                  {pendingNotifications.map((notification) => (
+                    <div
+                      key={notification.id}
+                      className="flex flex-wrap items-center justify-between gap-3"
+                    >
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left text-[var(--vc-text-primary)] hover:underline"
+                        onClick={() =>
+                          void selectSession(notification.session.id)
+                        }
+                      >
+                        <span className="mr-2 rounded bg-[var(--vc-surface-2)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--vc-text-subtle)]">
+                          {notification.kind}
+                        </span>
+                        {notification.summary}
+                      </button>
+                      <ControlButton
+                        compact
+                        variant="ghost"
+                        onClick={() => {
+                          if (ackNotification)
+                            void ackNotification(notification.id);
+                        }}
+                        disabled={notificationsStatus === "loading"}
+                      >
+                        {t("runtimeOps.acknowledge")}
+                      </ControlButton>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            {currentSessionResumable && !displayedIsChildSession ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs">
+                <span className="text-[var(--vc-text-muted)]">
+                  {t("session.resumePrompt")}
+                </span>
+                <ControlButton
+                  compact
+                  variant="secondary"
+                  disabled={isResumeLoading || !resumeSession}
+                  onClick={() => {
+                    if (resumeSession) void resumeSession(currentSessionId);
+                  }}
+                >
+                  {isResumeLoading
+                    ? t("session.resuming")
+                    : t("session.resume")}
+                </ControlButton>
+              </div>
+            ) : null}
+            {resumeError ? (
+              <div className="flex-shrink-0 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">
+                {t("session.resumeError", { message: resumeError })}
+              </div>
+            ) : null}
 
             {replayError && (
               <div className="flex flex-wrap items-center justify-between gap-3 flex-shrink-0 bg-[var(--vc-surface-1)] border-b border-[color:var(--vc-border-subtle)] px-4 py-2 text-xs text-[var(--vc-danger-text)]">

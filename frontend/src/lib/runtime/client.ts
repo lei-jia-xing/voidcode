@@ -11,6 +11,7 @@ import {
   RuntimeRequest,
   StoredSessionSummary,
   RuntimeResponse,
+  RuntimeResumeResponse,
   RuntimeInterruptResult,
   RuntimeStreamChunk,
   ApprovalDecision,
@@ -26,6 +27,7 @@ import {
   ReviewFileDiff,
   WorkspaceRegistrySnapshot,
   WorkspaceReviewSnapshot,
+  RuntimeNotification,
 } from "./types";
 
 import { SseFrameParser, parseSseDataPayload } from "./sse-parser";
@@ -137,6 +139,23 @@ export class RuntimeClient {
     return res.json();
   }
 
+  static async listNotifications(): Promise<RuntimeNotification[]> {
+    const res = await fetch(`/api/notifications`);
+    await expectOk(res, "Failed to load notifications");
+    return res.json();
+  }
+
+  static async ackNotification(
+    notificationId: string,
+  ): Promise<RuntimeNotification> {
+    const res = await fetch(
+      `/api/notifications/${encodeURIComponent(notificationId)}/ack`,
+      { method: "POST" },
+    );
+    await expectOk(res, "Failed to acknowledge notification");
+    return res.json();
+  }
+
   static async listSessions(): Promise<StoredSessionSummary[]> {
     const res = await fetch(`/api/sessions`);
     await expectOk(res, "Failed to list sessions");
@@ -219,6 +238,17 @@ export class RuntimeClient {
   static async getReviewDiff(path: string): Promise<ReviewFileDiff> {
     const res = await fetch(`/api/review/diff/${encodePathSegments(path)}`);
     await expectOk(res, "Failed to load review diff");
+    return res.json();
+  }
+
+  static async resumeSession(
+    sessionId: string,
+  ): Promise<RuntimeResumeResponse> {
+    const res = await fetch(
+      withShowThinking(`/api/sessions/${encodeURIComponent(sessionId)}/resume`),
+      { method: "POST" },
+    );
+    await expectOk(res, "Failed to resume session");
     return res.json();
   }
 

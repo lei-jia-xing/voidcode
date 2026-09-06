@@ -26,6 +26,7 @@ import {
   ReviewFileDiff,
   WorkspaceRegistrySnapshot,
   WorkspaceReviewSnapshot,
+  RuntimeNotification,
 } from "../lib/runtime/types";
 
 const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
@@ -35,6 +36,8 @@ const DEFAULT_SESSION_SIDEBAR_WIDTH = 344;
 // deterministically tear down the stream. Module scope (not store state) keeps
 // the controller out of the persisted store.
 let activeRunAbortController: AbortController | null = null;
+let notificationsRequestId = 0;
+let workspaceGeneration = 0;
 
 type PersistedAppState = Pick<
   AppState,
@@ -119,6 +122,11 @@ interface AppState {
   sessionDebugError: string | null;
   replayRequestId: number;
   replayTargetSessionId: string | null;
+  notifications: RuntimeNotification[];
+  notificationsStatus: AsyncStatus;
+  notificationsError: string | null;
+  resumeStatus: AsyncStatus;
+  resumeError: string | null;
 
   settings: RuntimeSettings | null;
   settingsStatus: "idle" | "loading" | "success" | "error";
@@ -160,6 +168,9 @@ interface AppState {
   loadBackgroundTasks: () => Promise<void>;
   loadBackgroundTaskOutput: (taskId: string | null) => Promise<void>;
   loadSessionDebug: (sessionId?: string | null) => Promise<void>;
+  loadNotifications: () => Promise<void>;
+  ackNotification: (notificationId: string) => Promise<void>;
+  resumeSession: (sessionId?: string | null) => Promise<void>;
   refreshAfterMutation: (
     options?: RefreshAfterMutationOptions,
   ) => Promise<void>;
@@ -339,6 +350,7 @@ type RefreshAfterMutationOptions = {
   status?: boolean;
   review?: boolean;
   backgroundTasks?: boolean;
+  notifications?: boolean;
   debug?: boolean;
   sessionId?: string | null;
 };
@@ -351,6 +363,7 @@ export const useAppStore = create<AppState>()(
         status = false,
         review = false,
         backgroundTasks = false,
+        notifications = false,
         debug = false,
         sessionId,
       } = {}) => {
@@ -359,6 +372,7 @@ export const useAppStore = create<AppState>()(
         if (status) refreshes.push(get().loadStatus());
         if (review) refreshes.push(get().loadReview());
         if (backgroundTasks) refreshes.push(get().loadBackgroundTasks());
+        if (notifications) refreshes.push(get().loadNotifications());
         if (debug) {
           const targetSessionId = sessionId ?? get().currentSessionId;
           if (targetSessionId) {
@@ -426,6 +440,11 @@ export const useAppStore = create<AppState>()(
       approvalError: null,
       questionStatus: "idle",
       questionError: null,
+      notifications: [],
+      notificationsStatus: "idle",
+      notificationsError: null,
+      resumeStatus: "idle",
+      resumeError: null,
       backgroundTasks: [],
       backgroundTasksStatus: "idle",
       backgroundTasksError: null,
@@ -447,11 +466,12 @@ export const useAppStore = create<AppState>()(
       setAgentPreset: (agentPreset) => set({ agentPreset }),
       setProviderModel: (providerModel) => set({ providerModel }),
       setReasoningEffort: (reasoningEffort) => set({ reasoningEffort }),
-
       loadWorkspaces: async () => {
+        const generation = workspaceGeneration;
         set({ workspacesStatus: "loading", workspacesError: null });
         try {
           const workspaces = await RuntimeClient.listWorkspaces();
+          if (generation !== workspaceGeneration) return;
           set({
             workspaces,
             workspacesStatus: "success",
@@ -462,6 +482,7 @@ export const useAppStore = create<AppState>()(
             workspaceSwitchError: null,
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             workspacesStatus: "error",
             workspacesError: errorMessage(err),
@@ -476,13 +497,14 @@ export const useAppStore = create<AppState>()(
           });
         }
       },
-
       switchWorkspace: async (path) => {
+        const generation = ++workspaceGeneration;
         // A workspace switch invalidates every in-flight local stream. Abort
         // it before replacing state and bump the replay token so late chunks
         // cannot leak into the new workspace.
         activeRunAbortController?.abort();
         activeRunAbortController = null;
+        notificationsRequestId += 1;
         set({
           replayRequestId: get().replayRequestId + 1,
           runStatus: "idle",
@@ -490,9 +512,15 @@ export const useAppStore = create<AppState>()(
           cancelRequested: false,
           workspaceSwitchStatus: "loading",
           workspaceSwitchError: null,
+          notifications: [],
+          notificationsStatus: "idle",
+          notificationsError: null,
+          resumeStatus: "idle",
+          resumeError: null,
         });
         try {
           const workspaces = await RuntimeClient.openWorkspace(path);
+          if (generation !== workspaceGeneration) return;
           set({
             workspaces,
             workspacesStatus: "success",
@@ -543,6 +571,9 @@ export const useAppStore = create<AppState>()(
             sessions: [],
             sessionsStatus: "idle",
             sessionsError: null,
+            notifications: [],
+            notificationsStatus: "idle",
+            notificationsError: null,
             backgroundTasks: [],
             backgroundTasksStatus: "idle",
             backgroundTasksError: null,
@@ -563,8 +594,10 @@ export const useAppStore = create<AppState>()(
             get().loadStatus(),
             get().loadReview(),
             get().loadBackgroundTasks(),
+            get().loadNotifications(),
           ]);
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             workspaceSwitchStatus: "error",
             workspaceSwitchError: errorMessage(err),
@@ -573,6 +606,7 @@ export const useAppStore = create<AppState>()(
       },
 
       loadProviders: async () => {
+        const generation = workspaceGeneration;
         set({ providersStatus: "loading", providersError: null });
         try {
           const providers = await RuntimeClient.listProviders();
@@ -593,6 +627,7 @@ export const useAppStore = create<AppState>()(
             providers,
             providerModels,
           );
+          if (generation !== workspaceGeneration) return;
           set({
             providers,
             providersStatus: "success",
@@ -601,6 +636,7 @@ export const useAppStore = create<AppState>()(
             providerModel: normalizedProviderModel,
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             providersStatus: "error",
             providersError: errorMessage(err),
@@ -609,12 +645,14 @@ export const useAppStore = create<AppState>()(
       },
 
       loadAgents: async () => {
+        const generation = workspaceGeneration;
         set({ agentsStatus: "loading", agentsError: null });
         try {
           const agentPresets = await RuntimeClient.listAgents();
           const selectableAgentPresets = agentPresets.filter(
             (agent) => agent.selectable !== false,
           );
+          if (generation !== workspaceGeneration) return;
           set({
             agentPresets,
             agentsStatus: "success",
@@ -626,40 +664,45 @@ export const useAppStore = create<AppState>()(
               : (selectableAgentPresets[0]?.id ?? "leader"),
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             agentsStatus: "error",
             agentsError: errorMessage(err),
           });
         }
       },
-
       loadSkills: async () => {
+        const generation = workspaceGeneration;
         set({ skillsStatus: "loading", skillsError: null });
         try {
           const skills = await RuntimeClient.listSkills();
+          if (generation !== workspaceGeneration) return;
           set({
             skills,
             skillsStatus: "success",
             skillsError: null,
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             skillsStatus: "error",
             skillsError: errorMessage(err),
           });
         }
       },
-
       loadCommands: async () => {
+        const generation = workspaceGeneration;
         set({ commandsStatus: "loading", commandsError: null });
         try {
           const commands = await RuntimeClient.listCommands();
+          if (generation !== workspaceGeneration) return;
           set({
             commands,
             commandsStatus: "success",
             commandsError: null,
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             commandsStatus: "error",
             commandsError: errorMessage(err),
@@ -669,6 +712,7 @@ export const useAppStore = create<AppState>()(
 
       validateProviderCredentials: async (providerName) => {
         if (!providerName) return;
+        const generation = workspaceGeneration;
         set((state) => ({
           providerValidationStatus: {
             ...state.providerValidationStatus,
@@ -682,6 +726,7 @@ export const useAppStore = create<AppState>()(
         try {
           const result =
             await RuntimeClient.validateProviderCredentials(providerName);
+          if (generation !== workspaceGeneration) return;
           set((state) => ({
             providerValidationResults: {
               ...state.providerValidationResults,
@@ -697,6 +742,7 @@ export const useAppStore = create<AppState>()(
             },
           }));
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set((state) => ({
             providerValidationStatus: {
               ...state.providerValidationStatus,
@@ -711,9 +757,11 @@ export const useAppStore = create<AppState>()(
       },
 
       loadStatus: async () => {
+        const generation = workspaceGeneration;
         set({ statusStatus: "loading", statusError: null });
         try {
           const statusSnapshot = await RuntimeClient.getStatus();
+          if (generation !== workspaceGeneration) return;
           set({
             statusSnapshot,
             statusStatus: "success",
@@ -725,6 +773,7 @@ export const useAppStore = create<AppState>()(
             mcpRetryError: null,
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             statusStatus: "error",
             statusError: errorMessage(err),
@@ -741,9 +790,11 @@ export const useAppStore = create<AppState>()(
       },
 
       retryMcpConnections: async () => {
+        const generation = workspaceGeneration;
         set({ mcpRetryStatus: "loading", mcpRetryError: null });
         try {
           const statusSnapshot = await RuntimeClient.retryMcpConnections();
+          if (generation !== workspaceGeneration) return;
           set({
             statusSnapshot,
             statusStatus: "success",
@@ -752,6 +803,7 @@ export const useAppStore = create<AppState>()(
             mcpRetryError: null,
           });
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             mcpRetryStatus: "error",
             mcpRetryError: errorMessage(err),
@@ -760,9 +812,11 @@ export const useAppStore = create<AppState>()(
       },
 
       loadReview: async () => {
+        const generation = workspaceGeneration;
         set({ reviewStatus: "loading", reviewError: null });
         try {
           const reviewSnapshot = await RuntimeClient.getReview();
+          if (generation !== workspaceGeneration) return;
           const selectedPath = get().reviewSelectedPath;
           const treeFallbackPath = firstTreeFilePath(reviewSnapshot.tree);
           const nextSelectedPath =
@@ -782,10 +836,11 @@ export const useAppStore = create<AppState>()(
             reviewDiffStatus: nextSelectedPath ? "idle" : "success",
             reviewDiffError: null,
           });
-          if (nextSelectedPath) {
+          if (nextSelectedPath && generation === workspaceGeneration) {
             await get().selectReviewPath(nextSelectedPath);
           }
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             reviewStatus: "error",
             reviewError: errorMessage(err),
@@ -794,6 +849,7 @@ export const useAppStore = create<AppState>()(
       },
 
       selectReviewPath: async (path) => {
+        const generation = workspaceGeneration;
         if (!path) {
           set({
             reviewSelectedPath: null,
@@ -810,7 +866,10 @@ export const useAppStore = create<AppState>()(
         });
         try {
           const reviewDiff = await RuntimeClient.getReviewDiff(path);
-          if (get().reviewSelectedPath !== path) {
+          if (
+            generation !== workspaceGeneration ||
+            get().reviewSelectedPath !== path
+          ) {
             return;
           }
           set({
@@ -819,7 +878,10 @@ export const useAppStore = create<AppState>()(
             reviewDiffError: null,
           });
         } catch (err) {
-          if (get().reviewSelectedPath !== path) {
+          if (
+            generation !== workspaceGeneration ||
+            get().reviewSelectedPath !== path
+          ) {
             return;
           }
           set({
@@ -836,9 +898,11 @@ export const useAppStore = create<AppState>()(
         set({ sessionSidebarWidth }),
 
       loadSessions: async () => {
+        const generation = workspaceGeneration;
         set({ sessionsStatus: "loading", sessionsError: null });
         try {
           const sessions = await RuntimeClient.listSessions();
+          if (generation !== workspaceGeneration) return;
           const { currentSessionId, childSessionParentId } = get();
 
           if (
@@ -862,9 +926,73 @@ export const useAppStore = create<AppState>()(
             set({ sessions, sessionsStatus: "success" });
           }
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             sessionsStatus: "error",
             sessionsError: errorMessage(err),
+          });
+        }
+      },
+      loadNotifications: async () => {
+        const generation = workspaceGeneration;
+        const requestId = ++notificationsRequestId;
+        set({ notificationsStatus: "loading", notificationsError: null });
+        try {
+          const notifications = await RuntimeClient.listNotifications();
+          if (
+            generation !== workspaceGeneration ||
+            requestId !== notificationsRequestId
+          ) {
+            return;
+          }
+          set({
+            notifications,
+            notificationsStatus: "success",
+            notificationsError: null,
+          });
+        } catch (err) {
+          if (
+            generation !== workspaceGeneration ||
+            requestId !== notificationsRequestId
+          ) {
+            return;
+          }
+          set({
+            notificationsStatus: "error",
+            notificationsError: errorMessage(err),
+          });
+        }
+      },
+      ackNotification: async (notificationId) => {
+        const generation = workspaceGeneration;
+        const requestId = ++notificationsRequestId;
+        set({ notificationsStatus: "loading", notificationsError: null });
+        try {
+          const acknowledged =
+            await RuntimeClient.ackNotification(notificationId);
+          if (
+            generation !== workspaceGeneration ||
+            requestId !== notificationsRequestId
+          ) {
+            return;
+          }
+          set((state) => ({
+            notifications: state.notifications.map((notification) =>
+              notification.id === acknowledged.id ? acknowledged : notification,
+            ),
+            notificationsStatus: "success",
+            notificationsError: null,
+          }));
+        } catch (err) {
+          if (
+            generation !== workspaceGeneration ||
+            requestId !== notificationsRequestId
+          ) {
+            return;
+          }
+          set({
+            notificationsStatus: "error",
+            notificationsError: errorMessage(err),
           });
         }
       },
@@ -993,7 +1121,10 @@ export const useAppStore = create<AppState>()(
               replayStatus: "success",
               replayError: null,
             });
-            await get().loadBackgroundTasks();
+            await Promise.all([
+              get().loadBackgroundTasks(),
+              get().loadNotifications(),
+            ]);
             return;
           } catch (error) {
             const message = errorMessage(error).toLowerCase();
@@ -1029,7 +1160,10 @@ export const useAppStore = create<AppState>()(
             replayError: null,
             replayTargetSessionId: null,
           });
-          await get().loadBackgroundTasks();
+          await Promise.all([
+            get().loadBackgroundTasks(),
+            get().loadNotifications(),
+          ]);
         } catch (err) {
           if (
             get().replayRequestId !== requestId ||
@@ -1062,11 +1196,84 @@ export const useAppStore = create<AppState>()(
           });
         }
       },
+      resumeSession: async (sessionId) => {
+        const generation = workspaceGeneration;
+        const targetSessionId = sessionId ?? get().currentSessionId;
+        const currentSessionState = get().currentSessionState;
+        const isResumable =
+          currentSessionState?.status === "interrupted" ||
+          (currentSessionState?.status === "failed" &&
+            get().sessionDebug?.resumable === true);
+        if (
+          !targetSessionId ||
+          !isResumable ||
+          get().resumeStatus === "loading" ||
+          isRunLocked(get().runStatus) ||
+          get().replayStatus === "loading" ||
+          get().currentSessionId !== targetSessionId
+        ) {
+          return;
+        }
+        const requestId = get().replayRequestId + 1;
+        set({
+          resumeStatus: "loading",
+          resumeError: null,
+          replayRequestId: requestId,
+          replayStatus: "loading",
+          replayError: null,
+          replayTargetSessionId: targetSessionId,
+          runError: null,
+        });
+        try {
+          const response = await RuntimeClient.resumeSession(targetSessionId);
+          if (
+            generation !== workspaceGeneration ||
+            get().replayRequestId !== requestId ||
+            get().currentSessionId !== targetSessionId
+          ) {
+            return;
+          }
+          set({
+            currentSessionState: response.session,
+            currentSessionEvents: response.events,
+            currentSessionOutput: response.output,
+            replayStatus: "success",
+            replayError: null,
+            replayTargetSessionId: null,
+            runStatus: runStatusForReplay(response.session),
+            runOrigin:
+              response.session.status === "running" ? "external" : null,
+            resumeStatus: "success",
+            resumeError: null,
+          });
+          await Promise.all([
+            get().loadSessions(),
+            get().loadNotifications(),
+            get().loadBackgroundTasks(),
+          ]);
+        } catch (err) {
+          if (
+            generation !== workspaceGeneration ||
+            get().replayRequestId !== requestId ||
+            get().currentSessionId !== targetSessionId
+          ) {
+            return;
+          }
+          set({
+            resumeStatus: "error",
+            resumeError: errorMessage(err),
+            replayStatus: "success",
+            replayError: null,
+            replayTargetSessionId: null,
+          });
+        }
+      },
 
       runTask: async (prompt: string, options) => {
         if (get().replayStatus === "loading" || isRunLocked(get().runStatus)) {
           return;
         }
+        const generation = workspaceGeneration;
 
         const nextReplayRequestId = get().replayRequestId + 1;
         const abortController = new AbortController();
@@ -1166,7 +1373,11 @@ export const useAppStore = create<AppState>()(
           let streamFailureMessage: string | null = null;
           let streamInterrupted = false;
           for await (const chunk of stream) {
-            if (get().replayRequestId !== nextReplayRequestId) return;
+            if (
+              generation !== workspaceGeneration ||
+              get().replayRequestId !== nextReplayRequestId
+            )
+              return;
             if (chunk.event) {
               streamInterrupted =
                 isRuntimeCancellationEvent(chunk.event) || streamInterrupted;
@@ -1176,7 +1387,11 @@ export const useAppStore = create<AppState>()(
               );
             }
             set((state) => {
-              if (state.replayRequestId !== nextReplayRequestId) return state;
+              if (
+                generation !== workspaceGeneration ||
+                state.replayRequestId !== nextReplayRequestId
+              )
+                return state;
               const newEvents = chunk.event
                 ? [...state.currentSessionEvents, chunk.event]
                 : state.currentSessionEvents;
@@ -1206,6 +1421,7 @@ export const useAppStore = create<AppState>()(
           const failed =
             !interrupted &&
             (streamFailureMessage !== null || sessionStatus === "failed");
+          if (generation !== workspaceGeneration) return;
           set({
             runStatus: interrupted ? "idle" : failed ? "error" : "success",
             runError: failed
@@ -1218,11 +1434,16 @@ export const useAppStore = create<AppState>()(
             status: true,
             review: true,
             backgroundTasks: true,
+            notifications: true,
             debug: true,
             sessionId: get().currentSessionId,
           });
         } catch (err) {
-          if (get().replayRequestId !== nextReplayRequestId) return;
+          if (
+            generation !== workspaceGeneration ||
+            get().replayRequestId !== nextReplayRequestId
+          )
+            return;
           // A torn-down stream during a user interrupt surfaces as an
           // AbortError (or any rejection once the cancel flag is set), and the
           // backend session row may already be interrupted.
@@ -1446,6 +1667,7 @@ export const useAppStore = create<AppState>()(
       },
 
       loadBackgroundTasks: async () => {
+        const generation = workspaceGeneration;
         const scopedSessionId =
           get().childSessionParentId ?? get().currentSessionId;
         set({ backgroundTasksStatus: "loading", backgroundTasksError: null });
@@ -1454,8 +1676,9 @@ export const useAppStore = create<AppState>()(
             ? await RuntimeClient.listSessionBackgroundTasks(scopedSessionId)
             : await RuntimeClient.listBackgroundTasks();
           if (
+            generation !== workspaceGeneration ||
             (get().childSessionParentId ?? get().currentSessionId) !==
-            scopedSessionId
+              scopedSessionId
           ) {
             return;
           }
@@ -1478,14 +1701,15 @@ export const useAppStore = create<AppState>()(
             });
           }
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             backgroundTasksStatus: "error",
             backgroundTasksError: errorMessage(err),
           });
         }
       },
-
       loadBackgroundTaskOutput: async (taskId) => {
+        const generation = workspaceGeneration;
         if (!taskId) {
           set({
             selectedBackgroundTaskOutputId: null,
@@ -1506,7 +1730,10 @@ export const useAppStore = create<AppState>()(
         try {
           const backgroundTaskOutput =
             await RuntimeClient.getBackgroundTaskOutput(taskId);
-          if (get().selectedBackgroundTaskOutputId !== taskId) {
+          if (
+            generation !== workspaceGeneration ||
+            get().selectedBackgroundTaskOutputId !== taskId
+          ) {
             return;
           }
           set({
@@ -1515,7 +1742,10 @@ export const useAppStore = create<AppState>()(
             backgroundTaskOutputError: null,
           });
         } catch (err) {
-          if (get().selectedBackgroundTaskOutputId !== taskId) {
+          if (
+            generation !== workspaceGeneration ||
+            get().selectedBackgroundTaskOutputId !== taskId
+          ) {
             return;
           }
           set({
@@ -1527,6 +1757,7 @@ export const useAppStore = create<AppState>()(
       },
 
       loadSessionDebug: async (sessionId) => {
+        const generation = workspaceGeneration;
         const targetSessionId = sessionId ?? get().currentSessionId;
         if (!targetSessionId) {
           set({
@@ -1540,14 +1771,24 @@ export const useAppStore = create<AppState>()(
         try {
           const sessionDebug =
             await RuntimeClient.getSessionDebug(targetSessionId);
-          if (get().currentSessionId !== targetSessionId) return;
+          if (
+            generation !== workspaceGeneration ||
+            get().currentSessionId !== targetSessionId
+          ) {
+            return;
+          }
           set({
             sessionDebug,
             sessionDebugStatus: "success",
             sessionDebugError: null,
           });
         } catch (err) {
-          if (get().currentSessionId !== targetSessionId) return;
+          if (
+            generation !== workspaceGeneration ||
+            get().currentSessionId !== targetSessionId
+          ) {
+            return;
+          }
           set({
             sessionDebug: null,
             sessionDebugStatus: "error",
@@ -1555,16 +1796,18 @@ export const useAppStore = create<AppState>()(
           });
         }
       },
-
       loadSettings: async () => {
+        const generation = workspaceGeneration;
         set({ settingsStatus: "loading", settingsError: null });
         try {
           const settings = await RuntimeClient.getSettings();
+          if (generation !== workspaceGeneration) return;
           set({ settings, settingsStatus: "success" });
           if (settings.model && !get().providerModel.trim()) {
             set({ providerModel: settings.model });
           }
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             settingsStatus: "error",
             settingsError: errorMessage(err),
@@ -1573,9 +1816,11 @@ export const useAppStore = create<AppState>()(
       },
 
       updateSettings: async (settings) => {
+        const generation = workspaceGeneration;
         set({ settingsStatus: "loading", settingsError: null });
         try {
           const updated = await RuntimeClient.updateSettings(settings);
+          if (generation !== workspaceGeneration) return;
           set({
             settings: updated,
             settingsStatus: "success",
@@ -1589,6 +1834,7 @@ export const useAppStore = create<AppState>()(
           await get().loadProviders();
           await get().loadStatus();
         } catch (err) {
+          if (generation !== workspaceGeneration) return;
           set({
             settingsStatus: "error",
             settingsError: errorMessage(err),

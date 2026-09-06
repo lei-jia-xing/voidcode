@@ -428,4 +428,63 @@ describe("RuntimeClient integration contract", () => {
     expect(steered.task.task.id).toBe("task/steer");
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+  it("loads and acknowledges notifications, and resumes explicitly without replay", async () => {
+    const notification = {
+      id: "notification-1",
+      session: { id: "session-1" },
+      kind: "completion",
+      status: "unread",
+      summary: "Session completed",
+      event_sequence: 4,
+      created_at: 10,
+      acknowledged_at: null,
+      payload: {},
+    };
+    const response = {
+      session: {
+        session: { id: "session-1" },
+        status: "completed",
+        turn: 2,
+        metadata: {},
+      },
+      events: [],
+      output: "resumed",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === "/api/notifications") {
+          expect(init).toBeUndefined();
+          return { ok: true, json: async () => [notification] } as Response;
+        }
+        if (url === "/api/notifications/notification-1/ack") {
+          expect(init?.method).toBe("POST");
+          return {
+            ok: true,
+            json: async () => ({ ...notification, status: "acknowledged" }),
+          } as Response;
+        }
+        if (url.startsWith("/api/sessions/session-1/resume")) {
+          expect(init?.method).toBe("POST");
+          expect(init?.body).toBeUndefined();
+          return { ok: true, json: async () => response } as Response;
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      });
+
+    await expect(RuntimeClient.listNotifications()).resolves.toEqual([
+      notification,
+    ]);
+    await expect(
+      RuntimeClient.ackNotification("notification-1"),
+    ).resolves.toMatchObject({
+      status: "acknowledged",
+    });
+    await expect(RuntimeClient.resumeSession("session-1")).resolves.toEqual(
+      response,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/sessions/session-1");
+  });
 });

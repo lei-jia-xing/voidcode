@@ -279,6 +279,9 @@ export interface RuntimeResponse {
   output: string | null;
 }
 
+/** The explicit resume endpoint returns the same authoritative snapshot shape. */
+export type RuntimeResumeResponse = RuntimeResponse;
+
 export interface RuntimeInterruptResult {
   session_id: string;
   status: "interrupted" | "not_active" | "stale";
@@ -321,9 +324,9 @@ export interface RuntimeNotification {
     | "question_blocked";
   status: "unread" | "acknowledged";
   summary: string;
-  event_sequence?: number | null;
+  event_sequence: number;
   created_at: number;
-  acknowledged_at?: number | null;
+  acknowledged_at: number | null;
   payload: Record<string, unknown>;
 }
 
