@@ -1071,6 +1071,29 @@ export function deriveChatMessages(
           applyRawToolEvent(currentAssistant, event, diffPreviewState);
         }
       }
+    } else if (event.event_type === "runtime.todo_updated") {
+      if (currentAssistant) {
+        const existingTodo = [...currentAssistant.tools]
+          .reverse()
+          .find((tool) => tool.name === "todo");
+        if (existingTodo) {
+          existingTodo.status = "completed";
+          existingTodo.result = event.payload;
+          existingTodo.content = null;
+        } else {
+          upsertTool(
+            currentAssistant,
+            {
+              id: `runtime-todo-${event.sequence}`,
+              name: "todo",
+              status: "completed",
+              result: event.payload,
+              content: null,
+            },
+            event.sequence,
+          );
+        }
+      }
     } else if (event.event_type === "runtime.approval_requested") {
       if (currentAssistant) {
         const blockedTool = String(event.payload?.tool || "");

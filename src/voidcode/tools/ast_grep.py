@@ -142,7 +142,9 @@ def _run_preview_replace(
 class AstGrepTool:
     definition: ClassVar[ToolDefinition] = ToolDefinition(
         name="ast_grep",
-        description="Structural code search and rewrite with ast-grep.",
+        description=(
+            "Structural code search and rewrite with ast-grep. Search and preview are read operations; replace mutates files and requires approval."
+        ),
         input_schema={
             "mode": {"type": "string", "enum": ["search", "preview", "replace"], "description": "AST operation to perform."},
             "pattern": {"type": "string", "minLength": 1, "description": "ast-grep pattern."},
@@ -152,7 +154,8 @@ class AstGrepTool:
             "apply": {"type": "boolean"},
             "required": ["mode", "pattern", "path"],
         },
-        read_only=True,
+        read_only=False,
+        replay_policy="never",
     )
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
@@ -207,11 +210,7 @@ class AstGrepTool:
 
         completed = _run_ast_grep(cmd=cmd, workspace=workspace, timeout_seconds=timeout_seconds)
         if isinstance(completed, ToolResult):
-            return ToolResult(
-                tool_name=self.definition.name,
-                status=completed.status,
-                error=completed.error,
-            )
+            return ToolResult(tool_name=self.definition.name, status=completed.status, error=completed.error)
 
         if _is_no_match_result(completed):
             matches: list[dict[str, Any]] = []
@@ -220,11 +219,10 @@ class AstGrepTool:
             matches = _parse_stream_output(completed.stdout)
 
         match_count = len(matches)
-        summary = f"Found {match_count} AST match(es) in {relative_path}"
         return ToolResult(
             tool_name=self.definition.name,
             status="ok",
-            content=summary,
+            content=f"Found {match_count} AST match(es) in {relative_path}",
             data={
                 "path": relative_path,
                 "pattern": args.pattern,
@@ -253,11 +251,7 @@ class AstGrepTool:
             timeout_seconds=timeout_seconds,
         )
         if isinstance(preview, ToolResult):
-            return ToolResult(
-                tool_name=self.definition.name,
-                status=preview.status,
-                error=preview.error,
-            )
+            return ToolResult(tool_name=self.definition.name, status=preview.status, error=preview.error)
         relative_path, matches, replacement_count = preview
 
         if args.mode == "preview":
@@ -278,22 +272,13 @@ class AstGrepTool:
                 },
             )
 
-        # replace mode
         apply_cmd = ["ast-grep", "run", "-p", args.pattern, "-r", (args.rewrite or "")]
         if args.lang:
             apply_cmd.extend(["--lang", args.lang])
         apply_cmd.extend(["-U", relative_path])
-        completed = _run_ast_grep(
-            cmd=apply_cmd,
-            workspace=workspace,
-            timeout_seconds=timeout_seconds,
-        )
+        completed = _run_ast_grep(cmd=apply_cmd, workspace=workspace, timeout_seconds=timeout_seconds)
         if isinstance(completed, ToolResult):
-            return ToolResult(
-                tool_name=self.definition.name,
-                status=completed.status,
-                error=completed.error,
-            )
+            return ToolResult(tool_name=self.definition.name, status=completed.status, error=completed.error)
         if not _is_no_match_result(completed):
             _raise_on_process_failure(completed=completed, fallback_message="ast-grep replace failed")
 

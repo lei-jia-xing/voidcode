@@ -730,7 +730,7 @@ function toolIcon(tool: ChatTool) {
   if (tool.name === "task") {
     return <Bot className={className} />;
   }
-  if (tool.name === "todo_write") {
+  if (tool.name === "todo") {
     return <ListTodo className={className} />;
   }
   if (tool.name === "skill") {
@@ -1325,38 +1325,65 @@ function TaskToolActivity({
   );
 }
 
-function todoItems(tool: ChatTool): { content: string; status: string }[] {
+function todoItems(
+  tool: ChatTool,
+): { content: string; status: string; blocker?: string; phase?: string }[] {
   const data = resultData(tool);
-  const rawTodos = Array.isArray(data?.todos)
-    ? data.todos
-    : Array.isArray(tool.arguments?.todos)
-      ? tool.arguments.todos
-      : [];
-  return rawTodos
-    .filter(
-      (item): item is Record<string, unknown> =>
-        Boolean(item) && typeof item === "object",
-    )
-    .map((item) => ({
-      content: toolValue(item.content) ?? "Untitled todo",
-      status: toolValue(item.status) ?? "pending",
-    }));
+  const hasPhases = Array.isArray(data?.phases);
+  const rawPhases: unknown[] = hasPhases ? (data.phases as unknown[]) : [];
+  const items = rawPhases.flatMap((rawPhase) => {
+    if (!rawPhase || typeof rawPhase !== "object") return [];
+    const phase = rawPhase as Record<string, unknown>;
+    const phaseName = toolValue(phase.name);
+    const tasks = Array.isArray(phase.tasks) ? phase.tasks : [];
+    return tasks.flatMap((rawTask) => {
+      if (!rawTask || typeof rawTask !== "object") return [];
+      const task = rawTask as Record<string, unknown>;
+      const content = toolValue(task.content);
+      if (!content) return [];
+      const item: {
+        content: string;
+        status: string;
+        blocker?: string;
+        phase?: string;
+      } = {
+        content,
+        status: toolValue(task.status) ?? "pending",
+      };
+      if (phaseName) item.phase = phaseName;
+      const blocker = toolValue(task.blocker);
+      if (blocker) item.blocker = blocker;
+      return [item];
+    });
+  });
+  const explicitlyEmpty = rawPhases.every((rawPhase) => {
+    if (!rawPhase || typeof rawPhase !== "object") return false;
+    const phase = rawPhase as Record<string, unknown>;
+    return Array.isArray(phase.tasks) && phase.tasks.length === 0;
+  });
+  if (items.length > 0 || (hasPhases && explicitlyEmpty)) return items;
+  if (tool.status === "completed" && tool.content) {
+    return [{ content: tool.content, status: "completed" }];
+  }
+  return items;
 }
 
 function todoStatusSymbol(status: string) {
   if (status === "completed") return "✓";
   if (status === "in_progress") return "●";
-  if (status === "cancelled") return "×";
+  if (status === "abandoned") return "-";
+  if (status === "blocked") return "!";
   return "○";
 }
 
 function TodoToolActivity({ tool }: { tool: ChatTool }) {
+  const { t } = useTranslation();
   if (tool.display?.hidden) return null;
   const items = todoItems(tool);
   const data = resultData(tool);
   const summary = nestedRecord(data, "summary");
   const summaryText = summary
-    ? ["in_progress", "pending", "completed", "cancelled"]
+    ? ["in_progress", "pending", "completed", "abandoned", "blocked"]
         .map((key) => `${key}=${toolValue(summary[key]) ?? "0"}`)
         .join(", ")
     : `${items.length} todos`;
@@ -1390,6 +1417,15 @@ function TodoToolActivity({ tool }: { tool: ChatTool }) {
               <span className="rounded-[var(--vc-radius-control)] border border-[color:var(--vc-border-subtle)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--vc-text-subtle)]">
                 {item.status}
               </span>
+              {item.blocker && (
+                <span
+                  role="note"
+                  aria-label={t("todo.blockedReason", { reason: item.blocker })}
+                  className="basis-full pl-5 text-[11px] text-[var(--vc-danger-text)]"
+                >
+                  {t("todo.blockedReason", { reason: item.blocker })}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -1942,7 +1978,7 @@ function ToolActivity({
         selectedBackgroundTaskOutput={selectedBackgroundTaskOutput}
       />
     );
-  if (tool.name === "todo_write") return <TodoToolActivity tool={tool} />;
+  if (tool.name === "todo") return <TodoToolActivity tool={tool} />;
   if (tool.name === "web_fetch") return <WebFetchToolActivity tool={tool} />;
   if (tool.name === "web_search") return <WebSearchToolActivity tool={tool} />;
   if (tool.name === "lsp") return <LspToolActivity tool={tool} />;

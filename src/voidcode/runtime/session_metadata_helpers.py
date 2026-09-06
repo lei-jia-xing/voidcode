@@ -40,9 +40,8 @@ from .session import (
 )
 from .skills import snapshot_from_payload
 from .todos import (
-    runtime_todos_equal,
-    runtime_todos_from_state_payload,
-    runtime_todos_from_tool_payload,
+    runtime_todo_phases_from_payload,
+    runtime_todo_state_from_payload,
     todo_event_payload,
     todo_state_payload,
 )
@@ -225,7 +224,9 @@ def runtime_state_acp(metadata: Mapping[str, object]) -> AcpStateMetadata | None
 
 def runtime_state_todos(metadata: Mapping[str, object]) -> TodosStateMetadata | None:
     value = _runtime_state_payload(metadata).get("todos")
-    return value if isinstance(value, dict) else None
+    if value is None:
+        return None
+    return cast(TodosStateMetadata, runtime_todo_state_from_payload(value))
 
 
 def runtime_state_pending_tool_intent(metadata: Mapping[str, object]) -> PendingToolIntentMetadata | None:
@@ -533,11 +534,11 @@ def session_with_context_window_payload_metadata(
 def session_with_todo_state(
     session: SessionState,
     *,
-    raw_todos: object,
+    raw_phases: object,
     revision: int,
 ) -> tuple[SessionState, dict[str, object]]:
-    todos = runtime_todos_from_tool_payload(raw_todos, updated_at=revision)
-    state_payload = todo_state_payload(todos, revision=revision)
+    phases = runtime_todo_phases_from_payload(raw_phases)
+    state_payload = todo_state_payload(phases, revision=revision)
     runtime_state = _runtime_state_payload_with_updates(
         session.metadata,
         updates={"todos": state_payload},
@@ -546,30 +547,14 @@ def session_with_todo_state(
         session=session.session,
         status=session.status,
         turn=session.turn,
-        metadata={
-            **session.metadata,
-            "runtime_state": runtime_state,
-        },
+        metadata={**session.metadata, "runtime_state": runtime_state},
     )
     event_payload = todo_event_payload(
         session_id=session.session.id,
-        todos=todos,
+        phases=phases,
         revision=revision,
     )
     return next_session, event_payload
-
-
-def todo_state_matches_payload(
-    session: SessionState,
-    *,
-    raw_todos: object,
-    revision: int,
-) -> bool:
-    todo_state = runtime_state_todos(session.metadata)
-    if todo_state is None:
-        return False
-    current = runtime_todos_from_state_payload(todo_state.get("todos"))
-    return runtime_todos_equal(current, raw_todos=raw_todos, updated_at=revision)
 
 
 def _session_with_metadata(session: SessionState, metadata: dict[str, object]) -> SessionState:
@@ -804,6 +789,5 @@ __all__ = [
     "session_with_run_id",
     "session_with_todo_state",
     "session_without_tool_intent",
-    "todo_state_matches_payload",
     "waiting_reason_from_session",
 ]

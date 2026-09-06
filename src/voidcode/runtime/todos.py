@@ -2,28 +2,25 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, cast
 
-type TodoStatus = Literal["pending", "in_progress", "completed", "cancelled"]
-
-TODO_STATUSES: tuple[TodoStatus, ...] = ("pending", "in_progress", "completed", "cancelled")
-
-
-def _parse_todo_status(value: object) -> TodoStatus | None:
-    if value == "pending":
-        return "pending"
-    if value == "in_progress":
-        return "in_progress"
-    if value == "completed":
-        return "completed"
-    if value == "cancelled":
-        return "cancelled"
-    return None
+TodoStatus = Literal["pending", "in_progress", "completed", "abandoned", "blocked"]
+TODO_STATUSES: tuple[TodoStatus, ...] = (
+    "pending",
+    "in_progress",
+    "completed",
+    "abandoned",
+    "blocked",
+)
 
 
-class RuntimeTodoItem(TypedDict):
+class RuntimeTodoTask(TypedDict, total=False):
     content: str
     status: TodoStatus
-    position: int
-    updated_at: int
+    blocker: str
+
+
+class RuntimeTodoPhase(TypedDict):
+    name: str
+    tasks: list[RuntimeTodoTask]
 
 
 class RuntimeTodoSummary(TypedDict):
@@ -31,113 +28,143 @@ class RuntimeTodoSummary(TypedDict):
     pending: int
     in_progress: int
     completed: int
-    cancelled: int
+    abandoned: int
+    blocked: int
     active: int
 
 
-def todo_summary(todos: tuple[RuntimeTodoItem, ...]) -> RuntimeTodoSummary:
-    pending = sum(1 for todo in todos if todo["status"] == "pending")
-    in_progress = sum(1 for todo in todos if todo["status"] == "in_progress")
-    completed = sum(1 for todo in todos if todo["status"] == "completed")
-    cancelled = sum(1 for todo in todos if todo["status"] == "cancelled")
+_TODO_STATE_KEYS = frozenset({"version", "revision", "phases", "summary"})
+
+
+def runtime_todo_state_from_payload(raw_state: object) -> dict[str, object]:
+    if not isinstance(raw_state, dict):
+        raise ValueError("runtime todo state must be an object")
+    state = cast(dict[object, object], raw_state)
+    unknown = sorted(str(key) for key in state if key not in _TODO_STATE_KEYS)
+    if unknown:
+        raise ValueError(f"runtime todo state field '{unknown[0]}' is not supported")
+    version = state.get("version")
+    if version != 2 or isinstance(version, bool):
+        raise ValueError(f"runtime todo state version must be 2, got {version!r}")
+    revision = state.get("revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        raise ValueError("runtime todo revision must be a non-negative integer")
+    phases = _parse_phases(state.get("phases"))
+    summary = state.get("summary")
+    if not isinstance(summary, dict) or dict(summary) != dict(todo_summary(phases)):
+        raise ValueError("runtime todo state summary does not match phases")
+    return todo_state_payload(phases, revision=revision)
+
+
+def _parse_status(value: object) -> TodoStatus:
+    if value in TODO_STATUSES:
+        return cast(TodoStatus, value)
+    raise ValueError(f"runtime todo task has invalid status: {value}")
+
+
+def _parse_phases(raw_phases: object) -> tuple[RuntimeTodoPhase, ...]:
+    if not isinstance(raw_phases, list):
+        raise ValueError("runtime todo state requires phases array")
+    phases: list[RuntimeTodoPhase] = []
+    phase_names: set[str] = set()
+    task_contents: set[str] = set()
+    active_count = 0
+    for raw_phase in raw_phases:
+        if not isinstance(raw_phase, dict):
+            raise ValueError("runtime todo phase must be an object")
+        phase = cast(dict[object, object], raw_phase)
+        name = phase.get("name")
+        raw_tasks = phase.get("tasks")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("runtime todo phase name must be non-empty")
+        name = name.strip()
+        if name in phase_names:
+            raise ValueError(f'Duplicate todo phase "{name}"')
+        if not isinstance(raw_tasks, list):
+            raise ValueError(f'todo phase "{name}" requires tasks array')
+        phase_names.add(name)
+        tasks: list[RuntimeTodoTask] = []
+        for raw_task in raw_tasks:
+            if not isinstance(raw_task, dict):
+                raise ValueError("runtime todo task must be an object")
+            task = cast(dict[object, object], raw_task)
+            content = task.get("content")
+            status = _parse_status(task.get("status"))
+            blocker = task.get("blocker")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("runtime todo task content must be non-empty")
+            content = content.strip()
+            if content in task_contents:
+                raise ValueError(f'Duplicate todo task "{content}"')
+            if status == "blocked":
+                if blocker is not None and (not isinstance(blocker, str) or not blocker.strip()):
+                    raise ValueError("blocked todo reason must be a non-empty string")
+            elif blocker is not None:
+                raise ValueError("only blocked todo tasks may include blocker")
+            normalized: RuntimeTodoTask = {"content": content, "status": status}
+            if isinstance(blocker, str) and blocker.strip():
+                normalized["blocker"] = " ".join(blocker.split())
+            tasks.append(normalized)
+            task_contents.add(content)
+            active_count += status == "in_progress"
+        phases.append({"name": name, "tasks": tasks})
+    if active_count > 1:
+        raise ValueError("runtime todo state permits only one in_progress task")
+    return tuple(phases)
+
+
+def todo_summary(phases: tuple[RuntimeTodoPhase, ...]) -> RuntimeTodoSummary:
+    counts = {status: 0 for status in TODO_STATUSES}
+    for phase in phases:
+        for task in phase["tasks"]:
+            counts[task["status"]] += 1
     return {
-        "total": len(todos),
-        "pending": pending,
-        "in_progress": in_progress,
-        "completed": completed,
-        "cancelled": cancelled,
-        "active": pending + in_progress,
+        "total": sum(counts.values()),
+        "pending": counts["pending"],
+        "in_progress": counts["in_progress"],
+        "completed": counts["completed"],
+        "abandoned": counts["abandoned"],
+        "blocked": counts["blocked"],
+        "active": counts["pending"] + counts["in_progress"],
     }
 
 
-def runtime_todos_from_tool_payload(
-    raw_todos: object,
+def runtime_todo_phases_from_payload(raw_phases: object) -> tuple[RuntimeTodoPhase, ...]:
+    return _parse_phases(raw_phases)
+
+
+def runtime_todo_phases_equal(
+    current: tuple[RuntimeTodoPhase, ...],
     *,
-    updated_at: int,
-) -> tuple[RuntimeTodoItem, ...]:
-    if not isinstance(raw_todos, list):
-        return ()
-    todos: list[RuntimeTodoItem] = []
-    for position, raw_item in enumerate(cast(list[object], raw_todos), start=1):
-        if not isinstance(raw_item, dict):
-            continue
-        item = cast(dict[object, object], raw_item)
-        content = item.get("content")
-        status = _parse_todo_status(item.get("status"))
-        if not isinstance(content, str) or not content.strip():
-            continue
-        if status is None:
-            continue
-        todos.append(
-            {
-                "content": content.strip(),
-                "status": status,
-                "position": position,
-                "updated_at": updated_at,
-            }
-        )
-    return tuple(todos)
-
-
-def runtime_todos_from_state_payload(raw_todos: object) -> tuple[RuntimeTodoItem, ...]:
-    if not isinstance(raw_todos, list):
-        return ()
-    todos: list[RuntimeTodoItem] = []
-    for fallback_position, raw_item in enumerate(cast(list[object], raw_todos), start=1):
-        if not isinstance(raw_item, dict):
-            continue
-        item = cast(dict[object, object], raw_item)
-        content = item.get("content")
-        status = _parse_todo_status(item.get("status"))
-        raw_position = item.get("position")
-        raw_updated_at = item.get("updated_at")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        if status is None:
-            continue
-        position = raw_position if isinstance(raw_position, int) and raw_position > 0 else fallback_position
-        updated_at = raw_updated_at if isinstance(raw_updated_at, int) and raw_updated_at >= 0 else 0
-        todos.append(
-            {
-                "content": content.strip(),
-                "status": status,
-                "position": position,
-                "updated_at": updated_at,
-            }
-        )
-    return tuple(sorted(todos, key=lambda todo: todo["position"]))
-
-
-def runtime_todos_equal(current: tuple[RuntimeTodoItem, ...], *, raw_todos: object, updated_at: int) -> bool:
-    candidate = runtime_todos_from_tool_payload(raw_todos, updated_at=updated_at)
-    if len(candidate) != len(current):
+    raw_phases: object,
+) -> bool:
+    try:
+        candidate = _parse_phases(raw_phases)
+    except ValueError:
         return False
-    return all(
-        existing["content"] == proposed["content"] and existing["status"] == proposed["status"] and existing["position"] == proposed["position"]
-        for existing, proposed in zip(current, candidate, strict=True)
-    )
+    return candidate == current
 
 
 def todo_state_payload(
-    todos: tuple[RuntimeTodoItem, ...],
+    phases: tuple[RuntimeTodoPhase, ...],
     *,
     revision: int,
 ) -> dict[str, object]:
     return {
-        "version": 1,
+        "version": 2,
         "revision": revision,
-        "todos": [dict(todo) for todo in todos],
-        "summary": todo_summary(todos),
+        "phases": [{"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]} for phase in phases],
+        "summary": todo_summary(phases),
     }
 
 
 def todo_event_payload(
     *,
     session_id: str,
-    todos: tuple[RuntimeTodoItem, ...],
+    phases: tuple[RuntimeTodoPhase, ...],
     revision: int,
 ) -> dict[str, object]:
-    summary = todo_summary(todos)
+    summary = todo_summary(phases)
     return {
         "session_id": session_id,
         "todo_count": summary["total"],
@@ -145,52 +172,44 @@ def todo_event_payload(
         "pending_count": summary["pending"],
         "in_progress_count": summary["in_progress"],
         "completed_count": summary["completed"],
-        "cancelled_count": summary["cancelled"],
+        "abandoned_count": summary["abandoned"],
+        "blocked_count": summary["blocked"],
         "revision": revision,
-        "todos": [dict(todo) for todo in todos],
+        "phases": [{"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]} for phase in phases],
         "summary": dict(summary),
     }
 
 
-def todo_state_from_session_metadata(
-    session_metadata: dict[str, object],
-) -> dict[str, object] | None:
-    # 延迟导入：session_metadata_helpers 在模块级导入本模块（todos），
-    # 模块级反向导入会构成环。读取统一走 helpers accessor（唯一入口）。
+def todo_state_from_session_metadata(session_metadata: dict[str, object]) -> dict[str, object] | None:
     from .session_metadata_helpers import runtime_state_todos
 
     todo_state = runtime_state_todos(session_metadata)
     if todo_state is None:
         return None
-    todos = runtime_todos_from_state_payload(todo_state.get("todos"))
-    revision = todo_state.get("revision")
-    return todo_state_payload(
-        todos,
-        revision=revision if isinstance(revision, int) and revision >= 0 else 0,
-    )
+    return runtime_todo_state_from_payload(todo_state)
 
 
 def render_provider_todo_state(session_metadata: dict[str, object]) -> str | None:
     todo_state = todo_state_from_session_metadata(session_metadata)
     if todo_state is None:
         return None
-    todos = runtime_todos_from_state_payload(todo_state.get("todos"))
-    active_todos = tuple(todo for todo in todos if todo["status"] in {"pending", "in_progress"})
-    if not active_todos:
+    phases = _parse_phases(todo_state["phases"])
+    active_phases = tuple(
+        {"name": phase["name"], "tasks": [task for task in phase["tasks"] if task["status"] in {"pending", "in_progress", "blocked"}]}
+        for phase in phases
+    )
+    active_phases = tuple(phase for phase in active_phases if phase["tasks"])
+    if not active_phases:
         return None
     lines = [
         "Runtime-managed todo state is active for this session.",
         "Use this as the current plan truth; do not recreate it from older tool results.",
-        (
-            "Do not call todo_write again unless you are actually changing todo content "
-            "or status. If the plan is unchanged, execute the next item instead."
-        ),
-        (
-            "If any todo is already in_progress, continue that item with implementation tools. "
-            "If none is in_progress, start the first pending item instead of replanning."
-        ),
+        "Use one todo operation at a time; view is read-only and mutations are persisted by the runtime.",
         "Current active todos:",
     ]
-    for todo in active_todos:
-        lines.append(f"{todo['position']}. [{todo['status']}] {todo['content']}")
+    for phase in active_phases:
+        lines.append(f"{phase['name']}:")
+        for task in cast(list[RuntimeTodoTask], phase["tasks"]):
+            blocker = f" (blocked: {task['blocker']})" if task.get("blocker") else ""
+            lines.append(f"- [{task['status']}] {task['content']}{blocker}")
     return "\n".join(lines)

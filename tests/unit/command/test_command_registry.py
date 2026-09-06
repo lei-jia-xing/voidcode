@@ -187,7 +187,7 @@ class TestBuiltinCommandRendering:
         assert "acceptance criteria" in rendered
         assert "do not write code or modify files" in rendered
         assert "delegate to the product agent (subagent_type=product)" in rendered
-        assert "todo_write is runtime state" in rendered
+        assert "todo is runtime state" in rendered
 
     def test_dollar_placeholder_substitution_uses_shlex_splitting(self) -> None:
         cmd = [c for c in builtin_commands() if c.name == "plan"][0]

@@ -1182,19 +1182,20 @@ def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
     raw_todo_content = "Secret todo text should not become a reusable schema example"
     tool_results = (
         ToolResult(
-            tool_name="todo_write",
+            tool_name="todo",
             status="ok",
             content="Updated todos",
             data={
-                "tool_call_id": "call-todo",
                 "arguments": {
-                    "todos": [
-                        {
-                            "content": raw_todo_content,
-                            "status": "pending",
-                        }
-                    ]
+                    "op": "init",
+                    "items": [raw_todo_content],
                 },
+                "phases": [
+                    {
+                        "name": "Tasks",
+                        "tasks": [{"content": "blocked", "status": "blocked", "blocker": "Secret blocked reason"}],
+                    }
+                ],
             },
         ),
     )
@@ -1235,9 +1236,13 @@ def test_provider_adapter_strips_redaction_sentinels_from_todo_history(
     raw_arguments = function["arguments"]
     assert isinstance(raw_arguments, str)
     assert raw_todo_content not in raw_arguments
-    assert '"content": ""' in raw_arguments
+    assert '"items": [""]' in raw_arguments
     assert '"omitted": true' not in raw_arguments
     assert '"byte_count"' not in raw_arguments
+    tool_content = messages[2]["content"]
+    assert isinstance(tool_content, str)
+    assert "Secret blocked reason" not in tool_content
+    assert '"blocker": {"byte_count"' in tool_content
 
 
 def test_provider_adapter_preserves_truncated_safe_argument_previews(
@@ -1804,18 +1809,14 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
     raw_todo_content = "Secret todo text should not appear in synthetic feedback arguments"
     tool_results = (
         ToolResult(
-            tool_name="todo_write",
+            tool_name="todo",
             status="ok",
             content="Updated todos",
             data={
                 "tool_call_id": "todo_0",
                 "arguments": {
-                    "todos": [
-                        {
-                            "content": raw_todo_content,
-                            "status": "pending",
-                        }
-                    ]
+                    "op": "init",
+                    "items": [raw_todo_content],
                 },
             },
         ),
@@ -1855,7 +1856,7 @@ def test_provider_adapter_synthetic_feedback_strips_argument_sentinels(
     feedback = messages[1]["content"]
     assert isinstance(feedback, str)
     assert raw_todo_content not in feedback
-    assert '"content": ""' in feedback
+    assert '"items": [""]' in feedback
     assert '"omitted": true' not in feedback
     assert '"byte_count"' not in feedback
 

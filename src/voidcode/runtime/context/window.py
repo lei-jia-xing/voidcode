@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
@@ -262,20 +263,21 @@ class RuntimeContextWindow:
 class ToolResultView:
     """Provider-facing rendering view of a tool result.
 
-    The persisted truth is the original ``ToolResult`` (event stream, session,
-    checkpoints) and is never rebuilt or mutated by context-window trimming.
-    Per-tool-cap truncation is a rendering-layer concern: this view carries the
-    clipped content plus truncation statistics, and every other attribute is
-    delegated to the source result. Views are transient provider-view artifacts
-    and are never persisted.
+    Persisted truth remains the original ``ToolResult``; ``data`` is an
+    isolated deep copy so provider-facing handlers cannot mutate it.
     """
 
     result: ToolResult
     content: str | None
-    # Whether the context window policy clipped ``content`` (per-tool cap).
     clipped: bool = False
     original_content_tokens: int | None = None
     content_token_limit: int | None = None
+    _isolated_data: dict[str, object] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        isolated_result = deepcopy(self.result)
+        object.__setattr__(self, "result", isolated_result)
+        object.__setattr__(self, "_isolated_data", deepcopy(isolated_result.data))
 
     @property
     def tool_name(self) -> str:
@@ -287,7 +289,7 @@ class ToolResultView:
 
     @property
     def data(self) -> dict[str, object]:
-        return self.result.data
+        return self._isolated_data
 
     @property
     def error(self) -> str | None:
@@ -295,13 +297,10 @@ class ToolResultView:
 
     @property
     def truncated(self) -> bool:
-        # Effective truncation: policy clipping or a source-truncated result.
         return self.clipped or self.result.truncated
 
     @property
     def partial(self) -> bool:
-        # Policy clipping always renders a partial result; otherwise the
-        # source result's own partial state is preserved untouched.
         return True if self.clipped else self.result.partial
 
     @property
@@ -643,7 +642,7 @@ def _facts_from_tool_results(
     refs: list[str] = []
     delegated: list[str] = []
     for result in results[:preview_item_limit]:
-        if result.tool_name == "todo_write":
+        if result.tool_name == "todo":
             continue
         preview = _tool_result_preview(result, max_preview_chars=preview_char_limit)
         if result.status == "ok":
@@ -1030,7 +1029,7 @@ def _build_continuity_state(
     tokenizer_model: str | None = None,
 ) -> ContextProjection:
     dropped_count = len(dropped_results)
-    previewable_dropped_results = tuple(result for result in dropped_results if result.tool_name != "todo_write")
+    previewable_dropped_results = tuple(result for result in dropped_results if result.tool_name != "todo")
     previous = _previous_continuity_state(session_metadata)
     objective = previous.objective if previous is not None else None
     if objective is None:
@@ -1602,7 +1601,7 @@ def assemble_provider_context(
         raise RuntimeError("prompt assembly plan missing current_user_prompt section")
     if replay_retained_tool_messages:
         for index, result in enumerate(context_window.tool_results, start=1):
-            if todo_prompt_context is not None and result.tool_name == "todo_write":
+            if todo_prompt_context is not None and result.tool_name == "todo":
                 continue
             # Prior-run results are already rendered inside the replayed
             # conversation history (before the current user prompt). Appending

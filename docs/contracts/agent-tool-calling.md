@@ -561,36 +561,40 @@ describes a non-essential tool; it is not an authorization decision.
 - 选择原则：用于测试、构建、诊断或无法通过内置读写工具完成的本地操作；能用更窄工具时不要首选 shell。
 
 
-#### `todo_write`
+#### `todo`
 
 - 分组：agent work state
-- 只读：是（`ToolDefinition.read_only=true`，见 `src/voidcode/tools/todo_write.py`；todo 状态视为 runtime work state，不进入 approval）
-- 用途：把 agent 当前 todo list 写入当前 session 的 runtime-owned todo state；它不写 `.voidcode/todos.json` 或其他 workspace 文件。
-- 参数：
+- 只读：是（`ToolDefinition.read_only=true`；todo 状态视为 runtime work state，不进入 approval）
+- 用途：对当前 session 的 runtime-owned todo phases 执行一个操作；工具不写 `.voidcode/todos.json` 或其他 workspace 文件。
+- 参数是单操作对象（没有 `todos` 数组包装）：
 
 ```json
-  {
-    "todos": [
-    {"content": "Implement docs", "status": "in_progress"}
-  ]
+{
+  "op": "append",
+  "phase": "Implementation",
+  "items": ["Add tests", "Run verification"]
 }
 ```
 
-`status` 允许 `pending`、`in_progress`、`completed`、`cancelled`。
+支持的操作为 `init`、`start`、`done`、`drop`、`block`、`unblock`、`append`、`rm`、`view`。`init` 接受 `list: [{"phase": string, "items": string[]}]`，也接受扁平 `items` 与可选 `phase`；`append` 接受 `phase` 与 `items`。`start`/`done`/`drop`/`block`/`unblock`/`rm` 按精确 task 内容或 phase 名称定位；`block` 可带 `reason`。`view` 只读，不触发状态归一化。
+
+任务状态为 `pending`、`in_progress`、`completed`、`abandoned`、`blocked`；runtime 会自动归一化为最多一个 `in_progress` 任务，并跳过 blocked 任务的自动激活。任何校验或目标错误都会丢弃本次操作，不产生部分状态。
 
 - 工具成功返回（runtime 随后负责持久化）：
 
 ```json
 {
-  "content": "Updated 1 todos",
+  "content": "Todo append applied.",
   "data": {
-    "todos": [{"content": "Implement docs", "status": "in_progress"}],
-    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "cancelled": 0}
+    "op": "append",
+    "mutated": true,
+    "phases": [{"name": "Implementation", "tasks": [{"content": "Add tests", "status": "in_progress"}]}],
+    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1}
   }
 }
 ```
 
-runtime 在成功的 `todo_write` 后更新 session metadata 中的 runtime todo state（`SessionState.metadata["runtime_state"]["todos"]`），并发出 `runtime.todo_updated` 事件；SQLite session store 持久化该 metadata。`todo_write` 的工具结果不是单独的 workspace 文件真相。
+runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo state（`SessionState.metadata["runtime_state"]["todos"]`），并发出 `runtime.todo_updated` 事件；SQLite session store 只由 runtime 持久化该 metadata 与事件。`todo` 工具不直接写存储。
 
 - 选择原则：用于 runtime-visible work state；不要把它当成项目文档或长期 memory。
 

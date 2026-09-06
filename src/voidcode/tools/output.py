@@ -22,6 +22,10 @@ _SENSITIVE_TEXT_ARGUMENT_KEYS = frozenset(
         "oldString",
         "patch",
         "edits",
+        "items",
+        "task",
+        "reason",
+        "blocker",
         "todos",
     }
 )
@@ -35,7 +39,7 @@ _PROVIDER_REDACTED_ARGUMENT_KEYS_BY_TOOL = {
     "apply_patch": frozenset({"patch"}),
     "edit": frozenset({"oldString", "newString"}),
     "multi_edit": frozenset({"oldString", "newString"}),
-    "todo_write": frozenset({"content"}),
+    "todo": frozenset({"content", "items", "task", "reason", "blocker"}),
     "write": frozenset({"content"}),
 }
 

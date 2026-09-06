@@ -217,14 +217,14 @@ def test_builtin_subagent_tool_allowlists_enforce_role_boundaries() -> None:
     assert worker is not None
     assert write_tools.issubset(worker.tool_allowlist)
     assert "task" not in worker.tool_allowlist
-    assert "todo_write" in worker.tool_allowlist
+    assert "todo" in worker.tool_allowlist
     assert "mcp/*" in worker.tool_allowlist
     assert "background_task" not in worker.tool_allowlist
     assert "question" not in worker.tool_allowlist
 
     researcher = get_builtin_agent_manifest("researcher")
     assert researcher is not None
-    assert "todo_write" not in researcher.tool_allowlist
+    assert "todo" not in researcher.tool_allowlist
     assert "background_task" not in researcher.tool_allowlist
     assert "question" not in researcher.tool_allowlist
 
@@ -249,7 +249,7 @@ def test_builtin_leader_recovery_surface_omits_removed_retry_tool() -> None:
     leader = get_builtin_agent_manifest("leader")
     assert leader is not None
     assert "background_retry" not in leader.tool_allowlist
-    assert "todo_write" in leader.tool_allowlist
+    assert "todo" in leader.tool_allowlist
     assert "background_task" in leader.tool_allowlist
     assert "question" in leader.tool_allowlist
 
@@ -297,7 +297,7 @@ def test_product_prompt_and_manifest_form_a_non_interactive_planning_agent() -> 
     assert manifest.top_level_selectable is False
     assert _MUTATING_TOOL_PATTERNS.isdisjoint(manifest.tool_allowlist)
     assert "question" not in manifest.tool_allowlist
-    assert "todo_write" not in manifest.tool_allowlist
+    assert "todo" not in manifest.tool_allowlist
     assert "task" not in manifest.tool_allowlist
     assert "yield" in manifest.tool_allowlist
     assert "background_task" not in manifest.tool_allowlist

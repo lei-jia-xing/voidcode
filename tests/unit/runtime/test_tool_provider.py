@@ -58,7 +58,7 @@ from voidcode.tools import (
     ShellExecTool,
     SkillTool,
     TaskTool,
-    TodoWriteTool,
+    TodoTool,
     ToolCall,
     WebFetchTool,
     WebSearchTool,
@@ -253,7 +253,7 @@ def test_builtin_tool_provider_returns_expected_builtin_tools() -> None:
         WebSearchTool,
         WriteTool,
         MultiEditTool,
-        TodoWriteTool,
+        TodoTool,
     ]
 
     for expected in expected_tools:
@@ -354,7 +354,7 @@ def test_tool_registry_accepts_tools_from_provider_output() -> None:
         "apply_patch",
         "ast_grep",
         "multi_edit",
-        "todo_write",
+        "todo",
     }
     for tool_name in optional_tools:
         if tool_name in registry.tools:
@@ -629,7 +629,9 @@ def test_builtin_tool_definitions_keep_python_descriptions_without_sidecars() ->
 
     assert definitions["write"].description == "Write a UTF-8 text file inside the current workspace."
     assert definitions["shell_exec"].description == "Execute a command inside the current workspace."
-    assert definitions["ast_grep"].description == "Structural code search and rewrite with ast-grep."
+    assert definitions["ast_grep"].description == (
+        "Structural code search and rewrite with ast-grep. Search and preview are read operations; replace mutates files and requires approval."
+    )
     for definition in definitions.values():
         guidance = guidance_for_tool(definition.name)
         assert "Agent usage guidance:" not in definition.description
@@ -664,7 +666,7 @@ def test_sidecar_guidance_mapping_covers_builtin_runtime_tool_names() -> None:
         "shell_exec",
         "skill",
         "task",
-        "todo_write",
+        "todo",
         "web_fetch",
         "web_search",
         "write",
@@ -784,7 +786,7 @@ def test_tool_registry_with_defaults_delegates_through_builtin_provider() -> Non
         "apply_patch",
         "ast_grep",
         "multi_edit",
-        "todo_write",
+        "todo",
     ]
     for tool_name in optional_tools:
         if tool_name in registry.tools:

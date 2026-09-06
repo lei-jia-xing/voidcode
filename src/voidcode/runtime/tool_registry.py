@@ -29,7 +29,7 @@ ESSENTIAL_TOOL_NAMES = frozenset(
         "task",
         "task_batch",
         "question",
-        "todo_write",
+        "todo",
         # Skill loading is a first-class runtime mechanism.
         "skill",
         # Terminal output contract: the graph loop completes on yield.

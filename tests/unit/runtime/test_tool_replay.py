@@ -30,6 +30,30 @@ def test_safe_pending_tool_intent_requests_replay() -> None:
     assert recovery_action(intent) == "replay"
 
 
+def test_ast_grep_replay_policy_follows_operation_mutability() -> None:
+    from voidcode.tools.ast_grep import AstGrepTool
+
+    definition = AstGrepTool.definition
+    assert definition.read_only is False
+    assert definition.effective_replay_policy == "never"
+    assert (
+        ToolExecutionIntent.from_call(
+            ToolCall("ast_grep", {"mode": "search", "pattern": "x", "path": "a.py"}),
+            definition,
+            tool_call_id="search-1",
+        ).replay_policy
+        == "safe"
+    )
+    assert (
+        ToolExecutionIntent.from_call(
+            ToolCall("ast_grep", {"mode": "replace", "pattern": "x", "rewrite": "y", "path": "a.py", "apply": True}),
+            definition,
+            tool_call_id="replace-1",
+        ).replay_policy
+        == "never"
+    )
+
+
 def test_runtime_message_queue_preserves_kind_and_drains_only_requested_kind() -> None:
     metadata = enqueue_runtime_message({}, content="finish the current turn", kind="steering")
     metadata = enqueue_runtime_message(metadata, content="write a summary", kind="follow_up")

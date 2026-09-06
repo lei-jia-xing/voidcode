@@ -215,3 +215,15 @@ def test_result_handler_failure_falls_back_to_source_and_records_bounded_provena
     assert entries[0]["action"] == "error"
     assert entries[0]["failure"] == "handler 'rewrite' failed"
     assert "raw failure" not in str(provenance)
+
+
+def test_tool_result_view_isolates_authoritative_result_and_data() -> None:
+    source = ToolResult(tool_name="capture", status="ok", content="source", data={"nested": {"secret": "value"}})
+    view = ToolResultView(result=source, content=source.content)
+
+    view.result.data["nested"]["secret"] = "result mutation"  # type: ignore[index]
+    view.data["nested"]["secret"] = "provider mutation"  # type: ignore[index]
+    view.data["added"] = True
+
+    assert source.data == {"nested": {"secret": "value"}}
+    assert view.result.data == {"nested": {"secret": "result mutation"}}

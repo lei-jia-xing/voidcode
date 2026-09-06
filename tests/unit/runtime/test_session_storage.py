@@ -366,14 +366,12 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
             metadata={
                 "runtime_state": {
                     "todos": {
-                        "version": 1,
+                        "version": 2,
                         "revision": 3,
-                        "todos": [
+                        "phases": [
                             {
-                                "content": "persist me",
-                                "status": "in_progress",
-                                "position": 1,
-                                "updated_at": 3,
+                                "name": "Tasks",
+                                "tasks": [{"content": "persist me", "status": "in_progress"}],
                             }
                         ],
                         "summary": {
@@ -381,10 +379,11 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
                             "pending": 0,
                             "in_progress": 1,
                             "completed": 0,
-                            "cancelled": 0,
+                            "abandoned": 0,
+                            "blocked": 0,
                             "active": 1,
                         },
-                    }
+                    },
                 }
             },
         ),
@@ -404,14 +403,7 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
                 payload={
                     "session_id": "todo-session",
                     "revision": 3,
-                    "todos": [
-                        {
-                            "content": "persist me",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 3,
-                        }
-                    ],
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "persist me", "status": "in_progress"}]}],
                 },
             ),
         ),
@@ -428,9 +420,10 @@ def test_session_storage_persists_runtime_todos_and_filters_reverted_state(
     todos_state = runtime_state.get("todos")
     assert isinstance(todos_state, dict)
     todos_state_payload = cast(dict[str, object], todos_state)
-    todos = todos_state_payload.get("todos")
-    assert isinstance(todos, list)
-    assert cast(dict[str, object], todos[0])["content"] == "persist me"
+    phases = todos_state_payload.get("phases")
+    assert isinstance(phases, list)
+    tasks = cast(dict[str, object], cast(dict[str, object], phases[0])["tasks"])
+    assert tasks[0]["content"] == "persist me"
 
     store.revert_session(workspace=tmp_path, session_id="todo-session", sequence=2)
     reverted = store.load_session(workspace=tmp_path, session_id="todo-session")

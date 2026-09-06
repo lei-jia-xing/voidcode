@@ -71,15 +71,16 @@ def _save_sample_session(tmp_path: Path, *, session_id: str = "bundle-session") 
                 "runtime_state": {
                     "run_id": "run-1",
                     "todos": {
-                        "version": 1,
+                        "version": 2,
                         "revision": 1,
-                        "todos": [],
+                        "phases": [],
                         "summary": {
                             "total": 0,
                             "pending": 0,
                             "in_progress": 0,
                             "completed": 0,
-                            "cancelled": 0,
+                            "abandoned": 0,
+                            "blocked": 0,
                             "active": 0,
                         },
                     },

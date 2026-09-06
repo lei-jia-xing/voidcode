@@ -1408,32 +1408,20 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
                     if len(requests) == 1:
                         return provider_protocol_module.ProviderTurnResult(
                             tool_call=tool_contracts_module.ToolCall(
-                                tool_name="todo_write",
+                                tool_name="todo",
                                 arguments={
-                                    "todos": [
-                                        {
-                                            "content": "make todo runtime-owned",
-                                            "status": "in_progress",
-                                        },
-                                        {
-                                            "content": "document completed setup",
-                                            "status": "completed",
-                                        },
-                                    ]
+                                    "op": "init",
+                                    "list": [{"phase": "Tasks", "items": ["make todo runtime-owned", "document completed setup"]}],
                                 },
                             )
                         )
                     if len(requests) == 2:
                         return provider_protocol_module.ProviderTurnResult(
                             tool_call=tool_contracts_module.ToolCall(
-                                tool_name="todo_write",
+                                tool_name="todo",
                                 arguments={
-                                    "todos": [
-                                        {
-                                            "content": "verify latest todo context only",
-                                            "status": "pending",
-                                        }
-                                    ]
+                                    "op": "init",
+                                    "items": ["verify latest todo context only"],
                                 },
                             )
                         )
@@ -1458,34 +1446,80 @@ def test_provider_runtime_persists_and_injects_runtime_todo_state(tmp_path: Path
 
     response = runtime.run(runtime_request(prompt="track todo state", session_id="runtime-todo-session"))
     todo_events = tuple(event for event in response.events if event.event_type == "runtime.todo_updated")
-    second_request_system_segments = [segment.content for segment in _assembled_context(requests[1]).segments if segment.role == "system"]
-    final_request_system_segments = [segment.content for segment in _assembled_context(requests[-1]).segments if segment.role == "system"]
 
     assert response.session.status == "completed"
     assert len(todo_events) == 2
     todo_event = todo_events[0]
     latest_todo_event = todo_events[1]
-    assert todo_event.payload["active_count"] == 1
-    assert todo_event.payload["pending_count"] == 0
+    assert todo_event.payload["active_count"] == 2
+    assert todo_event.payload["pending_count"] == 1
     assert todo_event.payload["in_progress_count"] == 1
-    assert todo_event.payload["completed_count"] == 1
-    assert latest_todo_event.payload["pending_count"] == 1
-    assert any(
-        isinstance(content, str)
-        and "Runtime-managed todo state is active" in content
-        and "make todo runtime-owned" in content
-        and "Do not call todo_write again unless you are actually changing" in content
-        and "document completed setup" not in content
-        for content in second_request_system_segments
+    assert todo_event.payload["completed_count"] == 0
+    assert latest_todo_event.payload["pending_count"] == 0
+    first_phases = todo_event.payload["phases"]
+    latest_phases = latest_todo_event.payload["phases"]
+    assert first_phases[0]["tasks"][0]["content"] == "make todo runtime-owned"
+    assert first_phases[0]["tasks"][1]["content"] == "document completed setup"
+    assert latest_phases[0]["tasks"][0]["content"] == "verify latest todo context only"
+
+
+def test_provider_invoke_todo_persists_authority_for_next_turn(tmp_path: Path) -> None:
+    contracts_module = importlib.import_module("voidcode.runtime.contracts")
+    config_module = importlib.import_module("voidcode.runtime.config")
+    model_provider_module = importlib.import_module("voidcode.provider.registry")
+    permission_module = importlib.import_module("voidcode.runtime.permission")
+    provider_protocol_module = importlib.import_module("voidcode.runtime.provider_protocol")
+    service_module = importlib.import_module("voidcode.runtime.service")
+    runtime_request = cast(Callable[..., RuntimeRequestLike], contracts_module.RuntimeRequest)
+    requests: list[object] = []
+
+    class _InvokeTodoModelProvider:
+        def turn_provider(self) -> object:
+            class _Provider:
+                name = "opencode"
+
+                def propose_turn(self, request: object) -> object:
+                    requests.append(request)
+                    if len(requests) == 1:
+                        return provider_protocol_module.ProviderTurnResult(
+                            tool_call=importlib.import_module("voidcode.tools.contracts").ToolCall(
+                                tool_name="invoke_tool",
+                                arguments={
+                                    "name": "todo",
+                                    "arguments": {"op": "init", "items": ["invoke todo authority"]},
+                                },
+                            )
+                        )
+                    return provider_protocol_module.ProviderTurnResult(output="done")
+
+            return _Provider()
+
+    runtime = cast(
+        RuntimeRunner,
+        service_module.VoidCodeRuntime(
+            workspace=tmp_path,
+            config=config_module.RuntimeConfig(
+                approval_mode="allow",
+                execution_engine="provider",
+                model="opencode/gpt-5.4",
+            ),
+            permission_policy=permission_module.PermissionPolicy(mode="allow"),
+            model_provider_registry=model_provider_module.ModelProviderRegistry(providers={"opencode": _InvokeTodoModelProvider()}),
+        ),
     )
-    latest_todo_segments = [
-        content
-        for content in final_request_system_segments
-        if isinstance(content, str) and content.startswith("Runtime-managed todo state is active")
-    ]
-    assert len(latest_todo_segments) == 1
-    assert "verify latest todo context only" in latest_todo_segments[0]
-    assert "make todo runtime-owned" not in latest_todo_segments[0]
+
+    response = runtime.run(runtime_request(prompt="use invoke todo", session_id="invoke-todo-authority"))
+    todo_events = tuple(event for event in response.events if event.event_type == "runtime.todo_updated")
+    assert len(todo_events) == 1
+    runtime_state = cast(dict[str, object], response.session.metadata["runtime_state"])
+    todo_state = cast(dict[str, object], runtime_state["todos"])
+    assert todo_state["version"] == 2
+    phases = cast(list[dict[str, object]], todo_state["phases"])
+    assert phases[0]["tasks"][0]["content"] == "invoke todo authority"
+    assert len(requests) >= 2
+    next_context = _request_text(requests[1])
+    assert "Runtime-managed todo state is active" in next_context
+    assert "invoke todo authority" in next_context
 
 
 def test_runtime_read_only_denied_tool_flow_persists_deterministic_policy_order(

@@ -433,11 +433,13 @@ def test_sanitize_tool_arguments_preserves_preview_for_oversized_benign_text() -
 
 def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() -> None:
     data_uri = "data:image/png;base64," + "A" * 100
+    raw_blocker = "secret blocked reason"
     sanitized = sanitize_tool_result_data(
         {
             "arguments": {"content": "raw file body", "path": "out.txt"},
             "attachment": {"mime": "image/png", "data_uri": data_uri},
             "todos": [{"content": "raw todo text", "status": "pending"}],
+            "phases": [{"name": "Tasks", "tasks": [{"content": "blocked", "status": "blocked", "blocker": raw_blocker}]}],
         }
     )
 
@@ -460,6 +462,9 @@ def test_sanitize_tool_result_data_strips_inline_blobs_and_nested_arguments() ->
         "content": {"omitted": True, "byte_count": 13, "line_count": 1},
         "status": "pending",
     }
+    phases = cast(list[dict[str, object]], sanitized["phases"])
+    task = cast(dict[str, object], cast(list[object], phases[0]["tasks"])[0])
+    assert task["blocker"] == {"omitted": True, "byte_count": len(raw_blocker.encode("utf-8")), "line_count": 1}
 
 
 def test_strip_redaction_sentinels_replaces_redaction_metadata_with_empty_strings() -> None:

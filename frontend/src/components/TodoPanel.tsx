@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  AlertCircle,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -20,8 +21,11 @@ function TodoStatusIcon({ status }: { status: string }) {
   if (status === "in_progress") {
     return <CircleDot className="h-3.5 w-3.5 text-[var(--vc-text-primary)]" />;
   }
-  if (status === "cancelled") {
+  if (status === "abandoned") {
     return <CircleX className="h-3.5 w-3.5 text-[var(--vc-danger-text)]" />;
+  }
+  if (status === "blocked") {
+    return <AlertCircle className="h-3.5 w-3.5 text-[var(--vc-danger-text)]" />;
   }
   return <Circle className="h-3.5 w-3.5 text-[var(--vc-text-subtle)]" />;
 }
@@ -73,12 +77,28 @@ export function TodoPanel({
             {snapshot.items.map((item, index) => (
               <div
                 key={`${item.content}-${index}`}
-                className="flex items-center gap-2 px-1.5 py-1 text-xs text-[var(--vc-text-muted)]"
+                className="flex flex-wrap items-center gap-2 px-1.5 py-1 text-xs text-[var(--vc-text-muted)]"
               >
                 <TodoStatusIcon status={item.status} />
+                {item.phase && (
+                  <span className="shrink-0 text-[10px] text-[var(--vc-text-subtle)]">
+                    {item.phase}
+                  </span>
+                )}
                 <span className="min-w-0 flex-1 truncate text-[var(--vc-text-primary)]">
                   {item.content}
                 </span>
+                {item.blocker && (
+                  <span
+                    role="note"
+                    aria-label={t("todo.blockedReason", {
+                      reason: item.blocker,
+                    })}
+                    className="basis-full text-[11px] text-[var(--vc-danger-text)]"
+                  >
+                    {t("todo.blockedReason", { reason: item.blocker })}
+                  </span>
+                )}
                 <span className="shrink-0 text-[11px] text-[var(--vc-text-subtle)]">
                   {t(`todo.status.${item.status}`, item.status)}
                 </span>

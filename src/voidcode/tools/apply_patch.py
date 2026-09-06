@@ -17,7 +17,6 @@ from ..hook.config import RuntimeHooksConfig
 from ..security.path_policy import resolve_workspace_path
 from ._post_edit_diagnostics import post_edit_lsp_diagnostics
 from ._repair import format_text_repair_hints, raise_tool_diagnostic
-from ._syntax_validation import post_edit_syntax_diagnostics
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_lines, enforce_seen_whole_file
 
@@ -918,18 +917,13 @@ def _with_formatter_feedback(
         hooks_config=hooks_config,
     )
     changed_paths = [cast(str, change["path"]) for change in changes if isinstance(change.get("path"), str)]
-    # Independent write-path feedback: LSP post-edit diagnostics and tree-sitter
-    # syntax validation are collected regardless of formatter feedback, so their
-    # switches stay effective even when format-on-write is off.
+    # Independent write-path feedback: LSP post-edit diagnostics are collected
+    # regardless of formatter feedback.
     lsp_diagnostics = post_edit_lsp_diagnostics(
         workspace=workspace,
         paths=changed_paths,
     )
-    syntax_diagnostics = post_edit_syntax_diagnostics(
-        workspace=workspace,
-        paths=changed_paths,
-    )
-    if not formatter_results and not diagnostics and not lsp_diagnostics and not syntax_diagnostics:
+    if not formatter_results and not diagnostics and not lsp_diagnostics:
         return result
     data = dict(result.data)
     if formatter_results:
@@ -940,10 +934,6 @@ def _with_formatter_feedback(
         current_diagnostics = data.get("diagnostics")
         existing = current_diagnostics if isinstance(current_diagnostics, list) else []
         data["diagnostics"] = [*existing, *lsp_diagnostics]
-    if syntax_diagnostics:
-        current_diagnostics = data.get("diagnostics")
-        existing = current_diagnostics if isinstance(current_diagnostics, list) else []
-        data["diagnostics"] = [*existing, *syntax_diagnostics]
     content = result.content
     if content is not None and diagnostics:
         content += f"\nFormatter warning: {diagnostics[0]['message']}"

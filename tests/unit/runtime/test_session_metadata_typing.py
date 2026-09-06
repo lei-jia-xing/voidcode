@@ -50,7 +50,12 @@ from voidcode.runtime.todos import todo_state_from_session_metadata
 def _runtime_state_payload() -> dict[str, object]:
     return {
         "run_id": "run-1",
-        "todos": {"version": 1, "revision": 3, "todos": []},
+        "todos": {
+            "version": 2,
+            "revision": 3,
+            "phases": [],
+            "summary": {"total": 0, "pending": 0, "in_progress": 0, "completed": 0, "abandoned": 0, "blocked": 0, "active": 0},
+        },
         "context_compacted": {
             "last_summary_anchor": "anchor-1",
             "last_original_tool_result_count": 2,
@@ -166,7 +171,12 @@ def test_runtime_state_run_id_accessor() -> None:
 
 def test_runtime_state_accessors() -> None:
     metadata = {"runtime_state": _runtime_state_payload()}
-    assert runtime_state_todos(metadata) == {"version": 1, "revision": 3, "todos": []}
+    assert runtime_state_todos(metadata) == {
+        "version": 2,
+        "revision": 3,
+        "phases": [],
+        "summary": {"total": 0, "pending": 0, "in_progress": 0, "completed": 0, "abandoned": 0, "blocked": 0, "active": 0},
+    }
     assert runtime_state_pending_tool_intent(metadata) is not None
     assert runtime_state_pending_tool_intent(metadata) is not None and metadata["runtime_state"]["pending_tool_intent"] is not None
     assert runtime_state_context_compacted(metadata) is not None
@@ -184,9 +194,10 @@ def test_todo_state_from_session_metadata_via_accessor() -> None:
     metadata = {
         "runtime_state": {
             "todos": {
-                "version": 1,
+                "version": 2,
                 "revision": 5,
-                "todos": [{"content": "task", "status": "pending", "position": 0, "updated_at": 5}],
+                "phases": [{"name": "Tasks", "tasks": [{"content": "task", "status": "pending"}]}],
+                "summary": {"total": 1, "pending": 1, "in_progress": 0, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
             }
         }
     }
@@ -195,6 +206,25 @@ def test_todo_state_from_session_metadata_via_accessor() -> None:
     assert todo_state["revision"] == 5
     with pytest.raises(ValueError, match="must be an object"):
         todo_state_from_session_metadata({"runtime_state": {"todos": "invalid"}})
+
+
+def test_runtime_todos_rejects_legacy_and_unknown_versions() -> None:
+    with pytest.raises(ValueError, match="version must be 2"):
+        runtime_state_todos({"runtime_state": {"todos": {"version": 1, "revision": 1, "phases": [], "summary": {}}}})
+    with pytest.raises(ValueError, match="field 'legacy' is not supported"):
+        runtime_state_todos(
+            {
+                "runtime_state": {
+                    "todos": {
+                        "version": 2,
+                        "revision": 1,
+                        "phases": [],
+                        "summary": {"total": 0, "pending": 0, "in_progress": 0, "completed": 0, "abandoned": 0, "blocked": 0, "active": 0},
+                        "legacy": True,
+                    }
+                }
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +338,7 @@ def test_write_path_constructors_reject_unknown_runtime_state_keys() -> None:
     # 手工往构造器输入未知 key（runtime_state["typo_field"]）→ ValueError
     typo_session = _write_path_session(runtime_state={"run_id": "run-1", "typo_field": 1})
     with pytest.raises(ValueError, match="is not supported"):
-        session_with_todo_state(typo_session, raw_todos=[], revision=1)
+        session_with_todo_state(typo_session, raw_phases=[], revision=1)
     with pytest.raises(ValueError, match="is not supported"):
         session_with_run_id(typo_session, run_id="run-2")
     with pytest.raises(ValueError, match="is not supported"):
@@ -330,7 +360,14 @@ def test_write_path_constructors_reject_unknown_runtime_state_keys() -> None:
     with pytest.raises(ValueError, match="is not supported"):
         session_metadata_with_runtime_state_updates(
             typo_session.metadata,
-            updates={"todos": {"version": 1, "revision": 1, "todos": []}},
+            updates={
+                "todos": {
+                    "version": 2,
+                    "revision": 1,
+                    "phases": [],
+                    "summary": {"total": 0, "pending": 0, "in_progress": 0, "completed": 0, "abandoned": 0, "blocked": 0, "active": 0},
+                }
+            },
         )
     with pytest.raises(ValueError, match="is not supported"):
         persist_tool_execution_intent(

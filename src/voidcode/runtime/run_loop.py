@@ -154,6 +154,7 @@ from .session_metadata_helpers import (
 )
 from .skill_metadata import skill_snapshot_from_metadata
 from .storage import SessionStore
+from .todos import runtime_todo_phases_from_payload, todo_state_from_session_metadata
 from .tool_call_preview import PREVIEW_SNAPSHOT_MAX_BYTES, WRITE_PREVIEW_TOOLS, build_partial_tool_call_preview, build_tool_call_preview
 from .tool_display import build_tool_display, build_tool_status
 from .tool_execution import RuntimeToolExecutor
@@ -687,6 +688,18 @@ class RuntimeRunLoopCoordinator:
         and ``invoke_tool`` inner calls.
         """
         sequence = start_sequence - 1
+        todo_state = todo_state_from_session_metadata(session.metadata)
+        todo_phases = (
+            cast(
+                tuple[dict[str, object], ...],
+                tuple(
+                    {"name": phase["name"], "tasks": [dict(task) for task in phase["tasks"]]}
+                    for phase in runtime_todo_phases_from_payload(todo_state["phases"])
+                ),
+            )
+            if todo_state is not None
+            else ()
+        )
         invocation = ToolInvocation(
             tool_call=resolved_call.tool_call,
             tool_definition=resolved_call.tool.definition,
@@ -699,6 +712,7 @@ class RuntimeRunLoopCoordinator:
                 remaining_spawn_budget=remaining_spawn_budget,
                 read_paths=read_paths,
                 read_lines=read_lines,
+                todo_phases=todo_phases,
                 tool_timeout_seconds=tool_timeout,
                 model=model,
                 abort_signal=abort_signal,
@@ -1423,7 +1437,7 @@ class RuntimeRunLoopCoordinator:
                 # (policy denial -> registry resolve -> permission -> hooks ->
                 # executor). Unknown tools and denials surface as tool-level
                 # feedback; the run continues.
-                yield from self._execute_invoked_tool(
+                session, sequence = yield from self._execute_invoked_tool(
                     tool_registry=tool_registry,
                     session=session,
                     sequence=sequence,
@@ -1483,7 +1497,7 @@ class RuntimeRunLoopCoordinator:
             if action == "returned":
                 return
 
-            tool_result, duplicate_todo_write, runtime_tool_result_data, session, sequence, terminated = yield from self._finalize_tool_result(
+            tool_result, todo_mutated, runtime_tool_result_data, session, sequence, terminated = yield from self._finalize_tool_result(
                 session=session,
                 sequence=sequence,
                 plan_tool_call=plan_tool_call,
@@ -1512,7 +1526,7 @@ class RuntimeRunLoopCoordinator:
                 sanitized_arguments=sanitized_arguments,
                 tool_result=tool_result,
                 runtime_tool_result_data=runtime_tool_result_data,
-                duplicate_todo_write=duplicate_todo_write,
+                todo_mutated=todo_mutated,
             )
 
             if _is_abort_requested(active_graph_request):
@@ -3014,13 +3028,14 @@ class RuntimeRunLoopCoordinator:
         tool_result: ToolResult,
         active_graph_request: GraphRunRequest,
     ) -> Generator[RuntimeStreamChunk, None, tuple[ToolResult, bool, dict[str, object], SessionState, int, bool]]:
-        tool_result, duplicate_todo_write, runtime_tool_result_data = _normalized_tool_result(
+        tool_result, runtime_tool_result_data = _normalized_tool_result(
             tool_result=tool_result,
             session=session,
             plan_tool_call=plan_tool_call,
             sequence=sequence,
             tool_call_id=tool_call_id,
         )
+        todo_mutated = plan_tool_call.tool_name == "todo" and tool_result.status == "ok" and runtime_tool_result_data.get("mutated") is True
         tool_result = self._number_yield_progress(session=session, tool_result=tool_result)
         drained_chunks, session, _ = self._drain_runtime_events(
             session=session,
@@ -3042,8 +3057,8 @@ class RuntimeRunLoopCoordinator:
                 sequence=sequence,
                 active_graph_request=active_graph_request,
             )
-            return tool_result, duplicate_todo_write, runtime_tool_result_data, session, sequence, True
-        return tool_result, duplicate_todo_write, runtime_tool_result_data, session, sequence, False
+            return tool_result, todo_mutated, runtime_tool_result_data, session, sequence, True
+        return tool_result, todo_mutated, runtime_tool_result_data, session, sequence, False
 
     def _handle_question_outcome(
         self,
@@ -3108,7 +3123,7 @@ class RuntimeRunLoopCoordinator:
         sanitized_arguments: dict[str, object],
         tool_result: ToolResult,
         runtime_tool_result_data: dict[str, object],
-        duplicate_todo_write: bool,
+        todo_mutated: bool,
     ) -> Generator[RuntimeStreamChunk, None, tuple[int, SessionState]]:
         completed_payload = _tool_completed_payload(
             session=session,
@@ -3145,23 +3160,22 @@ class RuntimeRunLoopCoordinator:
                 sequence = envelope.sequence
                 yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
 
-        if plan_tool_call.tool_name == "todo_write" and tool_result.status == "ok":
+        if plan_tool_call.tool_name == "todo" and todo_mutated:
             revision = sequence + 1
-            raw_todos = runtime_tool_result_data.get("todos")
-            if not duplicate_todo_write:
-                session, todo_payload = session_with_todo_state(
-                    session,
-                    raw_todos=raw_todos,
-                    revision=revision,
-                )
-                envelope = self._persist_event(
-                    session_id=session.session.id,
-                    event_type=RUNTIME_TODO_UPDATED,
-                    source="runtime",
-                    payload=todo_payload,
-                )
-                sequence = envelope.sequence
-                yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
+            raw_phases = runtime_tool_result_data.get("phases")
+            session, todo_payload = session_with_todo_state(
+                session,
+                raw_phases=raw_phases,
+                revision=revision,
+            )
+            envelope = self._persist_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_TODO_UPDATED,
+                source="runtime",
+                payload=todo_payload,
+            )
+            sequence = envelope.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=envelope)
         return sequence, session
 
     def _dispatch_error_feedback_chunks(
@@ -3253,7 +3267,7 @@ class RuntimeRunLoopCoordinator:
         permission_policy: PermissionPolicy | None,
         abort_signal: ProviderAbortSignal | None,
         is_resume: bool = False,
-    ) -> Generator[RuntimeStreamChunk]:
+    ) -> Generator[RuntimeStreamChunk, None, tuple[SessionState, int]]:
         """Execute an ``invoke_tool(name, arguments)`` dispatch call.
 
         The inner tool is resolved from the runtime registry and executed
@@ -3276,7 +3290,7 @@ class RuntimeRunLoopCoordinator:
                 error=format_validation_error("invoke_tool", exc),
                 error_kind="invalid_arguments",
             )
-            return
+            return session, sequence
 
         inner_name = parsed.name
         inner_arguments = dict(parsed.arguments or {})
@@ -3328,7 +3342,7 @@ class RuntimeRunLoopCoordinator:
                 error=delegation_policy_error,
                 error_kind="delegation_policy_denied",
             )
-            return
+            return session, sequence
 
         tool_policy_denial = runtime.tool_policy_denial(
             session=session,
@@ -3344,7 +3358,7 @@ class RuntimeRunLoopCoordinator:
                 error=tool_policy_error(tool_policy_denial),
                 error_kind="runtime_tool_policy_denied",
             )
-            return
+            return session, sequence
 
         try:
             tool = tool_registry.resolve(inner_name)
@@ -3358,7 +3372,7 @@ class RuntimeRunLoopCoordinator:
                 error=f"unknown tool: {inner_name} ({exc})",
                 error_kind="unknown_tool",
             )
-            return
+            return session, sequence
 
         lookup_envelope = self._persist_event(
             session_id=session.session.id,
@@ -3413,7 +3427,7 @@ class RuntimeRunLoopCoordinator:
                 error=input_hook_outcome.blocked_reason or "tool input handler blocked the call",
                 error_kind="tool_input_handler_blocked",
             )
-            return
+            return session, sequence
 
         permission_action, session, sequence = yield from self._resolve_permission_for_tool(
             session=session,
@@ -3428,7 +3442,7 @@ class RuntimeRunLoopCoordinator:
             continue_after_denial=False,
         )
         if permission_action != "ok":
-            return
+            return session, sequence
 
         inner_call, outer_call_id, _intent_payload, session = self._persist_resolved_tool_intent(
             session=session,
@@ -3460,7 +3474,7 @@ class RuntimeRunLoopCoordinator:
                 error=pre_hook_outcome.failed_error,
                 error_kind="hook_failed",
             )
-            return
+            return session, sequence
         if pre_hook_outcome.action == "cancel":
             yield from self._dispatch_error_feedback_chunks(
                 session=session,
@@ -3471,7 +3485,7 @@ class RuntimeRunLoopCoordinator:
                 error="run cancelled by pre-tool hook",
                 error_kind="hook_cancelled",
             )
-            return
+            return session, sequence
 
         tool_timeout = runtime.effective_runtime_config_from_metadata(session.metadata).tool_timeout_seconds
         sequence = yield from self._emit_started_tool_event(
@@ -3487,7 +3501,7 @@ class RuntimeRunLoopCoordinator:
                 tool_call_id=outer_call_id,
                 abort_signal=abort_signal,
             )
-            return
+            return session, sequence
 
         try:
             read_tracking = read_tracking_for_tool_results(
@@ -3532,7 +3546,7 @@ class RuntimeRunLoopCoordinator:
                 error=f"tool '{inner_name}' exceeded runtime timeout of {tool_timeout}s",
                 error_kind="tool_timeout",
             )
-            return
+            return session, sequence
         except Exception as exc:
             yield from self._dispatch_error_feedback_chunks(
                 session=session,
@@ -3543,8 +3557,9 @@ class RuntimeRunLoopCoordinator:
                 error=str(exc),
                 error_kind="tool_error",
             )
-            return
+            return session, sequence
 
+        runtime_tool_result_data = dict(tool_result.data)
         sanitized_arguments = sanitize_tool_arguments(dict(inner_call.arguments))
         tool_result = cap_tool_result_output(
             tool_result,
@@ -3577,7 +3592,7 @@ class RuntimeRunLoopCoordinator:
                 )
             )
             yield failed_chunk
-            return
+            return session, sequence
 
         completed_payload = {
             **_tool_completed_identity_payload(session),
@@ -3631,7 +3646,7 @@ class RuntimeRunLoopCoordinator:
                 )
             )
             yield failed_chunk
-            return
+            return session, sequence
 
         if tool_result.status == "ok":
             post_hook_outcome = run_tool_hooks_for_session(
@@ -3670,7 +3685,7 @@ class RuntimeRunLoopCoordinator:
                     )
                 )
                 yield failed_chunk
-                return
+                return session, sequence
 
         tool_results.append(
             replace(
@@ -3682,6 +3697,21 @@ class RuntimeRunLoopCoordinator:
                 },
             )
         )
+        if inner_name == "todo" and tool_result.status == "ok" and runtime_tool_result_data.get("mutated") is True:
+            session, todo_payload = session_with_todo_state(
+                session,
+                raw_phases=runtime_tool_result_data.get("phases"),
+                revision=sequence + 1,
+            )
+            todo_event = self._persist_event(
+                session_id=session.session.id,
+                event_type=RUNTIME_TODO_UPDATED,
+                source="runtime",
+                payload=todo_payload,
+            )
+            sequence = todo_event.sequence
+            yield RuntimeStreamChunk(kind="event", session=session, event=todo_event)
+        return session, sequence
 
     def _permission_denied_tool_feedback_chunks(
         self,

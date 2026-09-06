@@ -1235,29 +1235,28 @@ describe("ChatThread", () => {
             tools: [
               {
                 id: "todo-1",
-                name: "todo_write",
+                name: "todo",
                 status: "completed",
                 arguments: {
-                  todos: [
+                  op: "init",
+                  list: [
                     {
-                      content: "Audit tool UI",
-                      status: "completed",
-                    },
-                    {
-                      content: "Ship observability",
-                      status: "in_progress",
+                      phase: "Implementation",
+                      items: ["Audit tool UI", "Ship observability"],
                     },
                   ],
                 },
                 result: {
-                  todos: [
+                  phases: [
                     {
-                      content: "Audit tool UI",
-                      status: "completed",
-                    },
-                    {
-                      content: "Ship observability",
-                      status: "in_progress",
+                      name: "Implementation",
+                      tasks: [
+                        { content: "Audit tool UI", status: "completed" },
+                        {
+                          content: "Ship observability",
+                          status: "in_progress",
+                        },
+                      ],
                     },
                   ],
                   summary: {
@@ -1265,7 +1264,9 @@ describe("ChatThread", () => {
                     pending: 0,
                     in_progress: 1,
                     completed: 1,
-                    cancelled: 0,
+                    abandoned: 0,
+                    blocked: 0,
+                    active: 1,
                   },
                 },
               },
@@ -1278,17 +1279,169 @@ describe("ChatThread", () => {
       />,
     );
 
-    expect(screen.getByText("todo_write")).toBeInTheDocument();
+    expect(screen.getByText("todo")).toBeInTheDocument();
     expect(
-      screen.getByText(/in_progress=1, pending=0, completed=1, cancelled=0/),
+      screen.getByText(
+        /in_progress=1, pending=0, completed=1, abandoned=0, blocked=0/,
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Audit tool UI")).not.toBeInTheDocument();
-    fireEvent.click(getDisclosureToggle(/show details for todo_write/i));
+    fireEvent.click(getDisclosureToggle(/show details for todo/i));
     expect(screen.getByText("Audit tool UI")).toBeInTheDocument();
     expect(screen.getByText("Ship observability")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
     expect(screen.getByText("in_progress")).toBeInTheDocument();
     expect(screen.getByText(/in_progress=1/)).toBeInTheDocument();
+  });
+
+  it("renders blocked todo reasons visibly in tool activity", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "blocked-todo",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "todo-blocked",
+                name: "todo",
+                status: "completed",
+                result: {
+                  phases: [
+                    {
+                      name: "Plan",
+                      tasks: [
+                        {
+                          content: "Wait",
+                          status: "blocked",
+                          blocker: "dependency",
+                        },
+                      ],
+                    },
+                  ],
+                  summary: {
+                    total: 1,
+                    pending: 0,
+                    in_progress: 0,
+                    completed: 0,
+                    abandoned: 0,
+                    blocked: 1,
+                    active: 0,
+                  },
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(getDisclosureToggle(/show details for todo/i));
+    expect(
+      screen.getByRole("note", { name: "Blocked: dependency" }),
+    ).toBeInTheDocument();
+  });
+  it("falls back to rendered content for non-empty redacted phases", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "redacted-todo",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "todo-redacted",
+                name: "todo",
+                status: "completed",
+                content: "The runtime todo list is available.",
+                result: {
+                  phases: [{ name: "Plan", tasks: [{ status: "pending" }] }],
+                },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(getDisclosureToggle(/show details for todo/i));
+    expect(
+      screen.getByText("The runtime todo list is available."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not turn an explicit empty phase list into a fake todo", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "cleared-todo",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "todo-cleared",
+                name: "todo",
+                status: "completed",
+                content: "stale rendered content",
+                result: { phases: [] },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(getDisclosureToggle(/show details for todo/i));
+    expect(
+      screen.queryByText("stale rendered content"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears stale rendered content for a named empty phase", () => {
+    render(
+      <ChatThread
+        {...baseProps}
+        messages={[
+          {
+            id: "cleared-named-todo",
+            role: "assistant",
+            content: "",
+            thinking: [],
+            tools: [
+              {
+                id: "todo-cleared-named",
+                name: "todo",
+                status: "completed",
+                content: "stale rendered content",
+                result: { phases: [{ name: "Plan", tasks: [] }] },
+              },
+            ],
+            approval: null,
+            status: "completed",
+            sequence: 1,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(getDisclosureToggle(/show details for todo/i));
+    expect(
+      screen.queryByText("stale rendered content"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -1621,7 +1774,7 @@ describe("Tool Card Display Contract", () => {
     expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
   });
 
-  it("hides todo_write when display metadata marks it hidden", () => {
+  it("hides todo when display metadata marks it hidden", () => {
     render(
       <ChatThread
         {...baseProps}
@@ -1634,7 +1787,7 @@ describe("Tool Card Display Contract", () => {
             tools: [
               {
                 id: "todo-1",
-                name: "todo_write",
+                name: "todo",
                 status: "completed",
                 display: {
                   kind: "todo",
@@ -1657,6 +1810,7 @@ describe("Tool Card Display Contract", () => {
 
     expect(screen.queryByText("Updated todos")).not.toBeInTheDocument();
     expect(screen.queryByText("Hidden todo")).not.toBeInTheDocument();
+    expect(document.querySelector('[data-tool-row="todo"]')).toBeNull();
   });
 
   it("renders derived backend display metadata for failed shell, context, and generic tools", () => {

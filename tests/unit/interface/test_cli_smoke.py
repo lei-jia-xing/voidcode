@@ -1276,9 +1276,14 @@ def test_run_trace_streams_model_text_todos_and_tool_output(capsys: Any) -> None
             status="running",
             event=_runtime_event(
                 "runtime.todo_updated",
-                todos=[
-                    {"content": "Create sample file", "status": "completed"},
-                    {"content": "Run tests", "status": "in_progress"},
+                phases=[
+                    {
+                        "name": "Tasks",
+                        "tasks": [
+                            {"content": "Create sample file", "status": "completed"},
+                            {"content": "Run tests", "status": "in_progress"},
+                        ],
+                    },
                 ],
             ),
         ),

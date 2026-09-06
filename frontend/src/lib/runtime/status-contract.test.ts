@@ -799,6 +799,69 @@ describe("Tool Status Contract", () => {
   });
 });
 
+it("merges runtime.todo_updated into the existing todo tool card", () => {
+  const events: EventEnvelope[] = [
+    {
+      session_id: "test",
+      sequence: 1,
+      event_type: "runtime.request_received",
+      source: "runtime",
+      payload: { prompt: "plan" },
+    },
+    {
+      session_id: "test",
+      sequence: 2,
+      event_type: "runtime.tool_completed",
+      source: "runtime",
+      payload: {
+        tool_status: {
+          invocation_id: "todo-call",
+          tool_name: "todo",
+          phase: "completed",
+          status: "completed",
+          display: { kind: "todo", title: "Todo", summary: "Updated todos" },
+        },
+        phases: [
+          {
+            name: "Plan",
+            tasks: [{ content: "Draft plan", status: "pending" }],
+          },
+        ],
+      },
+    },
+    {
+      session_id: "test",
+      sequence: 3,
+      event_type: "runtime.todo_updated",
+      source: "runtime",
+      payload: {
+        phases: [
+          {
+            name: "Plan",
+            tasks: [{ content: "Draft plan", status: "completed" }],
+          },
+        ],
+        summary: {
+          total: 1,
+          pending: 0,
+          in_progress: 0,
+          completed: 1,
+          abandoned: 0,
+          blocked: 0,
+          active: 0,
+        },
+      },
+    },
+  ];
+
+  const messages = deriveChatMessages(events, null);
+  const tools = messages[1]?.tools.filter((tool) => tool.name === "todo") ?? [];
+  expect(tools).toHaveLength(1);
+  expect(tools[0]?.result?.phases).toEqual([
+    { name: "Plan", tasks: [{ content: "Draft plan", status: "completed" }] },
+  ]);
+});
+
 describe("Tool Display Metadata Contract", () => {
   it("extracts label from display.summary when tool_status.label is absent", () => {
     const events: EventEnvelope[] = [

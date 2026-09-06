@@ -1,0 +1,17 @@
+Use `todo` to apply exactly one operation to the current runtime-owned todo phases. The tool never writes workspace files or SQLite.
+
+Supported operations:
+- `init`: replace the plan with `list=[{"phase": "Build", "items": ["compile", "test"]}]`, or flat `items=["compile", "test"]` with an optional `phase` (default `Tasks`).
+- `start`: mark one exact task `in_progress`; other active tasks become `pending`.
+- `done` / `drop`: complete or abandon one exact task, one phase, or all tasks when no target is supplied.
+- `block`: block an exact task or phase and optionally provide a whitespace-normalized `reason`.
+- `unblock`: return blocked tasks in an exact task or phase target to `pending`.
+- `append`: append new task strings to an existing or newly-created `phase`.
+- `rm`: remove an exact task, clear one phase, or clear all phase task lists.
+- `view`: return the current phases without normalizing or mutating state.
+
+Task statuses are `pending`, `in_progress`, `completed`, `abandoned`, and `blocked`. Runtime normalization keeps at most one task `in_progress` and promotes the first pending task when possible; blocked tasks are not auto-promoted.
+
+Every successful result contains `data.op`, `data.mutated`, `data.phases`, and `data.summary`. A phase is `{name: string, tasks: TodoTask[]}`; a task is `{content: string, status: TodoStatus}` and may include `blocker` only while blocked.
+
+Invalid arguments, missing targets, duplicate tasks, and failed operations reject the whole operation. No partial state is returned or persisted. Successful mutations are persisted by the runtime through the todo state metadata and `runtime.todo_updated` event; the tool itself has no persistence authority.

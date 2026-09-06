@@ -163,16 +163,10 @@ def test_assemble_provider_context_second_stage_preserves_non_recent_tiers() -> 
         session_metadata={
             "runtime_state": {
                 "todos": {
-                    "version": 1,
+                    "version": 2,
                     "revision": 12,
-                    "todos": [
-                        {
-                            "content": "must survive compaction",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 12,
-                        }
-                    ],
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "must survive compaction", "status": "in_progress"}]}],
+                    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
                 }
             }
         },
@@ -193,30 +187,24 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
         session_metadata={
             "runtime_state": {
                 "todos": {
-                    "version": 1,
+                    "version": 2,
                     "revision": 12,
-                    "todos": [
+                    "phases": [
                         {
-                            "content": "implement runtime todo state",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 12,
-                        },
-                        {
-                            "content": "old finished task",
-                            "status": "completed",
-                            "position": 2,
-                            "updated_at": 12,
-                        },
+                            "name": "Tasks",
+                            "tasks": [
+                                {"content": "implement runtime todo state", "status": "in_progress"},
+                                {"content": "old finished task", "status": "completed"},
+                            ],
+                        }
                     ],
+                    "summary": {"total": 2, "pending": 0, "in_progress": 1, "completed": 1, "abandoned": 0, "blocked": 0, "active": 1},
                 }
             }
         },
         policy=_context_window_policy(model_context_window_tokens=1),
     )
-
     system_segments = [segment.content for segment in assembled.segments if segment.role == "system"]
-
     assert any(
         isinstance(content, str)
         and "Runtime-managed todo state is active" in content
@@ -232,11 +220,7 @@ def test_assemble_provider_context_injects_active_runtime_todos() -> None:
         "runtime_todo_state",
     }
     todo_metadata = next(metadata for metadata in system_metadata if metadata["source"] == "runtime_todo_state")
-    assert todo_metadata == {
-        "source": "runtime_todo_state",
-        "tier": "task",
-        "layer": "task_state",
-    }
+    assert todo_metadata == {"source": "runtime_todo_state", "tier": "task", "layer": "task_state"}
 
 
 def test_assemble_provider_context_records_explicit_context_tiers() -> None:
@@ -253,44 +237,27 @@ def test_assemble_provider_context_records_explicit_context_tiers() -> None:
         session_metadata={
             "runtime_state": {
                 "todos": {
-                    "version": 1,
+                    "version": 2,
                     "revision": 12,
-                    "todos": [
-                        {
-                            "content": "implement tiers",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 12,
-                        }
-                    ],
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "implement tiers", "status": "in_progress"}]}],
+                    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
                 }
             }
         },
         skill_prompt_context="skill context",
         policy=_context_window_policy(model_context_window_tokens=100),
     )
-
     assert assembled.metadata["context_tiers"] == {
         "version": 1,
         "order": ["instruction", "task", "recent"],
-        "counts": {
-            "instruction": 5,
-            "workspace": 0,
-            "task": 2,
-            "recent": 2,
-        },
+        "counts": {"instruction": 5, "workspace": 0, "task": 2, "recent": 2},
     }
     assert assembled.metadata["context_tier_policy"] == {
         "version": 1,
         "protected_tiers": ["instruction", "workspace", "task"],
         "compaction_target": "recent",
     }
-    assert [(segment.metadata or {}).get("tier") for segment in assembled.segments[:4]] == [
-        "instruction",
-        "instruction",
-        "instruction",
-        "instruction",
-    ]
+    assert [(segment.metadata or {}).get("tier") for segment in assembled.segments[:4]] == ["instruction"] * 4
 
 
 def test_assemble_provider_context_injects_file_rules_from_tool_paths(tmp_path: Any) -> None:
@@ -502,18 +469,13 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
         prompt="continue",
         tool_results=(
             ToolResult(
-                tool_name="todo_write",
+                tool_name="todo",
                 content="Updated 1 todos\n1. [pending/low] stale tool feedback",
                 status="ok",
                 data={
                     "tool_call_id": "todo-old",
-                    "arguments": {"todos": []},
-                    "todos": [
-                        {
-                            "content": "stale tool feedback",
-                            "status": "pending",
-                        }
-                    ],
+                    "arguments": {"op": "view"},
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "stale tool feedback", "status": "pending"}]}],
                 },
             ),
             ToolResult(
@@ -526,28 +488,20 @@ def test_assemble_provider_context_uses_runtime_todos_as_single_authority() -> N
         session_metadata={
             "runtime_state": {
                 "todos": {
-                    "version": 1,
+                    "version": 2,
                     "revision": 2,
-                    "todos": [
-                        {
-                            "content": "authoritative runtime state",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 2,
-                        }
-                    ],
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "authoritative runtime state", "status": "in_progress"}]}],
+                    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
                 }
             }
         },
         policy=_context_window_policy(model_context_window_tokens=100),
     )
-
     assert [segment.tool_name for segment in assembled.segments if segment.role == "tool"] == ["read"]
     system_text = "\n".join(str(segment.content) for segment in assembled.segments if segment.role == "system")
     assert "authoritative runtime state" in system_text
     assert "stale tool feedback" not in system_text
-    assert "Do not call todo_write again unless you are actually changing" in system_text
-    assert "If any todo is already in_progress, continue that item" in system_text
+    assert "Current active todos:" in system_text
 
 
 def test_assemble_provider_context_injects_pending_approval_state() -> None:
@@ -590,16 +544,10 @@ def test_assemble_provider_context_skill_todo_transform_content_present() -> Non
         session_metadata={
             "runtime_state": {
                 "todos": {
-                    "version": 1,
+                    "version": 2,
                     "revision": 1,
-                    "todos": [
-                        {
-                            "content": "implement feature",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 1,
-                        }
-                    ],
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "implement feature", "status": "in_progress"}]}],
+                    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
                 }
             }
         },
@@ -710,18 +658,14 @@ def test_provider_context_inspector_strips_sentinels_from_provider_messages() ->
         prompt="continue",
         tool_results=(
             ToolResult(
-                tool_name="todo_write",
+                tool_name="todo",
                 content="Updated todos",
                 status="ok",
                 data={
                     "tool_call_id": "call:todo",
                     "arguments": {
-                        "todos": [
-                            {
-                                "content": raw_todo_content,
-                                "status": "pending",
-                            }
-                        ]
+                        "op": "init",
+                        "items": [raw_todo_content],
                     },
                 },
             ),
@@ -743,7 +687,7 @@ def test_provider_context_inspector_strips_sentinels_from_provider_messages() ->
     provider_arguments = function["arguments"]
     assert isinstance(provider_arguments, str)
     assert raw_todo_content not in provider_arguments
-    assert '"content": ""' in provider_arguments
+    assert '"items": [""]' in provider_arguments
     assert '"omitted": true' not in provider_arguments
     assert '"byte_count"' not in provider_arguments
 
@@ -991,26 +935,16 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
             },
         ),
         ToolResult(
-            tool_name="todo_write",
+            tool_name="todo",
             status="ok",
-            content="Updated 1 todos\n1. [in_progress/high] preserve context parity",
+            content="Todo view applied.",
             data={
                 "tool_call_id": "todo-1",
-                "arguments": {
-                    "todos": [
-                        {
-                            "content": "preserve context parity",
-                            "status": "in_progress",
-                        }
-                    ]
-                },
-                "todos": [
-                    {
-                        "content": "preserve context parity",
-                        "status": "in_progress",
-                    }
-                ],
-                "summary": {"total": 1, "in_progress": 1},
+                "arguments": {"op": "view"},
+                "phases": [{"name": "Tasks", "tasks": [{"content": "preserve context parity", "status": "in_progress"}]}],
+                "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
+                "op": "view",
+                "mutated": False,
             },
         ),
         ToolResult(
@@ -1045,22 +979,15 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
         session_metadata={
             "runtime_state": {
                 "todos": {
-                    "version": 1,
+                    "version": 2,
                     "revision": 1,
-                    "todos": [
-                        {
-                            "content": "preserve context parity",
-                            "status": "in_progress",
-                            "position": 1,
-                            "updated_at": 1,
-                        }
-                    ],
+                    "phases": [{"name": "Tasks", "tasks": [{"content": "preserve context parity", "status": "in_progress"}]}],
+                    "summary": {"total": 1, "pending": 0, "in_progress": 1, "completed": 0, "abandoned": 0, "blocked": 0, "active": 1},
                 }
             }
         },
         policy=_context_window_policy(auto_compaction=False, model_context_window_tokens=100_000),
     )
-
     standard_snapshot = inspect_provider_context(
         assembled_context=assembled,
         provider="openai",
@@ -1086,7 +1013,7 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
 
     tool_segments = [segment for segment in standard_snapshot.segments if segment.role == "tool"]
     tool_messages = [message for message in standard_snapshot.provider_messages if message.role == "tool"]
-    expected_tool_results = tuple(result for result in tool_results if result.tool_name != "todo_write")
+    expected_tool_results = tuple(result for result in tool_results if result.tool_name != "todo")
     assert [segment.tool_name for segment in tool_segments] == [result.tool_name for result in expected_tool_results]
     assert len(tool_messages) == len(expected_tool_results)
     for result, segment, message in zip(expected_tool_results, tool_segments, tool_messages, strict=True):
@@ -1111,7 +1038,7 @@ def test_provider_context_parity_matrix_preserves_tool_shapes_across_debug_messa
         assert synthetic_feedback.count(f'"tool_name": "{result.tool_name}"') == 1
     assert "1: alpha" in synthetic_feedback
     assert "child done" in synthetic_feedback
-    assert '"tool_name": "todo_write"' not in synthetic_feedback
+    assert '"tool_name": "todo"' not in synthetic_feedback
     assert any(diagnostic.code == "provider_path_uses_synthetic_tool_feedback" for diagnostic in synthetic_snapshot.diagnostics)
 
 
@@ -1305,7 +1232,7 @@ def test_prepare_provider_context_older_todo_and_task_do_not_displace_newer_read
         prompt="finish task",
         tool_results=(
             ToolResult(
-                tool_name="todo_write",
+                tool_name="todo",
                 content="Updated todos",
                 status="ok",
                 data={"index": 1},
@@ -1848,7 +1775,7 @@ def test_truncation_renders_through_view_without_rebuilding_original() -> None:
     assert original.truncated is False
     assert original.partial is False
     assert "context_window_truncated" not in original.data
-    assert view.result is original
+    assert view.result is not original
     # The view renders the clipped content with observable truncation state.
     assert view.clipped is True
     assert view.truncated is True

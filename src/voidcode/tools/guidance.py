@@ -23,7 +23,7 @@ _TOOL_GUIDANCE_FILES = {
     "skill": "skill.txt",
     "task": "delegation/task.txt",
     "task_batch": "delegation/task_batch.txt",
-    "todo_write": "todo_write.txt",
+    "todo": "todo.txt",
     "web_fetch": "web_fetch.txt",
     "web_search": "web_search.txt",
     "yield": "yield.txt",

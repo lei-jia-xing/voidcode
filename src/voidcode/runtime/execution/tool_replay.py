@@ -31,7 +31,7 @@ class ToolExecutionIntent:
             tool_call_id=tool_call_id,
             tool_name=call.tool_name,
             arguments=sanitize_tool_arguments(dict(call.arguments)),
-            replay_policy=definition.effective_replay_policy,
+            replay_policy=definition.effective_replay_policy_for(call.arguments),
         )
 
     def metadata_payload(self) -> dict[str, object]:

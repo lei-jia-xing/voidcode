@@ -42,7 +42,7 @@ _BUILTIN_COMMANDS: tuple[CommandDefinition, ...] = (
             "Constraints:\n"
             "- Read-only: do not write code or modify files unless explicitly instructed after the plan is accepted.\n"
             "- Plan directly, or delegate to the product agent (subagent_type=product) via the task tool and read its plan back.\n"
-            "- todo_write is runtime state, not workspace mutation.\n"
+            "- todo is runtime state, not workspace mutation.\n"
             "\n"
             "Target: $ARGUMENTS"
         ),

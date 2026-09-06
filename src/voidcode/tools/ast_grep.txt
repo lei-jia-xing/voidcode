@@ -1,9 +1,9 @@
-Use ast-grep tools for structural code matching when syntax shape matters more than literal text.
+Use the `ast_grep` tool for structural code matching when syntax shape matters more than literal text.
 
-Usage:
-- ast_grep_search performs structural search and returns AST matches.
-- ast_grep_preview previews a rewrite without modifying files.
-- ast_grep_replace applies a structural rewrite and requires apply=true.
-- pattern is required. path must be workspace-relative. lang is optional but often improves correctness.
-- Use preview before replace when the rewrite scope is not already obvious.
+Operations:
+- `mode=search` performs a read-only structural search and is safe to replay.
+- `mode=preview` previews a rewrite without modifying files and is safe to replay.
+- `mode=replace` writes the workspace and requires `apply=true`; it is mutating, requires runtime approval, and is never replayed after interruption.
+- `pattern` and `path` are required. `rewrite` is required for preview and replace; `lang` is optional.
+- Preview before replace when the rewrite scope is not already obvious.
 - Prefer returned match and replacement counts over prose summaries when planning the next step.

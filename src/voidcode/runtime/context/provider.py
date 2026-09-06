@@ -414,7 +414,7 @@ def _synthetic_tool_feedback_message_snapshots(
                 )
             )
     for result in tool_results:
-        if has_runtime_todos and result.tool_name == "todo_write":
+        if has_runtime_todos and result.tool_name == "todo":
             continue
         tool_feedback_lines.append(_tool_result_payload_json(result))
     if tool_feedback_lines:
@@ -730,13 +730,13 @@ def _todo_projection_diagnostics(
     segments: tuple[RuntimeContextSegment, ...],
 ) -> list[RuntimeProviderContextDiagnostic]:
     has_runtime_todos = any(segment.role == "system" and _source_from_metadata(segment) == "runtime_todo_state" for segment in segments)
-    todo_tool_indices = [index for index, segment in enumerate(segments) if segment.role == "tool" and segment.tool_name == "todo_write"]
+    todo_tool_indices = [index for index, segment in enumerate(segments) if segment.role == "tool" and segment.tool_name == "todo"]
     if todo_tool_indices and not has_runtime_todos:
         return [
             RuntimeProviderContextDiagnostic(
                 severity="warning",
                 code="todo_state_only_in_droppable_feedback",
-                message=("TODO/progress state is visible only through retained todo_write tool feedback."),
+                message=("TODO/progress state is visible only through retained todo tool feedback."),
                 source="runtime_todo_state",
                 segment_indices=tuple(todo_tool_indices),
                 suggested_fix=("Persist TODO/progress as runtime-owned state before context-window pruning."),

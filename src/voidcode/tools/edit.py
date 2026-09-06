@@ -25,7 +25,6 @@ from ._repair import (
     looks_line_number_prefixed,
     raise_tool_diagnostic,
 )
-from ._syntax_validation import post_edit_syntax_diagnostics
 from .contracts import ToolCall, ToolDefinition, ToolResult
 from .guards import enforce_read_before_write, enforce_seen_lines
 from .runtime_context import current_runtime_tool_context
@@ -811,14 +810,6 @@ class EditTool:
             current_diagnostics = data.get("diagnostics")
             existing = current_diagnostics if isinstance(current_diagnostics, list) else []
             data["diagnostics"] = [*existing, *lsp_diagnostics]
-        syntax_diagnostics = post_edit_syntax_diagnostics(
-            workspace=workspace_root,
-            paths=[display_path],
-        )
-        if syntax_diagnostics:
-            current_diagnostics = data.get("diagnostics")
-            existing = current_diagnostics if isinstance(current_diagnostics, list) else []
-            data["diagnostics"] = [*existing, *syntax_diagnostics]
 
         return ToolResult(
             tool_name=self.definition.name,

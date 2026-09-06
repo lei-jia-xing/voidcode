@@ -43,7 +43,7 @@ BUILTIN_TOOL_NAMES = frozenset(
         "yield",
         "task",
         "task_batch",
-        "todo_write",
+        "todo",
         "web_fetch",
         "web_search",
         "write",
@@ -151,11 +151,11 @@ else:
     _SkillTool: _SkillToolFactory | None = SkillTool
 
 try:
-    from ..tools.todo_write import TodoWriteTool
+    from ..tools.todo import TodoTool
 except ImportError:
-    _TodoWriteTool: _NoArgToolFactory | None = None
+    _TodoTool: _NoArgToolFactory | None = None
 else:
-    _TodoWriteTool: _NoArgToolFactory | None = TodoWriteTool
+    _TodoTool: _NoArgToolFactory | None = TodoTool
 
 
 class ToolProvider(Protocol):
@@ -268,8 +268,8 @@ class BuiltinToolProvider:
             tools.append(_AstGrepTool())
         if _MultiEditTool is not None:
             tools.append(_MultiEditTool(hooks_config=self._hooks_config))
-        if _TodoWriteTool is not None:
-            tools.append(_TodoWriteTool())
+        if _TodoTool is not None:
+            tools.append(_TodoTool())
 
         return tuple(tools)
 

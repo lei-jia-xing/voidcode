@@ -80,6 +80,7 @@ class RuntimeToolInvocationContext:
     read_paths: frozenset[str] = frozenset()
     read_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
     model: str | None = None
+    todo_phases: tuple[dict[str, object], ...] = ()
     tool_timeout_seconds: int | None = None
     abort_signal: ProviderAbortSignal | None = None
     emit_tool_progress: Callable[[Mapping[str, object]], None] | None = None

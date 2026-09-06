@@ -120,10 +120,10 @@ class PendingToolIntentMetadata(TypedDict, total=False):
     status: str  # Literal["pending", "completed"]
 
 
-class TodosStateMetadata(TypedDict, total=False):
-    version: int  # 恒 1
+class TodosStateMetadata(TypedDict):
+    version: Literal[2]
     revision: int
-    todos: list[dict[str, object]]
+    phases: list[dict[str, object]]
     summary: dict[str, object]
 
 

@@ -35,6 +35,15 @@
   `runtime.failed`
 - 终端失败应保留给运行时错误、取消、无效会话状态或模型无法继续的情况
 
+
+## Shell command semantic guard
+
+`shell_exec` remains governed by the runtime permission engine. In addition to
+configured `permission.rules`, a narrow runtime-owned semantic guard forces
+`ask` for recursive removal of root/home paths and remote content piped into an
+interpreter. Explicit `deny` decisions and external-directory denials remain
+stronger. Ordinary workspace-scoped commands are not escalated by this guard.
+
 ## 审批请求契约
 
 审批请求必须至少能表示以下内容：

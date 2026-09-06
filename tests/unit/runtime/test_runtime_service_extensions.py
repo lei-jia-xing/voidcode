@@ -1479,17 +1479,11 @@ class _DuplicateTodoThenResultAwareTurnProvider:
     def propose_turn(self, request: object) -> ProviderTurnResult:
         turn_request = cast(ProviderTurnRequest, request)
         self.requests.append(turn_request)
-        todos = [
-            {
-                "content": "make todo runtime-owned",
-                "status": "in_progress",
-            }
-        ]
         if len(turn_request.tool_results) < 2:
             return ProviderTurnResult(
                 tool_call=ToolCall(
-                    tool_name="todo_write",
-                    arguments={"todos": todos},
+                    tool_name="todo",
+                    arguments={"op": "view"},
                 )
             )
         return ProviderTurnResult(output="duplicate todo handled")
@@ -4740,7 +4734,7 @@ def test_runtime_tool_diagnostic_error_propagates_structured_payload(tmp_path: P
     assert failed_tool_result.diagnostics.guidance == diagnostics["guidance"]
 
 
-def test_runtime_todo_write_duplicate_snapshot_is_marked_unchanged(tmp_path: Path) -> None:
+def test_runtime_todo_view_operation_completes_without_mutation_event(tmp_path: Path) -> None:
     created_providers: list[_DuplicateTodoThenResultAwareTurnProvider] = []
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
@@ -4759,17 +4753,12 @@ def test_runtime_todo_write_duplicate_snapshot_is_marked_unchanged(tmp_path: Pat
     response = runtime.run(RuntimeRequest(prompt="duplicate todo", session_id="duplicate-todo"))
 
     todo_events = [event for event in response.events if event.event_type == "runtime.todo_updated"]
-    todo_tool_events = [
-        event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "todo_write"
-    ]
+    todo_tool_events = [event for event in response.events if event.event_type == "runtime.tool_completed" and event.payload.get("tool") == "todo"]
 
     assert response.session.status == "completed"
     assert response.output == "duplicate todo handled"
-    assert len(todo_events) == 1
+    assert todo_events == []
     assert len(todo_tool_events) == 2
-    assert todo_tool_events[0].payload.get("unchanged") is None
-    assert todo_tool_events[1].payload.get("unchanged") is True
-    assert todo_tool_events[1].payload.get("content") == "Updated 0 todos (unchanged)"
 
 
 def test_runtime_session_debug_snapshot_reports_failure_classification_and_last_tool(

@@ -718,17 +718,27 @@ def _print_trace_tool_completed(payload: dict[str, object]) -> None:
 
 
 def _print_trace_todos(payload: dict[str, object]) -> None:
-    todos = payload.get("todos")
-    if not isinstance(todos, list):
+    phases = payload.get("phases")
+    if not isinstance(phases, list):
         return
     print("\nTODO", flush=True)
-    for todo in todos:
-        if not _is_string_keyed_mapping(todo):
+    for raw_phase in phases:
+        if not _is_string_keyed_mapping(raw_phase):
             continue
-        status = _trace_string(todo.get("status")) or "pending"
-        marker = "x" if status == "completed" else " "
-        content = _trace_string(todo.get("content")) or "(empty todo)"
-        print(f"  [{marker}] {content}", flush=True)
+        phase_name = _trace_string(raw_phase.get("name")) or "Tasks"
+        print(f"  {phase_name}", flush=True)
+        tasks = raw_phase.get("tasks")
+        if not isinstance(tasks, list):
+            continue
+        for task in tasks:
+            if not _is_string_keyed_mapping(task):
+                continue
+            status = _trace_string(task.get("status")) or "pending"
+            marker = {"completed": "x", "abandoned": "-", "blocked": "!"}.get(status, " ")
+            content = _trace_string(task.get("content")) or "(empty todo)"
+            reason = _trace_string(task.get("blocker"))
+            suffix = f" — {reason}" if reason else ""
+            print(f"    [{marker}] {content}{suffix}", flush=True)
 
 
 def _print_trace_final(result: RuntimeStreamResult) -> None:

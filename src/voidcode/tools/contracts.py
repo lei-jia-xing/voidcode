@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, cast, runtime_checkable
@@ -134,9 +135,14 @@ class ToolDefinition:
     # tools default to never replay unless they explicitly opt in.
     replay_policy: ToolReplayPolicy | None = None
 
+    def effective_replay_policy_for(self, arguments: Mapping[str, object] | None = None) -> ToolReplayPolicy:
+        if self.name == "ast_grep" and arguments is not None and arguments.get("mode") in {"search", "preview"}:
+            return "safe"
+        return self.replay_policy or ("safe" if self.read_only else "never")
+
     @property
     def effective_replay_policy(self) -> ToolReplayPolicy:
-        return self.replay_policy or ("safe" if self.read_only else "never")
+        return self.effective_replay_policy_for()
 
 
 @dataclass(frozen=True, slots=True)

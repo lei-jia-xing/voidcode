@@ -37,7 +37,7 @@ _TOOL_KIND_TABLE: dict[str, tuple[str, str]] = {
     "skill": ("skill", "Skill"),
     "question": ("question", "Question"),
     "lsp": ("lsp", "LSP"),
-    "todo_write": ("generic", "Todo"),
+    "todo": ("generic", "Todo"),
 }
 
 _MAX_SUMMARY_LENGTH = 120
@@ -269,7 +269,7 @@ def build_tool_display(
         summary = header if header else "Question"
         args = _extract_primitive_args(arguments, "header")
 
-    elif tool_name == "todo_write":
+    elif tool_name == "todo":
         summary = "Update todo list"
         hidden = True
 

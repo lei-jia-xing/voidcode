@@ -17,7 +17,7 @@ from voidcode.tools import (
     EditTool,
     GlobTool,
     MultiEditTool,
-    TodoWriteTool,
+    TodoTool,
     ToolCall,
     WebFetchTool,
 )
@@ -170,18 +170,12 @@ def test_multi_edit_tool_applies_ordered_edits_integration(tmp_path: Path) -> No
     assert result.data.get("applied") == 2
 
 
-def test_todo_write_tool_persists_summary_integration(tmp_path: Path) -> None:
-    tool = TodoWriteTool()
+def test_todo_tool_single_operation_integration(tmp_path: Path) -> None:
+    tool = TodoTool()
     result = tool.invoke(
         ToolCall(
-            tool_name="todo_write",
-            arguments={
-                "todos": [
-                    {"content": "task1", "status": "pending"},
-                    {"content": "task2", "status": "in_progress"},
-                    {"content": "task3", "status": "completed"},
-                ]
-            },
+            tool_name="todo",
+            arguments={"op": "init", "items": ["task1", "task2", "task3"]},
         ),
         workspace=tmp_path,
     )
@@ -191,12 +185,12 @@ def test_todo_write_tool_persists_summary_integration(tmp_path: Path) -> None:
     assert isinstance(summary_raw, dict)
     summary = cast(dict[str, object], summary_raw)
     assert summary.get("total") == 3
-    assert summary.get("pending") == 1
+    assert summary.get("pending") == 2
     assert summary.get("in_progress") == 1
-    assert summary.get("completed") == 1
+    assert summary.get("completed") == 0
     assert not (tmp_path / ".voidcode" / "todos.json").exists()
-    todos_raw = result.data.get("todos")
-    assert isinstance(todos_raw, list)
+    phases = result.data.get("phases")
+    assert isinstance(phases, list)
 
 
 def test_glob_tool_handles_paths_and_ignores_integration(tmp_path: Path) -> None:
