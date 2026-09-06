@@ -40,9 +40,7 @@ const baseProps: SessionSidebarProps = {
   sessionsError: null,
   isRunning: false,
   isReplayLoading: false,
-  isExpanded: true,
   onSidebarWidthChange: vi.fn(),
-  onExpandedChange: vi.fn(),
   onSelectSession: vi.fn(),
   onOpenProjects: vi.fn(),
   onOpenSettings: vi.fn(),
@@ -50,16 +48,14 @@ const baseProps: SessionSidebarProps = {
 
 function renderSidebar(props: Partial<SessionSidebarProps> = {}) {
   const onSidebarWidthChange = vi.fn();
-  const onExpandedChange = vi.fn();
   const result = render(
     <SessionSidebar
       {...baseProps}
       {...props}
       onSidebarWidthChange={onSidebarWidthChange}
-      onExpandedChange={onExpandedChange}
     />,
   );
-  return { ...result, onSidebarWidthChange, onExpandedChange };
+  return { ...result, onSidebarWidthChange };
 }
 
 describe("SessionSidebar resizing", () => {
@@ -130,26 +126,21 @@ describe("SessionSidebar resizing", () => {
     );
   });
 
-  it("preserves collapsed rail behavior and hides the resize handle", () => {
-    const { container, onExpandedChange, rerender } = renderSidebar({
+  it("stays expanded without collapse controls while retaining resize", () => {
+    const { container } = renderSidebar({
       sidebarWidth: MAX_SESSION_SIDEBAR_WIDTH,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
-
-    expect(onExpandedChange).toHaveBeenCalledWith(false);
-
-    rerender(
-      <SessionSidebar
-        {...baseProps}
-        sidebarWidth={MAX_SESSION_SIDEBAR_WIDTH}
-        isExpanded={false}
-        onExpandedChange={onExpandedChange}
-      />,
-    );
-
-    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
-    expect(container.querySelector("aside")).toHaveClass("w-16", "md:w-16");
+    expect(
+      screen.queryByRole("button", { name: "Collapse sidebar" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Expand sidebar" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("separator", { name: "Resize session sidebar" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector("aside")).not.toHaveClass("w-16", "md:w-16");
   });
 
   it("shortens the live Vulkan Chinese prompt in the session list", () => {

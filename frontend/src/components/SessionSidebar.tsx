@@ -7,14 +7,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ChevronLeft,
-  ChevronRight,
-  Code2,
-  FolderOpen,
-  Plus,
-  Settings,
-} from "lucide-react";
+import { Code2, FolderOpen, Plus, Settings } from "lucide-react";
 import type {
   StoredSessionSummary,
   WorkspaceRegistrySnapshot,
@@ -30,9 +23,7 @@ export interface SessionSidebarProps {
   sessionsError: string | null;
   isRunning: boolean;
   isReplayLoading: boolean;
-  isExpanded: boolean;
   onSidebarWidthChange: (width: number) => void;
-  onExpandedChange: (isExpanded: boolean) => void;
   onSelectSession: (sessionId: string) => void;
   onOpenProjects: () => void;
   onOpenSettings: () => void;
@@ -77,9 +68,7 @@ export function SessionSidebar({
   sessionsError,
   isRunning,
   isReplayLoading,
-  isExpanded,
   onSidebarWidthChange,
-  onExpandedChange,
   onSelectSession,
   onOpenProjects,
   onOpenSettings,
@@ -173,48 +162,34 @@ export function SessionSidebar({
 
   return (
     <>
-      {isExpanded && (
-        <button
-          type="button"
-          aria-label={t("sidebar.closeMobile")}
-          className="fixed inset-0 z-30 bg-[var(--vc-overlay-bg)] md:hidden"
-          onClick={() => onExpandedChange(false)}
-        />
-      )}
       <aside
-        className={`relative z-40 border-r border-[var(--vc-border-subtle)] bg-[var(--vc-bg)] flex flex-col justify-between flex-shrink-0 transition-[width] duration-200 ${
-          isExpanded
-            ? "fixed inset-y-0 left-0 w-[min(88vw,344px)] md:relative md:inset-auto md:w-[var(--session-sidebar-width)]"
-            : "w-16 md:w-16"
-        }`}
+        className="relative z-40 border-r border-[var(--vc-border-subtle)] bg-[var(--vc-bg)] flex flex-col justify-between flex-shrink-0 w-[min(88vw,344px)] md:w-[var(--session-sidebar-width)]"
         style={sidebarStyle}
       >
-        {isExpanded && (
-          <div
-            role="separator"
-            tabIndex={0}
-            aria-label={t("sidebar.resize")}
-            aria-orientation="vertical"
-            aria-valuemin={MIN_SESSION_SIDEBAR_WIDTH}
-            aria-valuemax={Math.round(maxSidebarWidth)}
-            aria-valuenow={Math.round(clampedSidebarWidth)}
-            className={`absolute inset-y-0 right-0 z-20 hidden w-[var(--vc-space-2)] translate-x-1/2 cursor-col-resize touch-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vc-focus-ring)] md:block ${
-              isResizing
-                ? "bg-[var(--vc-border-strong)]"
-                : "bg-transparent hover:bg-[var(--vc-border-strong)]"
-            }`}
-            onKeyDown={handleResizeKeyDown}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              setIsResizing(true);
-              resizeToWidth(event.clientX);
-            }}
-          />
-        )}
+        <div
+          role="separator"
+          tabIndex={0}
+          aria-label={t("sidebar.resize")}
+          aria-orientation="vertical"
+          aria-valuemin={MIN_SESSION_SIDEBAR_WIDTH}
+          aria-valuemax={Math.round(maxSidebarWidth)}
+          aria-valuenow={Math.round(clampedSidebarWidth)}
+          className={`absolute inset-y-0 right-0 z-20 hidden w-[var(--vc-space-2)] translate-x-1/2 cursor-col-resize touch-none transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vc-focus-ring)] md:block ${
+            isResizing
+              ? "bg-[var(--vc-border-strong)]"
+              : "bg-transparent hover:bg-[var(--vc-border-strong)]"
+          }`}
+          onKeyDown={handleResizeKeyDown}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            setIsResizing(true);
+            resizeToWidth(event.clientX);
+          }}
+        />
         <div className="flex-1 overflow-hidden flex flex-col">
           <div className="h-14 flex items-center justify-center md:justify-start md:px-4 border-b border-[color:var(--vc-border-subtle)] text-[var(--vc-text-primary)] font-bold tracking-tight">
             <Code2 className="w-6 h-6 md:mr-3" />
-            {isExpanded && <span className="text-lg">{t("app.title")}</span>}
+            <span className="text-lg">{t("app.title")}</span>
           </div>
 
           <div className="p-3 flex-1 overflow-y-auto">
@@ -224,16 +199,6 @@ export function SessionSidebar({
                   <div className="text-xs font-semibold text-[var(--vc-text-subtle)] uppercase tracking-wider">
                     {t("nav.workspace")}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onExpandedChange(!isExpanded)}
-                    className="rounded-md p-1 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-                    aria-label={t(
-                      isExpanded ? "sidebar.collapse" : "sidebar.expand",
-                    )}
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
                 </div>
 
                 <div className="rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] p-3 space-y-3">
@@ -314,49 +279,17 @@ export function SessionSidebar({
               </div>
             </div>
           </div>
-
-          {!isExpanded && (
-            <div className="p-3 space-y-3 flex flex-col items-center">
-              <button
-                type="button"
-                onClick={() => onExpandedChange(true)}
-                className="rounded-md p-2 text-[var(--vc-text-subtle)] hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-                aria-label={t("sidebar.expand")}
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={onOpenProjects}
-                className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-strong)] bg-[var(--vc-text-primary)] flex items-center justify-center text-[var(--vc-bg)]"
-                aria-label={t("project.openTitle")}
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={onOpenSettings}
-                className="w-10 h-10 rounded-xl border border-[color:var(--vc-border-subtle)] bg-[var(--vc-surface-1)] flex items-center justify-center text-[var(--vc-text-muted)]"
-                aria-label={t("nav.settings")}
-              >
-                <Settings className="w-4 h-4" />
-              </button>
-            </div>
-          )}
         </div>
-
-        {isExpanded && (
-          <div className="border-t border-[color:var(--vc-border-subtle)] p-3">
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="w-full flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-muted)] transition-colors hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
-            >
-              <Settings className="w-4 h-4" />
-              <span>{t("nav.settings")}</span>
-            </button>
-          </div>
-        )}
+        <div className="border-t border-[color:var(--vc-border-subtle)] p-3">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="w-full flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-[var(--vc-text-muted)] transition-colors hover:bg-[var(--vc-surface-1)] hover:text-[var(--vc-text-primary)]"
+          >
+            <Settings className="w-4 h-4" />
+            <span>{t("nav.settings")}</span>
+          </button>
+        </div>
       </aside>
     </>
   );

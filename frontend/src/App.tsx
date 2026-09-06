@@ -25,7 +25,6 @@ import {
   GitCompare,
   Loader2,
   MoveLeft,
-  PanelLeft,
 } from "lucide-react";
 import { StatusBar } from "./components/StatusBar";
 import { buildSessionDisplayTitle } from "./components/sessionTitle";
@@ -221,8 +220,6 @@ function App() {
   const [sessionEventError, setSessionEventError] = useState<string | null>(
     null,
   );
-  const [isSessionSidebarExpanded, setIsSessionSidebarExpanded] =
-    useState(true);
   const hydratedInitialSessionRef = useRef(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const lastMessageSignatureRef = useRef("");
@@ -697,12 +694,9 @@ function App() {
         sessionsError={sessionsError}
         isRunning={isRunning}
         isReplayLoading={isReplayLoading}
-        isExpanded={isSessionSidebarExpanded}
         onSidebarWidthChange={setSessionSidebarWidth}
-        onExpandedChange={setIsSessionSidebarExpanded}
         onSelectSession={(sessionId) => {
           void selectSession(sessionId);
-          setIsSessionSidebarExpanded(false);
         }}
         onOpenProjects={() => setShowProjects(true)}
         onOpenSettings={() => setShowSettings(true)}
@@ -714,16 +708,6 @@ function App() {
           <>
             <header className="relative z-20 h-14 flex items-center justify-between px-4 border-b border-[color:var(--vc-border-subtle)] bg-[var(--vc-bg)] flex-shrink-0">
               <div className="flex items-center gap-2 min-w-0">
-                <ControlButton
-                  compact
-                  variant={isSessionSidebarExpanded ? "secondary" : "ghost"}
-                  onClick={() => setIsSessionSidebarExpanded((value) => !value)}
-                  aria-label={t("sidebar.toggle")}
-                  aria-expanded={isSessionSidebarExpanded}
-                >
-                  <PanelLeft className="w-4 h-4" />
-                  <span>{t("sidebar.sessions")}</span>
-                </ControlButton>
                 {isReplayLoading && (
                   <Loader2 className="w-4 h-4 animate-spin text-[var(--vc-text-muted)] flex-shrink-0" />
                 )}

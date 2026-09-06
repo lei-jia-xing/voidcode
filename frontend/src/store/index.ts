@@ -1496,19 +1496,21 @@ export const useAppStore = create<AppState>()(
           currentSessionId,
           currentSessionEvents,
           replayStatus,
-          runStatus,
           approvalStatus,
         } = get();
 
         if (
           !currentSessionId ||
           replayStatus === "loading" ||
-          isRunLocked(runStatus) ||
           approvalStatus === "submitting"
         ) {
           return;
         }
 
+        // An approval request pauses the runtime, but the local stream can
+        // still report "running" until it closes after delivering the request
+        // event. The pending approval event is authoritative for this input
+        // path, so do not let that stale run lock silently swallow a decision.
         const requestId = getPendingApprovalRequestId(currentSessionEvents);
         if (!requestId) {
           set({

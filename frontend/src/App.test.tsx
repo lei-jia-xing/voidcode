@@ -331,7 +331,7 @@ describe("App", () => {
     sessionEventsSpy.mockRestore();
   });
 
-  it("renders independent sessions, file tree, and code review toggles in the workspace header", () => {
+  it("renders the always-visible sidebar and independent file tree and code review toggles", () => {
     const workspaceStore = {
       ...mockStore,
       reviewSnapshot: {
@@ -385,9 +385,6 @@ describe("App", () => {
 
     render(<App />);
 
-    const sessionsToggle = screen.getByRole("button", {
-      name: "Toggle sessions",
-    });
     const fileTreeToggle = screen.getByRole("button", {
       name: "Toggle file tree",
     });
@@ -395,18 +392,19 @@ describe("App", () => {
       name: "Toggle code review",
     });
 
-    expect(sessionsToggle).toHaveTextContent("Sessions");
     expect(fileTreeToggle).toHaveTextContent("File Tree");
     expect(codeReviewToggle).toHaveTextContent("Code Review");
     expect(
       screen.queryByRole("button", { name: "Toggle review" }),
     ).not.toBeInTheDocument();
-    expect(sessionsToggle).toHaveAttribute("aria-expanded", "true");
     expect(fileTreeToggle).toHaveAttribute("aria-expanded", "false");
     expect(codeReviewToggle).toHaveAttribute("aria-expanded", "false");
-
-    fireEvent.click(sessionsToggle);
-    expect(sessionsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: "Toggle sessions" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open Project" }),
+    ).toBeInTheDocument();
 
     fireEvent.click(fileTreeToggle);
     expect(

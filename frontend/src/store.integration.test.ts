@@ -591,6 +591,116 @@ describe("useAppStore integration flow", () => {
     expect(state.currentSessionOutput).toBe("hello");
     expect(state.currentSessionEvents).toEqual(completedResponse.events);
   });
+  it("submits approval while the request stream is still reporting running", async () => {
+    const sessionId = "approval-open-stream";
+    const requestId = "approval-open-stream-1";
+    const gate = createDeferred<void>();
+    const approvalResponse = makeRuntimeResponse(
+      sessionId,
+      "completed",
+      [
+        makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "write open.txt hello" },
+          "runtime",
+          sessionId,
+        ),
+        makeEvent(
+          2,
+          "runtime.approval_requested",
+          {
+            request_id: requestId,
+            tool: "write",
+            target_summary: "open.txt",
+            decision: "ask",
+          },
+          "runtime",
+          sessionId,
+        ),
+        makeEvent(
+          3,
+          "runtime.approval_resolved",
+          { request_id: requestId, decision: "allow" },
+          "runtime",
+          sessionId,
+        ),
+      ],
+      "hello",
+    );
+    const slowApproval = createDeferred<RuntimeResponse>();
+
+    async function* stream() {
+      yield makeStreamChunk(
+        sessionId,
+        "running",
+        makeEvent(
+          1,
+          "runtime.request_received",
+          { prompt: "write open.txt hello" },
+          "runtime",
+          sessionId,
+        ),
+      );
+      yield makeStreamChunk(
+        sessionId,
+        "waiting",
+        makeEvent(
+          2,
+          "runtime.approval_requested",
+          {
+            request_id: requestId,
+            tool: "write",
+            target_summary: "open.txt",
+            decision: "ask",
+          },
+          "runtime",
+          sessionId,
+        ),
+      );
+      await gate.promise;
+    }
+
+    runtimeClientMocks.runStreamMock.mockReturnValue(stream());
+    runtimeClientMocks.resolveApprovalMock.mockReturnValue(
+      slowApproval.promise,
+    );
+    runtimeClientMocks.listSessionsMock.mockResolvedValue([
+      makeStoredSessionSummary(sessionId, "completed", "write open.txt hello"),
+    ]);
+
+    const runPromise = useAppStore.getState().runTask("write open.txt hello");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    let state = useAppStore.getState();
+    expect(state.runStatus).toBe("running");
+    expect(
+      state.currentSessionEvents[state.currentSessionEvents.length - 1]
+        ?.event_type,
+    ).toBe("runtime.approval_requested");
+
+    const approvalPromise = useAppStore.getState().resolveApproval("allow");
+    await Promise.resolve();
+
+    expect(runtimeClientMocks.resolveApprovalMock).toHaveBeenCalledWith(
+      sessionId,
+      requestId,
+      "allow",
+    );
+    expect(useAppStore.getState().approvalStatus).toBe("submitting");
+
+    slowApproval.resolve(approvalResponse);
+    await approvalPromise;
+    gate.resolve();
+    await runPromise;
+
+    state = useAppStore.getState();
+    expect(state.currentSessionOutput).toBe("hello");
+    expect(state.approvalStatus).toBe("idle");
+  });
 
   it("acknowledges approval immediately while a resumed run is still resolving", async () => {
     const sessionId = "approval-slow-resume";
