@@ -5594,11 +5594,12 @@ def test_runtime_preserves_pending_approval_when_terminal_save_fails(tmp_path: P
     )
     replay = replay_runtime.resume("approval-session")
 
-    # The failed seal leaves the approval-resolution tail appended incrementally,
-    # so the pending approval survives but `events[-1]` is no longer the request.
-    assert replay.session.status == "waiting"
-    approval_requested = next(event for event in replay.events if event.event_type == "runtime.approval_requested")
-    assert cast(str, approval_requested.payload["request_id"]) == approval_request_id
+    # Reconciliation converts the durable resolved tail into an interrupted
+    # checkpoint, so retrying without the approval request id cannot execute the
+    # approved tool twice and can finish the graph safely.
+    assert replay.session.status == "completed"
+    assert replay.events[-1].event_type == "graph.response_ready"
+    assert replay.events.count(next(event for event in replay.events if event.event_type == "runtime.approval_resolved")) == 1
 
 
 def test_cli_run_command_prints_clean_file_contents_by_default(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import patch
 
 from voidcode.agent.prompt_sections import (
     capability_block,
@@ -13,6 +15,7 @@ from voidcode.agent.prompt_sections import (
 from voidcode.agent.prompts import render_builtin_prompt_profile
 from voidcode.runtime.context.prompt_assembly import (
     PromptAssemblySection,
+    build_env_card_sections,
     build_prompt_assembly_plan,
     prompt_activation_decision,
 )
@@ -184,6 +187,31 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
         "layer": "task_state",
     }
     assert pending_section.tier == "task"
+
+
+def test_build_env_card_sections_omits_python_patch_version_from_provider_view() -> None:
+    with patch(
+        "voidcode.runtime.context.prompt_assembly.sys.version_info",
+        SimpleNamespace(major=3, minor=14, micro=7),
+    ):
+        stable, dynamic = build_env_card_sections({"workspace_root": "/tmp/not-a-worktree", "model": "opencode/test-model"})
+        plan = build_prompt_assembly_plan(
+            prompt="fix the failing test",
+            runtime_instruction_precedence="runtime first",
+            agent_prompt_context="leader base body",
+            prompt_profile_name="leader",
+            session_runtime_state={
+                "workspace_root": "/tmp/not-a-worktree",
+                "model": "opencode/test-model",
+            },
+        )
+
+    assert "Python: 3.14\n" in stable
+    assert "Python: 3.14.7" not in stable
+    assert "Python: 3.14.7" not in dynamic
+    stable_section = next(section for section in plan.sections if section.source == "runtime_environment_stable")
+    assert "Python: 3.14\n" in stable_section.content
+    assert "Python: 3.14.7" not in stable_section.content
 
 
 def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix() -> None:

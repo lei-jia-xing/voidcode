@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -65,7 +67,17 @@ class _ActiveRunHandle:
 class ActiveSessionRegistry:
     def __init__(self) -> None:
         self._runs: dict[_ActiveSessionKey, dict[str, _ActiveRunHandle]] = {}
+        self._approval_locks: dict[_ActiveSessionKey, threading.Lock] = {}
         self._lock = threading.Lock()
+
+    @contextmanager
+    def approval_resolution_lock(self, *, workspace: Path, session_id: str) -> Iterator[None]:
+        """Serialize approval resolution attempts for one workspace/session."""
+        key = _ActiveSessionKey(workspace=workspace, session_id=session_id)
+        with self._lock:
+            lock = self._approval_locks.setdefault(key, threading.Lock())
+        with lock:
+            yield
 
     @staticmethod
     def _latest_handle(handles: dict[str, _ActiveRunHandle]) -> _ActiveRunHandle | None:

@@ -4425,6 +4425,7 @@ class VoidCodeRuntime(RuntimeSurface):
     ) -> RuntimeResponse:
         validate_session_id(session_id)
         if approval_request_id is None and approval_decision is None:
+            _ = self._reconcile_resolved_approval(session_id=session_id)
             checkpoint = self._resume_coordinator.load_resume_checkpoint(session_id=session_id)
             if checkpoint is not None and checkpoint.get("kind") == "provider_failure_retryable":
                 self._background_task_supervisor.reconcile_parent_background_task_events_for_session(parent_session_id=session_id)
@@ -4448,13 +4449,21 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        _, response = self._resume_coordinator.resume_pending_approval_response(
+        with ACTIVE_SESSION_REGISTRY.approval_resolution_lock(
+            workspace=self._workspace,
             session_id=session_id,
-            approval_request_id=approval_request_id,
-            approval_decision=approval_decision,
-        )
-        self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
-        return response
+        ):
+            self._claim_pending_approval(
+                session_id=session_id,
+                approval_request_id=approval_request_id,
+            )
+            _, response = self._resume_coordinator.resume_pending_approval_response(
+                session_id=session_id,
+                approval_request_id=approval_request_id,
+                approval_decision=approval_decision,
+            )
+            self._background_task_supervisor.finalize_background_task_from_session_response(session_response=response)
+            return response
 
     def resume_stream(
         self,
@@ -4522,28 +4531,36 @@ class VoidCodeRuntime(RuntimeSurface):
             session_id=session_id,
             approval_request_id=approval_request_id,
         )
-        run_id = os.urandom(8).hex()
-        abort_signal = self._register_active_session_id(
-            session_id,
-            run_id=run_id,
-            metadata={
-                "resume": True,
-                "resume_kind": "approval",
-                "approval_request_id": approval_request_id,
-                "run_id": run_id,
-            },
-        )
-        try:
-            yield from self._resume_coordinator.resume_pending_approval_stream(
+        with ACTIVE_SESSION_REGISTRY.approval_resolution_lock(
+            workspace=self._workspace,
+            session_id=session_id,
+        ):
+            self._claim_pending_approval(
                 session_id=session_id,
                 approval_request_id=approval_request_id,
-                approval_decision=approval_decision,
-                run_id=run_id,
-                abort_signal=abort_signal,
-                finalize_background_task=True,
             )
-        finally:
-            self._unregister_active_session_id(session_id, run_id=run_id)
+            run_id = os.urandom(8).hex()
+            abort_signal = self._register_active_session_id(
+                session_id,
+                run_id=run_id,
+                metadata={
+                    "resume": True,
+                    "resume_kind": "approval",
+                    "approval_request_id": approval_request_id,
+                    "run_id": run_id,
+                },
+            )
+            try:
+                yield from self._resume_coordinator.resume_pending_approval_stream(
+                    session_id=session_id,
+                    approval_request_id=approval_request_id,
+                    approval_decision=approval_decision,
+                    run_id=run_id,
+                    abort_signal=abort_signal,
+                    finalize_background_task=True,
+                )
+            finally:
+                self._unregister_active_session_id(session_id, run_id=run_id)
 
     def _validate_resume_targets_owned_request(
         self,
@@ -4566,6 +4583,30 @@ class VoidCodeRuntime(RuntimeSurface):
             raise ValueError("approval resume must target the child session that owns the approval request")
         if pending.request_id != approval_request_id:
             return
+
+    def _reconcile_resolved_approval(self, *, session_id: str) -> bool:
+        pending = self._session_store.load_pending_approval(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        if pending is None:
+            return False
+        reconcile = getattr(self._session_store, "reconcile_resolved_approval", None)
+        if not callable(reconcile):
+            return False
+        return bool(
+            reconcile(
+                workspace=self._workspace,
+                session_id=session_id,
+                request_id=pending.request_id,
+            )
+        )
+
+    def _claim_pending_approval(self, *, session_id: str, approval_request_id: str) -> None:
+        self._resume_coordinator.claim_pending_approval(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
+        )
 
     def _validate_question_targets_owned_request(
         self,

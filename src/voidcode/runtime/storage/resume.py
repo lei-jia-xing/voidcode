@@ -11,7 +11,7 @@ from ..contracts import (
     RuntimeResponse,
     UnknownSessionError,
 )
-from ..events import EventEnvelope
+from ..events import EventEnvelope, EventSource
 from ..permission import PendingApproval
 from ..question import (
     PendingQuestion,
@@ -281,6 +281,198 @@ class _ResumeStorageMixin(_MixinBase):
             matched_rule=(data["matched_rule"] if isinstance(data["matched_rule"], str) else None),
             policy_surface=(data["policy_surface"] if isinstance(data["policy_surface"], str) else None),
         )
+
+    def claim_pending_approval(self, *, workspace: Path, session_id: str, request_id: str) -> bool:
+        """Atomically claim one pending approval before executing its tool.
+
+        The pending row is mutable runtime coordination state; the event log
+        remains append-only truth.  ``BEGIN IMMEDIATE`` makes the request-id
+        check and claim marker one compare-and-set operation across runtime
+        instances and processes.
+        """
+        with self._write_connect(workspace) as connection:
+            row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT pending_approval_json
+                    FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            payload = cast(str | None, row["pending_approval_json"])
+            if payload is None:
+                return False
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"persisted pending approval for session {session_id!r} is corrupt") from exc
+            if not isinstance(decoded, dict):
+                raise RuntimeError(f"persisted pending approval for session {session_id!r} is corrupt: payload must decode to an object")
+            data = cast(dict[str, object], decoded)
+            if data.get("request_id") != request_id or data.get("resolution_claimed") is True:
+                return False
+            data["resolution_claimed"] = True
+            updated = connection.execute(
+                """
+                UPDATE sessions
+                SET pending_approval_json = ?, updated_at = ?
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (
+                    json.dumps(data, sort_keys=True),
+                    self._next_timestamp(connection=connection),
+                    str(workspace),
+                    session_id,
+                ),
+            ).rowcount
+            if updated != 1:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            connection.commit()
+            return True
+
+    def reconcile_resolved_approval(self, *, workspace: Path, session_id: str, request_id: str) -> bool:
+        """Repair a waiting row after a resolved approval tail was persisted.
+
+        A terminal seal can fail after the approval and tool events have been
+        appended.  In that case the waiting row and approval checkpoint are
+        stale even though replay already contains the side effect.  Convert
+        the row to an interrupted checkpoint carrying the durable tool result;
+        the normal interrupted-resume path then advances the graph without
+        invoking the approved tool again.  A durable runtime failure is already
+        terminal and is sealed as failed instead.
+        """
+        with self._write_connect(workspace) as connection:
+            session_row = cast(
+                sqlite3.Row | None,
+                connection.execute(
+                    """
+                    SELECT status, pending_approval_json, resume_checkpoint_json
+                    FROM sessions
+                    WHERE workspace_id = ? AND session_id = ?
+                    """,
+                    (str(workspace), session_id),
+                ).fetchone(),
+            )
+            if session_row is None:
+                raise UnknownSessionError(f"unknown session: {session_id}")
+            pending_payload = cast(str | None, session_row["pending_approval_json"])
+            if pending_payload is None:
+                return False
+            try:
+                pending_decoded = json.loads(pending_payload)
+                checkpoint_decoded = json.loads(cast(str, session_row["resume_checkpoint_json"]))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"persisted approval recovery state for session {session_id!r} is corrupt") from exc
+            if not isinstance(pending_decoded, dict) or not isinstance(checkpoint_decoded, dict):
+                raise RuntimeError(f"persisted approval recovery state for session {session_id!r} is corrupt")
+            pending_data = cast(dict[str, object], pending_decoded)
+            if pending_data.get("request_id") != request_id:
+                return False
+            checkpoint = cast(dict[str, object], checkpoint_decoded)
+            if checkpoint.get("kind") != "approval_wait":
+                return False
+            event_rows = cast(
+                list[sqlite3.Row],
+                connection.execute(
+                    """
+                    SELECT sequence, event_type, source, payload_json
+                    FROM session_events
+                    WHERE workspace_id = ? AND session_id = ?
+                    ORDER BY sequence ASC
+                    """,
+                    (str(workspace), session_id),
+                ).fetchall(),
+            )
+            events = tuple(
+                EventEnvelope(
+                    session_id=session_id,
+                    sequence=cast(int, row["sequence"]),
+                    event_type=cast(str, row["event_type"]),
+                    source=cast(EventSource, row["source"]),
+                    payload=cast(dict[str, object], json.loads(cast(str, row["payload_json"]))),
+                )
+                for row in event_rows
+            )
+            request_events = [
+                event for event in events if event.event_type == "runtime.approval_requested" and event.payload.get("request_id") == request_id
+            ]
+            resolution_events = [
+                event for event in events if event.event_type == "runtime.approval_resolved" and event.payload.get("request_id") == request_id
+            ]
+            if not resolution_events:
+                return False
+            if len(resolution_events) != 1:
+                raise ValueError("approval request has multiple durable resolutions; recovery is unsafe")
+            resolution_event = resolution_events[0]
+            if resolution_event.payload.get("decision") not in {"allow", "deny"}:
+                raise ValueError("durable approval resolution has an invalid decision")
+            if not request_events:
+                raise ValueError("durable approval resolution has no matching approval request event")
+            request_payload = request_events[-1].payload
+            for pending_key, event_key in (
+                ("tool_name", "tool"),
+                ("arguments", "arguments"),
+                ("owner_session_id", "owner_session_id"),
+                ("owner_parent_session_id", "owner_parent_session_id"),
+                ("delegated_task_id", "delegated_task_id"),
+            ):
+                if request_payload.get(event_key) != pending_data.get(pending_key):
+                    raise ValueError("persisted pending approval no longer matches the recorded approval request payload")
+            post_resolution_events = tuple(event for event in events if event.sequence > resolution_event.sequence)
+            failure_event = next((event for event in post_resolution_events if event.event_type == "runtime.failed"), None)
+            tool_events = tuple(event for event in post_resolution_events if event.event_type == "runtime.tool_completed")
+            if failure_event is None and not tool_events:
+                # A resolution alone does not prove whether the tool ran. Keep
+                # the claim and pending state rather than risking a duplicate.
+                return False
+            raw_tool_results = checkpoint.get("tool_results")
+            if not isinstance(raw_tool_results, list):
+                raise RuntimeError("persisted approval resume checkpoint tool_results must be a list")
+            checkpoint["tool_results"] = [
+                *cast(list[object], raw_tool_results),
+                *self._tool_results_from_events(tool_events),
+            ]
+            last_sequence = max((event.sequence for event in events), default=0)
+            checkpoint["last_event_sequence"] = last_sequence
+            if failure_event is not None:
+                checkpoint["kind"] = "terminal"
+                checkpoint["session_status"] = "failed"
+                status = "failed"
+            else:
+                checkpoint["kind"] = "interrupted"
+                checkpoint["session_status"] = "interrupted"
+                status = "interrupted"
+            checkpoint.pop("pending_approval_request_id", None)
+            checkpoint.pop("pending_approval_tool_name", None)
+            checkpoint.pop("pending_approval_arguments", None)
+            checkpoint.pop("pending_approval_request_event_sequence", None)
+            checkpoint.pop("pending_approval_owner_session_id", None)
+            checkpoint.pop("pending_approval_owner_parent_session_id", None)
+            checkpoint.pop("pending_approval_delegated_task_id", None)
+            # ``graph.response_ready`` is intentionally not used to infer the
+            # output: interrupted replay rebuilds the exact terminal output.
+            _ = connection.execute(
+                """
+                UPDATE sessions
+                SET status = ?, pending_approval_json = NULL,
+                    resume_checkpoint_json = ?, updated_at = ?
+                WHERE workspace_id = ? AND session_id = ?
+                """,
+                (
+                    status,
+                    json.dumps(checkpoint, sort_keys=True),
+                    self._next_timestamp(connection=connection),
+                    str(workspace),
+                    session_id,
+                ),
+            )
+            connection.commit()
+            return True
 
     def clear_pending_approval(self, *, workspace: Path, session_id: str) -> None:
         with self._write_connect(workspace) as connection:

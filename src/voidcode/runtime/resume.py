@@ -1513,6 +1513,26 @@ class RuntimeResumeCoordinator:
         )
         return stored_response, pending, checkpoint
 
+    def claim_pending_approval(self, *, session_id: str, approval_request_id: str) -> None:
+        """Validate and atomically claim an approval before tool execution."""
+        pending = self._session_store.load_pending_approval(
+            workspace=self._workspace,
+            session_id=session_id,
+        )
+        if pending is None:
+            raise ValueError("no pending approval; approval request is already being resolved or was resolved")
+        self._load_pending_approval_context(
+            session_id=session_id,
+            approval_request_id=approval_request_id,
+        )
+        claim = getattr(self._session_store, "claim_pending_approval", None)
+        if callable(claim) and not claim(
+            workspace=self._workspace,
+            session_id=session_id,
+            request_id=approval_request_id,
+        ):
+            raise ValueError("approval request is already being resolved")
+
     def _load_pending_question_context(
         self,
         *,

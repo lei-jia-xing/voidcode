@@ -23,6 +23,8 @@ from .transforms import (
     build_provider_context_transform_result,
 )
 
+_CONTINUITY_OBJECTIVE_PREVIEW_CHARS = 160
+
 
 def _empty_tool_limits() -> dict[str, int]:
     return {}
@@ -697,6 +699,26 @@ def _continuity_summary_text(state: ContextProjection) -> str:
     return "\n\n".join(sections)
 
 
+def _provider_continuity_summary(summary_text: str, *, prompt: str) -> str:
+    """Drop a redundant objective from the provider view only.
+
+    The persisted projection remains the source of truth.  When its rendered
+    objective is exactly the same deterministic preview derived from the
+    current prompt, repeating it in the provider context adds no information.
+    """
+    if not prompt.strip():
+        return summary_text
+    current_preview = _line_preview(prompt, limit=_CONTINUITY_OBJECTIVE_PREVIEW_CHARS)
+    objective_prefix = "## Objective\n"
+    sections = summary_text.split("\n\n")
+    retained: list[str] = []
+    for section in sections:
+        if section.startswith(objective_prefix) and section[len(objective_prefix) :].strip() == current_preview:
+            continue
+        retained.append(section)
+    return "\n\n".join(retained).strip()
+
+
 _CHARS_PER_TOKEN = 4
 _APPROX_CHARS_PER_4_SOURCE = "approx_chars_per_4"
 
@@ -1033,7 +1055,7 @@ def _build_continuity_state(
     previous = _previous_continuity_state(session_metadata)
     objective = previous.objective if previous is not None else None
     if objective is None:
-        objective = _line_preview(prompt, limit=160) if prompt.strip() else None
+        objective = _line_preview(prompt, limit=_CONTINUITY_OBJECTIVE_PREVIEW_CHARS) if prompt.strip() else None
     progress, blockers, refs, delegated = _facts_from_tool_results(
         previewable_dropped_results,
         preview_item_limit=preview_item_limit,
@@ -1514,7 +1536,9 @@ def assemble_provider_context(
     if continuity_state is not None:
         summary_text = continuity_state.summary_text
         if isinstance(summary_text, str) and summary_text.strip():
-            continuity_summary = f"Runtime context projection:\n{summary_text.strip()}"
+            provider_summary = _provider_continuity_summary(summary_text.strip(), prompt=prompt)
+            if provider_summary:
+                continuity_summary = f"Runtime context projection:\n{provider_summary}"
         artifact_reference_sections = tuple(
             PromptAssemblySection(
                 role=segment.role,

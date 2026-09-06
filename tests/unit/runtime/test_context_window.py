@@ -1604,6 +1604,59 @@ def test_continuity_summary_metadata_is_derived_from_state() -> None:
     assert second_source == {"tool_result_start": 0, "tool_result_end": 2}
 
 
+def test_assemble_provider_context_omits_matching_continuity_objective_only() -> None:
+    prompt = "fix the failing test"
+    summary_text = "## Objective\nfix the failing test\n\n## Progress Completed\n- kept"
+    state = ContextProjection(
+        projection_id="continuity:fixture",
+        summary_text=summary_text,
+        objective=prompt,
+        progress_completed=("kept",),
+        dropped_tool_result_count=1,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+    )
+
+    assembled = assemble_provider_context(
+        prompt=prompt,
+        tool_results=(),
+        session_metadata={},
+        preserved_continuity_state=state,
+    )
+
+    provider_summary = next(segment.content for segment in assembled.segments if (segment.metadata or {}).get("source") == "context_projection")
+    assert "## Objective" not in provider_summary
+    assert "## Progress Completed\n- kept" in provider_summary
+    assert assembled.metadata["projection"] == state.metadata_payload()
+    assert state.summary_text == summary_text
+
+
+def test_assemble_provider_context_retains_nonmatching_continuity_objective() -> None:
+    prompt = "fix the failing test"
+    summary_text = "## Objective\ncontinue the prior task\n\n## Progress Completed\n- kept"
+    state = ContextProjection(
+        projection_id="continuity:fixture",
+        summary_text=summary_text,
+        objective="continue the prior task",
+        progress_completed=("kept",),
+        dropped_tool_result_count=1,
+        retained_tool_result_count=1,
+        source="tool_result_window",
+    )
+
+    assembled = assemble_provider_context(
+        prompt=prompt,
+        tool_results=(),
+        session_metadata={},
+        preserved_continuity_state=state,
+    )
+
+    provider_summary = next(segment.content for segment in assembled.segments if (segment.metadata or {}).get("source") == "context_projection")
+    assert "## Objective\ncontinue the prior task" in provider_summary
+    assert assembled.metadata["projection"] == state.metadata_payload()
+    assert state.summary_text == summary_text
+
+
 def _continuity_tool_result(status: Literal["ok", "error"], content: str | None = None) -> ToolResult:
     return ToolResult(
         tool_name="fake_tool",
