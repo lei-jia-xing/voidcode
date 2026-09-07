@@ -34,16 +34,11 @@ def test_compute_stable_prefix_hash_uses_prefix_through_boundary_marker() -> Non
 
 def test_same_session_prompts_with_different_user_and_tool_tail_share_prefix_hash() -> None:
     boundary_marker = dynamic_boundary_marker()
-    same_session_state = {
-        "workspace_root": "/tmp/not-a-worktree",
-        "model": "opencode/test-model",
-    }
     first_plan = build_prompt_assembly_plan(
         prompt="summarize the first result",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
         prompt_profile_name="leader",
-        session_runtime_state=same_session_state,
         artifact_reference_sections=(
             PromptAssemblySection(
                 role="tool",
@@ -58,7 +53,6 @@ def test_same_session_prompts_with_different_user_and_tool_tail_share_prefix_has
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
         prompt_profile_name="leader",
-        session_runtime_state=same_session_state,
         artifact_reference_sections=(
             PromptAssemblySection(
                 role="tool",

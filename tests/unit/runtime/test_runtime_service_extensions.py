@@ -3923,6 +3923,14 @@ def test_runtime_session_debug_snapshot_includes_provider_context(tmp_path: Path
     assert "display" not in provider_message_content
     assert all(diagnostic.code not in {"missing_tool_result", "orphan_tool_result"} for diagnostic in provider_context.diagnostics)
     assert "context_transforms" not in provider_context.context_window
+    prompt_stack = provider_context.context_window.get("prompt_stack")
+    assert isinstance(prompt_stack, dict)
+    assert not any(
+        fragment.get("source") in {"runtime_environment_stable", "runtime_environment_dynamic"}
+        for fragment in prompt_stack.get("fragments", [])
+        if isinstance(fragment, dict)
+    )
+    assert all(segment.source not in {"runtime_environment_stable", "runtime_environment_dynamic"} for segment in provider_context.segments)
 
 
 def test_runtime_session_debug_snapshot_uses_model_tool_feedback_mode(

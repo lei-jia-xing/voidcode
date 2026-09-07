@@ -1592,12 +1592,6 @@ def assemble_provider_context(
         prompt_profile_name=prompt_profile_name,
         prompt_activation_section=activation_decision.section,
         tool_catalog_context=tool_catalog_context,
-        session_runtime_state={
-            "metadata": session_metadata,
-            "workspace_root": str(workspace) if workspace is not None else None,
-        }
-        if prompt_profile_name is not None
-        else None,
     )
     metadata_payload["prompt_stack"] = assembly_plan.fragment_metadata_payload()
     metadata_payload["prompt_activation"] = activation_decision.metadata

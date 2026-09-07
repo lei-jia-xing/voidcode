@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import platform
-from pathlib import Path
 from typing import cast
 
 from voidcode.agent.prompt_sections import (
@@ -14,7 +12,6 @@ from voidcode.agent.prompt_sections import (
 from voidcode.agent.prompts import render_builtin_prompt_profile
 from voidcode.runtime.context.prompt_assembly import (
     PromptAssemblySection,
-    build_env_card_sections,
     build_prompt_assembly_plan,
     prompt_activation_decision,
 )
@@ -188,32 +185,39 @@ def test_build_prompt_assembly_plan_preserves_pending_state_metadata() -> None:
     assert pending_section.tier == "task"
 
 
-def test_build_env_card_sections_omits_python_from_provider_view() -> None:
-    stable, dynamic = build_env_card_sections({"workspace_root": "/tmp/not-a-worktree", "model": "opencode/test-model"})
-    plan = build_prompt_assembly_plan(
-        prompt="fix the failing test",
-        runtime_instruction_precedence="runtime first",
+def test_provider_prompt_omits_environment_card_for_real_runtime_metadata() -> None:
+    from voidcode.runtime.context.window import assemble_provider_context
+
+    assembled = assemble_provider_context(
+        prompt="continue",
+        tool_results=(),
+        session_metadata={
+            "runtime_config": {
+                "model": "openrouter/free",
+                "resolved_provider": {
+                    "active_target": {
+                        "raw_model": "openrouter/free",
+                        "provider": "openrouter",
+                        "model": "free",
+                    }
+                },
+            }
+        },
         agent_prompt_context="leader base body",
         prompt_profile_name="leader",
-        session_runtime_state={
-            "workspace_root": "/tmp/not-a-worktree",
-            "model": "opencode/test-model",
-        },
     )
 
-    assert stable.splitlines() == [
-        f"Platform: {platform.system()}",
-        "Model: opencode/test-model",
-        "Workspace: /tmp/not-a-worktree",
-    ]
-    assert "Python:" not in stable
-    assert "Python:" not in dynamic
-    stable_section = next(section for section in plan.sections if section.source == "runtime_environment_stable")
-    dynamic_section = next(section for section in plan.sections if section.source == "runtime_environment_dynamic")
-    assert stable_section.content == stable
-    assert dynamic_section.content == dynamic
-    assert "Python:" not in stable_section.content
-    assert "Python:" not in dynamic_section.content
+    system_contents = [segment.content or "" for segment in assembled.segments if segment.role == "system"]
+    assert not any(
+        any(label in content for label in ("Platform:", "Workspace:", "Model:", "Date:", "Branch:", "Git:"))
+        for content in system_contents
+    )
+    prompt_stack = assembled.metadata["prompt_stack"]
+    assert isinstance(prompt_stack, dict)
+    assert not any(
+        fragment["source"] in {"runtime_environment_stable", "runtime_environment_dynamic"}
+        for fragment in prompt_stack["fragments"]
+    )
 
 
 def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix() -> None:
@@ -222,10 +226,6 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
         prompt_profile_name="leader",
-        session_runtime_state={
-            "workspace_root": "/tmp/not-a-worktree",
-            "model": "opencode/test-model",
-        },
         todo_prompt_context="active todo",
     )
 
@@ -237,20 +237,16 @@ def test_build_prompt_assembly_plan_composes_stable_prefix_before_dynamic_suffix
         "agent_identity_header",
         "agent_capability_block",
         "agent_prompt",
-        "runtime_environment_stable",
         "runtime_instruction_precedence",
         "runtime_tool_policy_summary",
     ]
     assert sources[boundary_index + 1 :] == [
-        "runtime_environment_dynamic",
         "runtime_todo_state",
         "current_user_prompt",
     ]
     assert plan.sections[boundary_index].content == dynamic_boundary_marker()
     assert sum(section.content == dynamic_boundary_marker() for section in plan.sections) == 1
     assert sum(section.content == "leader base body" for section in plan.sections) == 1
-    assert all("Git status:" not in section.content for section in plan.sections[:boundary_index])
-    assert "Git status:" not in plan.sections[boundary_index].content
 
 
 def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profiles() -> None:
@@ -259,14 +255,12 @@ def test_build_prompt_assembly_plan_adds_search_contract_only_for_search_profile
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="explore base body",
         prompt_profile_name="explore",
-        session_runtime_state={"model": "opencode/test-model"},
     )
     worker_plan = build_prompt_assembly_plan(
         prompt="make the edit",
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="worker base body",
         prompt_profile_name="worker",
-        session_runtime_state={"model": "opencode/test-model"},
     )
 
     assert any(section.source == "agent_profile_overlay" and "<search_agent_contract>" in section.content for section in explore_plan.sections)
@@ -284,7 +278,6 @@ def test_builtin_prompt_profiles_render_with_expected_overlay_boundaries() -> No
             runtime_instruction_precedence="runtime first",
             agent_prompt_context=base_prompt,
             prompt_profile_name=profile,
-            session_runtime_state={"model": "opencode/test-model"},
         )
         rendered_system_text = "\n\n".join(section.content for section in plan.sections if section.role == "system")
 
@@ -501,10 +494,6 @@ def test_prompt_activation_decision_is_idempotent_for_existing_session_slot() ->
 
 def test_transform_injections_live_in_dynamic_region_and_prefix_is_stable() -> None:
     boundary_marker = dynamic_boundary_marker()
-    same_session_state = {
-        "workspace_root": "/tmp/not-a-worktree",
-        "model": "opencode/test-model",
-    }
     injections = (
         RuntimeContextTransformInjection(
             role="system",
@@ -517,7 +506,6 @@ def test_transform_injections_live_in_dynamic_region_and_prefix_is_stable() -> N
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
         prompt_profile_name="leader",
-        session_runtime_state=same_session_state,
         context_transform_result=RuntimeContextTransformResult(injections=injections),
     )
     second = build_prompt_assembly_plan(
@@ -525,7 +513,6 @@ def test_transform_injections_live_in_dynamic_region_and_prefix_is_stable() -> N
         runtime_instruction_precedence="runtime first",
         agent_prompt_context="leader base body",
         prompt_profile_name="leader",
-        session_runtime_state=same_session_state,
         context_transform_result=RuntimeContextTransformResult(injections=injections),
     )
 
@@ -547,30 +534,6 @@ def test_transform_injections_live_in_dynamic_region_and_prefix_is_stable() -> N
     assert first_prefix.count(boundary_marker) == 1
 
 
-def test_git_dynamic_state_is_cached_per_workspace_within_session(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    from voidcode.runtime.context import prompt_assembly as prompt_assembly_module
-
-    prompt_assembly_module._reset_git_state_cache()
-    calls: list[tuple[str, ...]] = []
-
-    def fake_run_git(root: Path, args: tuple[str, ...], *, allow_empty: bool = False) -> str | None:
-        calls.append(args)
-        return None
-
-    monkeypatch.setattr(prompt_assembly_module, "_run_git", fake_run_git)
-    prompt_assembly_module._git_dynamic_state(str(tmp_path))
-    prompt_assembly_module._git_dynamic_state(str(tmp_path))
-
-    # One cache miss runs both git subprocesses; the follow-up call reuses the
-    # cached observation (same workspace, no mtime/TTL change) and runs none.
-    assert calls == [
-        ("rev-parse", "--abbrev-ref", "HEAD"),
-        ("status", "--short"),
-    ]
-    prompt_assembly_module._reset_git_state_cache()
 
 
 def test_assemble_provider_context_replayed_history_ends_with_current_user_prompt() -> None:

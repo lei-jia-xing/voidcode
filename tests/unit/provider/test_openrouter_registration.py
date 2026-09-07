@@ -33,6 +33,15 @@ def test_registry_resolves_openrouter_with_slash_model_id() -> None:
     assert config.base_url == "https://openrouter.ai/api/v1"
 
 
+def test_registry_resolves_openrouter_free_router_without_rewriting() -> None:
+    registry = ModelProviderRegistry.with_defaults()
+
+    resolved = resolve_provider_model("openrouter/free", registry=registry)
+
+    assert resolved.selection.raw_model == "openrouter/free"
+    assert resolved.selection.provider == "openrouter"
+    assert resolved.selection.model == "free"
+
 def test_openrouter_config_reads_env_and_round_trips_without_secret() -> None:
     parsed = parse_provider_configs_payload(
         {"openrouter": {}},

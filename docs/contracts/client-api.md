@@ -211,6 +211,22 @@ MVP 生命周期：
 
 本文档仍然有意地将契约定义与具体框架实现细节解耦；但这些路由边界与 delegated/task surfaces 本身已经属于当前 shipped API，而不是 future work。
 
+## Provider context 与 provider identity 可见性
+
+Provider-visible prompt 是一次请求的受限上下文投影，不是 provider、gateway 或上游模型的事实证明。客户端和调试/导出工具 MUST 将以下语义分开：
+
+- `requested model` / `model selector`：runtime 请求的 `provider/model` 字符串。它描述选择意图；例如 `openrouter/free` 表示 OpenRouter Free Models Router，而不是某个具体上游模型。
+- `resolved provider`：runtime 选择的 provider adapter/config。它描述请求如何发出，不代表 gateway 最终采用的 upstream。
+- `observed upstream model`：仅当 provider response metadata 明确返回时才成立的事实。OpenRouter 的 `response.model` 才能证明本次请求实际处理的模型；不得从 prompt、配置 slug 或能力声明推断。
+
+因此，provider-visible prompt MUST NOT 承诺 host/model/upstream identity，也不得将 router id 渲染成具体模型名称、厂商、能力或版本。Host、模型和上游路由的结构化信息 MAY 出现在 `/api/sessions/{id}/debug`、provider inspect 或导出视图中，但必须标注来源（requested/resolved/observed）并遵守现有脱敏边界；原始 provider credentials、secret-like values 和未脱敏环境值不得进入这些视图。
+
+对于 OpenRouter，`openrouter/free` 的实际 upstream 只能从该次响应 metadata 读取；若 metadata 缺失，客户端应显示 unknown/未观测，而不是回退为“free model”或某个 catalog entry。固定的 `provider/model:free` 也只表示 OpenRouter 的免费 variant，仍不应在 prompt 中声称 host 已实际选中该模型。
+
+### 环境信息的选择性原则
+
+环境卡片应优先提供模型完成当前任务真正需要的最小事实：workspace/cwd（文件和工具定位）、平台/终端（命令或交互差异），以及 runtime 明确启用的工具和约束。日期、分支和 Git 状态属于动态上下文，应与稳定前缀分层；CPU、GPU、发行版、kernel 等 workstation 字段仅在任务或工具能力相关时注入，不能作为模型身份或 provider 能力的替代品。debug/UI/export 可以展示更完整的结构化卡片，但应保持同样的字段来源和不确定性标记。
+
 ## 非目标
 
 - 完整的传输层实现

@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import platform
 import re
-import subprocess
-import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Literal, cast
 
 from voidcode.agent.profile_overlays import get_profile_overlay
@@ -37,18 +32,6 @@ _BASE_SAFETY_GUIDANCE = "Follow runtime safety policies. Runtime enforcement is 
 _TOOL_POLICY_SUMMARY = "Tools: visible list is advisory. Runtime allowlists and policy control execution."
 _PROMPT_ACTIVATION_PREVIEW_CHARS = 160
 
-# Session-scoped cache for git/environment observations. Git status only feeds the
-# dynamic suffix (never the stable prefix), so a bounded staleness window is
-# acceptable: recompute on TTL expiry or on a workspace-root directory mtime
-# change (which catches create/delete/rename events without scanning the tree).
-_GIT_STATE_CACHE_TTL = 30.0
-# Cached entries store: monotonic compute time, workspace-root directory mtime in
-# nanoseconds, git branch, and the git status summary.
-_GIT_STATE_CACHE: dict[str, tuple[float, int | None, str | None, str | None]] = {}
-
-
-def _reset_git_state_cache() -> None:
-    _GIT_STATE_CACHE.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,152 +152,6 @@ def _activation_records(value: object) -> list[dict[str, object]]:
     return records
 
 
-def build_env_card_sections(session_runtime_state: object) -> tuple[str, str]:
-    workspace_root = _state_string(
-        session_runtime_state,
-        (
-            "workspace_root",
-            "workspace",
-            "workspace_path",
-            "cwd",
-            "working_directory",
-            "root_path",
-        ),
-    )
-    model_identity = _model_identity(session_runtime_state)
-    stable_lines = [
-        f"Platform: {platform.system()}",
-        f"Model: {model_identity}",
-    ]
-    if workspace_root is not None:
-        stable_lines.append(f"Workspace: {workspace_root}")
-
-    dynamic_lines = [
-        f"Date: {datetime.now(UTC).date().isoformat()}",
-    ]
-    git_state = _git_dynamic_state(workspace_root)
-    if git_state[0] is not None:
-        dynamic_lines.append(f"Branch: {git_state[0]}")
-    if git_state[1] is not None:
-        dynamic_lines.append(f"Git: {git_state[1]}")
-    return "\n".join(stable_lines), "\n".join(dynamic_lines)
-
-
-def _model_identity(session_runtime_state: object) -> str:
-    direct = _state_string(
-        session_runtime_state,
-        ("model_identity", "model_id", "model_name", "model"),
-    )
-    if direct is not None:
-        return direct
-
-    resolved_provider = _state_value(session_runtime_state, "resolved_provider")
-    active_target = _state_value(resolved_provider, "active_target")
-    selection = _state_value(active_target, "selection")
-    selected = _state_string(selection, ("raw_model", "model"))
-    if selected is not None:
-        return selected
-
-    effective_config = _state_value(session_runtime_state, "effective_config")
-    configured = _state_string(effective_config, ("model",))
-    return configured if configured is not None else "unknown"
-
-
-def _git_dynamic_state(workspace_root: str | None) -> tuple[str | None, str | None]:
-    if workspace_root is None:
-        return None, None
-    root = Path(workspace_root).expanduser()
-    if not root.exists():
-        return None, None
-    key = str(root)
-    now = time.monotonic()
-    root_mtime_ns = _root_mtime_ns(root)
-    cached = _GIT_STATE_CACHE.get(key)
-    if cached is not None:
-        computed_at, cached_mtime_ns, branch, status_summary = cached
-        if (now - computed_at) < _GIT_STATE_CACHE_TTL and root_mtime_ns == cached_mtime_ns:
-            return branch, status_summary
-    branch = _run_git(root, ("rev-parse", "--abbrev-ref", "HEAD"))
-    status_output = _run_git(root, ("status", "--short"), allow_empty=True)
-    status_summary = _status_summary(status_output) if status_output is not None else None
-    _GIT_STATE_CACHE[key] = (now, root_mtime_ns, branch, status_summary)
-    return branch, status_summary
-
-
-def _root_mtime_ns(root: Path) -> int | None:
-    try:
-        return root.stat().st_mtime_ns
-    except OSError:
-        return None
-
-
-def _run_git(workspace_root: Path, args: tuple[str, ...], *, allow_empty: bool = False) -> str | None:
-    try:
-        result = subprocess.run(
-            ("git", "-C", str(workspace_root), *args),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=0.2,
-        )
-    except OSError, subprocess.SubprocessError:
-        return None
-    if result.returncode != 0:
-        return None
-    output = result.stdout.strip()
-    if output or allow_empty:
-        return output
-    return None
-
-
-def _status_summary(status_output: str | None) -> str | None:
-    if status_output is None:
-        return "clean"
-    changed = len([line for line in status_output.splitlines() if line.strip()])
-    if changed == 0:
-        return "clean"
-    return f"{changed} changed file{'s' if changed != 1 else ''}"
-
-
-def _state_string(state: object, keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        value = _state_value(state, key)
-        if isinstance(value, Path):
-            return str(value)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def _state_value(state: object, key: str) -> object | None:
-    if state is None:
-        return None
-    if isinstance(state, Mapping):
-        value = cast(Mapping[str, object], state).get(key)
-    else:
-        value = getattr(state, key, None)
-    if value is not None:
-        return value
-    metadata = _metadata_mapping(state)
-    if metadata is None:
-        return None
-    value = metadata.get(key)
-    if value is not None:
-        return value
-    # Resolve through the metadata helper lazily to keep the module graph acyclic.
-    from ..session_metadata_helpers import runtime_state_value
-
-    return runtime_state_value(metadata, key)
-
-
-def _metadata_mapping(state: object) -> Mapping[str, object] | None:
-    if isinstance(state, Mapping):
-        metadata = cast(Mapping[str, object], state).get("metadata")
-    else:
-        metadata = getattr(state, "metadata", None)
-    if isinstance(metadata, Mapping):
-        return cast(Mapping[str, object], metadata)
-    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,7 +235,6 @@ def build_prompt_assembly_plan(
     continuity_summary: str = "",
     artifact_reference_sections: Iterable[PromptAssemblySection] = (),
     prompt_profile_name: str | None = None,
-    session_runtime_state: object | None = None,
     prompt_activation_section: PromptAssemblySection | None = None,
     tool_catalog_context: str = "",
 ) -> PromptAssemblyPlan:
@@ -451,10 +287,6 @@ def build_prompt_assembly_plan(
         sections.append(block.to_section())
 
     profile_overlay = get_profile_overlay(prompt_profile_name) if prompt_profile_name is not None else None
-    stable_env_card = ""
-    dynamic_env_card = ""
-    if session_runtime_state is not None:
-        stable_env_card, dynamic_env_card = build_env_card_sections(session_runtime_state)
 
     if profile_overlay is not None:
         append_system(
@@ -488,12 +320,6 @@ def build_prompt_assembly_plan(
                 tier="instruction",
                 layer="persona_profile",
             )
-        append_system(
-            stable_env_card,
-            source="runtime_environment_stable",
-            tier="workspace",
-            layer="project_context",
-        )
     else:
         append_system(
             _BASE_SAFETY_GUIDANCE,
@@ -550,12 +376,6 @@ def build_prompt_assembly_plan(
     append_system(
         dynamic_boundary_marker(),
         source="runtime_dynamic_boundary",
-        tier="workspace",
-        layer="project_context",
-    )
-    append_system(
-        dynamic_env_card,
-        source="runtime_environment_dynamic",
         tier="workspace",
         layer="project_context",
     )
@@ -768,7 +588,6 @@ def _metadata_tier(
 __all__ = [
     "PromptAssemblyPlan",
     "PromptAssemblyFragment",
-    "build_env_card_sections",
     "PromptAssemblySection",
     "build_prompt_assembly_plan",
     "prompt_activation_decision",
