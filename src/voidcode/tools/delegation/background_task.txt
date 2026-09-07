@@ -1,9 +1,0 @@
-Control runtime-owned background tasks with exactly one operation:
-
-- `operation="output"`: provide exactly one selector: `task_id`, `task_ids`, or `parallel_group_id`. Aggregate selectors are parent-owned, bounded projections and never include prompts, transcripts, or raw child output. `block=false` returns immediately; `block=true` waits once through the runtime Condition/lifecycle API with a millisecond `timeout` of at least 1000. `full_session=true` is allowed only with one `task_id` and returns bounded child-session metadata/transcript preview; `message_limit` is capped at 100.
-- `operation="ps"`: pass no additional arguments. The runtime returns the active parent session's bounded task roster without prompts, transcripts, or child output.
-- `operation="cancel"`: provide one `task_id`. Unknown tasks return a stable unknown status; running tasks report a cancellation request; terminal tasks retain their terminal status.
-- `operation="steer"`: provide `task_id` and a non-empty `prompt`. Only the task's parent session may steer a keep-alive task while it is `idle` (`awaiting_steer`) or `interrupted`; a running turn cannot be pipelined.
-
-Wait for runtime completion/progress reminders instead of repeatedly polling. Do not guess or fabricate child results, retry failures automatically, or expose child transcript content outside the bounded retrieval contract. Blocking waits use milliseconds; `block=false` returns immediately and `block=true` waits once.
-This facade returns the bounded `progress` projection for individual output reads; aggregate output contains per-task bounded progress metadata only. Prompts, transcripts, and child output are never returned by `operation="ps"` or aggregate `operation="output"`. Do not repeatedly poll this tool in a tight loop. Do not read a running child transcript just to peek.

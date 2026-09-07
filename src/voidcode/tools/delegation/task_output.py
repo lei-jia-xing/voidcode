@@ -18,7 +18,7 @@ from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
-class BackgroundOutputRuntime(Protocol):
+class TaskOutputRuntime(Protocol):
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
 
     def load_background_task_result(
@@ -28,7 +28,12 @@ class BackgroundOutputRuntime(Protocol):
         emit_result_read_hook: bool = True,
     ) -> BackgroundTaskResult: ...
 
-    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState: ...
+    def load_background_task_result_by_child_session(
+        self,
+        *,
+        child_session_id: str,
+        emit_result_read_hook: bool = True,
+    ) -> BackgroundTaskResult | None: ...
 
     def load_background_task_group_result(
         self,
@@ -37,7 +42,9 @@ class BackgroundOutputRuntime(Protocol):
         parallel_group_id: str | None = None,
         parent_session_id: str | None = None,
         emit_result_read_hook: bool = True,
-    ) -> object: ...
+    ) -> BackgroundTaskGroupResult: ...
+
+    def wait_for_background_task(self, task_id: str, *, timeout_seconds: float) -> BackgroundTaskState: ...
 
     def wait_for_background_task_group(
         self,
@@ -47,12 +54,12 @@ class BackgroundOutputRuntime(Protocol):
         parent_session_id: str | None = None,
         timeout_seconds: float,
         emit_result_read_hook: bool = True,
-    ) -> object: ...
+    ) -> BackgroundTaskGroupResult: ...
 
     def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
 
-class _BackgroundOutputArgs(BaseModel):
+class _TaskOutputArgs(BaseModel):
     task_id: str | None = None
     task_ids: list[str] | None = None
     parallel_group_id: str | None = None
@@ -64,7 +71,7 @@ class _BackgroundOutputArgs(BaseModel):
     message_limit: int = 20
 
     @model_validator(mode="after")
-    def _validate_selectors(self) -> _BackgroundOutputArgs:
+    def _validate_selectors(self) -> _TaskOutputArgs:
         selector_count = sum(value is not None for value in (self.task_id, self.task_ids, self.parallel_group_id))
         if selector_count != 1:
             raise ValueError("provide exactly one of task_id, task_ids, or parallel_group_id")
@@ -115,9 +122,9 @@ class _BackgroundOutputArgs(BaseModel):
         return min(max(value, 1), 100)
 
 
-class BackgroundOutputTool:
+class TaskOutputTool:
     definition = ToolDefinition(
-        name="background_output",
+        name="task_output",
         description=(
             "Read background task status and optionally bounded child session results. "
             "Provide exactly one selector: task_id, task_ids, or parallel_group_id. "
@@ -176,29 +183,28 @@ class BackgroundOutputTool:
         read_only=True,
     )
 
-    def __init__(self, *, runtime: BackgroundOutputRuntime) -> None:
+    def __init__(self, *, runtime: TaskOutputRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
         try:
-            args = _BackgroundOutputArgs.model_validate(call.arguments)
+            args = _TaskOutputArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
-
         # Group reads are deliberately runtime-context owned. The runtime
         # validates every selected task against this parent before loading any
         # result, so a model cannot inspect another session's children.
         if args.task_id is None:
             context = current_runtime_tool_context()
             if context is None:
-                raise RuntimeError("background_output group reads require an active runtime tool invocation context")
+                raise RuntimeError("task output group reads require an active runtime tool invocation context")
             selected_ids = tuple(args.task_ids or ())
             group_id = args.parallel_group_id
             load_group = getattr(self._runtime, "load_background_task_group_result", None)
             wait_group = getattr(self._runtime, "wait_for_background_task_group", None)
             if not callable(load_group) or not callable(wait_group):
-                raise RuntimeError("background_output group reads require runtime group result support")
+                raise RuntimeError("task output group reads require runtime group result support")
             timeout_seconds = max(args.timeout, 0) / 1000
             group_timed_out = False
             group = cast(
@@ -275,7 +281,7 @@ class BackgroundOutputTool:
             "child_session_id": result.child_session_id,
             "duration_seconds": result.duration_seconds,
             "tool_call_count": result.tool_call_count,
-            "retrieval_instruction": f'background_output(task_id="{result.task_id}")',
+            "retrieval_instruction": f'task(operation="output", task_id="{result.task_id}")',
             "approval_blocked": result.approval_blocked,
             "summary_output": safe_summary,
             "error": result.error,
@@ -330,7 +336,7 @@ class BackgroundOutputTool:
                     "retrieval_hint": (
                         "Use sessions resume "
                         f"{session_result.session.session.id} or "
-                        f"background_output(task_id='{result.task_id}', "
+                        f'task(operation="output", task_id="{result.task_id}", '
                         "full_session=true) from an operator context to inspect full child output."
                     ),
                 }
@@ -443,13 +449,13 @@ def _background_group_tool_result(group: BackgroundTaskGroupResult) -> ToolResul
         "structured_output": [item["structured_output"] for item in results if item["structured_output"] is not None],
         "results": results,
         "retrieval_instruction": (
-            f'background_output(parallel_group_id="{group.parallel_group_id}")'
+            f'task(operation="output", parallel_group_id="{group.parallel_group_id}")'
             if group.parallel_group_id is not None
-            else "background_output(task_ids=[...])"
+            else 'task(operation="output", task_ids=[...])'
         ),
         "block_timed_out": group.timed_out,
     }
-    return ToolResult(tool_name="background_output", status="ok", content=content, data=payload)
+    return ToolResult(tool_name="task_output", status="ok", content=content, data=payload)
 
 
 def _background_output_guidance(
@@ -463,7 +469,7 @@ def _background_output_guidance(
         return (
             "Timed out waiting for the delegated child to finish. The returned status is current; "
             "wait for the runtime completion reminder and report it or continue other work. "
-            "Do not call background_output again immediately; only retry after a meaningful state "
+            'Do not call task(operation="output") again immediately; only retry after a meaningful state '
             "change, and do not loop indefinitely."
         )
     if result.status == "failed":
@@ -484,7 +490,7 @@ def _background_output_guidance(
     if not result.result_available:
         return (
             "No child result is available yet. Wait for the runtime completion reminder, report the "
-            "current status, or use background_output(block=true) only when intentionally waiting in "
+            'current status, or use task(operation="output", block=true) only when intentionally waiting in '
             "this turn; do not call again immediately or loop indefinitely."
         )
     if result.status == "completed" and (empty_child_output or not content.strip()):
@@ -588,7 +594,7 @@ def _background_task_handoff_summary(*, result: BackgroundTaskResult) -> dict[st
             "tool_call_count": result.tool_call_count,
         },
         "blocked_reason": blocked_reason,
-        "retrieval_instruction": f'background_output(task_id="{result.task_id}")',
+        "retrieval_instruction": f'task(operation="output", task_id="{result.task_id}")',
     }
 
 

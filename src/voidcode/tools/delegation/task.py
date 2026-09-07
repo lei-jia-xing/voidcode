@@ -6,32 +6,23 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from ...runtime.background.models import BackgroundTaskState, StoredBackgroundTaskSummary
+from ...runtime.background.models import BackgroundTaskState
 from ...runtime.contracts import (
-    BackgroundTaskResult,
     RuntimeRequest,
     RuntimeResponse,
-    RuntimeSessionResult,
     runtime_subagent_route_from_metadata,
     validate_runtime_request_metadata,
 )
 from .._pydantic_args import format_validation_error
 from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
+from .task_control import TaskControlRuntime, TaskControlTool
 
 
-class TaskRuntime(Protocol):
+class TaskRuntime(TaskControlRuntime, Protocol):
     def run(self, request: RuntimeRequest) -> RuntimeResponse: ...
 
     def start_background_task(self, request: RuntimeRequest) -> BackgroundTaskState: ...
-
-    def load_background_task_result(self, task_id: str) -> BackgroundTaskResult: ...
-
-    def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
-
-    def list_background_tasks(self) -> tuple[StoredBackgroundTaskSummary, ...]: ...
-
-    def session_result(self, *, session_id: str) -> RuntimeSessionResult: ...
 
 
 class _TaskArgs(BaseModel):
@@ -207,7 +198,7 @@ class TaskTool:
                     "description": (
                         "Optional. true keeps the delegated child session alive across steer "
                         "turns: after each turn without a handoff the task parks as idle "
-                        "(awaiting_steer) and the leader resumes it with background_task(operation=steer). Requires "
+                        "(awaiting_steer) and the leader resumes it with task(operation=steer). Requires "
                         "run_in_background=true."
                     ),
                 },
@@ -230,8 +221,19 @@ class TaskTool:
                         "without outputSchema."
                     ),
                 },
+                "operation": {"type": "string", "enum": ["output", "cancel", "ps", "steer"]},
+                "task_id": {"type": "string", "minLength": 1},
+                "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 100, "uniqueItems": True},
+                "block": {"type": "boolean"},
+                "timeout": {"type": "integer", "minimum": 0},
+                "full_session": {"type": "boolean"},
+                "message_limit": {"type": "integer"},
             },
-            "required": ["prompt", "run_in_background", "load_skills", "subagent_type"],
+            "required": [],
+            "anyOf": [
+                {"required": ["prompt", "run_in_background", "load_skills", "subagent_type"]},
+                {"required": ["operation"]},
+            ],
             "examples": [
                 {
                     "prompt": "Find where background task cancellation is implemented.",
@@ -252,8 +254,11 @@ class TaskTool:
 
     def __init__(self, *, runtime: TaskRuntime) -> None:
         self._runtime = runtime
+        self._control = TaskControlTool(runtime=runtime)
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
+        if isinstance(call.arguments, dict) and "operation" in call.arguments:
+            return self._control.invoke(call, workspace=workspace)
         _ = workspace
         try:
             args = _TaskArgs.model_validate(call.arguments)
@@ -271,10 +276,7 @@ class TaskTool:
         if context.delegation_depth > 0 or context.remaining_spawn_budget is not None:
             delegation_metadata["depth"] = context.delegation_depth + 1
             if context.remaining_spawn_budget is not None:
-                delegation_metadata["remaining_spawn_budget"] = max(
-                    context.remaining_spawn_budget - 1,
-                    0,
-                )
+                delegation_metadata["remaining_spawn_budget"] = max(context.remaining_spawn_budget - 1, 0)
         validated_metadata = validate_runtime_request_metadata(request_metadata)
         _ = runtime_subagent_route_from_metadata(validated_metadata)
         delegation_payload = validated_metadata.get("delegation")
@@ -291,10 +293,9 @@ class TaskTool:
             task = self._runtime.start_background_task(request)
             waiting_reason = task.observability.waiting_reason if task.observability is not None else None
             keep_alive_guidance = (
-                " This task is keep-alive: after each turn without a terminal yield the worker "
-                "parks as idle and emits runtime.background_task_awaiting_steer; dispatch the "
-                "next instruction with background_task(operation=steer, task_id=..., prompt=...) and repeat until "
-                "the worker submits its terminal yield."
+                " This task is keep-alive: after each turn without a terminal yield the worker parks as idle "
+                "and emits runtime.background_task_awaiting_steer; dispatch the next instruction with "
+                "task(operation=steer, task_id=..., prompt=...) until the worker submits its final result."
                 if args.keep_alive
                 else ""
             )
@@ -302,18 +303,15 @@ class TaskTool:
                 queued_reason = waiting_reason or "queued"
                 content = (
                     f"Started background task {task.task.id} (status: queued; reason: {queued_reason}). "
-                    "It will be dispatched when capacity is available; continue other work now and "
-                    "do not call background_task(operation=output) immediately unless you truly need a status check. "
-                    "Wait for a completion reminder, or use background_task(operation=output, block=true) when you "
-                    "intentionally need to wait."
+                    "Continue other work; use task(operation=output) only when a status check is needed. "
+                    "Wait for a completion reminder or use task(operation=output, block=true) intentionally."
                     f"{keep_alive_guidance}"
                 )
             else:
                 content = (
-                    f"Started background task {task.task.id}. Continue other work now; "
-                    "do not call background_task(operation=output) immediately unless you truly need a "
-                    "status check. Wait for a completion reminder, or use "
-                    "background_task(operation=output, block=true) when you intentionally need to wait."
+                    f"Started background task {task.task.id}. Continue other work; use "
+                    "task(operation=output) only when a status check is needed. Wait for a completion "
+                    "reminder or use task(operation=output, block=true) intentionally."
                     f"{keep_alive_guidance}"
                 )
             return ToolResult(

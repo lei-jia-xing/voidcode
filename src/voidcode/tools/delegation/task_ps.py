@@ -7,15 +7,13 @@ from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
-class BackgroundPsRuntime(Protocol):
+class TaskPsRuntime(Protocol):
     def background_task_roster(self, *, parent_session_id: str) -> dict[str, object]: ...
 
 
-class BackgroundPsTool:
-    """Expose the runtime-owned, bounded background-task roster to the model."""
-
+class TaskPsTool:
     definition = ToolDefinition(
-        name="background_ps",
+        name="task_ps",
         description=(
             "List the active session's background task roster as a bounded status projection. "
             "Runtime ownership is enforced; no prompts or transcripts are returned."
@@ -28,16 +26,16 @@ class BackgroundPsTool:
         read_only=True,
     )
 
-    def __init__(self, *, runtime: BackgroundPsRuntime) -> None:
+    def __init__(self, *, runtime: TaskPsRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
         if call.arguments:
-            raise ValueError("background_ps accepts no arguments")
+            raise ValueError('task(operation="ps") accepts no arguments')
         context = current_runtime_tool_context()
         if context is None:
-            raise RuntimeError("background_ps requires an active runtime tool invocation context")
+            raise RuntimeError('task(operation="ps") requires an active runtime tool invocation context')
         payload = self._runtime.background_task_roster(parent_session_id=context.session_id)
         tasks = payload.get("tasks")
         task_count = len(tasks) if isinstance(tasks, list) else 0
@@ -50,4 +48,4 @@ class BackgroundPsTool:
         )
 
 
-__all__ = ["BackgroundPsRuntime", "BackgroundPsTool"]
+__all__ = ["TaskPsRuntime", "TaskPsTool"]

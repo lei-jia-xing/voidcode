@@ -59,7 +59,7 @@ from ..tools.contracts import (
     ToolDefinition,
     ToolResult,
 )
-from ..tools.delegation import BackgroundTaskTool, TaskBatchTool, TaskTool
+from ..tools.delegation import TaskBatchTool, TaskTool
 from ..tools.output import (
     read_tool_output_artifact,
     search_tool_output_artifact,
@@ -711,7 +711,6 @@ class VoidCodeRuntime(RuntimeSurface):
             task_batch_tool=TaskBatchTool(runtime=self),
             task_tool=TaskTool(runtime=self),
             question_tool=QuestionTool(),
-            background_task_tool=BackgroundTaskTool(runtime=self),
             background_process_tool=BackgroundProcessTool(runtime=self),
         )
 
@@ -2828,7 +2827,7 @@ class VoidCodeRuntime(RuntimeSurface):
             task_id = state.task.id[:256]
             child_session_id = state.session_id[:256] if state.session_id is not None else None
             next_steps: dict[str, object] = {
-                "background_task": f'background_task(operation="output", task_id="{task_id}")',
+                "task": f'task(operation="output", task_id="{task_id}")',
             }
             if child_session_id is not None:
                 next_steps["child_session"] = f"session:{child_session_id}"

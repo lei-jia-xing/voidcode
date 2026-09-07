@@ -12,7 +12,7 @@ from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import current_runtime_tool_context
 
 
-class BackgroundCancelRuntime(Protocol):
+class TaskCancelRuntime(Protocol):
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
 
     def cancel_background_task(self, task_id: str) -> BackgroundTaskState: ...
@@ -20,7 +20,7 @@ class BackgroundCancelRuntime(Protocol):
 
 def _unknown_task_result(task_id: str, message: str) -> ToolResult:
     return ToolResult(
-        tool_name="background_cancel",
+        tool_name="task_cancel",
         status="ok",
         content=f"Background task {task_id}: unknown ({message})",
         data={
@@ -36,7 +36,7 @@ def _unknown_task_result(task_id: str, message: str) -> ToolResult:
     )
 
 
-class _BackgroundCancelArgs(BaseModel):
+class _TaskCancelArgs(BaseModel):
     taskId: str
 
     @field_validator("taskId", mode="after")
@@ -48,9 +48,9 @@ class _BackgroundCancelArgs(BaseModel):
         return stripped
 
 
-class BackgroundCancelTool:
+class TaskCancelTool:
     definition = ToolDefinition(
-        name="background_cancel",
+        name="task_cancel",
         description="Cancel a running background task by id.",
         input_schema={
             "type": "object",
@@ -61,13 +61,13 @@ class BackgroundCancelTool:
         read_only=True,
     )
 
-    def __init__(self, *, runtime: BackgroundCancelRuntime) -> None:
+    def __init__(self, *, runtime: TaskCancelRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
         try:
-            args = _BackgroundCancelArgs.model_validate(call.arguments)
+            args = _TaskCancelArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
         context = current_runtime_tool_context()
@@ -107,3 +107,6 @@ class BackgroundCancelTool:
                 "terminal": is_background_task_terminal(task.status),
             },
         )
+
+
+__all__ = ["TaskCancelRuntime", "TaskCancelTool"]

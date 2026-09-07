@@ -632,10 +632,10 @@ runtime 在成功的 mutation 后更新 session metadata 中的 runtime todo sta
 - 非终态进度：`type` 为除 `result`/`error` 外的非空字符串或非空字符串数组；必须提供 `result` 或非空 `data`，不得提供 `summary`。每次调用提交一个 bounded progress section，不完成 child。
 - runtime 为 progress section 分配单调 `ordinal`，每段最多 4096 字符、累计最多 100 段/65536 字符，`type` 最多 100 项且每项最多 64 字符；超限按确定性错误/截断规则处理。
 - progress 先作为 child 的 `runtime.tool_completed` truth，再以 `runtime.background_task_progress` 的有界、去重 projection 投递 parent；它不是 peer bus，也不替代 terminal result 或 transcript。
-- parent 通过 runtime events/outbox、`background_task(operation="output")`（单任务可读 bounded progress；聚合仍不返回 transcript）消费；完整 child history 仍走显式 transcript/session recovery。
+- parent 通过 runtime events/outbox、`task(operation="output")`（单任务可读 bounded progress；聚合仍不返回 transcript）消费；完整 child history 仍走显式 transcript/session recovery。
 - 详见 `docs/contracts/background-task-delegation.md`。
 
-#### `background_task`
+#### `task`
 
 - 分组：delegated execution
 - 权限分类按 `operation` 区分：`output` / `ps` 为 `read`（只读）；`cancel` 为 `execute`；`steer` 为 `write`。后两者会修改 runtime-owned task state，必须经过对应的 execute/write governance；plan/read-only runtime mode 拒绝 `cancel` 与 `steer`，不能把整个 facade 视为只读。

@@ -8,24 +8,24 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, mo
 
 from .._pydantic_args import format_validation_error
 from ..contracts import ToolCall, ToolDefinition, ToolResult
-from .background_cancel import BackgroundCancelRuntime, BackgroundCancelTool
-from .background_output import BackgroundOutputRuntime, BackgroundOutputTool
-from .background_ps import BackgroundPsRuntime, BackgroundPsTool
-from .steer_task import SteerTaskRuntime, SteerTaskTool
+from .task_cancel import TaskCancelRuntime, TaskCancelTool
+from .task_output import TaskOutputRuntime, TaskOutputTool
+from .task_ps import TaskPsRuntime, TaskPsTool
+from .task_steer import TaskSteerRuntime, TaskSteerTool
 
 
 def _rewrite_background_reference(value: object) -> object:
     """Rewrite internal delegate guidance before it crosses the model boundary."""
     if isinstance(value, str):
         replacements = (
-            ("background_output(task_id=", 'background_task(operation="output", task_id='),
-            ("background_output(task_ids=", 'background_task(operation="output", task_ids='),
-            ("background_output(parallel_group_id=", 'background_task(operation="output", parallel_group_id='),
-            ("background_output(block=true)", 'background_task(operation="output", block=true)'),
-            ("background_output", 'background_task(operation="output")'),
-            ("background_cancel", 'background_task(operation="cancel")'),
-            ("background_ps", 'background_task(operation="ps")'),
-            ("steer_task", 'background_task(operation="steer")'),
+            ("task_output(task_id=", 'task(operation="output", task_id='),
+            ("task_output(task_ids=", 'task(operation="output", task_ids='),
+            ("task_output(parallel_group_id=", 'task(operation="output", parallel_group_id='),
+            ("task_output(block=true)", 'task(operation="output", block=true)'),
+            ("task_output", 'task(operation="output")'),
+            ("task_cancel", 'task(operation="cancel")'),
+            ("task_ps", 'task(operation="ps")'),
+            ("task_steer", 'task(operation="steer")'),
         )
         for old, new in replacements:
             value = value.replace(old, new)
@@ -37,11 +37,11 @@ def _rewrite_background_reference(value: object) -> object:
     return value
 
 
-class BackgroundTaskRuntime(BackgroundOutputRuntime, BackgroundCancelRuntime, BackgroundPsRuntime, SteerTaskRuntime, Protocol):
-    """Runtime authority used by the unified background-task control facade."""
+class TaskControlRuntime(TaskOutputRuntime, TaskCancelRuntime, TaskPsRuntime, TaskSteerRuntime, Protocol):
+    """Runtime authority used by the unified task control facade."""
 
 
-class _BackgroundTaskArgs(BaseModel):
+class _TaskControlArgs(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     operation: Literal["output", "cancel", "ps", "steer"]
@@ -96,7 +96,7 @@ class _BackgroundTaskArgs(BaseModel):
         return min(max(value, 1), 100)
 
     @model_validator(mode="after")
-    def _validate_operation_arguments(self) -> _BackgroundTaskArgs:
+    def _validate_operation_arguments(self) -> _TaskControlArgs:
         values_by_operation = {
             "output": {"task_id", "task_ids", "parallel_group_id", "block", "timeout", "full_session", "message_limit"},
             "cancel": {"task_id"},
@@ -152,15 +152,15 @@ _OUTPUT_PROPERTIES: dict[str, object] = {
 }
 
 
-class BackgroundTaskTool:
-    """Unified model-facing control surface for runtime-owned background tasks."""
+class TaskControlTool:
+    """Unified model-facing control surface for runtime-owned tasks."""
 
     definition = ToolDefinition(
-        name="background_task",
+        name="task",
         description=(
-            "Control a runtime-owned background task with one strict operation: output, cancel, ps, or steer. "
-            "output reads one task or a bounded task group; ps lists the active parent's bounded roster; "
-            "cancel requests cancellation; steer dispatches the next turn for a parent-owned keep-alive task."
+            "Control a runtime-owned delegated task with operation output, cancel, ps, or steer. "
+            "Output reads one task or a bounded task group; ps lists the parent's bounded roster; "
+            "cancel requests cancellation; steer dispatches the next turn for a keep-alive task."
         ),
         input_schema={
             "type": "object",
@@ -228,21 +228,21 @@ class BackgroundTaskTool:
         read_only=False,
     )
 
-    def __init__(self, *, runtime: BackgroundTaskRuntime) -> None:
-        self._output = BackgroundOutputTool(runtime=runtime)
-        self._cancel = BackgroundCancelTool(runtime=runtime)
-        self._ps = BackgroundPsTool(runtime=runtime)
-        self._steer = SteerTaskTool(runtime=runtime)
+    def __init__(self, *, runtime: TaskControlRuntime) -> None:
+        self._output = TaskOutputTool(runtime=runtime)
+        self._cancel = TaskCancelTool(runtime=runtime)
+        self._ps = TaskPsTool(runtime=runtime)
+        self._steer = TaskSteerTool(runtime=runtime)
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         try:
-            args = _BackgroundTaskArgs.model_validate(call.arguments)
+            args = _TaskControlArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
         if args.operation == "output":
             delegate_call = ToolCall(
-                tool_name="background_output",
+                tool_name="task_output",
                 arguments=args.model_dump(exclude_none=True),
                 tool_call_id=call.tool_call_id,
             )
@@ -251,22 +251,21 @@ class BackgroundTaskTool:
             assert args.task_id is not None
             result = self._cancel.invoke(
                 ToolCall(
-                    tool_name="background_cancel",
+                    tool_name="task_cancel",
                     arguments={"taskId": args.task_id},
-                    tool_call_id=call.tool_call_id,
                 ),
                 workspace=workspace,
             )
         elif args.operation == "ps":
             result = self._ps.invoke(
-                ToolCall(tool_name="background_ps", arguments={}, tool_call_id=call.tool_call_id),
+                ToolCall(tool_name="task_ps", arguments={}, tool_call_id=call.tool_call_id),
                 workspace=workspace,
             )
         else:
             assert args.task_id is not None and args.prompt is not None
             result = self._steer.invoke(
                 ToolCall(
-                    tool_name="steer_task",
+                    tool_name="task_steer",
                     arguments={"task_id": args.task_id, "prompt": args.prompt},
                     tool_call_id=call.tool_call_id,
                 ),
@@ -281,4 +280,4 @@ class BackgroundTaskTool:
         )
 
 
-__all__ = ["BackgroundTaskRuntime", "BackgroundTaskTool"]
+__all__ = ["TaskControlRuntime", "TaskControlTool"]

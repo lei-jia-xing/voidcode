@@ -137,7 +137,6 @@ class ToolRegistry:
         task_tool: Tool | None = None,
         task_batch_tool: Tool | None = None,
         question_tool: Tool | None = None,
-        background_task_tool: Tool | None = None,
         background_process_tool: Tool | None = None,
     ) -> ToolRegistry:
         return cls.from_tools(
@@ -150,7 +149,6 @@ class ToolRegistry:
                 task_tool=task_tool,
                 task_batch_tool=task_batch_tool,
                 question_tool=question_tool,
-                background_task_tool=background_task_tool,
                 background_process_tool=background_process_tool,
             ).provide_tools()
         )

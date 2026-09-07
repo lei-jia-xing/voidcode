@@ -206,13 +206,13 @@ Hook 命令 stdout 可返回 JSON：
 
 语义：
 
-- 它必须晚于 terminal/waiting truth 持久化，不能早于 `background_output(task_id)` 可读取相同 task truth。
+- 它必须晚于 terminal/waiting truth 持久化，不能早于 `task(operation="output", task_id=...)` 可读取相同 task truth。
 
 ### `background_task_result_read`
 
 触发点：
 
-- `load_background_task_result` / `background_output` 读取 runtime-owned delegated result view 时。
+- `load_background_task_result` / `task(operation="output")` 读取 runtime-owned delegated result view 时。
 
 ### `delegated_result_available`
 

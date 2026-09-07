@@ -1940,7 +1940,7 @@ class RuntimeBackgroundTaskSupervisor:
             "Runtime background task completion notification: "
             f"task_id={task.task.id} status={task.status}{child}. "
             f"Summary: {summary} "
-            f'Use background_task(operation="output", task_id="{task.task.id}") for the structured result; '
+            f'Use task(operation="output", task_id="{task.task.id}") for the structured result; '
             "wait for runtime notifications and do not poll."
         )
         try:
@@ -2114,7 +2114,7 @@ class RuntimeBackgroundTaskSupervisor:
                 f"Runtime background task progress: task_id={task.task.id} "
                 f"ordinal={progress.get('ordinal', '?')} "
                 f"type={progress.get('type', 'progress')}. "
-                f"{result_text if isinstance(result_text, str) else 'Structured progress is available via background_task(operation=output).'}"
+                f"{result_text if isinstance(result_text, str) else 'Structured progress is available via task(operation="output").'}"
             )
             queue_progress = getattr(self._surface, "queue_progress_interaction", None)
             if callable(queue_progress):

@@ -800,7 +800,7 @@ class VoidCodeTUI(App[int]):
         if event_type == "runtime.background_task_completed":
             title = f"✓ Background completed · {short_task_id}"
             style = "bold green"
-            body = summary if isinstance(summary, str) and summary else "Result is available through background_task(operation=output)."
+            body = summary if isinstance(summary, str) and summary else 'Result is available through task(operation="output").'
         elif event_type == "runtime.background_task_failed":
             title = f"✖ Background failed · {short_task_id}"
             style = "bold red"

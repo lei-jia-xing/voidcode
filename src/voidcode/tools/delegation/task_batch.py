@@ -298,7 +298,7 @@ class TaskBatchTool:
             "created": created,
             "failed": failed,
             "retrieval_instruction": (
-                f'background_task(operation="output", parallel_group_id="{group_id}")'
+                f'task(operation="output", parallel_group_id="{group_id}")'
                 if not partial
                 else "Use the returned task_ids only after the partial batch is reconciled; no automatic retry or cancellation was performed."
             ),
@@ -321,7 +321,7 @@ class TaskBatchTool:
         else:
             content = (
                 f"Started task batch {group_id} with {group_size} background tasks. "
-                f'Read the group with background_task(operation="output", parallel_group_id="{group_id}").'
+                f'Read the group with task(operation="output", parallel_group_id="{group_id}").'
             )
         return ToolResult(
             tool_name=self.definition.name,

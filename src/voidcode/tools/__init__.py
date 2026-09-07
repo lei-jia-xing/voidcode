@@ -2,7 +2,7 @@ from .apply_patch import ApplyPatchTool
 from .apply_workspace_edit import ApplyWorkspaceEditTool
 from .ast_grep import AstGrepTool
 from .contracts import ToolCall, ToolDefinition, ToolDiagnostics, ToolInvocation, ToolResult, ToolResultStatus
-from .delegation import BackgroundTaskTool, TaskBatchTool, TaskTool
+from .delegation import TaskBatchTool, TaskControlTool, TaskTool
 from .edit import EditTool
 from .glob import GlobTool
 from .grep import GrepTool
@@ -38,7 +38,7 @@ from .write import WriteTool
 from .yield_tool import YieldArgs, YieldTool
 
 __all__ = [
-    "BackgroundTaskTool",
+    "TaskControlTool",
     "ApplyPatchTool",
     "ApplyWorkspaceEditTool",
     "AstGrepTool",

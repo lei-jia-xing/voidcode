@@ -11,7 +11,7 @@ from ..contracts import ToolCall, ToolDefinition, ToolResult
 from ..runtime_context import require_runtime_tool_context
 
 
-class SteerTaskRuntime(Protocol):
+class TaskSteerRuntime(Protocol):
     def authorize_background_task_owner(self, task_id: str, *, parent_session_id: str | None) -> None: ...
 
     def load_background_task(self, task_id: str) -> BackgroundTaskState: ...
@@ -19,7 +19,7 @@ class SteerTaskRuntime(Protocol):
     def steer_background_task(self, task_id: str, content: str) -> BackgroundTaskState: ...
 
 
-class _SteerTaskArgs(BaseModel):
+class _TaskSteerArgs(BaseModel):
     task_id: str
     prompt: str
 
@@ -40,9 +40,9 @@ class _SteerTaskArgs(BaseModel):
         return stripped
 
 
-class SteerTaskTool:
+class TaskSteerTool:
     definition = ToolDefinition(
-        name="steer_task",
+        name="task_steer",
         description=(
             "Dispatch a new worker turn for a keep-alive background task created with "
             "task(keep_alive=true, run_in_background=true). The task must be idle "
@@ -67,13 +67,13 @@ class SteerTaskTool:
         read_only=True,
     )
 
-    def __init__(self, *, runtime: SteerTaskRuntime) -> None:
+    def __init__(self, *, runtime: TaskSteerRuntime) -> None:
         self._runtime = runtime
 
     def invoke(self, call: ToolCall, *, workspace: Path) -> ToolResult:
         _ = workspace
         try:
-            args = _SteerTaskArgs.model_validate(call.arguments)
+            args = _TaskSteerArgs.model_validate(call.arguments)
         except ValidationError as exc:
             raise ValueError(format_validation_error(self.definition.name, exc)) from exc
 
@@ -114,3 +114,6 @@ class SteerTaskTool:
                 "terminal": is_background_task_terminal(task.status),
             },
         )
+
+
+__all__ = ["TaskSteerRuntime", "TaskSteerTool"]

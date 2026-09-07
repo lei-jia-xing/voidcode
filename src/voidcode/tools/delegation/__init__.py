@@ -1,17 +1,17 @@
-from .background_cancel import BackgroundCancelTool
-from .background_output import BackgroundOutputTool
-from .background_ps import BackgroundPsTool
-from .background_task import BackgroundTaskTool
-from .steer_task import SteerTaskTool
 from .task import TaskTool
 from .task_batch import TaskBatchTool
+from .task_cancel import TaskCancelTool
+from .task_control import TaskControlTool
+from .task_output import TaskOutputTool
+from .task_ps import TaskPsTool
+from .task_steer import TaskSteerTool
 
 __all__ = [
-    "BackgroundCancelTool",
-    "BackgroundOutputTool",
-    "BackgroundPsTool",
-    "BackgroundTaskTool",
-    "SteerTaskTool",
     "TaskBatchTool",
+    "TaskCancelTool",
+    "TaskControlTool",
+    "TaskOutputTool",
+    "TaskPsTool",
+    "TaskSteerTool",
     "TaskTool",
 ]

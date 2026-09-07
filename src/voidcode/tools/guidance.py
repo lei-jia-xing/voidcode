@@ -9,7 +9,6 @@ _TOOL_GUIDANCE_FILES = {
     "apply_workspace_edit": "apply_workspace_edit.txt",
     "ast_grep": "ast_grep.txt",
     "apply_patch": "apply_patch.txt",
-    "background_task": "delegation/background_task.txt",
     "background_process": "process/background_process.txt",
     "edit": "edit.txt",
     "glob": "glob.txt",
@@ -41,13 +40,11 @@ def guidance_filename_for_tool(tool_name: str) -> str | None:
 def load_tool_guidance(filename: str) -> str:
     path = _GUIDANCE_DIR / filename
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return ""
 
 
 def guidance_for_tool(tool_name: str) -> str:
     filename = guidance_filename_for_tool(tool_name)
-    if filename is None:
-        return ""
-    return load_tool_guidance(filename)
+    return "" if filename is None else load_tool_guidance(filename)

@@ -1,15 +1,16 @@
-Delegate work to a child runtime session or background task.
+Delegate work to a child runtime session, start independent work in the background, or control an existing delegated task.
 
-Usage:
-- Always include `prompt`, `run_in_background`, `load_skills`, and `subagent_type` on every `task` call.
+Delegation usage:
+- Always include `prompt`, `run_in_background`, `load_skills`, and `subagent_type` on every delegation call.
 - `load_skills` must be an array of strings. Pass `[]` when no extra skills are needed.
 - `subagent_type` is required: one of `advisor`, `explore`, `researcher`, `worker`, or `product`.
-- Prefer `run_in_background=true` for delegated work unless you intentionally need a synchronous child session result in the same turn.
-- Use this tool when the work should be split into a delegated child run rather than handled inline.
+- Prefer `run_in_background=true` for delegated work unless you intentionally need a synchronous child session result.
 - When `run_in_background` is true, this tool starts a real background task and returns a `task_id`.
-- After starting a background task, continue other safe work first. Do not call `background_task(operation="output")` immediately unless you truly need a status check.
-- Prefer waiting for the runtime completion reminder before reading results; use `background_task(operation="output", block=true)` only when intentionally waiting in the current turn.
-- Do not sleep, poll in a loop, or repeatedly re-launch equivalent background work just to check progress. Trust the runtime completion reminder and use the unified background control surface when you actually need it.
-- Do not guess or fabricate a background task's result before the runtime delivers it. Report current status only, or continue other independent work.
-- Use `background_task(operation="output")` to read status/results, `background_task(operation="cancel")` to cancel a task, and `background_task(operation="steer")` to dispatch a keep-alive turn.
-- The current runtime preserves parent/child lineage, requested skills, and delegated task correlation. Top-level active runs execute as `leader` by default. Delegated child runs can execute the `advisor`, `explore`, `researcher`, `worker`, or `product` presets through the runtime-owned delegation path. The `product` agent produces an implementation plan without user interaction; delegate planning with `subagent_type="product"` and read its plan back through its `yield` handoff.
+
+Control usage:
+- Set `operation="output"` with exactly one selector: `task_id`, `task_ids`, or `parallel_group_id`. Aggregate reads are bounded and never include prompts, transcripts, or raw child output. `block=true` waits once through the runtime lifecycle API with a millisecond `timeout` of at least 1000; `full_session=true` requires one `task_id` and returns bounded metadata/transcript preview.
+- Set `operation="ps"` with no additional arguments to list the active parent's bounded task roster.
+- Set `operation="cancel"` with one `task_id` to request cancellation.
+- Set `operation="steer"` with `task_id` and non-empty `prompt` to dispatch the next turn for a parent-owned keep-alive task while it is idle or interrupted.
+
+After starting a background task, continue independent work and wait for a completion reminder. Do not sleep, poll in a loop, repeatedly relaunch equivalent work, guess results, or read a running child transcript just to peek. The runtime preserves parent/child lineage, requested skills, and task correlation.

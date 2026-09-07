@@ -30,8 +30,8 @@
 - 让后台任务继续走现有 runtime 执行路径
 - 通过 `task` 工具路由受支持的 child preset，并建立 parent / child session linkage
 - 通过 runtime events 通知 parent session
-- 通过 `background_task(operation="output")` 读取摘要或有界 child transcript，通过 `background_task(operation="ps")` 读取当前 parent session 的最多 100 条 bounded task roster，不返回 prompt/transcript/result content
-- 通过 CLI 与 HTTP 暴露 task status / output / cancel / retry / list surfaces；`background_task(operation="ps")` 是 model-facing runtime tool，不替代 operator/CLI list API
+- 通过 `task(operation="output")` 读取摘要或有界 child transcript，通过 `task(operation="ps")` 读取当前 parent session 的最多 100 条 bounded task roster，不返回 prompt/transcript/result content
+- 通过 CLI 与 HTTP 暴露 task status / output / cancel / retry / list surfaces；`task(operation="ps")` 是 model-facing runtime tool，不替代 operator/CLI list API
 
 它支持的 async delegation 语义是收敛的：
 
@@ -87,7 +87,7 @@ runtime 已有的基础能力：
 - foreground `shell_exec` 会在工具内部 worker thread 中运行，以便流式转发 progress events；这不是同一 turn 内的多工具并行执行。
 - `task(..., run_in_background=true)` 会创建 persisted `queued` background task，runtime queue 会按 provider/model/default concurrency limit 启动多个 worker thread；默认 concurrency 由 `RuntimeBackgroundTaskConfig.default_concurrency` 控制，并可被 provider/model 级配置覆盖。
 - background worker lifecycle、queued/running/completed/failed/cancelled/interrupted 状态、parent notification events 与 result retrieval 都持久化在同一 runtime truth 中；leader 不需要靠 prompt 文本或客户端本地状态推断完成情况。
-- `background_task(operation="output", block=true)` 是显式阻塞等待 surface；常规 agent flow 应优先继续其他安全工作，等待 parent-session notification event 或稍后读取 `background_task(operation="output", task_id=...)`。
+- `task(operation="output", block=true)` 是显式阻塞等待 surface；常规 agent flow 应优先继续其他安全工作，等待 parent-session notification event 或稍后读取 `task(operation="output", task_id=...)`。
 
 当前 shipped baseline 还必须保持以下限制：
 
@@ -113,13 +113,13 @@ not presented as a false transaction: if a later child start fails, the result h
 `partial: true` and separately lists `created` and `failed` item indexes. Already
 created tasks remain durable and active; the tool never retries, cancels the group,
 or copies child transcripts. A fully dispatched result returns `parallel_group_id`
-and `task_ids` directly usable with `background_task(operation="output", parallel_group_id=...)`.
+and `task_ids` directly usable with `task(operation="output", parallel_group_id=...)`.
 
 `task_batch` does not accept client-supplied parent/session/group IDs, keep-alive,
 dependencies, nested graphs, or automatic retry controls. Child execution continues
 through the same `start_background_task` routing, SQLite state, parent ownership,
 bounded group projection, and Condition-based wait used by `task` and
-`background_task(operation="output")`; it is not a new scheduler or arbitrary agent topology.
+`task(operation="output")`; it is not a new scheduler or arbitrary agent topology.
 
 ## 所有权边界
 
@@ -206,7 +206,7 @@ def load_background_task_result(task_id: str) -> BackgroundTaskResult: ...
 - `result_available` 只在 runtime 能安全暴露摘要结果或 child transcript pointer 时为 `true`
 - `approval_blocked` 是**结果视图上的派生字段**，不是对 `BackgroundTaskState.status` 的扩展
 - 当 child session 的 `SessionState.status == "waiting"` 时，`approval_blocked` 应为 `true`
-- `background_task(operation="output", full_session=true)` 可以返回 bounded child transcript metadata；`message_limit` 当前被限制在 1 到 100，避免把完整 session 无界塞回 leader context
+- `task(operation="output", full_session=true)` 可以返回 bounded child transcript metadata；`message_limit` 当前被限制在 1 到 100，避免把完整 session 无界塞回 leader context
 - failed child result 只提供显式 user-request retry / continuation guidance，建议使用 `session_id=<child_session_id>` 继续；不能由工具自动无限重试
 - interrupted child result 是确定性终态，表示 runtime 在重启/中断/超时类场景中无法证明 child 已完成；它与 failed 一样可读取错误摘要，但不能被 late child completion 回退或覆盖
 
@@ -261,7 +261,7 @@ def steer_background_task(task_id: str, content: str) -> BackgroundTaskState: ..
 
 ### 工具 / CLI / HTTP surface（与 status/output/cancel/retry/list 平级）
 
-- leader 工具 `background_task(operation="steer", task_id, prompt)`：调用方必须是任务的 parent（`context.session_id == task.parent_session_id`，session_id 取自 runtime tool context，不信任客户端传入）；`keep_alive=true` 时 `task` 工具在 request metadata **顶层**加 `"keep_alive": true`（不放 delegation 子对象）。
+- leader 工具 `task(operation="steer", task_id, prompt)`：调用方必须是任务的 parent（`context.session_id == task.parent_session_id`，session_id 取自 runtime tool context，不信任客户端传入）；`keep_alive=true` 时 `task` 工具在 request metadata **顶层**加 `"keep_alive": true`（不放 delegation 子对象）。
 - CLI：`voidcode tasks steer <task_id> "<prompt>" [--json]`；`tasks status` 对 `idle` 状态给出 `tasks steer` / `tasks cancel` 指引。
 - HTTP：`POST /api/tasks/<task_id>/steer`，body `{"prompt": "..."}`，返回 steered task state。
 
@@ -361,7 +361,7 @@ leader notification 必须表现为**附加到 parent session 上的 runtime eve
 - `result_available`（可选）
 - `delegation` / `message`（可选；`_delegated_lifecycle_payloads` 结构）
 
-该事件在每个 keep-alive turn 结束时投递一次（去重键 per-turn），表示 worker 已挂起、等待 leader 用 `background_task(operation="steer", task_id, prompt)` / `tasks steer` / `POST /api/tasks/<id>/steer` 派发下一 turn。
+该事件在每个 keep-alive turn 结束时投递一次（去重键 per-turn），表示 worker 已挂起、等待 leader 用 `task(operation="steer", task_id, prompt)` / `tasks steer` / `POST /api/tasks/<id>/steer` 派发下一 turn。
 
 ## 顺序规则
 
@@ -415,7 +415,7 @@ episode 级 dedupe 的意思是：只要当前 episode 已经发过一次 remind
 
 一旦出现以下任一情况，runtime 必须停止对当前 eligible idle episode 继续发 reminder：
 
-- result 已被读取，包括 `background_task(operation="output", task_id=...)`、`load_background_task_result(task_id)` 或通过 `resume(child_session_id)` 消费 child transcript 的路径
+- result 已被读取，包括 `task(operation="output", task_id=...)`、`load_background_task_result(task_id)` 或通过 `resume(child_session_id)` 消费 child transcript 的路径
 - 显式 retry
 - cancel
 - terminal completion
@@ -520,19 +520,19 @@ MCP 当前是 runtime-managed capability，不是 workspace-scoped marketplace�
 
 Leader 读取结果时应遵守以下规则：
 
-- `background_task(operation="output")` 的 selector 必须严格互斥：单任务使用 `task_id`；聚合调用使用 `task_ids` 或 `parallel_group_id`，三者只能提供一个。`task_ids` 有界且不得重复；`parallel_group_id` 由 runtime 按持久化 group truth 解析。
-- `background_task(operation="ps")` 无参数，要求 active runtime tool context；runtime 使用其中的 parent `session_id` 只投影该 parent 的最多 100 条 task roster。返回 task/child/group/lifecycle/timestamp/approval/result flags 与 next-step references，不返回 prompt、transcript 或 child result content。
+- `task(operation="output")` 的 selector 必须严格互斥：单任务使用 `task_id`；聚合调用使用 `task_ids` 或 `parallel_group_id`，三者只能提供一个。`task_ids` 有界且不得重复；`parallel_group_id` 由 runtime 按持久化 group truth 解析。
+- `task(operation="ps")` 无参数，要求 active runtime tool context；runtime 使用其中的 parent `session_id` 只投影该 parent 的最多 100 条 task roster。返回 task/child/group/lifecycle/timestamp/approval/result flags 与 next-step references，不返回 prompt、transcript 或 child result content。
 - 聚合读取使用当前 runtime tool context 的 `session_id` 作为 parent owner；对于显式 `task_ids`，runtime 先逐个完成 parent ownership authorization，再加载 task state/result；`parallel_group_id` 查询本身按 parent 过滤。runtime 必须拒绝不属于该 parent 的 task 或 group，工具/模型不得通过客户端参数绕过 lineage ownership。
 - `block=true` 使用 runtime-owned Condition/lifecycle wait，不做 tight polling；`timeout` 单位为毫秒且阻塞等待至少 1000ms。超时返回当前各 task 状态并设置 `block_timed_out`，不得把任务误标为失败。
 - 聚合结果是 bounded model-facing projection：每个 task 只返回 `status`、有界 `summary`/`error`、`structured_output` 与关联状态字段；不得复制 child prompt、transcript 或 raw child session 内容。结果同时包含 group completeness、counts、expected task count 与 task ids。
 - CLI readable 默认输出先暴露 `TASK ...` correlation record，并在 waiting / running / idle / failed / completed 等状态下打印 concrete next-step commands（例如 `sessions resume <child_session_id>`、`tasks output <task_id>`、`tasks steer <task_id> "<prompt>"`、`tasks cancel <task_id>`）。
 - `block=true` 等待超时时返回 `block_timed_out`，同时保留当前 task state，而不是把任务误标为失败。
 - failed/cancelled/interrupted task 可以通过 runtime 方法 `retry_background_task(task_id)`、CLI `voidcode tasks retry <task_id>` 或 HTTP `POST /api/tasks/<task_id>/retry` 显式重试。retry 必须复用旧 task 持久化的 request prompt、requested child session id、parent session id、metadata、routing 与 `allocate_session_id`，并创建新的 queued task handle；不得改写旧 terminal task。
-- idle keep-alive task 通过 `background_task(operation="steer", task_id, prompt)`（CLI `voidcode tasks steer <task_id> "<prompt>"`、HTTP `POST /api/tasks/<task_id>/steer`）派发下一 worker turn；keep-alive 的 `interrupted` 任务可视为断点续跑同样 steer。steer 只对 keep-alive 任务开放，且任务必须处于 `idle`/`interrupted`（turn 在飞时拒绝）。
+- idle keep-alive task 通过 `task(operation="steer", task_id, prompt)`（CLI `voidcode tasks steer <task_id> "<prompt>"`、HTTP `POST /api/tasks/<task_id>/steer`）派发下一 worker turn；keep-alive 的 `interrupted` 任务可视为断点续跑同样 steer。steer 只对 keep-alive 任务开放，且任务必须处于 `idle`/`interrupted`（turn 在飞时拒绝）。
 - failed/interrupted child 输出可以提示用户显式请求 retry/continue，并优先使用 runtime-owned `retry_background_task` 返回的新 task id；工具本身不得自动进入无限 retry loop。
 - repeated child failure 应升级给 leader / user，而不是继续隐藏在后台循环里。
-- `background_task(operation="cancel", task_id=...)` 对 unknown task 返回稳定 `status="unknown"` payload；即使 model-facing runtime context 中 authorization 先发现 unknown id，也不得把 unknown 误报为权限错误；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。
-- `background_task(operation="output")` 的 payload 应包含 `retrieval_instruction` 与 compact `handoff_summary`，至少表达 objective、completed work、open questions、files touched、verification、blocked/error reason；未知项用空值或空列表表达，不能要求客户端推断。
+- `task(operation="cancel", task_id=...)` 对 unknown task 返回稳定 `status="unknown"` payload；即使 model-facing runtime context 中 authorization 先发现 unknown id，也不得把 unknown 误报为权限错误；对 running task 标记 cancel requested；对 completed/cancelled 等 terminal task 返回其 terminal state，不描述成新取消。
+- `task(operation="output")` 的 payload 应包含 `retrieval_instruction` 与 compact `handoff_summary`，至少表达 objective、completed work、open questions、files touched、verification、blocked/error reason；未知项用空值或空列表表达，不能要求客户端推断。
 
 ## Lifecycle hooks
 

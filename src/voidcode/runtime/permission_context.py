@@ -123,7 +123,7 @@ def operation_class_for_tool(
     tool_instance: Tool,
     arguments: dict[str, object] | None = None,
 ) -> OperationClass:
-    if tool_name == "background_task":
+    if tool_name == "task":
         operation = arguments.get("operation") if arguments is not None else None
         if operation in ("output", "ps"):
             return "read"
