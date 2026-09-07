@@ -212,10 +212,14 @@ def provider_transient_retry_config(
         provider_config = providers.litellm
     elif provider_name == "opencode":
         provider_config = providers.opencode
+    elif provider_name == "openrouter":
+        provider_config = providers.openrouter
     elif provider_name == "deepseek":
         provider_config = providers.deepseek
-    elif provider_name == "glm":
-        provider_config = providers.glm
+    elif provider_name == "zai":
+        provider_config = providers.zai
+    elif provider_name == "zhipuai":
+        provider_config = providers.zhipuai
     elif provider_name == "grok":
         provider_config = providers.grok
     elif provider_name == "minimax":
@@ -224,6 +228,14 @@ def provider_transient_retry_config(
         provider_config = providers.kimi
     elif provider_name == "qwen":
         provider_config = providers.qwen
+    elif provider_name == "groq":
+        provider_config = providers.groq
+    elif provider_name == "together":
+        provider_config = providers.together
+    elif provider_name == "fireworks":
+        provider_config = providers.fireworks
+    elif provider_name == "mistral":
+        provider_config = providers.mistral
     else:
         provider_config = providers.custom.get(provider_name)
     if provider_config is None or provider_config.transient_retry is None:

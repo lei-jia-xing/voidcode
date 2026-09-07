@@ -824,7 +824,256 @@
       "supports_vision": false
     }
   },
-  "glm": {
+  "zai": {
+    "glm-4.5": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 1.1e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.2e-06,
+      "max_output_tokens": 98304,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.5-air": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 3e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 2.0000000000000002e-07,
+      "cost_per_output_token": 1.1e-06,
+      "max_output_tokens": 98304,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.5-flash": {
+      "context_window": 131072,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 98304,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.5v": {
+      "context_window": 64000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 1.8000000000000001e-06,
+      "max_output_tokens": 16384,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "glm-4.6": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 1.1e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 6e-07,
+      "cost_per_output_token": 2.2e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.6v": {
+      "context_window": 128000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 3e-07,
+      "cost_per_output_token": 9.000000000000001e-07,
+      "max_output_tokens": 32768,
+      "modalities_input": [
+        "text",
+        "image",
+        "video"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    },
+    "glm-4.7": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.7-flash": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-4.7-flashx": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 1e-08,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 7e-08,
+      "cost_per_output_token": 4.0000000000000003e-07,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5": {
+      "context_window": 204800,
+      "cost_per_cache_read_token": 2.0000000000000002e-07,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 1e-06,
+      "cost_per_output_token": 3.2000000000000003e-06,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5-turbo": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.1": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.2": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.2-highspeed": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5.3": {
+      "context_window": 1000000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": false
+    },
+    "glm-5v-turbo": {
+      "context_window": 200000,
+      "cost_per_cache_read_token": 0.0,
+      "cost_per_cache_write_token": 0.0,
+      "cost_per_input_token": 0.0,
+      "cost_per_output_token": 0.0,
+      "max_output_tokens": 131072,
+      "modalities_input": [
+        "text",
+        "image",
+        "video",
+        "pdf"
+      ],
+      "model_status": "active",
+      "supports_reasoning": true,
+      "supports_tools": true,
+      "supports_vision": true
+    }
+  },
+  "zhipuai": {
     "glm-4.5": {
       "context_window": 131072,
       "cost_per_cache_read_token": 1.1e-07,
@@ -3863,5 +4112,32 @@
       "supports_tools": true,
       "supports_vision": true
     }
+  },
+  "groq": {
+    "llama-3.3-70b-versatile": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "llama-3.1-8b-instant": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "openai/gpt-oss-120b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "openai/gpt-oss-20b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "qwen/qwen3-32b": {"context_window": 131072, "max_output_tokens": 32768, "model_status": "active", "supports_tools": true, "supports_vision": false}
+  },
+  "together": {
+    "llama-3.3-70b": {"context_window": 131072, "max_output_tokens": 4096, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "llama-3.1-8b": {"context_window": 131072, "max_output_tokens": 4096, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "deepseek-v3": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "qwen3-coder": {"context_window": 262144, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "kimi-k2": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false}
+  },
+  "fireworks": {
+    "llama-3.1-70b": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "deepseek-v3": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "qwen3-235b": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "kimi-k2": {"context_window": 131072, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false}
+  },
+  "mistral": {
+    "mistral-large": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "mistral-small": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "codestral": {"context_window": 256000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "devstral-small": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false},
+    "magistral-medium": {"context_window": 128000, "max_output_tokens": 8192, "model_status": "active", "supports_tools": true, "supports_vision": false}
   }
 }

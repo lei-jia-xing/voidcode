@@ -424,6 +424,22 @@ def test_discover_available_models_skips_when_no_discovery_base_url_or_base_url(
     assert result.discovery_mode == "unavailable"
 
 
+def test_fireworks_discovery_defaults_to_model_map_only() -> None:
+    result = discover_available_models(
+        "fireworks",
+        LiteLLMProviderConfig(
+            api_key="fireworks-key",
+            base_url="https://api.fireworks.ai/inference/v1",
+            discovery_base_url="",
+            model_map={"llama-3.1-70b": "accounts/fireworks/models/llama-v3p1-70b-instruct"},
+        ),
+    )
+
+    assert result.models == ("llama-3.1-70b", "accounts/fireworks/models/llama-v3p1-70b-instruct")
+    assert result.discovery_mode == "disabled"
+    assert result.last_refresh_status == "skipped"
+
+
 def test_discover_available_models_marks_fallback_on_fetch_failure() -> None:
     def _failing_fetcher(_request: DiscoveryRequest) -> tuple[str, ...]:
         raise TimeoutError("timed out")
@@ -559,8 +575,17 @@ def test_discover_available_models_custom_provider_keeps_existing_v1_models_path
     assert result.discovery_mode == "configured_base_url"
 
 
-def test_discover_available_models_glm_base_url_uses_v4_models_path(
+@pytest.mark.parametrize(
+    ("provider_name", "base_url"),
+    [
+        ("zai", "https://api.z.ai/api/paas/v4"),
+        ("zhipuai", "https://open.bigmodel.cn/api/paas/v4"),
+    ],
+)
+def test_discover_available_models_zai_providers_use_v4_models_path(
     monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    base_url: str,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -577,7 +602,7 @@ def test_discover_available_models_glm_base_url_uses_v4_models_path(
             return False
 
         def read(self) -> bytes:
-            return json.dumps({"data": [{"id": "glm/glm-4-flash"}]}).encode("utf-8")
+            return json.dumps({"data": [{"id": "glm-4-flash"}]}).encode("utf-8")
 
     def _fake_urlopen(request: Request, timeout: float) -> _Response:
         captured["url"] = request.full_url
@@ -587,12 +612,12 @@ def test_discover_available_models_glm_base_url_uses_v4_models_path(
     monkeypatch.setattr(model_catalog, "urlopen", _fake_urlopen)
 
     result = discover_available_models(
-        "glm",
-        LiteLLMProviderConfig(base_url="https://open.bigmodel.cn/api/paas/v4", api_key="glm-key"),
+        provider_name,
+        LiteLLMProviderConfig(base_url=base_url, api_key="provider-key"),
     )
 
-    assert result.models == ("glm/glm-4-flash",)
-    assert captured["url"] == "https://open.bigmodel.cn/api/paas/v4/models"
+    assert result.models == ("glm-4-flash",)
+    assert captured["url"] == f"{base_url}/models"
     assert result.discovery_mode == "configured_base_url"
 
 

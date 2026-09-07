@@ -8,7 +8,7 @@ import {
 describe("provider model references", () => {
   it.each([
     ["deepseek", "deepseek-v4-pro", "deepseek/deepseek-v4-pro"],
-    ["glm", "nested/model", "glm/nested/model"],
+    ["zai", "nested/model", "zai/nested/model"],
     ["deepseek", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro"],
   ])("canonicalizes %s/%s", (provider, model, expected) => {
     expect(canonicalModelReference(provider, model)).toBe(expected);
@@ -17,7 +17,7 @@ describe("provider model references", () => {
   it.each([
     ["deepseek-v4-pro", "deepseek", "deepseek-v4-pro"],
     ["deepseek/deepseek-v4-pro", "deepseek", "deepseek-v4-pro"],
-    ["nested/model", "glm", "nested/model"],
+    ["nested/model", "zai", "nested/model"],
     ["deepseek/deepseek-v4-pro", null, "deepseek/deepseek-v4-pro"],
   ])("displays %s for provider %s", (model, provider, expected) => {
     expect(displayModelName(model, provider)).toBe(expected);

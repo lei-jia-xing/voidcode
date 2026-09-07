@@ -13,7 +13,7 @@ const baseProps = {
   settingsStatus: "idle",
   settingsError: null,
   providers: [
-    { name: "glm", label: "GLM", configured: true, current: true },
+    { name: "zai", label: "Z.AI", configured: true, current: true },
     { name: "openai", label: "OpenAI", configured: false, current: false },
   ],
   providersStatus: "success",
@@ -46,7 +46,7 @@ describe("SettingsPanel", () => {
     render(<SettingsPanel {...baseProps} />);
     openProviderSection();
 
-    expect(screen.getByText("GLM")).toBeInTheDocument();
+    expect(screen.getByText("Z.AI")).toBeInTheDocument();
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
     expect(screen.getByText("Configured")).toBeInTheDocument();
     expect(screen.getByText("Not configured")).toBeInTheDocument();
@@ -58,13 +58,13 @@ describe("SettingsPanel", () => {
       <SettingsPanel
         {...baseProps}
         settings={{
-          provider: "glm",
+          provider: "zai",
           model: "",
           provider_api_key_present: true,
         }}
         providerModels={{
-          glm: {
-            provider: "glm",
+          zai: {
+            provider: "zai",
             configured: true,
             models: ["glm-5", "nested/model"],
             last_refresh_status: "ok",
@@ -85,13 +85,13 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("Unconfigured providers")).toBeInTheDocument();
 
     const modelSelect = screen.getByLabelText("Model");
-    fireEvent.change(modelSelect, { target: { value: "glm/nested/model" } });
+    fireEvent.change(modelSelect, { target: { value: "zai/nested/model" } });
     fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      provider: "glm",
+      provider: "zai",
       provider_api_key: undefined,
-      model: "glm/nested/model",
+      model: "zai/nested/model",
     });
   });
 
@@ -101,7 +101,7 @@ describe("SettingsPanel", () => {
         {...baseProps}
         settings={{ provider: "deepseek", model: "" }}
         providers={[
-          { name: "glm", label: "GLM", configured: true, current: false },
+          { name: "zai", label: "Z.AI", configured: true, current: false },
           {
             name: "deepseek",
             label: "DeepSeek",
@@ -110,8 +110,8 @@ describe("SettingsPanel", () => {
           },
         ]}
         providerModels={{
-          glm: {
-            provider: "glm",
+          zai: {
+            provider: "zai",
             configured: true,
             models: ["glm-5"],
           },
@@ -144,10 +144,10 @@ describe("SettingsPanel", () => {
     render(
       <SettingsPanel
         {...baseProps}
-        settings={{ provider: "glm", model: "glm/glm-5" }}
+        settings={{ provider: "zai", model: "zai/glm-5" }}
         providerModels={{
-          glm: {
-            provider: "glm",
+          zai: {
+            provider: "zai",
             configured: true,
             models: ["glm-5"],
           },
@@ -177,10 +177,10 @@ describe("SettingsPanel", () => {
     render(
       <SettingsPanel
         {...baseProps}
-        settings={{ provider: "glm", model: "glm/glm-5" }}
+        settings={{ provider: "zai", model: "zai/glm-5" }}
         providerModels={{
-          glm: {
-            provider: "glm",
+          zai: {
+            provider: "zai",
             configured: true,
             models: ["glm-5"],
             last_refresh_status: "failed",
@@ -189,15 +189,15 @@ describe("SettingsPanel", () => {
           },
         }}
         providerValidationResults={{
-          glm: {
-            provider: "glm",
+          zai: {
+            provider: "zai",
             configured: true,
             ok: false,
             status: "failed",
             message: "Provider credential validation failed.",
           },
         }}
-        providerValidationStatus={{ glm: "error" }}
+        providerValidationStatus={{ zai: "error" }}
         onValidateProvider={onValidateProvider}
       />,
     );
@@ -212,7 +212,7 @@ describe("SettingsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Test credentials" }));
 
-    expect(onValidateProvider).toHaveBeenCalledWith("glm");
+    expect(onValidateProvider).toHaveBeenCalledWith("zai");
   });
 
   it("shows empty state when no providers are available", () => {
@@ -255,9 +255,9 @@ describe("SettingsPanel", () => {
       <SettingsPanel
         {...baseProps}
         settings={{
-          provider: "glm",
+          provider: "zai",
           provider_api_key_present: true,
-          model: "glm/glm-5",
+          model: "zai/glm-5",
         }}
         onSave={onSave}
       />,
@@ -272,9 +272,9 @@ describe("SettingsPanel", () => {
     fireEvent.click(saveButton);
 
     expect(onSave).toHaveBeenCalledWith({
-      provider: "glm",
+      provider: "zai",
       provider_api_key: "new-key",
-      model: "glm/glm-5",
+      model: "zai/glm-5",
     });
   });
 

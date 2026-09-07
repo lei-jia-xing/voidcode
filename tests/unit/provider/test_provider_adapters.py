@@ -21,10 +21,12 @@ from voidcode.provider.errors import (
     provider_execution_error_from_api_payload,
     provider_execution_error_from_stream_payload,
 )
-from voidcode.provider.glm import GLMModelProvider
+from voidcode.provider.fireworks import FireworksModelProvider
 from voidcode.provider.google import GoogleModelProvider
+from voidcode.provider.groq import GroqModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.litellm_backend import LiteLLMBackendSingleAgentProvider
+from voidcode.provider.mistral import MistralModelProvider
 from voidcode.provider.model_catalog import ProviderModelMetadata
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
@@ -42,6 +44,9 @@ from voidcode.provider.protocol import (
     StreamableTurnProvider,
     TurnProvider,
 )
+from voidcode.provider.together import TogetherModelProvider
+from voidcode.provider.zai import ZAIModelProvider
+from voidcode.provider.zhipuai import ZhipuAIModelProvider
 from voidcode.tools.contracts import ToolDefinition, ToolResult
 from voidcode.tools.delegation.task import TaskTool
 
@@ -2609,10 +2614,16 @@ def test_provider_adapter_passes_reasoning_effort_for_direct_litellm_provider(
     assert payload["reasoning_effort"] == "high"
 
 
-def test_glm_provider_maps_reasoning_effort_to_binary_thinking_extra_body(
+@pytest.mark.parametrize(
+    ("provider_type", "provider_name"),
+    [(ZAIModelProvider, "zai"), (ZhipuAIModelProvider, "zhipuai")],
+)
+def test_named_provider_maps_reasoning_effort_to_binary_thinking_extra_body(
     monkeypatch: pytest.MonkeyPatch,
+    provider_type: type[ZAIModelProvider] | type[ZhipuAIModelProvider],
+    provider_name: str,
 ) -> None:
-    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
+    provider = provider_type(config=SimplifiedProviderConfig(api_key="provider-key")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2620,7 +2631,7 @@ def test_glm_provider_maps_reasoning_effort_to_binary_thinking_extra_body(
         completion_content="ok",
     )
 
-    _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="high"))
+    _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort="high"))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -2632,7 +2643,7 @@ def test_glm_provider_maps_reasoning_effort_to_binary_thinking_extra_body(
     assert cast(dict[str, object], thinking_obj)["type"] == "enabled"
     assert "reasoning_effort" not in payload
 
-    _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="off"))
+    _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort="off"))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
@@ -2680,10 +2691,16 @@ def test_provider_adapter_maps_reasoning_effort_for_provider(
     assert payload["reasoning_effort"] == expected
 
 
-def test_provider_adapter_rejects_invalid_reasoning_effort(
+@pytest.mark.parametrize(
+    ("provider_type", "provider_name"),
+    [(ZAIModelProvider, "zai"), (ZhipuAIModelProvider, "zhipuai")],
+)
+def test_named_provider_rejects_invalid_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
+    provider_type: type[ZAIModelProvider] | type[ZhipuAIModelProvider],
+    provider_name: str,
 ) -> None:
-    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key")).turn_provider()
+    provider = provider_type(config=SimplifiedProviderConfig(api_key="provider-key")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2692,7 +2709,7 @@ def test_provider_adapter_rejects_invalid_reasoning_effort(
     )
 
     with pytest.raises(ValueError):
-        _ = provider.propose_turn(_build_turn_request(model_name="glm", reasoning_effort="insane"))
+        _ = provider.propose_turn(_build_turn_request(model_name=provider_name, reasoning_effort="insane"))
 
 
 @pytest.mark.parametrize(
@@ -2837,12 +2854,20 @@ def test_opencode_go_glm_stream_turn_does_not_send_rejected_tool_stream_param(
     }
 
 
-def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    from voidcode.provider.config import SimplifiedProviderConfig
-    from voidcode.provider.glm import GLMModelProvider
-
-    provider = GLMModelProvider(config=SimplifiedProviderConfig(api_key="glm-key"))
-    provider = provider.turn_provider()
+@pytest.mark.parametrize(
+    ("provider_type", "provider_name", "expected_base_url"),
+    [
+        (ZAIModelProvider, "zai", "https://api.z.ai/api/paas/v4"),
+        (ZhipuAIModelProvider, "zhipuai", "https://open.bigmodel.cn/api/paas/v4"),
+    ],
+)
+def test_named_provider_does_not_append_v1_to_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_type: type[ZAIModelProvider] | type[ZhipuAIModelProvider],
+    provider_name: str,
+    expected_base_url: str,
+) -> None:
+    provider = provider_type(config=SimplifiedProviderConfig(api_key="provider-key")).turn_provider()
 
     _patch_litellm_completion(
         monkeypatch,
@@ -2850,12 +2875,12 @@ def test_glm_provider_does_not_append_v1_to_base_url(monkeypatch: pytest.MonkeyP
         completion_content="ok",
     )
 
-    _ = provider.propose_turn(_build_turn_request(model_name="glm"))
+    _ = provider.propose_turn(_build_turn_request(model_name=provider_name))
 
     payload_obj = _LAST_REQUEST_PAYLOAD.get("kwargs")
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
-    assert payload["api_base"] == "https://open.bigmodel.cn/api/paas/v4"
+    assert payload["api_base"] == expected_base_url
 
 
 def test_litellm_backend_propose_turn_forwards_ssl_verify(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3593,6 +3618,64 @@ def test_provider_adapters_call_litellm_directly_without_internal_bridge(
     assert isinstance(payload_obj, dict)
     payload = cast(dict[str, object], payload_obj)
     assert payload["model"] == f"{provider_name}/demo"
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "provider", "expected_base"),
+    [
+        ("groq", GroqModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.groq.com/openai/v1"),
+        ("together", TogetherModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.together.ai/v1"),
+        ("fireworks", FireworksModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.fireworks.ai/inference/v1"),
+        ("mistral", MistralModelProvider(config=SimplifiedProviderConfig(api_key="key")), "https://api.mistral.ai/v1"),
+    ],
+)
+def test_new_provider_adapters_use_openai_compatible_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_name: str,
+    provider: ModelTurnProvider,
+    expected_base: str,
+) -> None:
+    _patch_litellm_completion(monkeypatch, mode="completion", completion_content="ok")
+
+    result = provider.turn_provider().propose_turn(_build_turn_request(model_name="demo"))
+
+    assert result.output == "ok"
+    payload = cast(dict[str, object], _LAST_REQUEST_PAYLOAD["kwargs"])
+    assert payload["model"] == f"{provider_name}/demo"
+    assert payload["api_base"] == expected_base
+
+
+@pytest.mark.parametrize(
+    ("provider", "model_name", "expected_model"),
+    [
+        (GroqModelProvider(config=SimplifiedProviderConfig(api_key="key")), "openai/gpt-oss-120b", "groq/openai/gpt-oss-120b"),
+        (
+            TogetherModelProvider(config=SimplifiedProviderConfig(api_key="key")),
+            "llama-3.3-70b",
+            "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        ),
+        (
+            FireworksModelProvider(config=SimplifiedProviderConfig(api_key="key")),
+            "llama-3.1-70b",
+            "fireworks_ai/accounts/fireworks/models/llama-v3p1-70b-instruct",
+        ),
+        (MistralModelProvider(config=SimplifiedProviderConfig(api_key="key")), "mistral-large", "mistral/mistral-large-latest"),
+    ],
+)
+def test_gateway_provider_model_maps_preserve_litellm_provider_routing(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ModelTurnProvider,
+    model_name: str,
+    expected_model: str,
+) -> None:
+    _patch_litellm_completion(monkeypatch, mode="completion", completion_content="ok")
+
+    request = replace(_build_turn_request(model_name=provider.name), model_name=model_name)
+    result = provider.turn_provider().propose_turn(request)
+
+    assert result.output == "ok"
+    payload = cast(dict[str, object], _LAST_REQUEST_PAYLOAD["kwargs"])
+    assert payload["model"] == expected_model
 
 
 def test_copilot_provider_reads_token_from_configured_env_var(

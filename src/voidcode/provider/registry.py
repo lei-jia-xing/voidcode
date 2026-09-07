@@ -8,12 +8,14 @@ from .anthropic import AnthropicModelProvider
 from .config import LiteLLMProviderConfig, ProviderConfigs
 from .copilot import CopilotModelProvider
 from .deepseek import DeepSeekModelProvider
-from .glm import GLMModelProvider
+from .fireworks import FireworksModelProvider
 from .google import GoogleModelProvider
 from .grok import GrokModelProvider
+from .groq import GroqModelProvider
 from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
+from .mistral import MistralModelProvider
 from .model_catalog import (
     ProviderModelCatalog,
     ProviderModelMetadata,
@@ -23,8 +25,12 @@ from .models import ProviderResolutionSource
 from .openai import OpenAIModelProvider
 from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
+from .openrouter import OpenRouterModelProvider
 from .protocol import ModelTurnProvider, StubTurnProvider, TurnProvider
 from .qwen import QwenModelProvider
+from .together import TogetherModelProvider
+from .zai import ZAIModelProvider
+from .zhipuai import ZhipuAIModelProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +68,18 @@ class ModelProviderRegistry:
                 "copilot": CopilotModelProvider(config=configs.copilot),
                 "litellm": LiteLLMModelProvider(config=configs.litellm),
                 "deepseek": DeepSeekModelProvider(config=configs.deepseek),
-                "glm": GLMModelProvider(config=configs.glm),
+                "openrouter": OpenRouterModelProvider(config=configs.openrouter),
+                "zai": ZAIModelProvider(config=configs.zai),
+                "zhipuai": ZhipuAIModelProvider(config=configs.zhipuai),
                 "grok": GrokModelProvider(config=configs.grok),
                 "minimax": MiniMaxModelProvider(config=configs.minimax),
                 "kimi": KimiModelProvider(config=configs.kimi),
                 "opencode-go": OpenCodeGoModelProvider(config=configs.opencode_go),
                 "qwen": QwenModelProvider(config=configs.qwen),
+                "groq": GroqModelProvider(config=configs.groq),
+                "together": TogetherModelProvider(config=configs.together),
+                "fireworks": FireworksModelProvider(config=configs.fireworks),
+                "mistral": MistralModelProvider(config=configs.mistral),
             },
             default_litellm_config=configs.litellm,
             custom_provider_configs=configs.custom,

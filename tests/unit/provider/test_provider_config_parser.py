@@ -503,34 +503,45 @@ def test_parse_deepseek_provider_config_from_env() -> None:
     assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-env-key")
 
 
-def test_parse_glm_provider_config_from_env() -> None:
+def test_parse_zai_provider_config_from_env() -> None:
     parsed = parse_provider_configs_payload(
-        {"glm": {}},
+        {"zai": {}},
         source="runtime config field 'providers'",
-        env={"ZAI_API_KEY": "glm-env-key"},
+        env={"ZAI_API_KEY": "zai-env-key"},
     )
 
     assert parsed is not None
-    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-env-key")
+    assert parsed.zai == SimplifiedProviderConfig(api_key="zai-env-key")
 
 
-def test_parse_glm_provider_config_with_api_key() -> None:
+def test_parse_zhipuai_provider_config_prefers_zhipu_api_key() -> None:
     parsed = parse_provider_configs_payload(
-        {"glm": {"api_key": "glm-direct-key"}},
+        {"zhipuai": {}},
         source="runtime config field 'providers'",
-        env={"ZAI_API_KEY": "glm-env-key"},
+        env={"ZAI_API_KEY": "zai-env-key", "ZHIPU_API_KEY": "zhipu-env-key"},
     )
 
     assert parsed is not None
-    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-direct-key")
+    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zhipu-env-key")
 
 
-def test_parse_glm_provider_config_with_base_url_and_model_map() -> None:
+def test_parse_zhipuai_provider_config_falls_back_to_zai_api_key() -> None:
+    parsed = parse_provider_configs_payload(
+        {"zhipuai": {}},
+        source="runtime config field 'providers'",
+        env={"ZAI_API_KEY": "zai-env-key"},
+    )
+
+    assert parsed is not None
+    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zai-env-key")
+
+
+def test_parse_zai_provider_config_with_base_url_and_model_map() -> None:
     parsed = parse_provider_configs_payload(
         {
-            "glm": {
-                "api_key": "glm-key",
-                "base_url": "https://custom.glm.cn",
+            "zai": {
+                "api_key": "zai-key",
+                "base_url": "https://custom.z.ai",
                 "model_map": {"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
             }
         },
@@ -538,9 +549,9 @@ def test_parse_glm_provider_config_with_base_url_and_model_map() -> None:
     )
 
     assert parsed is not None
-    assert parsed.glm == SimplifiedProviderConfig(
-        api_key="glm-key",
-        base_url="https://custom.glm.cn",
+    assert parsed.zai == SimplifiedProviderConfig(
+        api_key="zai-key",
+        base_url="https://custom.z.ai",
         model_map={"glm4": "glm-4-flash", "glm4-plus": "glm-4-plus"},
     )
 
@@ -707,7 +718,8 @@ def test_parse_multiple_simplified_providers_together() -> None:
     parsed = parse_provider_configs_payload(
         {
             "deepseek": {"api_key": "deepseek-key"},
-            "glm": {"api_key": "glm-key"},
+            "zai": {"api_key": "zai-key"},
+            "zhipuai": {"api_key": "zhipuai-key"},
             "grok": {"api_key": "grok-key"},
             "minimax": {"api_key": "minimax-key"},
             "kimi": {"api_key": "kimi-key"},
@@ -719,7 +731,8 @@ def test_parse_multiple_simplified_providers_together() -> None:
 
     assert parsed is not None
     assert parsed.deepseek == SimplifiedProviderConfig(api_key="deepseek-key")
-    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-key")
+    assert parsed.zai == SimplifiedProviderConfig(api_key="zai-key")
+    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zhipuai-key")
     assert parsed.grok == SimplifiedProviderConfig(api_key="grok-key")
     assert parsed.minimax == SimplifiedProviderConfig(api_key="minimax-key")
     assert parsed.kimi == SimplifiedProviderConfig(api_key="kimi-key")
@@ -730,19 +743,19 @@ def test_parse_multiple_simplified_providers_together() -> None:
 def test_parse_simplified_provider_with_api_key_env_var_override() -> None:
     parsed = parse_provider_configs_payload(
         {
-            "glm": {
+            "zhipuai": {
                 "api_key": "direct-key",
-                "api_key_env_var": "MY_CUSTOM_GLM_KEY",
+                "api_key_env_var": "MY_CUSTOM_ZHIPUAI_KEY",
             }
         },
         source="runtime config field 'providers'",
-        env={"MY_CUSTOM_GLM_KEY": "env-key", "ZAI_API_KEY": "default-env-key"},
+        env={"MY_CUSTOM_ZHIPUAI_KEY": "env-key", "ZAI_API_KEY": "default-env-key"},
     )
 
     assert parsed is not None
-    assert parsed.glm == SimplifiedProviderConfig(
+    assert parsed.zhipuai == SimplifiedProviderConfig(
         api_key="direct-key",
-        api_key_env_var="MY_CUSTOM_GLM_KEY",
+        api_key_env_var="MY_CUSTOM_ZHIPUAI_KEY",
     )
 
 
@@ -756,7 +769,7 @@ def test_reject_unknown_simplified_provider() -> None:
 
 @pytest.mark.parametrize(
     "provider_name",
-    ["deepseek", "glm", "grok", "minimax", "kimi", "opencode-go", "qwen"],
+    ["deepseek", "zai", "zhipuai", "grok", "minimax", "kimi", "opencode-go", "qwen"],
 )
 def test_simplified_provider_not_allowed_in_custom_block(provider_name: str) -> None:
     with pytest.raises(
@@ -794,18 +807,18 @@ def test_provider_configs_from_env_builds_grok_with_xai_api_key() -> None:
     assert parsed.grok == SimplifiedProviderConfig(api_key="xai-env-key")
 
 
-def test_provider_configs_from_env_builds_glm_with_zai_api_key() -> None:
-    parsed = provider_configs_from_env({"ZAI_API_KEY": "glm-env-key"})
+def test_provider_configs_from_env_builds_zai_with_zai_api_key() -> None:
+    parsed = provider_configs_from_env({"ZAI_API_KEY": "zai-env-key"})
 
     assert parsed is not None
-    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-env-key")
+    assert parsed.zai == SimplifiedProviderConfig(api_key="zai-env-key")
 
 
-def test_provider_configs_from_env_builds_glm_with_zhipu_api_key() -> None:
-    parsed = provider_configs_from_env({"ZHIPU_API_KEY": "glm-env-key"})
+def test_provider_configs_from_env_builds_zhipuai_with_zhipu_api_key() -> None:
+    parsed = provider_configs_from_env({"ZHIPU_API_KEY": "zhipu-env-key"})
 
     assert parsed is not None
-    assert parsed.glm == SimplifiedProviderConfig(api_key="glm-env-key")
+    assert parsed.zhipuai == SimplifiedProviderConfig(api_key="zhipu-env-key")
 
 
 def test_merge_provider_configs_keeps_repo_provider_over_environment_fallback() -> None:
@@ -851,3 +864,39 @@ def test_merge_provider_configs_preserves_empty_base_url_override() -> None:
     assert merged.opencode_go is not None
     assert merged.opencode_go.base_url == ""
     assert merged.opencode_go.discovery_base_url == ""
+
+
+@pytest.mark.parametrize(
+    ("provider", "env_var", "api_key"),
+    [
+        ("groq", "GROQ_API_KEY", "groq-env-key"),
+        ("together", "TOGETHER_API_KEY", "together-env-key"),
+        ("fireworks", "FIREWORKS_API_KEY", "fireworks-env-key"),
+        ("mistral", "MISTRAL_API_KEY", "mistral-env-key"),
+    ],
+)
+def test_new_provider_configs_use_standard_environment_keys(provider: str, env_var: str, api_key: str) -> None:
+    parsed = parse_provider_configs_payload({provider: {}}, source="providers", env={env_var: api_key})
+    assert parsed is not None
+    assert getattr(parsed, provider) == SimplifiedProviderConfig(api_key=api_key)
+
+    from_env = provider_configs_from_env({env_var: api_key})
+    assert from_env is not None
+    assert getattr(from_env, provider) == SimplifiedProviderConfig(api_key=api_key)
+
+
+def test_new_provider_configs_serialize_without_secrets() -> None:
+    payload = serialize_provider_configs(
+        ProviderConfigs(
+            groq=SimplifiedProviderConfig(api_key="groq-secret"),
+            together=SimplifiedProviderConfig(api_key="together-secret"),
+            fireworks=SimplifiedProviderConfig(api_key="fireworks-secret"),
+            mistral=SimplifiedProviderConfig(api_key="mistral-secret"),
+        )
+    )
+    assert payload == {
+        "groq": {},
+        "together": {},
+        "fireworks": {},
+        "mistral": {},
+    }

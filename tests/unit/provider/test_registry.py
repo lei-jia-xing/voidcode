@@ -12,12 +12,14 @@ from voidcode.provider.config import (
 )
 from voidcode.provider.copilot import CopilotModelProvider
 from voidcode.provider.deepseek import DeepSeekModelProvider
-from voidcode.provider.glm import GLMModelProvider
+from voidcode.provider.fireworks import FireworksModelProvider
 from voidcode.provider.google import GoogleModelProvider
 from voidcode.provider.grok import GrokModelProvider
+from voidcode.provider.groq import GroqModelProvider
 from voidcode.provider.kimi import KimiModelProvider
 from voidcode.provider.litellm import LiteLLMModelProvider
 from voidcode.provider.minimax import MiniMaxModelProvider
+from voidcode.provider.mistral import MistralModelProvider
 from voidcode.provider.model_catalog import ProviderModelCatalog, ProviderModelMetadata
 from voidcode.provider.openai import OpenAIModelProvider
 from voidcode.provider.opencode import OpenCodeModelProvider
@@ -25,6 +27,9 @@ from voidcode.provider.opencode_go import OpenCodeGoModelProvider
 from voidcode.provider.qwen import QwenModelProvider
 from voidcode.provider.registry import ModelProviderRegistry
 from voidcode.provider.resolution import resolve_provider_model
+from voidcode.provider.together import TogetherModelProvider
+from voidcode.provider.zai import ZAIModelProvider
+from voidcode.provider.zhipuai import ZhipuAIModelProvider
 
 
 def test_registry_registers_concrete_provider_adapters() -> None:
@@ -338,16 +343,31 @@ def test_registry_litellm_provider_config_sets_default_discovery_base_url() -> N
     assert config.discovery_base_url == "http://127.0.0.1:4000"
 
 
-def test_registry_registers_glm_provider() -> None:
-    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(glm=SimplifiedProviderConfig(api_key="glm-key")))
+def test_registry_registers_zai_provider() -> None:
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(zai=SimplifiedProviderConfig(api_key="zai-key")))
 
-    resolved = registry.resolve("glm")
+    resolved = registry.resolve("zai")
 
-    assert isinstance(resolved, GLMModelProvider)
-    assert resolved.name == "glm"
-    config = registry.provider_config("glm")
+    assert isinstance(resolved, ZAIModelProvider)
+    assert resolved.name == "zai"
+    config = registry.provider_config("zai")
     assert config is not None
-    assert config.api_key == "glm-key"
+    assert config.api_key == "zai-key"
+    assert config.base_url == "https://api.z.ai/api/paas/v4"
+    assert config.discovery_base_url == "https://api.z.ai/api/paas/v4"
+    assert "glm-4-flash" in config.model_map
+
+
+def test_registry_registers_zhipuai_provider() -> None:
+    registry = ModelProviderRegistry.with_defaults(provider_configs=ProviderConfigs(zhipuai=SimplifiedProviderConfig(api_key="zhipu-key")))
+
+    resolved = registry.resolve("zhipuai")
+
+    assert isinstance(resolved, ZhipuAIModelProvider)
+    assert resolved.name == "zhipuai"
+    config = registry.provider_config("zhipuai")
+    assert config is not None
+    assert config.api_key == "zhipu-key"
     assert config.base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
     assert "glm-4-flash" in config.model_map
@@ -485,22 +505,22 @@ def test_registry_registers_qwen_provider() -> None:
     assert "qwen-plus" in config.model_map.values()
 
 
-def test_registry_glm_provider_config_with_base_url_and_model_map() -> None:
+def test_registry_zhipuai_provider_config_with_base_url_and_model_map() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            glm=SimplifiedProviderConfig(
-                api_key="glm-key",
-                base_url="https://custom.glm.cn",
+            zhipuai=SimplifiedProviderConfig(
+                api_key="zhipu-key",
+                base_url="https://custom.zhipu.example",
                 model_map={"glm4": "glm-4-flash"},
             )
         )
     )
 
-    config = registry.provider_config("glm")
+    config = registry.provider_config("zhipuai")
 
     assert config == LiteLLMProviderConfig(
-        api_key="glm-key",
-        base_url="https://custom.glm.cn",
+        api_key="zhipu-key",
+        base_url="https://custom.zhipu.example",
         discovery_base_url="https://open.bigmodel.cn/api/paas/v4",
         model_map={"glm4": "glm-4-flash"},
     )
@@ -510,7 +530,8 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
             deepseek=SimplifiedProviderConfig(api_key="deepseek-key"),
-            glm=SimplifiedProviderConfig(api_key="glm-key"),
+            zai=SimplifiedProviderConfig(api_key="zai-key"),
+            zhipuai=SimplifiedProviderConfig(api_key="zhipu-key"),
             grok=SimplifiedProviderConfig(api_key="grok-key"),
             minimax=SimplifiedProviderConfig(api_key="minimax-key"),
             kimi=SimplifiedProviderConfig(api_key="kimi-key"),
@@ -525,11 +546,17 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
     assert deepseek_config.discovery_base_url == "https://api.deepseek.com"
     assert deepseek_config.model_map.get("deepseek-v4-flash") == "deepseek-v4-flash"
 
-    glm_config = registry.provider_config("glm")
-    assert glm_config is not None
-    assert glm_config.base_url == "https://open.bigmodel.cn/api/paas/v4"
-    assert glm_config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
-    assert glm_config.model_map.get("glm-4-flash") == "glm-4-flash"
+    zai_config = registry.provider_config("zai")
+    assert zai_config is not None
+    assert zai_config.base_url == "https://api.z.ai/api/paas/v4"
+    assert zai_config.discovery_base_url == "https://api.z.ai/api/paas/v4"
+    assert zai_config.model_map.get("glm-4-flash") == "glm-4-flash"
+
+    zhipuai_config = registry.provider_config("zhipuai")
+    assert zhipuai_config is not None
+    assert zhipuai_config.base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert zhipuai_config.discovery_base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert zhipuai_config.model_map.get("glm-4-flash") == "glm-4-flash"
 
     grok_config = registry.provider_config("grok")
     assert grok_config is not None
@@ -569,14 +596,14 @@ def test_registry_simplified_provider_uses_default_base_url_when_not_set() -> No
 def test_registry_simplified_provider_user_model_map_overrides_default() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            glm=SimplifiedProviderConfig(
-                api_key="glm-key",
+            zai=SimplifiedProviderConfig(
+                api_key="zai-key",
                 model_map={"custom": "custom-model"},
             )
         )
     )
 
-    config = registry.provider_config("glm")
+    config = registry.provider_config("zai")
     assert config is not None
     assert config.model_map == {"custom": "custom-model"}
     assert "glm-4-flash" not in config.model_map
@@ -585,14 +612,14 @@ def test_registry_simplified_provider_user_model_map_overrides_default() -> None
 def test_registry_simplified_provider_user_base_url_overrides_default() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
-            glm=SimplifiedProviderConfig(
-                api_key="glm-key",
+            zai=SimplifiedProviderConfig(
+                api_key="zai-key",
                 base_url="https://my-proxy.com/v1",
             )
         )
     )
 
-    config = registry.provider_config("glm")
+    config = registry.provider_config("zai")
     assert config is not None
     assert config.base_url == "https://my-proxy.com/v1"
 
@@ -601,7 +628,8 @@ def test_registry_all_chinese_providers_resolve_correctly() -> None:
     registry = ModelProviderRegistry.with_defaults(
         provider_configs=ProviderConfigs(
             deepseek=SimplifiedProviderConfig(api_key="deepseek-key"),
-            glm=SimplifiedProviderConfig(api_key="glm-key"),
+            zai=SimplifiedProviderConfig(api_key="zai-key"),
+            zhipuai=SimplifiedProviderConfig(api_key="zhipu-key"),
             grok=SimplifiedProviderConfig(api_key="grok-key"),
             minimax=SimplifiedProviderConfig(api_key="minimax-key"),
             kimi=SimplifiedProviderConfig(api_key="kimi-key"),
@@ -611,9 +639,29 @@ def test_registry_all_chinese_providers_resolve_correctly() -> None:
     )
 
     assert isinstance(registry.resolve("deepseek"), DeepSeekModelProvider)
-    assert isinstance(registry.resolve("glm"), GLMModelProvider)
-    assert isinstance(registry.resolve("grok"), GrokModelProvider)
+    assert isinstance(registry.resolve("zai"), ZAIModelProvider)
+    assert isinstance(registry.resolve("zhipuai"), ZhipuAIModelProvider)
     assert isinstance(registry.resolve("minimax"), MiniMaxModelProvider)
     assert isinstance(registry.resolve("kimi"), KimiModelProvider)
     assert isinstance(registry.resolve("opencode-go"), OpenCodeGoModelProvider)
     assert isinstance(registry.resolve("qwen"), QwenModelProvider)
+
+
+def test_registry_registers_groq_together_fireworks_and_mistral() -> None:
+    registry = ModelProviderRegistry.with_defaults(
+        provider_configs=ProviderConfigs(
+            groq=SimplifiedProviderConfig(api_key="groq-key"),
+            together=SimplifiedProviderConfig(api_key="together-key"),
+            fireworks=SimplifiedProviderConfig(api_key="fireworks-key"),
+            mistral=SimplifiedProviderConfig(api_key="mistral-key"),
+        )
+    )
+
+    assert isinstance(registry.resolve("groq"), GroqModelProvider)
+    assert isinstance(registry.resolve("together"), TogetherModelProvider)
+    assert isinstance(registry.resolve("fireworks"), FireworksModelProvider)
+    assert isinstance(registry.resolve("mistral"), MistralModelProvider)
+    assert registry.provider_config("groq").base_url == "https://api.groq.com/openai/v1"
+    assert registry.provider_config("together").base_url == "https://api.together.ai/v1"
+    assert registry.provider_config("fireworks").discovery_base_url == ""
+    assert registry.provider_config("mistral").discovery_base_url == "https://api.mistral.ai/v1"

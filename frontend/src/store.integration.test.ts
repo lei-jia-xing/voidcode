@@ -2761,13 +2761,13 @@ describe("useAppStore integration flow", () => {
     ]);
     useAppStore.setState({
       reasoningEffort: "high",
-      providerModel: "glm/glm-5",
+      providerModel: "zai/glm-5",
       providers: [
-        { name: "glm", label: "GLM", configured: true, current: true },
+        { name: "zai", label: "Z.AI", configured: true, current: true },
       ],
       providerModels: {
-        glm: {
-          provider: "glm",
+        zai: {
+          provider: "zai",
           configured: true,
           models: ["glm-5"],
           model_metadata: {
@@ -2789,7 +2789,7 @@ describe("useAppStore integration flow", () => {
         reasoning_effort: "high",
         agent: {
           preset: "leader",
-          model: "glm/glm-5",
+          model: "zai/glm-5",
         },
       },
     });
@@ -3063,7 +3063,7 @@ describe("useAppStore integration flow", () => {
           current: true,
         },
         { name: "kimi", label: "Kimi", configured: true, current: false },
-        { name: "glm", label: "GLM", configured: true, current: false },
+        { name: "zai", label: "Z.AI", configured: true, current: false },
       ],
       providerModels: {
         "opencode-go": {
@@ -3076,8 +3076,8 @@ describe("useAppStore integration flow", () => {
           configured: true,
           models: ["kimi-k2.6"],
         },
-        glm: {
-          provider: "glm",
+        zai: {
+          provider: "zai",
           configured: true,
           models: ["kimi-k2.6"],
         },
@@ -3274,9 +3274,9 @@ describe("useAppStore integration flow", () => {
 
   it("loads runtime-owned settings without overriding an existing live providerModel", async () => {
     runtimeClientMocks.getSettingsMock.mockResolvedValue({
-      provider: "glm",
+      provider: "zai",
       provider_api_key_present: true,
-      model: "glm/glm-5",
+      model: "zai/glm-5",
     });
 
     await useAppStore.getState().loadSettings();
@@ -3284,9 +3284,9 @@ describe("useAppStore integration flow", () => {
     const state = useAppStore.getState();
     expect(runtimeClientMocks.getSettingsMock).toHaveBeenCalledOnce();
     expect(state.settings).toEqual({
-      provider: "glm",
+      provider: "zai",
       provider_api_key_present: true,
-      model: "glm/glm-5",
+      model: "zai/glm-5",
     });
     expect(state.providerModel).toBe("deepseek/deepseek-v4-pro");
   });
@@ -3294,18 +3294,18 @@ describe("useAppStore integration flow", () => {
   it("keeps an explicit live providerModel when loading runtime-owned settings", async () => {
     useAppStore.setState({ providerModel: "opencode-go/kimi-k2.6" });
     runtimeClientMocks.getSettingsMock.mockResolvedValue({
-      provider: "glm",
+      provider: "zai",
       provider_api_key_present: true,
-      model: "glm/glm-5",
+      model: "zai/glm-5",
     });
 
     await useAppStore.getState().loadSettings();
 
     const state = useAppStore.getState();
     expect(state.settings).toEqual({
-      provider: "glm",
+      provider: "zai",
       provider_api_key_present: true,
-      model: "glm/glm-5",
+      model: "zai/glm-5",
     });
     expect(state.providerModel).toBe("opencode-go/kimi-k2.6");
   });

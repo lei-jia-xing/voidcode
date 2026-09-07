@@ -112,7 +112,7 @@ def test_provider_readiness_reports_forwarded_reasoning_effort_controls(tmp_path
     runtime = VoidCodeRuntime(
         workspace=tmp_path,
         config=RuntimeConfig(
-            model="glm/glm-5",
+            model="zai/glm-5",
             execution_engine="provider",
             reasoning_effort="high",
         ),

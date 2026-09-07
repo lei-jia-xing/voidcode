@@ -673,8 +673,8 @@ describe("Composer", () => {
             current: true,
           },
           {
-            name: "glm",
-            label: "GLM",
+            name: "zai",
+            label: "Z.AI",
             configured: true,
             current: false,
           },
@@ -689,10 +689,10 @@ describe("Composer", () => {
             last_error: null,
             discovery_mode: null,
           },
-          glm: {
-            provider: "glm",
+          zai: {
+            provider: "zai",
             configured: true,
-            models: ["glm/glm-5"],
+            models: ["zai/glm-5"],
             source: null,
             last_refresh_status: null,
             last_error: null,

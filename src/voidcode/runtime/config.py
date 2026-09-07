@@ -2970,13 +2970,19 @@ def _first_configured_provider_name(providers: RuntimeProvidersConfig | None) ->
         ("copilot", providers.copilot),
         ("litellm", providers.litellm),
         ("opencode", providers.opencode),
+        ("openrouter", providers.openrouter),
         ("deepseek", providers.deepseek),
-        ("glm", providers.glm),
+        ("zai", providers.zai),
+        ("zhipuai", providers.zhipuai),
         ("grok", providers.grok),
         ("minimax", providers.minimax),
         ("kimi", providers.kimi),
         ("opencode-go", providers.opencode_go),
         ("qwen", providers.qwen),
+        ("groq", providers.groq),
+        ("together", providers.together),
+        ("fireworks", providers.fireworks),
+        ("mistral", providers.mistral),
     )
     for provider_name, configured_provider in ordered_candidates:
         if configured_provider is not None:
@@ -3001,10 +3007,14 @@ def _provider_api_key_present(providers: RuntimeProvidersConfig | None, provider
         return bool(providers.litellm and providers.litellm.api_key)
     if provider == "opencode":
         return bool(providers.opencode and providers.opencode.api_key)
+    if provider == "openrouter":
+        return bool(providers.openrouter and providers.openrouter.api_key)
     if provider == "deepseek":
         return bool(providers.deepseek and providers.deepseek.api_key)
-    if provider == "glm":
-        return bool(providers.glm and providers.glm.api_key)
+    if provider == "zai":
+        return bool(providers.zai and providers.zai.api_key)
+    if provider == "zhipuai":
+        return bool(providers.zhipuai and providers.zhipuai.api_key)
     if provider == "grok":
         return bool(providers.grok and providers.grok.api_key)
     if provider == "minimax":
@@ -3015,19 +3025,27 @@ def _provider_api_key_present(providers: RuntimeProvidersConfig | None, provider
         return bool(providers.opencode_go and providers.opencode_go.api_key)
     if provider == "qwen":
         return bool(providers.qwen and providers.qwen.api_key)
+    if provider == "groq":
+        return bool(providers.groq and providers.groq.api_key)
+    if provider == "together":
+        return bool(providers.together and providers.together.api_key)
+    if provider == "fireworks":
+        return bool(providers.fireworks and providers.fireworks.api_key)
+    if provider == "mistral":
+        return bool(providers.mistral and providers.mistral.api_key)
     custom_provider = providers.custom.get(provider)
     return bool(custom_provider and custom_provider.api_key)
 
 
 def _set_provider_api_key_payload(*, raw_providers: object, provider: str, api_key: str) -> dict[str, object]:
     providers_payload = dict(cast(dict[str, object], raw_providers)) if isinstance(raw_providers, dict) else {}
-    if provider in {"deepseek", "glm", "grok", "minimax", "kimi", "opencode-go", "qwen"}:
+    if provider in {"deepseek", "zai", "zhipuai", "grok", "minimax", "kimi", "opencode-go", "qwen", "groq", "together", "fireworks", "mistral"}:
         nested = providers_payload.get(provider)
         nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
         nested_payload["api_key"] = api_key
         providers_payload[provider] = nested_payload
         return providers_payload
-    if provider in {"openai", "anthropic", "litellm", "opencode"}:
+    if provider in {"openai", "anthropic", "litellm", "opencode", "openrouter"}:
         nested = providers_payload.get(provider)
         nested_payload = dict(cast(dict[str, object], nested)) if isinstance(nested, dict) else {}
         nested_payload["api_key"] = api_key

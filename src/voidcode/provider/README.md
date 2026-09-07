@@ -73,52 +73,55 @@ VoidCode 遵循严格的优先级阶梯来确定最终生效的模型和供应�
 | **Copilot** | `auth.token` | `GITHUB_COPILOT_TOKEN` | `token`, `oauth` |
 | **LiteLLM** | `api_key` / `api_key_env_var` | `LITELLM_API_KEY` / `LITELLM_PROXY_API_KEY` | `api_key`, `none` |
 | **OpenCode Zen** | `api_key` / `api_key_env_var` | `OPENCODE_API_KEY` | `api_key` |
+| **OpenRouter** | `api_key` / `api_key_env_var` | `OPENROUTER_API_KEY` | `api_key`, `none` |
 
-### 中国 AI Provider（一等支持）
+### 一等 OpenAI-compatible Provider
 
-以下 Provider 使用简化的 `SimplifiedProviderConfig`，支持最小配置：`api_key` + 可选 `base_url`。
+以下 provider 复用 LiteLLM/OpenAI-compatible backend；配置支持 `api_key`、`api_key_env_var`、`base_url`、`discovery_base_url`、`ssl_verify`、`timeout_seconds` 和 `model_map`。
 
 | Provider | 配置 Key | 默认 Base URL | 默认环境变量 |
 | :--- | :--- | :--- | :--- |
-| **GLM** (智谱 AI) | `glm` | `https://open.bigmodel.cn/api/paas/v4` | `ZAI_API_KEY` / `ZHIPU_API_KEY` |
+| **Z.AI** | `zai` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` |
+| **智谱 AI** | `zhipuai` | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPU_API_KEY`（无值时回退 `ZAI_API_KEY`） |
+| **OpenRouter** | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | **MiniMax** | `minimax` | `https://api.minimax.io` | `MINIMAX_API_KEY` |
 | **Kimi** (Moonshot AI) | `kimi` | `https://api.moonshot.ai` | `KIMI_API_KEY` |
 | **OpenCode Go** | `opencode-go` | `https://opencode.ai/zen/go` | `OPENCODE_API_KEY` |
 | **Qwen** (通义千问) | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode` | `DASHSCOPE_API_KEY` |
+| **Groq** | `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
+| **Together** | `together` | `https://api.together.ai/v1` | `TOGETHER_API_KEY` |
+| **Fireworks AI** | `fireworks` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
+| **Mistral** | `mistral` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
 
 #### 模型发现策略
 
-| Provider | Discovery 方式 | 说明 |
-| :--- | :--- | :--- |
-| **GLM** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
+| **Z.AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
+| **智谱 AI** | `/v4/models` endpoint | OpenAI-compatible，自动发现 |
+| **OpenRouter** | `/api/v1/models` endpoint | 自动发现真实模型 ID；模型引用保留 provider/model 中的全部 slash，也包含 API 返回的 `:free` 模型 |
 | **MiniMax** | `model_map` fallback | 默认不启用 discovery，使用内置 model_map |
 | **Kimi** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 | **OpenCode Zen** | `/zen/v1/models` endpoint | OpenAI-compatible，自动发现；模型引用为 `opencode/<model-id>` |
 | **OpenCode Go** | `model_map` fallback | 无公开 discovery endpoint，使用内置 model_map |
 | **Qwen** | `/v1/models` endpoint | DashScope compatible-mode，自动发现 |
+| **Groq** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
+| **Together** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
+| **Fireworks AI** | `model_map` fallback | 账号范围模型列表，无通用 `/v1/models`；可通过 `discovery_base_url` 显式启用 |
+| **Mistral** | `/v1/models` endpoint | OpenAI-compatible，自动发现 |
 
-所有 Provider 都内置了稳定的 `model_map` fallback 列表，用户无需手动配置即可使用。
+OpenRouter 不硬编码易变的免费模型 slug；请使用 `/api/v1/models` 刷新得到的模型 ID，例如
+`openrouter/anthropic/claude-3.7-sonnet` 或 API 当前返回的 `openrouter/<provider>/<model>:free`。
 
-内置默认模型映射：
-
-| Provider | 可用模型别名 |
-| :--- | :--- |
-| **GLM** | `glm-4-flash`, `glm-4-plus`, `glm-4`, `glm-5`, `glm-5-turbo` |
-| **MiniMax** | `minimax-m2.7`, `minimax-m2.5`, `minimax-m2.1`, `minimax-m2` |
-| **Kimi** | `kimi-k2.6`, `kimi-k2.5`, `kimi-k2`, `kimi-k2-turbo`, `kimi-k2-thinking` |
-| **OpenCode Go** | `glm-5`, `glm-5.1`, `kimi-k2.5`, `kimi-k2.6`, `mimo-v2-omni`, `mimo-v2-pro`, `mimo-v2.5`, `mimo-v2.5-pro`, `minimax-m2.5`, `minimax-m2.7`, `qwen3.5-plus`, `qwen3.6-plus` |
-| **Qwen** | `qwen-plus`, `qwen-max`, `qwen-flash`, `qwen3.5-plus`, `qwen3.5-flash`, `qwq-plus` |
+所有静态 Provider 都内置稳定的 `model_map` fallback 列表；OpenRouter 以远端 discovery 为准。
 
 配置示例（最小）：
 
 ```json
 {
   "providers": {
-    "glm": {},
-    "kimi": {},
-    "qwen": {}
+    "openrouter": {},
+    "zai": {}
   },
-  "model": "glm/glm-4-flash"
+  "model": "openrouter/anthropic/claude-3.7-sonnet"
 }
 ```
 
@@ -142,31 +145,28 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id
 ```json
 {
   "providers": {
-    "glm": {
-      "api_key": "your-glm-api-key",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "model_map": { "glm4": "glm-4-flash" }
+    "openrouter": {
+      "api_key_env_var": "OPENROUTER_API_KEY",
+      "model_map": { "sonnet": "anthropic/claude-3.7-sonnet" }
+    },
+    "zai": {
+      "api_key_env_var": "ZAI_API_KEY",
+      "base_url": "https://api.z.ai/api/paas/v4"
     },
     "minimax": {
       "api_key_env_var": "MINIMAX_API_KEY",
       "timeout_seconds": 60.0
-    },
-    "kimi": {
-      "api_key": "your-kimi-api-key",
-      "base_url": "https://api.moonshot.ai/v1"
     }
   },
-  "model": "minimax/minimax-m2.7"
+  "model": "openrouter/sonnet"
 }
 ```
-
-这些 Provider 不允许在 `providers.custom` 下定义（会与内置名称冲突）。
+这些 provider 不允许在 `providers.custom` 下定义（会与内置名称冲突）。
 
 ### 自定义 Provider（生产可用路径）
 
 - 使用 `providers.custom.<provider_name>` 定义任意自定义 provider（名称必须不包含 `/`）。
-- `providers.custom.<provider_name>` 不能与内置 provider 名称冲突（包括 `openai` / `anthropic` / `google` / `copilot` / `litellm` / `opencode` / `opencode-go` / `deepseek` / `glm` / `grok` / `minimax` / `kimi` / `qwen`）。
-- 对用户可见配置，给真实后端起一个明确名称放在 `providers.custom` 下；LiteLLM 只是内部调用层，不作为推荐的用户配置入口。
+- `providers.custom.<provider_name>` 不能与内置 provider 名称冲突（包括 `openai` / `anthropic` / `google` / `copilot` / `litellm` / `opencode` / `openrouter` / `opencode-go` / `deepseek` / `zai` / `zhipuai` / `grok` / `minimax` / `kimi` / `qwen` / `groq` / `together` / `fireworks` / `mistral`）。
 - 每个自定义 provider 都复用 OpenAI-compatible 后端调用路径，支持：
   - `api_key` / `api_key_env_var`
   - `base_url`
@@ -202,9 +202,9 @@ OpenCode Zen 与 OpenCode Go 是不同 provider：Zen 使用 `opencode/<model-id
 
 ### OpenAI-compatible 后端与证书校验
 
-- 对具名 OpenAI-compatible 后端，使用 `providers.custom.<name>`；例如本地代理、OpenRouter team gateway、内部模型网关等。
+- 对具名 OpenAI-compatible 后端，使用 `providers.custom.<name>`；例如本地代理或内部模型网关。
 - `ssl_verify: false` 是 HTTPS 证书校验问题的显式逃生口；优先使用 `http://` 本地代理 `base_url` 或修复 CA 信任链，只有在受控环境中才禁用校验。
-- 对内置具体 provider（例如 `opencode-go`），也可以在对应 provider block 上设置 `ssl_verify: false`。
+- 对内置具体 provider（例如 `openrouter`、`opencode-go`），也可以在对应 provider block 上设置 `ssl_verify: false`。
 - 当前该字段作用于实际模型调用路径；模型列表刷新仍走独立 discovery HTTP 路径，不应依赖它绕过 discovery 证书校验。
 
 ### 可用模型列表动态刷新（端点/API 驱动）

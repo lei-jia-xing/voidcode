@@ -32,12 +32,14 @@ from .errors import (
     format_fallback_exhausted_error,
     format_invalid_provider_config_error,
 )
-from .glm import GLMModelProvider
+from .fireworks import FireworksModelProvider
 from .google import GoogleModelProvider
 from .grok import GrokModelProvider
+from .groq import GroqModelProvider
 from .kimi import KimiModelProvider
 from .litellm import LiteLLMModelProvider
 from .minimax import MiniMaxModelProvider
+from .mistral import MistralModelProvider
 from .model_catalog import (
     ProviderModelCatalog,
     ProviderModelMetadata,
@@ -53,6 +55,7 @@ from .models import (
 from .openai import OpenAIModelProvider
 from .opencode import OpenCodeModelProvider
 from .opencode_go import OpenCodeGoModelProvider
+from .openrouter import OpenRouterModelProvider
 from .protocol import (
     ModelTurnProvider,
     ProviderExecutionError,
@@ -73,18 +76,25 @@ from .snapshot import (
     parse_resolved_provider_snapshot,
     resolved_provider_snapshot,
 )
+from .together import TogetherModelProvider
+from .zai import ZAIModelProvider
+from .zhipuai import ZhipuAIModelProvider
 
 __all__ = [
     "AnthropicModelProvider",
     "CopilotModelProvider",
     "DeepSeekModelProvider",
     "GoogleModelProvider",
+    "FireworksModelProvider",
+    "GroqModelProvider",
+    "MistralModelProvider",
     "GrokModelProvider",
     "LiteLLMModelProvider",
     "ModelTurnProvider",
     "ProviderModelCatalog",
     "ProviderModelMetadata",
     "ModelProviderRegistry",
+    "OpenRouterModelProvider",
     "OpenAIModelProvider",
     "OpenCodeModelProvider",
     "ProviderAuthAuthorizeRequest",
@@ -114,11 +124,13 @@ __all__ = [
     "SimplifiedProviderConfig",
     "StaticModelProvider",
     "StubTurnProvider",
-    "GLMModelProvider",
+    "ZAIModelProvider",
+    "ZhipuAIModelProvider",
     "MiniMaxModelProvider",
     "KimiModelProvider",
     "OpenCodeGoModelProvider",
     "QwenModelProvider",
+    "TogetherModelProvider",
     "classify_provider_error",
     "format_fallback_exhausted_error",
     "format_invalid_provider_config_error",

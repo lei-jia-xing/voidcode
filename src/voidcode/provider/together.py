@@ -8,24 +8,10 @@ from .protocol import TurnProvider
 
 
 @dataclass(frozen=True, slots=True)
-class GLMModelProvider:
-    """GLM (智谱AI) Model Provider.
+class TogetherModelProvider:
+    """Together's OpenAI-compatible inference API."""
 
-    GLM provides OpenAI-compatible API at https://open.bigmodel.cn/api/paas/v4
-
-    Usage:
-        providers:
-          glm:
-            api_key: "your-api-key"  # or set ZAI_API_KEY / ZHIPU_API_KEY env vars
-            model_map:
-              glm-4: glm-4-flash  # optional model alias
-
-    Environment Variables:
-        ZAI_API_KEY: API key for GLM authentication via ZAI port
-        ZHIPU_API_KEY: API key for GLM authentication via ZHIPU port
-    """
-
-    name: str = "glm"
+    name: str = "together"
     config: SimplifiedProviderConfig | None = None
 
     def provider_config(self):

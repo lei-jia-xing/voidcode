@@ -107,7 +107,7 @@ _OPENCODE_GO_M2_7_EFFORT: dict[str, str] = {
 def map_effort_for_provider(*, provider_name: str, model_name: str = "", effort: str) -> dict[str, object]:
     """Map a canonical effort to the request kwargs a provider expects.
 
-    The GLM provider takes a binary `extra_body.thinking.type` of
+    The Z.AI and ZhipuAI providers take a binary `extra_body.thinking.type` of
     "enabled"/"disabled" (keyed on the exact provider name). The DeepSeek
     provider takes graded levels via `extra_body.reasoning_effort` (litellm's
     adapter collapses a top-level `reasoning_effort` kwarg into binary
@@ -132,7 +132,7 @@ def map_effort_for_provider(*, provider_name: str, model_name: str = "", effort:
     "none" and "max" collapsed to the highest level the provider actually
     accepts.
     """
-    if provider_name == "glm":
+    if provider_name in {"zai", "zhipuai"}:
         thinking_type = "disabled" if effort == REASONING_EFFORT_OFF else "enabled"
         return {"extra_body": {"thinking": {"type": thinking_type}}}
 
@@ -171,7 +171,7 @@ def provider_supports_reasoning_effort(provider_name: str, model_name: str) -> b
     Returns False for providers whose LiteLLM adapters reject the OpenAI-style
     `reasoning_effort` kwarg (litellm raises `UnsupportedParamsError`) or otherwise
     do not forward it (Qwen/Kimi/MiniMax are explicitly unsupported here).
-    GLM is binary (thinking.type), not reasoning_effort: True only for reasoning GLM models.
+    Z.AI and ZhipuAI are binary (thinking.type), not reasoning_effort: True only for reasoning GLM models.
     OpenCodeGo is per-model: only `minimax-m2.5` (Anthropic adaptive thinking) and
     `minimax-m2.7` (OpenAI reasoning_effort ladder) are reasoning-capable; every other
     opencode-go model (glm/kimi/qwen/mimo/deepseek-v4-*) fails fast.
@@ -180,7 +180,7 @@ def provider_supports_reasoning_effort(provider_name: str, model_name: str) -> b
     provider = provider_name.strip().lower()
     if provider in _PROVIDERS_WITHOUT_REASONING_EFFORT:
         return False
-    if provider == "glm":
+    if provider in {"zai", "zhipuai"}:
         model = model_name.strip().lower()
         return True if model.startswith(("glm-5", "glm-z1")) else False
     if provider == "opencode-go":

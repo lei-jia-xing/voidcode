@@ -29,12 +29,17 @@ PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
     "deepseek": ("deepseek",),
     "grok": ("xai",),
     "qwen": ("qwen-portal", "alibaba-coding-plan"),
-    "glm": ("zai", "zhipuai-coding-plan"),
+    "zai": ("zai",),
+    "zhipuai": ("zhipuai-coding-plan",),
     "kimi": ("moonshotai",),
     "minimax": ("minimax", "minimax-cn"),
     "opencode": ("opencode",),
     "opencode-go": ("opencode-go",),
     "copilot": ("github-copilot",),
+    "groq": ("groq",),
+    "together": ("togetherai",),
+    "fireworks": ("fireworks-ai",),
+    "mistral": ("mistral",),
 }
 
 

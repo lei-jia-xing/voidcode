@@ -129,12 +129,17 @@ class ProviderAuthResolver:
     def _simplified_provider_config(self, provider: str) -> SimplifiedProviderConfig | None:
         provider_map = {
             "deepseek": self._providers.deepseek,
-            "glm": self._providers.glm,
+            "zai": self._providers.zai,
+            "zhipuai": self._providers.zhipuai,
             "grok": self._providers.grok,
             "minimax": self._providers.minimax,
             "kimi": self._providers.kimi,
             "opencode-go": self._providers.opencode_go,
             "qwen": self._providers.qwen,
+            "groq": self._providers.groq,
+            "together": self._providers.together,
+            "fireworks": self._providers.fireworks,
+            "mistral": self._providers.mistral,
         }
         return provider_map.get(provider)
 
@@ -169,22 +174,12 @@ class ProviderAuthResolver:
                 methods=_COPILOT_METHODS,
                 default_method=configured or "token",
             )
-        if provider == "litellm":
-            configured = self._providers.litellm
+        if provider in {"litellm", "opencode", "openrouter"}:
+            configured = getattr(self._providers, provider)
             default_method = "none"
             if configured is not None and configured.auth_scheme == "none":
                 default_method = "none"
             elif configured is not None and configured.api_key is not None:
-                default_method = "api_key"
-            return ProviderAuthMethodsResponse(
-                provider=provider,
-                methods=_LITELLM_METHODS,
-                default_method=default_method,
-            )
-        if provider == "opencode":
-            configured = self._providers.opencode
-            default_method = "none"
-            if configured is not None and configured.api_key is not None:
                 default_method = "api_key"
             return ProviderAuthMethodsResponse(
                 provider=provider,
@@ -229,17 +224,11 @@ class ProviderAuthResolver:
             return self._authorize_google(request)
         if request.provider == "copilot":
             return self._authorize_copilot(request)
-        if request.provider == "litellm":
+        if request.provider in {"litellm", "opencode", "openrouter"}:
             return self._authorize_litellm_compatible(
                 request=request,
-                provider_name="litellm",
-                provider_config=self._providers.litellm,
-            )
-        if request.provider == "opencode":
-            return self._authorize_litellm_compatible(
-                request=request,
-                provider_name="opencode",
-                provider_config=self._providers.opencode,
+                provider_name=request.provider,
+                provider_config=getattr(self._providers, request.provider),
             )
         simplified_config = self._simplified_provider_config(request.provider)
         if simplified_config is not None:

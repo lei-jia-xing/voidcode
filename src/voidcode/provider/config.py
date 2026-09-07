@@ -204,13 +204,19 @@ class _ProviderConfigsPayload(_ProviderPayloadModel):
     copilot: _CopilotProviderConfigPayload | None = None
     litellm: _LiteLLMProviderConfigPayload | None = None
     opencode: _LiteLLMProviderConfigPayload | None = None
+    openrouter: _LiteLLMProviderConfigPayload | None = None
     deepseek: _SimplifiedProviderConfigPayload | None = None
-    glm: _SimplifiedProviderConfigPayload | None = None
+    zai: _SimplifiedProviderConfigPayload | None = None
+    zhipuai: _SimplifiedProviderConfigPayload | None = None
     grok: _SimplifiedProviderConfigPayload | None = None
     minimax: _SimplifiedProviderConfigPayload | None = None
     kimi: _SimplifiedProviderConfigPayload | None = None
     opencode_go: _SimplifiedProviderConfigPayload | None = Field(default=None, alias="opencode-go")
     qwen: _SimplifiedProviderConfigPayload | None = None
+    groq: _SimplifiedProviderConfigPayload | None = None
+    together: _SimplifiedProviderConfigPayload | None = None
+    fireworks: _SimplifiedProviderConfigPayload | None = None
+    mistral: _SimplifiedProviderConfigPayload | None = None
     custom: dict[str, _LiteLLMProviderConfigPayload] = Field(default_factory=dict)
 
 
@@ -220,8 +226,9 @@ class _ProviderFallbackPayload(_ProviderPayloadModel):
 
 
 # =============================================================================
-# Simplified Provider Config for Chinese AI Providers
-# Provides a unified, minimal configuration interface for GLM, MiniMax, Kimi, OpenCode Go, and Qwen
+# Simplified Provider Config for OpenAI-compatible providers
+# Provides a unified, minimal configuration interface for Z.AI, ZhipuAI, MiniMax,
+# Kimi, OpenCode Go, and Qwen.
 # =============================================================================
 
 
@@ -275,7 +282,19 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
             "deepseek-reasoner": "deepseek-reasoner",
         },
     ),
-    "glm": (
+    "zai": (
+        "https://api.z.ai/api/paas/v4",
+        "https://api.z.ai/api/paas/v4",
+        {
+            "glm-5.1": "glm-5.1",
+            "glm-4-flash": "glm-4-flash",
+            "glm-4-plus": "glm-4-plus",
+            "glm-4": "glm-4-flash",
+            "glm-5": "glm-5",
+            "glm-5-turbo": "glm-5-turbo",
+        },
+    ),
+    "zhipuai": (
         "https://open.bigmodel.cn/api/paas/v4",
         "https://open.bigmodel.cn/api/paas/v4",
         {
@@ -379,6 +398,49 @@ _SIMPLIFIED_DEFAULTS: dict[str, tuple[str, str | None, dict[str, str]]] = {
             "qwq-plus": "qwq-plus",
         },
     ),
+    "groq": (
+        "https://api.groq.com/openai/v1",
+        "https://api.groq.com/openai/v1",
+        {
+            "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant": "llama-3.1-8b-instant",
+            "openai/gpt-oss-120b": "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b": "openai/gpt-oss-20b",
+            "qwen/qwen3-32b": "qwen/qwen3-32b",
+        },
+    ),
+    "together": (
+        "https://api.together.ai/v1",
+        "https://api.together.ai/v1",
+        {
+            "llama-3.3-70b": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "llama-3.1-8b": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+            "deepseek-v3": "deepseek-ai/DeepSeek-V3",
+            "qwen3-coder": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+            "kimi-k2": "moonshotai/Kimi-K2-Instruct",
+        },
+    ),
+    "fireworks": (
+        "https://api.fireworks.ai/inference/v1",
+        "",
+        {
+            "llama-3.1-70b": "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "deepseek-v3": "accounts/fireworks/models/deepseek-v3p1",
+            "qwen3-235b": "accounts/fireworks/models/qwen3-235b-a22b",
+            "kimi-k2": "accounts/fireworks/models/kimi-k2-instruct",
+        },
+    ),
+    "mistral": (
+        "https://api.mistral.ai/v1",
+        "https://api.mistral.ai/v1",
+        {
+            "mistral-large": "mistral-large-latest",
+            "mistral-small": "mistral-small-latest",
+            "codestral": "codestral-latest",
+            "devstral-small": "devstral-small-latest",
+            "magistral-medium": "magistral-medium-latest",
+        },
+    ),
 }
 
 
@@ -432,13 +494,17 @@ def simplified_config_to_litellm(
 # Environment Variables for Chinese AI Providers
 # =============================================================================
 
-_GLM_ZAI_API_KEY_ENV_VAR = "ZAI_API_KEY"
-_GLM_ZHIPU_API_KEY_ENV_VAR = "ZHIPU_API_KEY"
+_ZAI_API_KEY_ENV_VAR = "ZAI_API_KEY"
+_ZHIPU_API_KEY_ENV_VAR = "ZHIPU_API_KEY"
 _DEEPSEEK_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY"
 _XAI_API_KEY_ENV_VAR = "XAI_API_KEY"
 _MINIMAX_API_KEY_ENV_VAR = "MINIMAX_API_KEY"
 _KIMI_API_KEY_ENV_VAR = "KIMI_API_KEY"
 _OPENCODE_API_KEY_ENV_VAR = "OPENCODE_API_KEY"
+_GROQ_API_KEY_ENV_VAR = "GROQ_API_KEY"
+_TOGETHER_API_KEY_ENV_VAR = "TOGETHER_API_KEY"
+_FIREWORKS_API_KEY_ENV_VAR = "FIREWORKS_API_KEY"
+_MISTRAL_API_KEY_ENV_VAR = "MISTRAL_API_KEY"
 
 
 # =============================================================================
@@ -550,13 +616,19 @@ class ProviderConfigs:
     copilot: CopilotProviderConfig | None = None
     litellm: LiteLLMProviderConfig | None = None
     opencode: LiteLLMProviderConfig | None = None
+    openrouter: LiteLLMProviderConfig | None = None
     deepseek: SimplifiedProviderConfig | None = None
-    glm: SimplifiedProviderConfig | None = None
+    zai: SimplifiedProviderConfig | None = None
+    zhipuai: SimplifiedProviderConfig | None = None
     grok: SimplifiedProviderConfig | None = None
     minimax: SimplifiedProviderConfig | None = None
     kimi: SimplifiedProviderConfig | None = None
     opencode_go: SimplifiedProviderConfig | None = None
     qwen: SimplifiedProviderConfig | None = None
+    groq: SimplifiedProviderConfig | None = None
+    together: SimplifiedProviderConfig | None = None
+    fireworks: SimplifiedProviderConfig | None = None
+    mistral: SimplifiedProviderConfig | None = None
     custom: dict[str, LiteLLMProviderConfig] = field(default_factory=dict)
 
 
@@ -567,6 +639,7 @@ _COPILOT_TOKEN_ENV_VAR = "GITHUB_COPILOT_TOKEN"
 _LITELLM_API_KEY_ENV_VAR = "LITELLM_API_KEY"
 _LITELLM_PROXY_API_KEY_ENV_VAR = "LITELLM_PROXY_API_KEY"
 _LITELLM_BASE_URL_ENV_VAR = "LITELLM_BASE_URL"
+_OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 _LITELLM_PROXY_URL_ENV_VAR = "LITELLM_PROXY_URL"
 
 _VALID_GOOGLE_AUTH_METHODS: tuple[GoogleAuthMethod, ...] = (
@@ -618,16 +691,22 @@ _BUILTIN_PROVIDER_NAMES: frozenset[str] = frozenset(
         "openai",
         "anthropic",
         "google",
-        "copilot",
         "litellm",
         "opencode",
+        "openrouter",
+        "copilot",
         "deepseek",
-        "glm",
+        "zai",
+        "zhipuai",
         "grok",
         "minimax",
         "kimi",
         "opencode-go",
         "qwen",
+        "groq",
+        "together",
+        "fireworks",
+        "mistral",
     }
 )
 
@@ -660,11 +739,13 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
         ),
         litellm=_litellm_provider_config_from_env(env),
         opencode=(LiteLLMProviderConfig(api_key=opencode_key) if (opencode_key := env.get(_OPENCODE_API_KEY_ENV_VAR)) else None),
+        openrouter=(LiteLLMProviderConfig(api_key=openrouter_key) if (openrouter_key := env.get(_OPENROUTER_API_KEY_ENV_VAR)) else None),
         deepseek=_simplified_provider_config_from_env(env, _DEEPSEEK_API_KEY_ENV_VAR),
-        glm=_simplified_provider_config_from_env(
+        zai=_simplified_provider_config_from_env(env, _ZAI_API_KEY_ENV_VAR),
+        zhipuai=_simplified_provider_config_from_env(
             env,
-            _GLM_ZAI_API_KEY_ENV_VAR,
-            _GLM_ZHIPU_API_KEY_ENV_VAR,
+            _ZHIPU_API_KEY_ENV_VAR,
+            _ZAI_API_KEY_ENV_VAR,
         ),
         grok=_simplified_provider_config_from_env(
             env,
@@ -674,6 +755,10 @@ def provider_configs_from_env(env: Mapping[str, str]) -> ProviderConfigs | None:
         kimi=_simplified_provider_config_from_env(env, _KIMI_API_KEY_ENV_VAR),
         opencode_go=_simplified_provider_config_from_env(env, _OPENCODE_API_KEY_ENV_VAR),
         qwen=_simplified_provider_config_from_env(env, "DASHSCOPE_API_KEY"),
+        groq=_simplified_provider_config_from_env(env, _GROQ_API_KEY_ENV_VAR),
+        together=_simplified_provider_config_from_env(env, _TOGETHER_API_KEY_ENV_VAR),
+        fireworks=_simplified_provider_config_from_env(env, _FIREWORKS_API_KEY_ENV_VAR),
+        mistral=_simplified_provider_config_from_env(env, _MISTRAL_API_KEY_ENV_VAR),
     )
     if _provider_configs_has_entries(providers):
         return providers
@@ -696,8 +781,10 @@ def merge_provider_configs(
         copilot=_merge_copilot_provider_config(primary.copilot, fallback.copilot),
         litellm=_merge_litellm_provider_config(primary.litellm, fallback.litellm),
         opencode=_merge_litellm_provider_config(primary.opencode, fallback.opencode),
+        openrouter=_merge_litellm_provider_config(primary.openrouter, fallback.openrouter),
         deepseek=_merge_simplified_provider_config(primary.deepseek, fallback.deepseek),
-        glm=_merge_simplified_provider_config(primary.glm, fallback.glm),
+        zai=_merge_simplified_provider_config(primary.zai, fallback.zai),
+        zhipuai=_merge_simplified_provider_config(primary.zhipuai, fallback.zhipuai),
         grok=_merge_simplified_provider_config(primary.grok, fallback.grok),
         minimax=_merge_simplified_provider_config(primary.minimax, fallback.minimax),
         kimi=_merge_simplified_provider_config(primary.kimi, fallback.kimi),
@@ -706,6 +793,10 @@ def merge_provider_configs(
             fallback.opencode_go,
         ),
         qwen=_merge_simplified_provider_config(primary.qwen, fallback.qwen),
+        groq=_merge_simplified_provider_config(primary.groq, fallback.groq),
+        together=_merge_simplified_provider_config(primary.together, fallback.together),
+        fireworks=_merge_simplified_provider_config(primary.fireworks, fallback.fireworks),
+        mistral=_merge_simplified_provider_config(primary.mistral, fallback.mistral),
         custom={**fallback.custom, **primary.custom},
     )
 
@@ -856,13 +947,19 @@ def _provider_configs_has_entries(providers: ProviderConfigs) -> bool:
             providers.copilot,
             providers.litellm,
             providers.opencode,
+            providers.openrouter,
             providers.deepseek,
-            providers.glm,
+            providers.zai,
+            providers.zhipuai,
             providers.grok,
             providers.minimax,
             providers.kimi,
             providers.opencode_go,
             providers.qwen,
+            providers.groq,
+            providers.together,
+            providers.fireworks,
+            providers.mistral,
             providers.custom,
         )
     )
@@ -989,18 +1086,30 @@ def parse_provider_configs_payload(
             env=environment,
             default_api_key_env_var=_OPENCODE_API_KEY_ENV_VAR,
         ),
+        openrouter=_parse_litellm_provider_config(
+            payload.openrouter,
+            field_path=_nested_config_field(source, "openrouter"),
+            env=environment,
+            default_api_key_env_var=_OPENROUTER_API_KEY_ENV_VAR,
+        ),
         deepseek=_parse_simplified_provider_config(
             payload.deepseek,
             field_path=_nested_config_field(source, "deepseek"),
             env=environment,
             api_key_env_var=_DEEPSEEK_API_KEY_ENV_VAR,
         ),
-        glm=_parse_simplified_provider_config(
-            payload.glm,
-            field_path=_nested_config_field(source, "glm"),
+        zai=_parse_simplified_provider_config(
+            payload.zai,
+            field_path=_nested_config_field(source, "zai"),
             env=environment,
-            api_key_env_var=_GLM_ZAI_API_KEY_ENV_VAR,
-            fallback_api_key_env_vars=(_GLM_ZHIPU_API_KEY_ENV_VAR,),
+            api_key_env_var=_ZAI_API_KEY_ENV_VAR,
+        ),
+        zhipuai=_parse_simplified_provider_config(
+            payload.zhipuai,
+            field_path=_nested_config_field(source, "zhipuai"),
+            env=environment,
+            api_key_env_var=_ZHIPU_API_KEY_ENV_VAR,
+            fallback_api_key_env_vars=(_ZAI_API_KEY_ENV_VAR,),
         ),
         grok=_parse_simplified_provider_config(
             payload.grok,
@@ -1031,6 +1140,30 @@ def parse_provider_configs_payload(
             field_path=_nested_config_field(source, "qwen"),
             env=environment,
             api_key_env_var="DASHSCOPE_API_KEY",
+        ),
+        groq=_parse_simplified_provider_config(
+            payload.groq,
+            field_path=_nested_config_field(source, "groq"),
+            env=environment,
+            api_key_env_var=_GROQ_API_KEY_ENV_VAR,
+        ),
+        together=_parse_simplified_provider_config(
+            payload.together,
+            field_path=_nested_config_field(source, "together"),
+            env=environment,
+            api_key_env_var=_TOGETHER_API_KEY_ENV_VAR,
+        ),
+        fireworks=_parse_simplified_provider_config(
+            payload.fireworks,
+            field_path=_nested_config_field(source, "fireworks"),
+            env=environment,
+            api_key_env_var=_FIREWORKS_API_KEY_ENV_VAR,
+        ),
+        mistral=_parse_simplified_provider_config(
+            payload.mistral,
+            field_path=_nested_config_field(source, "mistral"),
+            env=environment,
+            api_key_env_var=_MISTRAL_API_KEY_ENV_VAR,
         ),
         custom=_parse_custom_litellm_provider_configs(
             payload.custom,
@@ -1078,14 +1211,24 @@ def serialize_provider_configs(
             providers.opencode,
             include_secrets=include_secrets,
         )
+    if providers.openrouter is not None:
+        serialized["openrouter"] = _serialize_litellm_provider_config(
+            providers.openrouter,
+            include_secrets=include_secrets,
+        )
     if providers.deepseek is not None:
         serialized["deepseek"] = _serialize_simplified_provider_config(
             providers.deepseek,
             include_secrets=include_secrets,
         )
-    if providers.glm is not None:
-        serialized["glm"] = _serialize_simplified_provider_config(
-            providers.glm,
+    if providers.zai is not None:
+        serialized["zai"] = _serialize_simplified_provider_config(
+            providers.zai,
+            include_secrets=include_secrets,
+        )
+    if providers.zhipuai is not None:
+        serialized["zhipuai"] = _serialize_simplified_provider_config(
+            providers.zhipuai,
             include_secrets=include_secrets,
         )
     if providers.grok is not None:
@@ -1111,6 +1254,26 @@ def serialize_provider_configs(
     if providers.qwen is not None:
         serialized["qwen"] = _serialize_simplified_provider_config(
             providers.qwen,
+            include_secrets=include_secrets,
+        )
+    if providers.groq is not None:
+        serialized["groq"] = _serialize_simplified_provider_config(
+            providers.groq,
+            include_secrets=include_secrets,
+        )
+    if providers.together is not None:
+        serialized["together"] = _serialize_simplified_provider_config(
+            providers.together,
+            include_secrets=include_secrets,
+        )
+    if providers.fireworks is not None:
+        serialized["fireworks"] = _serialize_simplified_provider_config(
+            providers.fireworks,
+            include_secrets=include_secrets,
+        )
+    if providers.mistral is not None:
+        serialized["mistral"] = _serialize_simplified_provider_config(
+            providers.mistral,
             include_secrets=include_secrets,
         )
     if providers.custom:

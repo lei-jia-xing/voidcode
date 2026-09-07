@@ -55,6 +55,11 @@ _PROVIDER_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _MAX_PROVIDER_TOOL_NAME_LENGTH = 64
 _PROVIDER_TOOL_NAME_HASH_LENGTH = 8
 _PROVIDERS_REQUIRING_REASONING_CONTENT_WITH_TOOL_CALLS = frozenset({"deepseek"})
+_LITELLM_PROVIDER_MODEL_PREFIXES = {
+    "groq": "groq",
+    "together": "together_ai",
+    "fireworks": "fireworks_ai",
+}
 _LITELLM_DEBUG_ENABLED = False
 _LITELLM_DEBUG_HANDLER: logging.Handler | None = None
 
@@ -356,6 +361,9 @@ class LiteLLMBackendSingleAgentProvider:
         if self.use_raw_model_name:
             return model_name
         if "/" in model_name:
+            provider_prefix = _LITELLM_PROVIDER_MODEL_PREFIXES.get(self.name)
+            if provider_prefix is not None and not model_name.startswith(f"{provider_prefix}/"):
+                return f"{provider_prefix}/{model_name}"
             return model_name
         return f"{self.name}/{model_name}"
 

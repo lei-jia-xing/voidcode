@@ -17,6 +17,7 @@ from voidcode.provider.config import (
     LiteLLMProviderConfig,
     OpenAIProviderConfig,
     ProviderConfigs,
+    SimplifiedProviderConfig,
 )
 
 
@@ -336,3 +337,17 @@ def test_provider_auth_authorize_litellm_defaults_to_none_when_auth_scheme_is_no
     assert result.method == "none"
     assert result.material is not None
     assert result.material.headers == {}
+
+
+@pytest.mark.parametrize("provider", ["groq", "together", "fireworks", "mistral"])
+def test_provider_auth_supports_new_simplified_providers(provider: str) -> None:
+    resolver = ProviderAuthResolver(providers=ProviderConfigs(**{provider: SimplifiedProviderConfig(api_key=f"{provider}-secret")}))
+
+    methods = resolver.methods(provider)
+    result = resolver.authorize(ProviderAuthAuthorizeRequest(provider=provider))
+
+    assert methods.default_method == "api_key"
+    assert [method.id for method in methods.methods] == ["api_key"]
+    assert result.status == "authorized"
+    assert result.material is not None
+    assert result.material.headers == {"Authorization": f"Bearer {provider}-secret"}

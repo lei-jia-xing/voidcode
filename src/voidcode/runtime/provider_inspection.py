@@ -52,14 +52,20 @@ class RuntimeProviderAuthInspector:
             "google": providers.google,
             "copilot": providers.copilot,
             "litellm": providers.litellm,
+            "openrouter": providers.openrouter,
             "deepseek": providers.deepseek,
-            "glm": providers.glm,
+            "zai": providers.zai,
+            "zhipuai": providers.zhipuai,
             "grok": providers.grok,
             "minimax": providers.minimax,
             "kimi": providers.kimi,
             "opencode": providers.opencode,
             "opencode-go": providers.opencode_go,
             "qwen": providers.qwen,
+            "groq": providers.groq,
+            "together": providers.together,
+            "fireworks": providers.fireworks,
+            "mistral": providers.mistral,
         }
         if provider_name in configured:
             return configured[provider_name] is not None

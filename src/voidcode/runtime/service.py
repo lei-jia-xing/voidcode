@@ -3931,11 +3931,16 @@ class VoidCodeRuntime(RuntimeSurface):
             "copilot": "Copilot",
             "litellm": "LiteLLM",
             "deepseek": "DeepSeek",
-            "glm": "GLM",
+            "zai": "Z.AI",
+            "zhipuai": "ZhipuAI",
             "grok": "Grok",
             "minimax": "MiniMax",
             "kimi": "Kimi",
             "qwen": "Qwen",
+            "groq": "Groq",
+            "together": "Together",
+            "fireworks": "Fireworks",
+            "mistral": "Mistral",
         }.get(provider_name, provider_name)
 
     def _provider_is_configured(self, provider_name: str) -> bool:

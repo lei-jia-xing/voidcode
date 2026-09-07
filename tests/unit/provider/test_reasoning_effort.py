@@ -116,14 +116,16 @@ def test_map_effort_for_provider_passes_other_values_through() -> None:
     }
 
 
-def test_map_effort_for_provider_uses_glm_binary_for_glm_provider_off() -> None:
-    assert map_effort_for_provider(provider_name="glm", effort="off") == {
+@pytest.mark.parametrize("provider_name", ["zai", "zhipuai"])
+def test_map_effort_for_provider_uses_named_provider_binary_for_off(provider_name: str) -> None:
+    assert map_effort_for_provider(provider_name=provider_name, effort="off") == {
         "extra_body": {"thinking": {"type": "disabled"}},
     }
 
 
-def test_map_effort_for_provider_uses_glm_binary_for_glm_provider_high() -> None:
-    assert map_effort_for_provider(provider_name="glm", effort="high") == {
+@pytest.mark.parametrize("provider_name", ["zai", "zhipuai"])
+def test_map_effort_for_provider_uses_named_provider_binary_for_high(provider_name: str) -> None:
+    assert map_effort_for_provider(provider_name=provider_name, effort="high") == {
         "extra_body": {"thinking": {"type": "enabled"}},
     }
 
@@ -184,7 +186,7 @@ def test_map_effort_for_provider_maps_opencode_go_m2_7_ladder_through_extra_body
         ("opencode-go", "high", "high"),
     ],
 )
-def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_non_glm(
+def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_generic_provider(
     provider_name: str,
     effort: str,
     expected: str,
@@ -201,8 +203,10 @@ def test_map_effort_for_provider_uses_reasoning_effort_kwarg_for_non_glm(
         ("opencode-go", "minimax-m2.5", True),
         ("opencode-go", "minimax-m2.7", True),
         ("opencode-go", "glm-5", False),
-        ("glm", "glm-4-flash", False),
-        ("glm", "glm-5", True),
+        ("zai", "glm-4-flash", False),
+        ("zai", "glm-5", True),
+        ("zhipuai", "glm-4-flash", False),
+        ("zhipuai", "glm-5", True),
         ("openai", "gpt-5", None),
     ],
 )
